@@ -1182,7 +1182,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
+  test "runtime sandbox policy resolution expands local explicit writable roots" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1198,7 +1198,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: ["relative/path"],
+          writableRoots: ["~/Repos/symphony-workspaces", "relative/path"],
           networkAccess: true
         }
       )
@@ -1207,7 +1207,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path"],
+               "writableRoots" => [
+                 Path.expand("~/Repos/symphony-workspaces"),
+                 Path.expand("relative/path")
+               ],
+               "networkAccess" => true
+             }
+
+      assert {:ok, remote_settings} = Config.codex_runtime_settings(issue_workspace, remote: true)
+
+      assert remote_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => ["~/Repos/symphony-workspaces", "relative/path"],
                "networkAccess" => true
              }
 

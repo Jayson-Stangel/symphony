@@ -121,7 +121,7 @@ defmodule SymphonyElixir.Config do
     if Keyword.get(opts, :remote, false) or sandbox_policy_type(policy) != "workspaceWrite" do
       policy
     else
-      roots = sandbox_policy_writable_roots(policy)
+      roots = policy |> sandbox_policy_writable_roots() |> expand_local_roots()
       extra_roots = workspace_git_metadata_roots(workspace)
       put_sandbox_policy_writable_roots(policy, dedupe_roots(roots ++ extra_roots))
     end
@@ -144,6 +144,12 @@ defmodule SymphonyElixir.Config do
       Map.has_key?(policy, :writableRoots) -> Map.put(policy, :writableRoots, roots)
       true -> Map.put(policy, "writableRoots", roots)
     end
+  end
+
+  defp expand_local_roots(roots) do
+    roots
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&Path.expand/1)
   end
 
   defp workspace_git_metadata_roots(workspace) do
