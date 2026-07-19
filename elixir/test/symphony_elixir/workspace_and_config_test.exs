@@ -1182,7 +1182,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
+  test "runtime sandbox policy resolution expands local explicit writable roots" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1198,7 +1198,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         codex_turn_sandbox_policy: %{
           type: "workspaceWrite",
-          writableRoots: ["relative/path"],
+          writableRoots: ["~/Repos/symphony-workspaces", "relative/path"],
           networkAccess: true
         }
       )
@@ -1207,7 +1207,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path"],
+               "writableRoots" => [
+                 Path.expand("~/Repos/symphony-workspaces"),
+                 Path.expand("relative/path")
+               ],
+               "networkAccess" => true
+             }
+
+      assert {:ok, remote_settings} = Config.codex_runtime_settings(issue_workspace, remote: true)
+
+      assert remote_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => ["~/Repos/symphony-workspaces", "relative/path"],
                "networkAccess" => true
              }
 
@@ -1224,6 +1235,69 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "futureSandbox",
                "nested" => %{"flag" => true}
+             }
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "runtime sandbox policy adds Harmony linked worktree git metadata roots" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-runtime-git-metadata-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      issue_workspace = Path.join(workspace_root, "JAY-83")
+      git_common_dir = Path.join(test_root, "harmony/.git")
+      git_worktrees_dir = Path.join(git_common_dir, "worktrees")
+      git_dir = Path.join(git_worktrees_dir, "JAY-83")
+      File.mkdir_p!(issue_workspace)
+      File.mkdir_p!(git_dir)
+
+      File.write!(
+        Path.join(issue_workspace, ".harmony-workspace.json"),
+        Jason.encode!(%{
+          source: %{
+            git_common_dir: git_common_dir,
+            git_dir: git_dir
+          }
+        })
+      )
+
+      explicit_cache = Path.join(test_root, "cache")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [issue_workspace, explicit_cache],
+          networkAccess: true
+        }
+      )
+
+      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+
+      assert runtime_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [
+                 issue_workspace,
+                 explicit_cache,
+                 git_common_dir,
+                 git_worktrees_dir,
+                 git_dir
+               ],
+               "networkAccess" => true
+             }
+
+      assert {:ok, remote_settings} = Config.codex_runtime_settings(issue_workspace, remote: true)
+
+      assert remote_settings.turn_sandbox_policy == %{
+               "type" => "workspaceWrite",
+               "writableRoots" => [issue_workspace, explicit_cache],
+               "networkAccess" => true
              }
     after
       File.rm_rf(test_root)

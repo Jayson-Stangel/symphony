@@ -104,6 +104,8 @@ defmodule SymphonyElixir.Config do
     with {:ok, settings} <- settings() do
       with {:ok, turn_sandbox_policy} <-
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+        turn_sandbox_policy = augment_runtime_turn_sandbox_policy(turn_sandbox_policy, workspace, opts)
+
         {:ok,
          %{
            approval_policy: settings.codex.approval_policy,
@@ -112,6 +114,98 @@ defmodule SymphonyElixir.Config do
          }}
       end
     end
+  end
+
+  defp augment_runtime_turn_sandbox_policy(policy, workspace, opts)
+       when is_map(policy) and is_binary(workspace) do
+    if Keyword.get(opts, :remote, false) or sandbox_policy_type(policy) != "workspaceWrite" do
+      policy
+    else
+      roots = policy |> sandbox_policy_writable_roots() |> expand_local_roots()
+      extra_roots = workspace_git_metadata_roots(workspace)
+      put_sandbox_policy_writable_roots(policy, dedupe_roots(roots ++ extra_roots))
+    end
+  end
+
+  defp augment_runtime_turn_sandbox_policy(policy, _workspace, _opts), do: policy
+
+  defp sandbox_policy_type(policy), do: Map.get(policy, "type") || Map.get(policy, :type)
+
+  defp sandbox_policy_writable_roots(policy) do
+    case Map.get(policy, "writableRoots") || Map.get(policy, :writableRoots) do
+      roots when is_list(roots) -> roots
+      _ -> []
+    end
+  end
+
+  defp put_sandbox_policy_writable_roots(policy, roots) do
+    cond do
+      Map.has_key?(policy, "writableRoots") -> Map.put(policy, "writableRoots", roots)
+      Map.has_key?(policy, :writableRoots) -> Map.put(policy, :writableRoots, roots)
+      true -> Map.put(policy, "writableRoots", roots)
+    end
+  end
+
+  defp expand_local_roots(roots) do
+    roots
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&Path.expand/1)
+  end
+
+  defp workspace_git_metadata_roots(workspace) do
+    workspace
+    |> manifest_git_metadata_roots()
+    |> Kernel.++(git_metadata_roots_from_git(workspace))
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&Path.expand/1)
+  end
+
+  defp manifest_git_metadata_roots(workspace) do
+    manifest_path = Path.join(workspace, ".harmony-workspace.json")
+
+    with {:ok, raw} <- File.read(manifest_path),
+         {:ok, %{"source" => source}} when is_map(source) <- Jason.decode(raw) do
+      common_dir = source["git_common_dir"]
+      git_dir = source["git_dir"]
+      [common_dir, worktrees_dir(common_dir), git_dir]
+    else
+      _ -> []
+    end
+  end
+
+  defp git_metadata_roots_from_git(workspace) do
+    with {:ok, common_dir} <- git_value(workspace, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+         {:ok, git_dir} <- git_value(workspace, ["rev-parse", "--path-format=absolute", "--git-dir"]) do
+      [common_dir, worktrees_dir(common_dir), git_dir]
+    else
+      _ -> []
+    end
+  end
+
+  defp git_value(workspace, args) do
+    case System.cmd("git", args, cd: workspace, stderr_to_stdout: true) do
+      {value, 0} -> {:ok, String.trim(value)}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp worktrees_dir(nil), do: nil
+  defp worktrees_dir(path) when is_binary(path), do: Path.join(path, "worktrees")
+
+  defp dedupe_roots(roots) do
+    roots
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reduce([], fn root, acc ->
+      key = Path.expand(root)
+
+      if Enum.any?(acc, &(Path.expand(&1) == key)) do
+        acc
+      else
+        acc ++ [root]
+      end
+    end)
   end
 
   defp validate_semantics(settings) do
