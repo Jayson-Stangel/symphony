@@ -369,6 +369,10 @@ defmodule SymphonyElixir.Codex.AppServer do
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
         {:ok, :turn_completed}
 
+      {:ok, %{"method" => "thread/status/changed", "params" => %{"status" => %{"type" => "idle"}}} = payload} ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
         emit_turn_event(
           on_message,
