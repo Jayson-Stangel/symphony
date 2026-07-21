@@ -88,7 +88,19 @@ defmodule SymphonyElixir.Codex.AppServer do
         DynamicTool.execute(tool, arguments)
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    case start_turn(
+           port,
+           thread_id,
+           prompt,
+           issue,
+           workspace,
+           approval_policy,
+           turn_sandbox_policy,
+           on_message,
+           metadata,
+           tool_executor,
+           auto_approve_requests
+         ) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -301,7 +313,19 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+  defp start_turn(
+         port,
+         thread_id,
+         prompt,
+         issue,
+         workspace,
+         approval_policy,
+         turn_sandbox_policy,
+         on_message,
+         metadata,
+         tool_executor,
+         auto_approve_requests
+       ) do
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
@@ -320,7 +344,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @turn_start_id) do
+    case await_response(port, @turn_start_id, on_message, metadata, tool_executor, auto_approve_requests) do
       {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
       other -> other
     end
@@ -368,6 +392,27 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{"method" => "turn/completed"} = payload} ->
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
         {:ok, :turn_completed}
+
+      {:ok, %{"method" => "thread/status/changed", "params" => %{"status" => %{"type" => "idle"}}} = payload} ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
+      {:ok, %{"method" => "item/completed"} = payload} ->
+        if completed_agent_message_item?(payload) do
+          emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+          {:ok, :turn_completed}
+        else
+          handle_turn_method(
+            port,
+            on_message,
+            payload,
+            payload_string,
+            "item/completed",
+            timeout_ms,
+            tool_executor,
+            auto_approve_requests
+          )
+        end
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
         emit_turn_event(
@@ -450,6 +495,20 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata_from_message(port, payload)
     )
   end
+
+  defp completed_agent_message_item?(payload) when is_map(payload) do
+    item = get_in(payload, ["params", "item"])
+
+    item_type =
+      cond do
+        is_map(item) -> Map.get(item, "type") || Map.get(item, :type)
+        true -> nil
+      end
+
+    item_type in ["agentMessage", "agent_message"]
+  end
+
+  defp completed_agent_message_item?(_payload), do: false
 
   defp handle_turn_method(
          port,
@@ -920,17 +979,58 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+    await_response(port, request_id, &default_on_message/1, %{}, &DynamicTool.execute/2, false)
   end
 
-  defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+  defp await_response(port, request_id, on_message, metadata, tool_executor, auto_approve_requests) do
+    with_timeout_response(
+      port,
+      request_id,
+      Config.settings!().codex.read_timeout_ms,
+      "",
+      on_message,
+      metadata,
+      tool_executor,
+      auto_approve_requests
+    )
+  end
+
+  defp with_timeout_response(
+         port,
+         request_id,
+         timeout_ms,
+         pending_line,
+         on_message,
+         metadata,
+         tool_executor,
+         auto_approve_requests
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_response(port, request_id, complete_line, timeout_ms)
+
+        handle_response(
+          port,
+          request_id,
+          complete_line,
+          timeout_ms,
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
 
       {^port, {:data, {:noeol, chunk}}} ->
-        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk))
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          pending_line <> to_string(chunk),
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
@@ -940,7 +1040,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_response(port, request_id, data, timeout_ms) do
+  defp handle_response(
+         port,
+         request_id,
+         data,
+         timeout_ms,
+         on_message,
+         metadata,
+         tool_executor,
+         auto_approve_requests
+       ) do
     payload = to_string(data)
 
     case Jason.decode(payload) do
@@ -950,16 +1059,109 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{"id" => ^request_id, "result" => result}} ->
         {:ok, result}
 
+      {:ok, %{"id" => ^request_id, "method" => method} = response_payload} when is_binary(method) ->
+        handle_response_method(
+          port,
+          request_id,
+          response_payload,
+          payload,
+          timeout_ms,
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
+
       {:ok, %{"id" => ^request_id} = response_payload} ->
         {:error, {:response_error, response_payload}}
 
       {:ok, %{} = other} ->
         Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
-        with_timeout_response(port, request_id, timeout_ms, "")
+
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          "",
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
 
       {:error, _} ->
         log_non_json_stream_line(payload, "response stream")
-        with_timeout_response(port, request_id, timeout_ms, "")
+
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          "",
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
+    end
+  end
+
+  defp handle_response_method(
+         port,
+         request_id,
+         payload,
+         payload_string,
+         timeout_ms,
+         on_message,
+         metadata,
+         tool_executor,
+         auto_approve_requests
+       ) do
+    method = Map.fetch!(payload, "method")
+    response_metadata = Map.merge(metadata_from_message(port, payload), metadata)
+
+    case maybe_handle_approval_request(
+           port,
+           method,
+           payload,
+           payload_string,
+           on_message,
+           response_metadata,
+           tool_executor,
+           auto_approve_requests
+         ) do
+      :approved ->
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          "",
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
+
+      :input_required ->
+        emit_message(on_message, :turn_input_required, %{payload: payload, raw: payload_string}, response_metadata)
+        {:error, {:turn_input_required, payload}}
+
+      :approval_required ->
+        emit_message(on_message, :approval_required, %{payload: payload, raw: payload_string}, response_metadata)
+        {:error, {:approval_required, payload}}
+
+      :unhandled ->
+        Logger.debug("Ignoring message while waiting for response: #{inspect(payload)}")
+
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          "",
+          on_message,
+          metadata,
+          tool_executor,
+          auto_approve_requests
+        )
     end
   end
 

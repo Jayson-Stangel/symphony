@@ -678,6 +678,51 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
+  test "max-turn worker exit blocks instead of scheduling continuation retry" do
+    issue_id = "issue-max-turn-block"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :MaxTurnBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-561",
+      issue: %Issue{id: issue_id, identifier: "MT-561", state: "In Progress"},
+      workspace_path: "/workspaces/MT-561",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:max_turns_reached, %{max_turns: 12}}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-561",
+             workspace_path: "/workspaces/MT-561",
+             error: "agent.max_turns reached with issue still active after 12 turns"
+           } = state.blocked[issue_id]
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1575,7 +1620,15 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert {:max_turns_reached,
+              %{
+                issue_id: "issue-max-turns",
+                identifier: "MT-248",
+                max_turns: 2,
+                workspace: max_turn_workspace
+              }} = catch_exit(AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher))
+
+      assert String.ends_with?(max_turn_workspace, "/workspaces/MT-248")
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1
