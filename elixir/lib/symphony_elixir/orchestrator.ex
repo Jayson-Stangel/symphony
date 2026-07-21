@@ -172,8 +172,24 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
-        notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        case live_budget_blocker(updated_running_entry) do
+          nil ->
+            notify_dashboard()
+            {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+
+          error ->
+            Logger.warning(
+              "Issue blocked by live Codex budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
+            )
+
+            state =
+              state
+              |> record_session_completion_totals(updated_running_entry)
+              |> stop_and_block_issue(issue_id, updated_running_entry, error)
+
+            notify_dashboard()
+            {:noreply, state}
+        end
     end
   end
 
@@ -693,6 +709,30 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_input_required_outcome(_outcome), do: nil
 
+  defp live_budget_blocker(running_entry) when is_map(running_entry) do
+    codex = Config.settings!().codex
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    turn_count = Map.get(running_entry, :turn_count, 0)
+
+    cond do
+      budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
+        "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
+
+      budget_exceeded?(turn_count, codex.live_max_turns) ->
+        "codex live turn budget exceeded: turn_count=#{turn_count} limit=#{codex.live_max_turns}"
+
+      true ->
+        nil
+    end
+  end
+
+  defp live_budget_blocker(_running_entry), do: nil
+
+  defp budget_exceeded?(value, limit) when is_integer(value) and is_integer(limit) and limit > 0,
+    do: value >= limit
+
+  defp budget_exceeded?(_value, _limit), do: false
+
   defp blocker_error(running_entry, fallback) when is_map(running_entry) do
     codex_event_blocker_error(Map.get(running_entry, :last_codex_event)) ||
       completion_blocker_error(Map.get(running_entry, :completion)) ||
@@ -765,6 +805,10 @@ defmodule SymphonyElixir.Orchestrator do
       session_id: running_entry_session_id(running_entry),
       error: error,
       blocked_at: DateTime.utc_now(),
+      codex_input_tokens: Map.get(running_entry, :codex_input_tokens),
+      codex_output_tokens: Map.get(running_entry, :codex_output_tokens),
+      codex_total_tokens: Map.get(running_entry, :codex_total_tokens),
+      turn_count: Map.get(running_entry, :turn_count),
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
@@ -1434,6 +1478,10 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
+          codex_input_tokens: Map.get(metadata, :codex_input_tokens),
+          codex_output_tokens: Map.get(metadata, :codex_output_tokens),
+          codex_total_tokens: Map.get(metadata, :codex_total_tokens),
+          turn_count: Map.get(metadata, :turn_count),
           error: Map.get(metadata, :error),
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),

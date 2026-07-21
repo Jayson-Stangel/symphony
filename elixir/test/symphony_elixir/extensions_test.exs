@@ -382,10 +382,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
+                 "turn_count" => 0,
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
-                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at"),
+                 "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}
                }
              ],
              "codex_totals" => %{
@@ -441,8 +443,10 @@ defmodule SymphonyElixir.ExtensionsTest do
              "last_error" => "codex turn requires operator input",
              "blocked" => %{
                "session_id" => "thread-blocked",
+               "turn_count" => 0,
                "state" => "In Progress",
-               "error" => "codex turn requires operator input"
+               "error" => "codex turn requires operator input",
+               "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}
              }
            } = json_response(conn, 200)
 

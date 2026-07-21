@@ -180,6 +180,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:live_max_total_tokens, :integer, default: 100_000)
+      field(:live_max_turns, :integer, default: 5)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -194,7 +196,9 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :live_max_total_tokens,
+          :live_max_turns
         ],
         empty_values: []
       )
@@ -202,6 +206,8 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:live_max_total_tokens, greater_than_or_equal_to: 0)
+      |> validate_number(:live_max_turns, greater_than_or_equal_to: 0)
     end
   end
 
