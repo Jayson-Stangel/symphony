@@ -718,7 +718,8 @@ defmodule SymphonyElixir.Orchestrator do
       budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
         "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
 
-      live_turn_reserve_exhausted?(total_tokens, codex.live_max_total_tokens, codex.live_turn_token_reserve) ->
+      turn_boundary?(running_entry) and
+          live_turn_reserve_exhausted?(total_tokens, codex.live_max_total_tokens, codex.live_turn_token_reserve) ->
         remaining = codex.live_max_total_tokens - total_tokens
 
         "codex live token reserve exhausted before next turn: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens} remaining=#{remaining} reserve=#{codex.live_turn_token_reserve}"
@@ -745,6 +746,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp live_turn_reserve_exhausted?(_total_tokens, _max_total_tokens, _reserve_tokens), do: false
+
+  defp turn_boundary?(running_entry) when is_map(running_entry),
+    do: Map.get(running_entry, :last_codex_event) == :turn_completed
+
+  defp turn_boundary?(_running_entry), do: false
 
   defp blocker_error(running_entry, fallback) when is_map(running_entry) do
     codex_event_blocker_error(Map.get(running_entry, :last_codex_event)) ||

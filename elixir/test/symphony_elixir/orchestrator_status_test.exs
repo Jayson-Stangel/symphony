@@ -1234,6 +1234,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(50)
     state = :sys.get_state(pid)
 
+    assert Process.alive?(worker_pid)
+    assert Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         payload: %{"method" => "turn/completed"},
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
