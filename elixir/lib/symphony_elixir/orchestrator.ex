@@ -215,6 +215,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp handle_agent_down({:max_turns_reached, details}, state, issue_id, running_entry, session_id) do
+    max_turns = max_turns_from_details(details)
+    error = "agent.max_turns reached with issue still active after #{max_turns} turns"
+
+    Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
+
+    block_issue_from_entry(state, issue_id, running_entry, error)
+  end
+
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, reason)
@@ -222,6 +231,10 @@ defmodule SymphonyElixir.Orchestrator do
       retry_agent_down(state, issue_id, running_entry, session_id, reason)
     end
   end
+
+  defp max_turns_from_details(%{max_turns: max_turns}) when is_integer(max_turns), do: max_turns
+  defp max_turns_from_details(%{"max_turns" => max_turns}) when is_integer(max_turns), do: max_turns
+  defp max_turns_from_details(_details), do: Config.settings!().agent.max_turns
 
   defp block_input_required_agent_down(state, issue_id, running_entry, session_id, reason) do
     error = blocker_error(running_entry, "agent exited: #{inspect(reason)}")
