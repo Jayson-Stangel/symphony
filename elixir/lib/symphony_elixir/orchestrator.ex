@@ -1427,7 +1427,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def preflight_codex_turn(server, issue_id, next_turn)
       when is_binary(issue_id) and is_integer(next_turn) and next_turn > 0 do
-    GenServer.call(server, {:codex_turn_preflight, issue_id, next_turn}, 5_000)
+    GenServer.call(server, {:codex_turn_preflight, issue_id, next_turn}, :infinity)
   catch
     :exit, reason ->
       {:error, "codex live turn preflight unavailable before turn #{next_turn}: #{inspect(reason)}"}

@@ -4,16 +4,36 @@ defmodule SymphonyElixir.CoreTest do
   defmodule TurnPreflightRecorder do
     use GenServer
 
-    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+    def start_link(test_pid, delay_ms \\ 0),
+      do: GenServer.start_link(__MODULE__, %{test_pid: test_pid, delay_ms: delay_ms})
 
     @impl true
-    def init(test_pid), do: {:ok, test_pid}
+    def init(state), do: {:ok, state}
 
     @impl true
-    def handle_call({:codex_turn_preflight, issue_id, turn_number}, _from, test_pid) do
+    def handle_call(
+          {:codex_turn_preflight, issue_id, turn_number},
+          _from,
+          %{test_pid: test_pid, delay_ms: delay_ms} = state
+        ) do
       send(test_pid, {:codex_turn_preflight, issue_id, turn_number})
-      {:reply, :ok, test_pid}
+      Process.sleep(delay_ms)
+      {:reply, :ok, state}
     end
+  end
+
+  test "turn preflight waits for a busy orchestrator beyond the default GenServer timeout" do
+    {:ok, preflight_server} = TurnPreflightRecorder.start_link(self(), 5_200)
+
+    task =
+      Task.async(fn ->
+        Orchestrator.preflight_codex_turn(preflight_server, "issue-busy-orchestrator", 2)
+      end)
+
+    assert_receive {:codex_turn_preflight, "issue-busy-orchestrator", 2}
+    Process.sleep(5_050)
+    assert Task.yield(task, 0) == nil
+    assert Task.await(task, 1_000) == :ok
   end
 
   test "config defaults and validation checks" do
