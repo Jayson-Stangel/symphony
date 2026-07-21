@@ -246,6 +246,69 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server treats completed agent message item as completion" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-agent-message-completion-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1003")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1003"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1003"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"msg_1003","type":"agentMessage","status":"completed"}}}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-agent-message-completion",
+        identifier: "MT-1003",
+        title: "Agent message completion",
+        description: "Current Codex app-server can mark turn completion through completed agent message items",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1003",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{result: :turn_completed}} = AppServer.run(workspace, "Complete on agent message", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks request-for-input events as a hard failure" do
     test_root =
       Path.join(
@@ -1083,6 +1146,105 @@ defmodule SymphonyElixir.AppServerTest do
                  false
                end
              end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server handles dynamic tool calls while waiting for turn start response" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-startup-tool-call-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-90C")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-startup-tool-call.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-startup-tool-call.trace}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-90c"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"method":"item/tool/call","params":{"tool":"linear_graphql","callId":"call-90c","threadId":"thread-90c","turnId":"turn-90c","arguments":{"query":"query Viewer { viewer { id } }"}}}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-90c"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-startup-tool-call",
+        identifier: "MT-90C",
+        title: "Startup tool call",
+        description: "Ensure turn startup can service interleaved dynamic tool calls",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-90C",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+
+      tool_executor = fn tool, arguments ->
+        send(test_pid, {:tool_called, tool, arguments})
+
+        %{
+          "success" => true,
+          "contentItems" => [
+            %{
+              "type" => "inputText",
+              "text" => ~s({"data":{"viewer":{"id":"usr_123"}}})
+            }
+          ]
+        }
+      end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Handle startup tool call", issue, tool_executor: tool_executor)
+
+      assert_received {:tool_called, "linear_graphql", %{"query" => "query Viewer { viewer { id } }"}}
     after
       File.rm_rf(test_root)
     end
