@@ -18,6 +18,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
     assert config.codex.live_max_total_tokens == 100_000
+    assert config.codex.live_turn_token_reserve == 40_000
     assert config.codex.live_max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -41,10 +42,12 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_live_max_total_tokens: 50_000,
+      codex_live_turn_token_reserve: 15_000,
       codex_live_max_turns: 3
     )
 
     assert Config.settings!().codex.live_max_total_tokens == 50_000
+    assert Config.settings!().codex.live_turn_token_reserve == 15_000
     assert Config.settings!().codex.live_max_turns == 3
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")

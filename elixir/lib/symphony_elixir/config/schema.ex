@@ -181,6 +181,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:live_max_total_tokens, :integer, default: 100_000)
+      field(:live_turn_token_reserve, :integer, default: 40_000)
       field(:live_max_turns, :integer, default: 5)
     end
 
@@ -198,6 +199,7 @@ defmodule SymphonyElixir.Config.Schema do
           :read_timeout_ms,
           :stall_timeout_ms,
           :live_max_total_tokens,
+          :live_turn_token_reserve,
           :live_max_turns
         ],
         empty_values: []
@@ -207,6 +209,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:live_max_total_tokens, greater_than_or_equal_to: 0)
+      |> validate_number(:live_turn_token_reserve, greater_than_or_equal_to: 0)
       |> validate_number(:live_max_turns, greater_than_or_equal_to: 0)
     end
   end

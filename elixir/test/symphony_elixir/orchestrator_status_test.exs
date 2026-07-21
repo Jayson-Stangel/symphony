@@ -1154,6 +1154,98 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = Orchestrator.snapshot(orchestrator_name, 1_000)
   end
 
+  test "orchestrator blocks live workers before another turn when token reserve is exhausted" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_live_max_total_tokens: 100,
+      codex_live_turn_token_reserve: 40,
+      codex_live_max_turns: 0
+    )
+
+    issue_id = "issue-live-token-reserve"
+    orchestrator_name = Module.concat(__MODULE__, :LiveTokenReserveOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    started_at = DateTime.utc_now()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-RESERVE",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-RESERVE",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-RESERVE"
+      },
+      worker_host: nil,
+      workspace_path: "/tmp/MT-RESERVE",
+      session_id: "thread-reserve-turn-1",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: started_at,
+      last_codex_event: :session_started,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "thread/tokenUsage/updated",
+           "params" => %{
+             "tokenUsage" => %{
+               "total" => %{"inputTokens" => 50, "outputTokens" => 20, "totalTokens" => 70}
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Process.alive?(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-RESERVE",
+             error: "codex live token reserve exhausted before next turn: total_tokens=70 limit=100 remaining=30 reserve=40",
+             codex_total_tokens: 70,
+             turn_count: 1
+           } = state.blocked[issue_id]
+  end
+
   test "orchestrator blocks failed workers after app-server reports input required" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 

@@ -463,6 +463,11 @@ fields locally if they want stricter startup checks.
   - If `<= 0`, live token budget enforcement is disabled.
   - If the running session reports `codex_total_tokens >= live_max_total_tokens`, the orchestrator
     MUST stop the worker and expose the issue as blocked instead of scheduling a retry.
+- `live_turn_token_reserve` (integer)
+  - Default: implementation-defined.
+  - If `<= 0`, reserve enforcement is disabled.
+  - If the running session reports less remaining budget than this reserve before another turn, the
+    orchestrator MUST stop the worker and expose the issue as blocked instead of scheduling a retry.
 - `live_max_turns` (integer)
   - Default: implementation-defined.
   - If `<= 0`, live turn budget enforcement is disabled.
@@ -611,6 +616,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.live_max_total_tokens`: integer, default implementation-defined
+- `codex.live_turn_token_reserve`: integer, default implementation-defined
 - `codex.live_max_turns`: integer, default implementation-defined
 
 ## 7. Orchestration State Machine

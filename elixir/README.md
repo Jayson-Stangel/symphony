@@ -135,6 +135,10 @@ Notes:
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `100000`.
+- `codex.live_turn_token_reserve` is the minimum remaining live-token budget Symphony keeps before
+  attempting another Codex turn in the same issue session. When reported total usage leaves less than
+  this reserve, Symphony blocks the issue before the next continuation. Set to `0` to disable.
+  Default: `40000`.
 - `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
   run. When the count reaches this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `5`.

@@ -34,6 +34,7 @@ codex:
   approval_policy: never
   thread_sandbox: workspace-write
   live_max_total_tokens: 100000
+  live_turn_token_reserve: 40000
   live_max_turns: 5
   turn_sandbox_policy:
     type: workspaceWrite
