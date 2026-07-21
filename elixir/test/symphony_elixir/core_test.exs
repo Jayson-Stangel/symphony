@@ -1,6 +1,21 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  defmodule TurnPreflightRecorder do
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+
+    @impl true
+    def init(test_pid), do: {:ok, test_pid}
+
+    @impl true
+    def handle_call({:codex_turn_preflight, issue_id, turn_number}, _from, test_pid) do
+      send(test_pid, {:codex_turn_preflight, issue_id, turn_number})
+      {:reply, :ok, test_pid}
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -18,6 +33,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
     assert config.codex.live_max_total_tokens == 100_000
+    assert config.codex.live_turn_token_reserve == 40_000
     assert config.codex.live_max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -41,10 +57,12 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_live_max_total_tokens: 50_000,
+      codex_live_turn_token_reserve: 20_000,
       codex_live_max_turns: 3
     )
 
     assert Config.settings!().codex.live_max_total_tokens == 50_000
+    assert Config.settings!().codex.live_turn_token_reserve == 20_000
     assert Config.settings!().codex.live_max_turns == 3
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
@@ -1513,7 +1531,16 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      {:ok, preflight_server} = TurnPreflightRecorder.start_link(self())
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 codex_turn_preflight_server: preflight_server
+               )
+
+      assert_receive {:codex_turn_preflight, "issue-continue", 1}
+      assert_receive {:codex_turn_preflight, "issue-continue", 2}
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 

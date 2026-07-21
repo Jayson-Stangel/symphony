@@ -463,11 +463,18 @@ fields locally if they want stricter startup checks.
   - If `<= 0`, live token budget enforcement is disabled.
   - If the running session reports `codex_total_tokens >= live_max_total_tokens`, the orchestrator
     MUST stop the worker and expose the issue as blocked instead of scheduling a retry.
+- `live_turn_token_reserve` (integer)
+  - Default: implementation-defined.
+  - If `<= 0`, reserve enforcement is disabled.
+  - Before each prospective turn, the orchestrator MUST compare the observed cumulative live-thread
+    token total with `live_max_total_tokens`. If the remaining budget is less than this reserve, it
+    MUST expose the issue as blocked and MUST NOT send the next `turn/start` request.
+  - Crossing only the reserve threshold during a running turn MUST NOT terminate that turn.
 - `live_max_turns` (integer)
   - Default: implementation-defined.
   - If `<= 0`, live turn budget enforcement is disabled.
-  - If the running session reports `turn_count >= live_max_turns`, the orchestrator MUST stop the
-    worker and expose the issue as blocked instead of scheduling a retry.
+  - Before a prospective turn, if the running session reports `turn_count >= live_max_turns`, the
+    orchestrator MUST expose the issue as blocked and MUST NOT send the next `turn/start` request.
 
 ### 5.4 Prompt Template Contract
 
@@ -611,6 +618,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.live_max_total_tokens`: integer, default implementation-defined
+- `codex.live_turn_token_reserve`: integer, default implementation-defined
 - `codex.live_max_turns`: integer, default implementation-defined
 
 ## 7. Orchestration State Machine
@@ -693,8 +701,13 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 - `Codex Update Event`
   - Update live session fields, token counters, and rate limits.
-  - If a configured live token or turn budget is exceeded, kill the worker, preserve the latest
+  - If the hard live token budget is exceeded, kill the worker, preserve the latest
     token/turn/session details in blocked state, and do not schedule a retry.
+
+- `Codex Turn Preflight`
+  - Serialize after prior worker updates and before every `turn/start` request.
+  - Refuse the prospective turn when the configured live-token reserve or turn limit is exhausted.
+  - Preserve the latest token/turn/session details in blocked state and do not schedule a retry.
 
 - `Retry Timer Fired`
   - Re-fetch active candidates and attempt re-dispatch, or release claim if no longer eligible.

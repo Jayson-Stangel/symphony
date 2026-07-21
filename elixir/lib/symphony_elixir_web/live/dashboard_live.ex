@@ -216,7 +216,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Blocked sessions</h2>
-              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
+              <p class="section-copy">Issues paused by an input, approval, or live-budget guard.</p>
             </div>
           </div>
 
@@ -224,12 +224,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No blocked sessions.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
+              <table class="data-table" style="min-width: 1200px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Workspace</th>
                     <th>Session</th>
+                    <th>Turns</th>
+                    <th>Tokens (in / out / total)</th>
                     <th>Blocked at</th>
                     <th>Last update</th>
                     <th>Error</th>
@@ -248,20 +251,28 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <%= entry.state || "Blocked" %>
                       </span>
                     </td>
+                    <td class="mono"><%= entry.workspace_path || "n/a" %></td>
                     <td>
                       <%= if entry.session_id do %>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          data-label="Copy ID"
-                          data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                        >
-                          Copy ID
-                        </button>
+                        <div class="detail-stack">
+                          <span class="mono"><%= entry.session_id %></span>
+                          <button
+                            type="button"
+                            class="subtle-button"
+                            data-label="Copy ID"
+                            data-copy={entry.session_id}
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          >
+                            Copy ID
+                          </button>
+                        </div>
                       <% else %>
                         <span class="muted">n/a</span>
                       <% end %>
+                    </td>
+                    <td class="numeric"><%= entry.turn_count %></td>
+                    <td class="mono numeric">
+                      <%= entry.tokens.input_tokens %> / <%= entry.tokens.output_tokens %> / <%= entry.tokens.total_tokens %>
                     </td>
                     <td class="mono"><%= entry.blocked_at || "n/a" %></td>
                     <td>

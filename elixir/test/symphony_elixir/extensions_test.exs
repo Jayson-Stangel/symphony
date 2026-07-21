@@ -382,12 +382,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
-                 "turn_count" => 0,
+                 "turn_count" => 3,
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at"),
-                 "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}
+                 "tokens" => %{"input_tokens" => 65_000, "output_tokens" => 5_000, "total_tokens" => 70_000}
                }
              ],
              "codex_totals" => %{
@@ -443,10 +443,10 @@ defmodule SymphonyElixir.ExtensionsTest do
              "last_error" => "codex turn requires operator input",
              "blocked" => %{
                "session_id" => "thread-blocked",
-               "turn_count" => 0,
+               "turn_count" => 3,
                "state" => "In Progress",
                "error" => "codex turn requires operator input",
-               "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}
+               "tokens" => %{"input_tokens" => 65_000, "output_tokens" => 5_000, "total_tokens" => 70_000}
              }
            } = json_response(conn, 200)
 
@@ -593,6 +593,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
+    assert html =~ "/workspaces/MT-BLOCKED"
+    assert html =~ "thread-blocked"
+    assert html =~ "65000 / 5000 / 70000"
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
@@ -776,6 +779,10 @@ defmodule SymphonyElixir.ExtensionsTest do
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",
+          turn_count: 3,
+          codex_input_tokens: 65_000,
+          codex_output_tokens: 5_000,
+          codex_total_tokens: 70_000,
           blocked_at: DateTime.utc_now(),
           last_codex_event: :turn_input_required,
           last_codex_message: %{
