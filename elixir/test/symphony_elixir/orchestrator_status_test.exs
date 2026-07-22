@@ -1058,6 +1058,108 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              Orchestrator.snapshot(orchestrator_name, 1_000)
   end
 
+  test "orchestrator records token updates without blocking healthy live workers" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    issue_id = "issue-live-token-observability"
+    orchestrator_name = Module.concat(__MODULE__, :LiveTokenObservabilityOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    started_at = DateTime.utc_now()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-TOKENS",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-TOKENS",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-TOKENS"
+      },
+      worker_host: nil,
+      workspace_path: "/tmp/MT-TOKENS",
+      session_id: "thread-token-observability",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: started_at,
+      last_codex_event: :session_started,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "thread/tokenUsage/updated",
+           "params" => %{
+             "tokenUsage" => %{
+               "total" => %{"inputTokens" => 8, "outputTokens" => 4, "totalTokens" => 12}
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert Process.alive?(worker_pid)
+    assert Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-TOKENS",
+             session_id: "thread-token-observability",
+             codex_input_tokens: 8,
+             codex_output_tokens: 4,
+             codex_total_tokens: 12,
+             turn_count: 1
+           } = state.running[issue_id]
+
+    assert %{
+             running: [
+               %{
+                 identifier: "MT-TOKENS",
+                 codex_total_tokens: 12,
+                 turn_count: 1
+               }
+             ]
+           } = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+    send(worker_pid, :done)
+  end
+
   test "orchestrator blocks failed workers after app-server reports input required" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
