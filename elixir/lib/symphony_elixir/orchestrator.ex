@@ -172,7 +172,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
-        case live_budget_blocker(updated_running_entry) do
+        case live_streaming_budget_blocker(updated_running_entry) do
           nil ->
             notify_dashboard()
             {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -709,29 +709,55 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_input_required_outcome(_outcome), do: nil
 
-  defp live_budget_blocker(running_entry) when is_map(running_entry) do
+  defp live_streaming_budget_blocker(running_entry) when is_map(running_entry) do
+    codex = Config.settings!().codex
+    total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+
+    if budget_exceeded?(total_tokens, codex.live_max_total_tokens) do
+      "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
+    end
+  end
+
+  defp live_turn_preflight_blocker(running_entry, next_turn) when is_map(running_entry) do
     codex = Config.settings!().codex
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     cond do
       budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
-        "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
+        "codex live token budget exceeded before turn #{next_turn}: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
+
+      live_turn_reserve_exhausted?(
+        total_tokens,
+        codex.live_max_total_tokens,
+        codex.live_turn_token_reserve
+      ) ->
+        remaining = codex.live_max_total_tokens - total_tokens
+
+        "codex live token reserve exhausted before turn #{next_turn}: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens} remaining=#{remaining} reserve=#{codex.live_turn_token_reserve}"
 
       budget_exceeded?(turn_count, codex.live_max_turns) ->
-        "codex live turn budget exceeded: turn_count=#{turn_count} limit=#{codex.live_max_turns}"
+        "codex live turn budget exhausted before turn #{next_turn}: turn_count=#{turn_count} limit=#{codex.live_max_turns}"
 
       true ->
         nil
     end
   end
 
-  defp live_budget_blocker(_running_entry), do: nil
+  defp live_turn_preflight_blocker(_running_entry, _next_turn), do: nil
 
   defp budget_exceeded?(value, limit) when is_integer(value) and is_integer(limit) and limit > 0,
     do: value >= limit
 
   defp budget_exceeded?(_value, _limit), do: false
+
+  defp live_turn_reserve_exhausted?(total_tokens, max_total_tokens, reserve_tokens)
+       when is_integer(total_tokens) and is_integer(max_total_tokens) and is_integer(reserve_tokens) and
+              max_total_tokens > 0 and reserve_tokens > 0 do
+    max_total_tokens - total_tokens < reserve_tokens
+  end
+
+  defp live_turn_reserve_exhausted?(_total_tokens, _max_total_tokens, _reserve_tokens), do: false
 
   defp blocker_error(running_entry, fallback) when is_map(running_entry) do
     codex_event_blocker_error(Map.get(running_entry, :last_codex_event)) ||
@@ -998,7 +1024,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             codex_turn_preflight_server: recipient
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1391,6 +1421,22 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
+  @spec preflight_codex_turn(GenServer.server() | nil, String.t() | nil, pos_integer()) ::
+          :ok | {:error, String.t()}
+  def preflight_codex_turn(nil, _issue_id, _next_turn), do: :ok
+
+  def preflight_codex_turn(server, issue_id, next_turn)
+      when is_binary(issue_id) and is_integer(next_turn) and next_turn > 0 do
+    GenServer.call(server, {:codex_turn_preflight, issue_id, next_turn}, :infinity)
+  catch
+    :exit, reason ->
+      {:error, "codex live turn preflight unavailable before turn #{next_turn}: #{inspect(reason)}"}
+  end
+
+  def preflight_codex_turn(_server, _issue_id, next_turn) do
+    {:error, "codex live turn preflight unavailable before turn #{next_turn}: invalid issue context"}
+  end
+
   @spec request_refresh() :: map() | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
@@ -1419,6 +1465,37 @@ defmodule SymphonyElixir.Orchestrator do
       end
     else
       :unavailable
+    end
+  end
+
+  @impl true
+  def handle_call({:codex_turn_preflight, issue_id, next_turn}, _from, state) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        error =
+          case Map.get(state.blocked, issue_id) do
+            %{error: error} when is_binary(error) -> error
+            _ -> "codex live turn preflight unavailable before turn #{next_turn}: issue is not running"
+          end
+
+        {:reply, {:error, error}, state}
+
+      running_entry ->
+        case live_turn_preflight_blocker(running_entry, next_turn) do
+          nil ->
+            {:reply, :ok, state}
+
+          error ->
+            Logger.warning("Issue blocked before Codex turn: issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{running_entry_session_id(running_entry)} #{error}")
+
+            state =
+              state
+              |> record_session_completion_totals(running_entry)
+              |> block_issue_from_entry(issue_id, running_entry, error)
+
+            notify_dashboard()
+            {:reply, {:error, error}, state}
+        end
     end
   end
 

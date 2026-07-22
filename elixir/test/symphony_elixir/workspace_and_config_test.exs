@@ -903,6 +903,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "codex.live_max_total_tokens"
 
+    write_workflow_file!(Workflow.workflow_file_path(), codex_live_turn_token_reserve: "bad")
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.live_turn_token_reserve"
+
     write_workflow_file!(Workflow.workflow_file_path(), codex_live_max_turns: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "codex.live_max_turns"

@@ -135,9 +135,14 @@ Notes:
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `100000`.
-- `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
-  run. When the count reaches this value, Symphony stops the worker and exposes the issue as
-  blocked instead of retrying it. Set to `0` to disable. Default: `5`.
+- `codex.live_turn_token_reserve` is the minimum remaining live-token budget required before
+  Symphony starts another turn on the same Codex thread. Hidden instructions and retained thread
+  history can make a continuation substantially larger than its visible prompt. When less than this
+  reserve remains, Symphony lets the current turn finish, then blocks before the next `turn/start`.
+  Set to `0` to disable. Default: `40000`.
+- `codex.live_max_turns` limits completed starts on one live Codex thread. Symphony checks the
+  observed turn count before the next `turn/start`, blocks instead of retrying, and never kills a
+  running turn solely because it reached this count. Set to `0` to disable. Default: `5`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
