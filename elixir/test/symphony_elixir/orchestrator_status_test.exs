@@ -1053,15 +1053,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              Orchestrator.snapshot(orchestrator_name, 1_000)
   end
 
-  test "orchestrator blocks live workers that exceed codex token budget" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
-      codex_live_max_total_tokens: 10,
-      codex_live_max_turns: 0
-    )
+  test "orchestrator records token updates without blocking healthy live workers" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
-    issue_id = "issue-live-token-budget"
-    orchestrator_name = Module.concat(__MODULE__, :LiveTokenBudgetOrchestrator)
+    issue_id = "issue-live-token-observability"
+    orchestrator_name = Module.concat(__MODULE__, :LiveTokenObservabilityOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
@@ -1083,16 +1079,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     running_entry = %{
       pid: worker_pid,
       ref: make_ref(),
-      identifier: "MT-BUDGET",
+      identifier: "MT-TOKENS",
       issue: %Issue{
         id: issue_id,
-        identifier: "MT-BUDGET",
+        identifier: "MT-TOKENS",
         state: "In Progress",
-        url: "https://example.org/issues/MT-BUDGET"
+        url: "https://example.org/issues/MT-TOKENS"
       },
       worker_host: nil,
-      workspace_path: "/tmp/MT-BUDGET",
-      session_id: "thread-budget-turn-budget",
+      workspace_path: "/tmp/MT-TOKENS",
+      session_id: "thread-token-observability",
       turn_count: 1,
       last_codex_message: nil,
       last_codex_timestamp: started_at,
@@ -1132,26 +1128,31 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(50)
     state = :sys.get_state(pid)
 
-    refute Process.alive?(worker_pid)
-    refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert Process.alive?(worker_pid)
+    assert Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
-             identifier: "MT-BUDGET",
-             error: "codex live token budget exceeded: total_tokens=12 limit=10",
+             identifier: "MT-TOKENS",
+             session_id: "thread-token-observability",
+             codex_input_tokens: 8,
+             codex_output_tokens: 4,
              codex_total_tokens: 12,
              turn_count: 1
-           } = state.blocked[issue_id]
+           } = state.running[issue_id]
 
     assert %{
-             blocked: [
+             running: [
                %{
-                 identifier: "MT-BUDGET",
-                 error: "codex live token budget exceeded: total_tokens=12 limit=10"
+                 identifier: "MT-TOKENS",
+                 codex_total_tokens: 12,
+                 turn_count: 1
                }
              ]
            } = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+    send(worker_pid, :done)
   end
 
   test "orchestrator blocks failed workers after app-server reports input required" do
