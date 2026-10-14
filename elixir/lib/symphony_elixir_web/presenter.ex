@@ -144,10 +144,16 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
+      turn_count: Map.get(entry, :turn_count, 0),
       blocked_at: iso8601(entry.blocked_at),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
-      last_event_at: iso8601(entry.last_codex_timestamp)
+      last_event_at: iso8601(entry.last_codex_timestamp),
+      tokens: %{
+        input_tokens: Map.get(entry, :codex_input_tokens, 0),
+        output_tokens: Map.get(entry, :codex_output_tokens, 0),
+        total_tokens: Map.get(entry, :codex_total_tokens, 0)
+      }
     }
   end
 
@@ -185,12 +191,18 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
       session_id: blocked.session_id,
+      turn_count: Map.get(blocked, :turn_count, 0),
       state: blocked.state,
       error: blocked.error,
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
-      last_event_at: iso8601(blocked.last_codex_timestamp)
+      last_event_at: iso8601(blocked.last_codex_timestamp),
+      tokens: %{
+        input_tokens: Map.get(blocked, :codex_input_tokens, 0),
+        output_tokens: Map.get(blocked, :codex_output_tokens, 0),
+        total_tokens: Map.get(blocked, :codex_total_tokens, 0)
+      }
     }
   end
 
