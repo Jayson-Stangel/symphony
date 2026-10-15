@@ -733,8 +733,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp live_budget_blocker(_running_entry), do: nil
-
   defp budget_exceeded?(value, limit) when is_integer(value) and is_integer(limit) and limit > 0,
     do: value >= limit
 

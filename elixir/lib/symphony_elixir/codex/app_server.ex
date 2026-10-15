@@ -545,8 +545,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     item_type in ["agentMessage", "agent_message"]
   end
 
-  defp completed_agent_message_item?(_payload), do: false
-
   defp handle_turn_method(
          port,
          on_message,
