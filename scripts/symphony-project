@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Portable project bootstrapper for a local Symphony installation.
+set -euo pipefail
+
+die() { printf 'symphony-project: %s\n' "$*" >&2; exit 1; }
+
+script_path=${BASH_SOURCE[0]}
+while [ -L "$script_path" ]; do
+  link=$(readlink "$script_path")
+  case "$link" in
+    /*) script_path=$link ;;
+    *) script_path=$(cd "$(dirname "$script_path")" && cd "$(dirname "$link")" && pwd)/$(basename "$link") ;;
+  esac
+done
+script_dir=$(cd "$(dirname "$script_path")" && pwd)
+symphony_home=${SYMPHONY_HOME:-$(cd "$script_dir/.." && pwd)}
+config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"}
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || die 'run this command inside a Git repository'; }
+
+project_id() {
+  local remote name
+  remote=$(git -C "$1" remote get-url origin 2>/dev/null || true)
+  name=$(basename "${remote:-$1}" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//')
+  printf '%s\n' "$name"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  symphony-project init --linear-project <slug>
+  symphony-project run [--port <port>]
+
+Set SYMPHONY_HOME when this script is not installed inside the Symphony checkout.
+Set SYMPHONY_CONFIG_HOME to relocate per-user credentials and logs.
+
+Credentials created by init:
+  The generated per-project .env file is stored outside the repository at:
+    $SYMPHONY_CONFIG_HOME/projects/<repository>.env
+
+  GitHub (recommended): create a fine-grained personal access token at
+  https://github.com/settings/personal-access-tokens/new
+
+    Repository access: Only select repositories, then choose this repository.
+    Repository permissions:
+      Contents: Read and write       # clone, branches, and git push
+      Pull requests: Read and write  # create/update PRs and merge them
+      Issues: Read and write         # PR comments and labels (if used)
+
+  Do not grant Administration, Actions, Secrets, Packages, or organization
+  permissions. Add Workflows: Read and write only if Symphony must
+  commit changes beneath .github/workflows/.
+
+  A classic token is a fallback only: grant `repo`, and additionally `workflow`
+  only when Symphony must modify .github/workflows/. Never use a token with
+  `delete_repo`, and do not give it access to every repository.
+EOF
+}
+
+init() {
+  local slug=${1:-}
+  [ -n "$slug" ] || die 'init requires --linear-project <slug>'
+  local root id remote workflow env_file skills_dir manifest launcher revision
+  root=$(repo_root)
+  id=$(project_id "$root")
+  remote=$(git -C "$root" remote get-url origin 2>/dev/null || die 'the repository needs an origin remote')
+  workflow="$root/WORKFLOW.md"
+  env_file="$config_home/projects/$id.env"
+  skills_dir="$root/.codex/skills"
+  manifest="$root/.codex/symphony-skills.yml"
+  launcher="$root/script/symphony"
+  revision=$(git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown')
+
+  mkdir -p "$(dirname "$env_file")" "$skills_dir" "$(dirname "$launcher")"
+  if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
+# Linear: Settings → Security & access → Personal API keys
+LINEAR_API_KEY=
+# GitHub: preferred fine-grained token. See `symphony-project --help` for the
+# minimum repository permissions. Do not put this file in the repository.
+GH_TOKEN=
+EOF
+); fi
+
+  if [ ! -e "$workflow" ]; then cat >"$workflow" <<EOF
+---
+tracker:
+  kind: linear
+  provider:
+    project_slug: "$slug"
+    api_key: \$LINEAR_API_KEY
+  required_labels: []
+  active_states: ["Todo", "In Progress", "Merging", "Rework"]
+  terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+polling:
+  interval_ms: 5000
+workspace:
+  root: ~/.local/share/symphony/workspaces/$id
+hooks:
+  after_create: |
+    git clone --depth 1 "$remote" .
+  before_remove: |
+    git clean -ffdqx
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+codex:
+  command: codex --config shell_environment_policy.inherit=all app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  live_max_total_tokens: 500000
+  live_max_turns: 5
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+---
+
+EOF
+    printf '\nRepository: %s\nRemote: %s\n\n' "$id" "$remote" >>"$workflow"
+    awk 'BEGIN { delimiters = 0 } /^---$/ { delimiters++; next } delimiters >= 2 { print }' \
+      "$symphony_home/elixir/WORKFLOW.md" >>"$workflow"
+  else
+    printf 'Preserving existing %s\n' "$workflow"
+  fi
+
+  for skill in commit push pull linear land; do
+    [ -e "$skills_dir/$skill" ] || cp -R "$symphony_home/.codex/skills/$skill" "$skills_dir/"
+  done
+  cat >"$manifest" <<EOF
+bundle:
+  source: $symphony_home
+  revision: $revision
+  mode: copied
+skills: [commit, push, pull, linear, land]
+EOF
+  cat >"$launcher" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec symphony-project run "$@"
+EOF
+  chmod +x "$launcher"
+  printf 'Created %s\nCredentials template: %s\nNext: fill credentials, then run %s\n' "$workflow" "$env_file" "$launcher"
+}
+
+run() {
+  local root id env_file workflow runtime
+  root=$(repo_root); id=$(project_id "$root")
+  env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
+  [ -r "$env_file" ] || die "missing credentials file: $env_file"
+  [ -f "$workflow" ] || die "missing workflow: $workflow"
+  set -a; . "$env_file"; set +a
+  runtime="$symphony_home/elixir/bin/symphony"
+  [ -x "$runtime" ] || die "missing Symphony runtime: $runtime"
+
+  # The packaged runtime is an escript. Run it in Symphony's mise project so
+  # a target repository's own tool versions (or lack of Erlang) do not matter.
+  if command -v mise >/dev/null 2>&1; then
+    exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
+      --i-understand-that-this-will-be-running-without-the-usual-guardrails "$workflow" "$@"
+  fi
+
+  exec "$runtime" --i-understand-that-this-will-be-running-without-the-usual-guardrails "$workflow" "$@"
+}
+
+case "${1:-}" in
+  init) shift; [ "${1:-}" = --linear-project ] || { usage; exit 2; }; init "${2:-}" ;;
+  run) shift; run "$@" ;;
+  *) usage; exit 2 ;;
+esac
