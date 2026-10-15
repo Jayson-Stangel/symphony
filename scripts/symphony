@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# Stable, checkout-backed command for a local Symphony runtime.
+set -euo pipefail
+
+die() { printf 'symphony: %s\n' "$*" >&2; exit 1; }
+
+script_path=${BASH_SOURCE[0]}
+while [ -L "$script_path" ]; do
+  link=$(readlink "$script_path")
+  case "$link" in
+    /*) script_path=$link ;;
+    *) script_path=$(cd "$(dirname "$script_path")" && cd "$(dirname "$link")" && pwd)/$(basename "$link") ;;
+  esac
+done
+script_dir=$(cd "$(dirname "$script_path")" && pwd)
+symphony_home=${SYMPHONY_HOME:-$(cd "$script_dir/.." && pwd)}
+config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"}
+bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
+
+source_revision() { git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
+
+source_state() {
+  if [ ! -d "$symphony_home/.git" ]; then
+    printf 'unknown\n'
+  elif [ -n "$(git -C "$symphony_home" status --porcelain 2>/dev/null)" ]; then
+    printf 'dirty\n'
+  else
+    printf 'clean\n'
+  fi
+}
+
+bool() { "$1" && printf 'true' || printf 'false'; }
+
+ensure_launcher_link() {
+  local source=$1 target=$2
+  source=$(cd "$(dirname "$source")" && pwd)/$(basename "$source")
+  mkdir -p "$(dirname "$target")"
+
+  if [ -L "$target" ]; then
+    [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing symlink: $target"
+    printf 'Launcher: unchanged (%s)\n' "$target"
+    return
+  fi
+  [ ! -e "$target" ] || die "refusing to replace existing path: $target"
+  ln -s "$source" "$target"
+  printf 'Launcher: created (%s)\n' "$target"
+}
+
+tool_available() { command -v "$1" >/dev/null 2>&1; }
+
+required_tools() {
+  local tool missing=0
+  for tool in git mise gh codex; do
+    if ! tool_available "$tool"; then
+      printf 'Missing prerequisite: %s\n' "$tool" >&2
+      missing=1
+    fi
+  done
+  return "$missing"
+}
+
+runtime_ready() {
+  tool_available mise && mise -C "$symphony_home/elixir" exec -- erl -noshell -eval 'halt().' >/dev/null 2>&1
+}
+
+install_prerequisites() {
+  case "$(uname -s)" in
+    Darwin)
+      tool_available git || {
+        xcode-select --install || true
+        die 'install the Xcode Command Line Tools, then rerun symphony setup'
+      }
+      tool_available brew || die 'install Homebrew first: https://brew.sh'
+      tool_available mise || brew install mise
+      tool_available gh || brew install gh
+      if ! tool_available codex; then
+        tool_available npm || brew install node
+        npm install -g @openai/codex@latest
+      fi
+      ;;
+    *)
+      die 'automatic prerequisite installation currently supports macOS only; install git, mise, gh, and Codex, then rerun symphony setup'
+      ;;
+  esac
+}
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || die 'run this command inside a Git repository'; }
+
+project_id() {
+  local remote name
+  remote=$(git -C "$1" remote get-url origin 2>/dev/null || true)
+  name=$(basename "${remote:-$1}" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//')
+  printf '%s\n' "$name"
+}
+
+project_record_path() { printf '%s/projects/%s.project\n' "$config_home" "$1"; }
+
+register_project() {
+  local id=$1 root=$2 manifest=$3 record
+  record=$(project_record_path "$id")
+  (umask 077; mkdir -p "$(dirname "$record")")
+  (umask 077; printf 'root=%s\nmanifest=%s\nrevision=%s\n' "$root" "$manifest" "$(source_revision)" >"$record")
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  symphony --version
+  symphony install [--bin-dir PATH] [--config-dir PATH]
+  symphony setup [--install-prerequisites]
+  symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH]
+  symphony update [--skills] [--bin-dir PATH] [--config-dir PATH]
+  symphony init --linear-project SLUG
+  symphony run [--port PORT]
+
+Run this command from a clean, stable Symphony checkout such as ~/src/symphony.
+`install` only links the command and creates protected configuration storage.
+`setup` deliberately installs or repairs prerequisites and the pinned mise runtime.
+`update` fast-forwards the tracked main branch and reports copied skill bundles
+that are older than the stable runtime; it never overwrites project files.
+
+Use SYMPHONY_HOME when this script is copied outside its checkout. Set
+SYMPHONY_BIN_DIR and SYMPHONY_CONFIG_HOME to use alternate locations.
+
+Credentials created by init are stored outside the repository at:
+  $SYMPHONY_CONFIG_HOME/projects/<repository>.env
+
+GitHub tokens should be fine-grained and repository-scoped. Grant Contents and
+Pull requests: Read and write; grant Issues or Workflows only when needed.
+EOF
+}
+
+install() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --bin-dir) [ "$#" -ge 2 ] || die '--bin-dir requires a path'; bin_dir=$2; shift 2 ;;
+      --config-dir) [ "$#" -ge 2 ] || die '--config-dir requires a path'; config_home=$2; shift 2 ;;
+      --help|-h) printf 'Usage: symphony install [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      *) die "unknown install option: $1" ;;
+    esac
+  done
+  [ -x "$symphony_home/elixir/bin/symphony" ] || die "missing packaged runtime: $symphony_home/elixir/bin/symphony"
+  ensure_launcher_link "$symphony_home/scripts/symphony" "$bin_dir/symphony"
+  (umask 077; mkdir -p "$config_home/projects")
+  printf 'Runtime: %s\nConfiguration: %s\nNext: run symphony setup, then symphony init inside a Git repository.\n' \
+    "$symphony_home" "$config_home"
+}
+
+setup() {
+  local install_missing=false
+  case "${1:-}" in
+    '') ;;
+    --install-prerequisites) install_missing=true ;;
+    --help|-h) printf 'Usage: symphony setup [--install-prerequisites]\n'; return ;;
+    *) die "unknown setup option: $1" ;;
+  esac
+
+  if ! required_tools; then
+    "$install_missing" || die 'rerun with --install-prerequisites after reviewing the changes it will make'
+    install_prerequisites
+    required_tools || die 'a prerequisite is still missing after installation'
+  fi
+  mise -C "$symphony_home/elixir" install
+  runtime_ready || die 'mise completed but the Symphony Erlang runtime is unavailable'
+  printf 'Runtime setup complete: %s\n' "$symphony_home/elixir"
+}
+
+report_stale_skills() {
+  local record root manifest installed current stale=0
+  current=$(source_revision)
+  for record in "$config_home"/projects/*.project; do
+    [ -f "$record" ] || continue
+    root=$(sed -n 's/^root=//p' "$record" | head -n 1)
+    manifest=$(sed -n 's/^manifest=//p' "$record" | head -n 1)
+    installed=$(sed -n 's/^revision=//p' "$record" | head -n 1)
+    if [ "$installed" != "$current" ]; then
+      printf 'Skill bundle needs review: %s (installed %s, runtime %s)\n' "$root" "$installed" "$current"
+      stale=1
+    fi
+    [ -f "$manifest" ] || printf 'Missing skill manifest: %s\n' "$manifest"
+  done
+  return "$stale"
+}
+
+update() {
+  local check_skills=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --skills) check_skills=true; shift ;;
+      --bin-dir|--config-dir)
+        [ "$#" -ge 2 ] || die "$1 requires a path"
+        if [ "$1" = --bin-dir ]; then bin_dir=$2; else config_home=$2; fi
+        shift 2 ;;
+      --help|-h) printf 'Usage: symphony update [--skills] [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      *) die "unknown update option: $1" ;;
+    esac
+  done
+
+  [ -d "$symphony_home/.git" ] || die "Symphony source is not a Git checkout: $symphony_home"
+  [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die "Symphony source has uncommitted changes; update it manually: $symphony_home"
+  local branch upstream remote before after
+  branch=$(git -C "$symphony_home" branch --show-current)
+  [ "$branch" = main ] || die "update requires main, not ${branch:-detached HEAD}"
+  upstream=$(git -C "$symphony_home" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || die 'main has no upstream; configure it before updating'
+  remote=${upstream%%/*}
+  before=$(git -C "$symphony_home" rev-parse HEAD)
+  git -C "$symphony_home" fetch "$remote"
+  git -C "$symphony_home" merge --ff-only "$upstream"
+  after=$(git -C "$symphony_home" rev-parse HEAD)
+  [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die 'update left unexpected working-tree changes'
+  install --bin-dir "$bin_dir" --config-dir "$config_home"
+  printf 'Updated: %s -> %s\n' "$before" "$after"
+  if "$check_skills"; then report_stale_skills || true; fi
+}
+
+doctor() {
+  local json=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true; shift ;;
+      --bin-dir|--config-dir)
+        [ "$#" -ge 2 ] || die "$1 requires a path"
+        if [ "$1" = --bin-dir ]; then bin_dir=$2; else config_home=$2; fi
+        shift 2 ;;
+      --help|-h) printf 'Usage: symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      *) die "unknown doctor option: $1" ;;
+    esac
+  done
+
+  local git_ok mise_ok gh_ok codex_ok runtime_ok launcher_ok source_ok ready=true
+  git_ok=false; tool_available git && git_ok=true
+  mise_ok=false; tool_available mise && mise_ok=true
+  gh_ok=false; tool_available gh && gh_ok=true
+  codex_ok=false; tool_available codex && codex_ok=true
+  runtime_ok=false; runtime_ready && runtime_ok=true
+  launcher_ok=false; [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$symphony_home/scripts/symphony" ] && launcher_ok=true
+  source_ok=false; [ -x "$symphony_home/elixir/bin/symphony" ] && source_ok=true
+  "$git_ok" && "$mise_ok" && "$gh_ok" && "$codex_ok" && "$runtime_ok" && "$launcher_ok" && "$source_ok" || ready=false
+
+  if "$json"; then
+    printf '{"mode":"doctor","ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"git":%s,"mise":%s,"gh":%s,"codex":%s,"runtime":%s}}\n' \
+      "$(bool "$ready")" "$(source_revision)" "$(source_state)" "$(bool "$source_ok")" "$(bool "$launcher_ok")" \
+      "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$gh_ok")" "$(bool "$codex_ok")" "$(bool "$runtime_ok")"
+  else
+    printf 'Symphony %s (%s)\n' "$(source_revision)" "$(source_state)"
+    printf 'source=%s launcher=%s git=%s mise=%s gh=%s codex=%s runtime=%s\n' \
+      "$source_ok" "$launcher_ok" "$git_ok" "$mise_ok" "$gh_ok" "$codex_ok" "$runtime_ok"
+    "$ready" && printf 'Ready.\n' || printf 'Not ready. Run symphony install and symphony setup as needed.\n' >&2
+  fi
+  "$ready"
+}
+
+init() {
+  local slug=${1:-}
+  [ -n "$slug" ] || die 'init requires --linear-project <slug>'
+  local root id remote workflow env_file skills_dir manifest launcher revision skill
+  root=$(repo_root)
+  id=$(project_id "$root")
+  remote=$(git -C "$root" remote get-url origin 2>/dev/null || die 'the repository needs an origin remote')
+  workflow="$root/WORKFLOW.md"
+  env_file="$config_home/projects/$id.env"
+  skills_dir="$root/.codex/skills"
+  manifest="$root/.codex/symphony-skills.yml"
+  launcher="$root/script/symphony"
+  revision=$(source_revision)
+  for skill in commit push pull linear land; do [ -d "$symphony_home/.codex/skills/$skill" ] || die "missing bundled skill: $skill"; done
+
+  (umask 077; mkdir -p "$(dirname "$env_file")")
+  mkdir -p "$skills_dir" "$(dirname "$launcher")"
+  if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
+# Linear: Settings → Security & access → Personal API keys
+LINEAR_API_KEY=
+# GitHub: fine-grained, repository-scoped token. See `symphony --help`.
+GH_TOKEN=
+EOF
+); fi
+
+  if [ ! -e "$workflow" ]; then cat >"$workflow" <<EOF
+---
+tracker:
+  kind: linear
+  provider:
+    project_slug: "$slug"
+    api_key: \$LINEAR_API_KEY
+  required_labels: []
+  active_states: ["Todo", "In Progress", "Merging", "Rework"]
+  terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+polling:
+  interval_ms: 5000
+workspace:
+  root: ~/.local/share/symphony/workspaces/$id
+hooks:
+  after_create: |
+    git clone --depth 1 "$remote" .
+  before_remove: |
+    git clean -ffdqx
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+codex:
+  command: codex --config shell_environment_policy.inherit=all app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  live_max_total_tokens: 500000
+  live_max_turns: 5
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+---
+
+EOF
+    printf '\nRepository: %s\nRemote: %s\n\n' "$id" "$remote" >>"$workflow"
+    awk 'BEGIN { delimiters = 0 } /^---$/ { delimiters++; next } delimiters >= 2 { print }' "$symphony_home/elixir/WORKFLOW.md" >>"$workflow"
+  else
+    printf 'Workflow: preserved (%s)\n' "$workflow"
+  fi
+
+  for skill in commit push pull linear land; do [ -e "$skills_dir/$skill" ] || cp -R "$symphony_home/.codex/skills/$skill" "$skills_dir/"; done
+  cat >"$manifest" <<EOF
+bundle:
+  source: $symphony_home
+  revision: $revision
+  mode: copied
+skills: [commit, push, pull, linear, land]
+EOF
+  cat >"$launcher" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec symphony run "$@"
+EOF
+  chmod +x "$launcher"
+  register_project "$id" "$root" "$manifest"
+  printf 'Project: initialized (%s)\nCredentials: %s\nNext: fill credentials, then run %s\n' "$workflow" "$env_file" "$launcher"
+}
+
+run() {
+  local root id env_file workflow runtime
+  root=$(repo_root); id=$(project_id "$root")
+  env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
+  [ -r "$env_file" ] || die "missing credentials file: $env_file"
+  [ -f "$workflow" ] || die "missing workflow: $workflow"
+  runtime_ready || die 'Symphony runtime is not ready; run symphony setup'
+  set -a; . "$env_file"; set +a
+  runtime="$symphony_home/elixir/bin/symphony"
+  exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
+    --i-understand-that-this-will-be-running-without-the-usual-guardrails "$workflow" "$@"
+}
+
+case "${1:-}" in
+  --version) printf '{"mode":"cli","source_revision":"%s","source_state":"%s"}\n' "$(source_revision)" "$(source_state)" ;;
+  --help|-h|'') usage ;;
+  install) shift; install "$@" ;;
+  setup) shift; setup "$@" ;;
+  doctor) shift; doctor "$@" ;;
+  update) shift; update "$@" ;;
+  init) shift; [ "${1:-}" = --linear-project ] || { usage >&2; exit 2; }; init "${2:-}" ;;
+  run) shift; run "$@" ;;
+  *) usage >&2; exit 2 ;;
+esac

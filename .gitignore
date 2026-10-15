@@ -1,0 +1,2 @@
+# macOS Finder metadata must not make a stable runtime checkout look dirty.
+.DS_Store

@@ -20,128 +20,95 @@ moving from managing coding agents to managing work that needs to get done.
 
 ### Run this fork as a centralized local service
 
-This fork includes `symphony-project`, a local bootstrapper for running one centrally installed
-Symphony runtime against many repositories. It keeps credentials outside of each target repository,
-but creates a repository-specific `WORKFLOW.md`, skill bundle, and convenience launcher.
+This fork includes `symphony`, a small local manager for one stable Symphony runtime serving many
+repositories. It deliberately separates that runtime from the checkout where developers change
+Symphony itself. Target repositories can live anywhere and do not need to use Elixir or mise.
 
-#### One-time machine setup
+#### Install a stable runtime
 
-Treat `~/src/symphony` as the stable runtime checkout, separate from any developer checkout used
-to modify Symphony itself. Clone the fork you want to run on its `main` branch, then invoke its
-installer:
+Clone the fork you intend to operate into a stable location (the path is a convention, not a
+requirement), then link the command:
 
 ```bash
 git clone git@github.com:Jayson-Stangel/symphony.git ~/src/symphony
-~/src/symphony/scripts/symphony-project install --install-prerequisites
+~/src/symphony/scripts/symphony install
 ```
 
-The installer is safe to re-run. It refuses to replace an existing global command, creates
-`~/.config/symphony/` with protected permissions, links `~/.local/bin/symphony-project` to the
-stable checkout, and installs the Erlang/Elixir versions declared in that checkout. It checks for
-Git, [mise](https://mise.jdx.dev/), GitHub CLI (`gh`), and Codex. The
-`--install-prerequisites` option installs missing mise, `gh`, and Codex on macOS; Git itself comes
-from the Xcode Command Line Tools and may require a separate interactive confirmation.
+`install` is safe to rerun: it creates `~/.config/symphony/` with protected permissions and links
+`~/.local/bin/symphony` to the stable checkout. It never replaces an existing file or symlink.
+Ensure `~/.local/bin` is on your `PATH`.
 
-The installer does not require target repositories to use Erlang, Elixir, mise, or any particular
-parent directory. It runs the packaged `escript` through the stable checkout's `elixir/mise.toml`.
-Sign in to Codex after installation and ensure it can run `codex app-server`.
-
-Ensure `~/.local/bin` is on your shell `PATH`, then verify the installation:
+Set up or repair dependencies explicitly:
 
 ```bash
-symphony-project doctor
-symphony-project --help
+symphony setup --install-prerequisites
+symphony doctor
 ```
 
-Keep `~/src/symphony` in place: the global command deliberately points to that checkout. Developer
-worktrees may live anywhere and may be dirty or on feature branches without changing the runtime
-used by managed projects.
+`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`. On macOS,
+`--install-prerequisites` can install missing [mise](https://mise.jdx.dev/), GitHub CLI (`gh`),
+and Codex; Git comes from the Xcode Command Line Tools and Homebrew is required for automatic
+installation. Sign in to Codex and confirm `codex app-server` works before starting a listener.
+`symphony doctor --json` is available for scripts and CI.
+
+Keep the stable checkout in place. The global command points to it, while developer clones and
+worktrees may be anywhere, dirty, or on feature branches without changing the runtime used by
+managed projects.
 
 #### Update the stable runtime
 
-Update the stable command and runtime deliberately:
-
 ```bash
-symphony-project update
+symphony update
 ```
 
-The updater requires its source checkout to be clean, on `main`, and configured with an upstream.
-It fetches that tracked remote and fast-forwards only—on this fork, a standard installation tracks
-`jayson/main`, not OpenAI's `origin`. It then revalidates the global launcher and runtime without
-touching any project credentials or workflows.
+The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
+installation of this fork tracks `jayson/main`, not OpenAI's `origin`. It refreshes the launcher
+without changing project credentials, workflows, or copied skills. `symphony update --skills`
+reports projects whose copied skill bundle predates the current runtime; reviewing and updating
+those project files remains an intentional human decision.
 
-Use `SYMPHONY_HOME` only when the script is copied outside its checkout. `SYMPHONY_BIN_DIR` and
-`SYMPHONY_CONFIG_HOME` relocate the global command and configuration. Export alternate locations
-before `install` so later `update`, `doctor`, and `run` commands use the same paths.
+Use `SYMPHONY_BIN_DIR` and `SYMPHONY_CONFIG_HOME` to relocate the command and configuration (or
+pass `--bin-dir` and `--config-dir` to `install`, `doctor`, or `update`). Use `SYMPHONY_HOME` only
+when invoking a copy of the script outside its source checkout.
 
-#### Create credentials
+#### Initialize a repository
 
-For each target repository, `init` creates a private credential file at
-`~/.config/symphony/projects/<repository>.env` (or the equivalent under
-`SYMPHONY_CONFIG_HOME`). This file is deliberately outside the repository and is created with
-owner-only permissions.
+From a new or existing Git repository with an `origin` remote, wherever it lives:
 
-Add the following values:
+```bash
+cd /path/to/my-service
+symphony init --linear-project my-service-linear-project-slug
+```
+
+On first use this creates a repository-specific `WORKFLOW.md` from Symphony's full operating
+contract, copies the versioned `commit`, `push`, `pull`, `linear`, and `land` skills into
+`.codex/skills/`, records their source revision in `.codex/symphony-skills.yml`, and creates the
+repository launcher `script/symphony`. Existing workflow, credentials, and skill directories are
+preserved. Review the generated workflow before starting the listener.
+
+For a brand-new repository, make its first commit and push it before initializing so the `origin`
+remote can be cloned into a Symphony workspace.
+
+#### Configure credentials
+
+Initialization stores a private, owner-only credential template outside the repository at
+`~/.config/symphony/projects/<repository>.env`. Add:
 
 ```dotenv
 LINEAR_API_KEY=lin_api_...
 GH_TOKEN=github_pat_...
 ```
 
-Create the Linear key in **Settings → Security & access → Personal API keys**. Create the GitHub
-token at [GitHub Settings → Fine-grained personal access tokens](https://github.com/settings/personal-access-tokens/new).
-Restrict the GitHub token to **only the repository that Symphony will manage**, and grant:
-
-- `Contents: Read and write` — clone, branches, and pushes.
-- `Pull requests: Read and write` — create, update, and merge pull requests.
-- `Issues: Read and write` — only when Symphony will comment on or label issues.
-- `Workflows: Read and write` — only when it must change files under
-  `.github/workflows/`.
-
-Do not grant Administration, Secrets, Packages, organization permissions, or access to every
-repository. A classic token with `repo` is a fallback only; add `workflow` only when changing
-workflow files. GitHub App support is planned as a stronger, bot-attributed alternative to a
-personal token.
-
-#### Initialize a repository
-
-From either a new or existing Git repository, wherever it lives, ensure it has an `origin` remote,
-then run:
-
-```bash
-cd /path/to/my-service
-symphony-project init --linear-project my-service-linear-project-slug
-```
-
-The command is safe to re-run. On first initialization it:
-
-- creates a repository-specific `WORKFLOW.md` using the full Symphony operating contract as the
-  baseline;
-- creates the external credential template described above;
-- copies the versioned `commit`, `push`, `pull`, `linear`, and `land` skills into
-  `.codex/skills/`, recording their Symphony revision in `.codex/symphony-skills.yml`; and
-- adds `script/symphony`, a convenient repository-local launcher.
-
-It preserves an existing `WORKFLOW.md` and existing credential file. Review the generated workflow
-before the first run: its clone URL, Linear project slug, workspace location, active states,
-concurrency, and token/turn guardrails should match the target project.
-
-For a brand-new repository, commit and push at least one initial commit before initialization so
-the `origin` remote is cloneable:
-
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin git@github.com:<owner>/<repository>.git
-git push -u origin main
-symphony-project init --linear-project <linear-project-slug>
-```
+Create the Linear key in **Settings → Security & access → Personal API keys**. Create a
+[fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new), restrict it
+to the managed repository, and grant `Contents: Read and write` and `Pull requests: Read and
+write`. Add `Issues` only if it comments or labels issues, and `Workflows` only when it changes
+`.github/workflows/`. Do not grant Administration, Secrets, organization-wide access, or access to
+unrelated repositories.
 
 #### Verify and start safely
 
-First, verify authentication without starting an agent run. From the target repository, load the
-credential file and use GitHub's CLI to confirm repository access:
+Verify repository access before starting a listener:
 
 ```bash
 set -a
@@ -150,18 +117,16 @@ set +a
 gh repo view <owner>/<repository>
 ```
 
-Then start Symphony with its optional local dashboard:
+Then start Symphony and its optional local dashboard:
 
 ```bash
 script/symphony --port 4010
-# Equivalent: symphony-project run --port 4010
 ```
 
-Visit `http://localhost:4010` to observe the listener. This is a live service: it polls Linear and
-can claim any issue matching the workflow's active-state and label rules. For a first run, add a
-temporary `required_labels: ["symphony-smoke-test"]` entry to `WORKFLOW.md` and create one harmless
-test issue with that label. Stop the listener with `Ctrl-C`, inspect the workspace, branch, Linear
-updates, and pull request, then remove the temporary filter when ready for normal operation.
+Visit `http://localhost:4010` to observe the listener. For a first run, temporarily set
+`required_labels: ["symphony-smoke-test"]` in `WORKFLOW.md` and create one harmless matching
+Linear issue. Inspect the workspace, branch, Linear updates, and pull request before removing that
+filter for normal operation.
 
 ### Option 1. Make your own
 
