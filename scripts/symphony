@@ -139,7 +139,6 @@ install() {
       *) die "unknown install option: $1" ;;
     esac
   done
-  [ -x "$symphony_home/elixir/bin/symphony" ] || die "missing packaged runtime: $symphony_home/elixir/bin/symphony"
   ensure_launcher_link "$symphony_home/scripts/symphony" "$bin_dir/symphony"
   (umask 077; mkdir -p "$config_home/projects")
   printf 'Runtime: %s\nConfiguration: %s\nNext: run symphony setup, then symphony init inside a Git repository.\n' \
@@ -162,6 +161,9 @@ setup() {
   fi
   mise -C "$symphony_home/elixir" install
   runtime_ready || die 'mise completed but the Symphony Erlang runtime is unavailable'
+  mise -C "$symphony_home/elixir" exec -- mix setup
+  mise -C "$symphony_home/elixir" exec -- mix build
+  [ -x "$symphony_home/elixir/bin/symphony" ] || die 'runtime build completed without creating elixir/bin/symphony'
   printf 'Runtime setup complete: %s\n' "$symphony_home/elixir"
 }
 
