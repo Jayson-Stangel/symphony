@@ -26,34 +26,53 @@ but creates a repository-specific `WORKFLOW.md`, skill bundle, and convenience l
 
 #### One-time machine setup
 
-Install these prerequisites:
-
-- Git, GitHub CLI (`gh`), and a GitHub account with access to the repositories Symphony will work in.
-- [mise](https://mise.jdx.dev/) to supply the Erlang/Elixir runtime used by Symphony.
-- The [Codex CLI](https://developers.openai.com/codex/cli/) signed in and able to run
-  `codex app-server`.
-- A Linear personal API key for the Linear workspace that supplies work.
-
-The bootstrapper runs the packaged `escript` through the Symphony checkout's `elixir/mise.toml`.
-Target repositories do **not** need to adopt Erlang, Elixir, or mise themselves. Install the runtime
-once after cloning or updating this repository:
+Treat `~/src/symphony` as the stable runtime checkout, separate from any developer checkout used
+to modify Symphony itself. Clone the fork you want to run on its `main` branch, then invoke its
+installer:
 
 ```bash
-git clone git@github.com:<your-account>/symphony.git ~/src/symphony
-mise -C ~/src/symphony/elixir install
-mkdir -p ~/.local/bin
-ln -sf ~/src/symphony/scripts/symphony-project ~/.local/bin/symphony-project
+git clone git@github.com:Jayson-Stangel/symphony.git ~/src/symphony
+~/src/symphony/scripts/symphony-project install --install-prerequisites
 ```
 
-Ensure `~/.local/bin` is on your shell `PATH`, then verify the command:
+The installer is safe to re-run. It refuses to replace an existing global command, creates
+`~/.config/symphony/` with protected permissions, links `~/.local/bin/symphony-project` to the
+stable checkout, and installs the Erlang/Elixir versions declared in that checkout. It checks for
+Git, [mise](https://mise.jdx.dev/), GitHub CLI (`gh`), and Codex. The
+`--install-prerequisites` option installs missing mise, `gh`, and Codex on macOS; Git itself comes
+from the Xcode Command Line Tools and may require a separate interactive confirmation.
+
+The installer does not require target repositories to use Erlang, Elixir, mise, or any particular
+parent directory. It runs the packaged `escript` through the stable checkout's `elixir/mise.toml`.
+Sign in to Codex after installation and ensure it can run `codex app-server`.
+
+Ensure `~/.local/bin` is on your shell `PATH`, then verify the installation:
 
 ```bash
+symphony-project doctor
 symphony-project --help
 ```
 
-Set `SYMPHONY_HOME` if the executable is copied somewhere instead of symlinked from the checkout.
-Set `SYMPHONY_CONFIG_HOME` to relocate the default per-user configuration directory
-(`~/.config/symphony`).
+Keep `~/src/symphony` in place: the global command deliberately points to that checkout. Developer
+worktrees may live anywhere and may be dirty or on feature branches without changing the runtime
+used by managed projects.
+
+#### Update the stable runtime
+
+Update the stable command and runtime deliberately:
+
+```bash
+symphony-project update
+```
+
+The updater requires its source checkout to be clean, on `main`, and configured with an upstream.
+It fetches that tracked remote and fast-forwards only—on this fork, a standard installation tracks
+`jayson/main`, not OpenAI's `origin`. It then revalidates the global launcher and runtime without
+touching any project credentials or workflows.
+
+Use `SYMPHONY_HOME` only when the script is copied outside its checkout. `SYMPHONY_BIN_DIR` and
+`SYMPHONY_CONFIG_HOME` relocate the global command and configuration. Export alternate locations
+before `install` so later `update`, `doctor`, and `run` commands use the same paths.
 
 #### Create credentials
 
@@ -86,10 +105,11 @@ personal token.
 
 #### Initialize a repository
 
-From either a new or existing Git repository, ensure it has an `origin` remote, then run:
+From either a new or existing Git repository, wherever it lives, ensure it has an `origin` remote,
+then run:
 
 ```bash
-cd ~/Repos/my-service
+cd /path/to/my-service
 symphony-project init --linear-project my-service-linear-project-slug
 ```
 
