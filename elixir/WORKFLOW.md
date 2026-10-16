@@ -51,7 +51,7 @@ Follow-up context:
 - This is follow-up attempt #{{ attempt }}. It may be a normal continuation or a retry after a failure.
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Do not end the turn while the work item remains in an active state unless you are blocked by missing required access.
+- Do not end the turn while the work item remains in an active state unless you are blocked by missing required access or the review convergence policy requires escalation.
   {% endif %}
 
 Issue context:
@@ -75,9 +75,11 @@ existing branch, working tree, PR, and workpad and resume unfinished work. Keep
 uncommitted changes and local evidence; do not reset or clean an existing
 checkout merely because this is a fresh agent session. Tracker state determines
 whether work should resume. Codex conversation history may not be available.
+Reconcile the review ledger and honor any convergence escalation marker before
+changing code, replacing a PR, or starting another review round.
 
-1. This is an unattended orchestration session. Do not ask a human to perform follow-up actions.
-2. Only stop early for a true external blocker (missing required tools, auth, permissions, or secrets). If blocked, record it in the workpad and move the issue according to the workflow.
+1. This is an unattended orchestration session. Do not ask a human to perform follow-up actions, except for the review convergence escalation defined below.
+2. Only stop early for a true external blocker (missing required tools, auth, permissions, or secrets) or the review convergence escalation defined below. If blocked, record it in the workpad and move the issue according to the workflow.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
@@ -103,7 +105,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
   current issue as `related`, and use `blockedBy` when the follow-up depends on
   the current issue.
 - Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
+- Operate autonomously end-to-end unless blocked by missing requirements, secrets, permissions, or review convergence escalation.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
 
 ## Related skills
@@ -128,7 +130,7 @@ requires them. A missing tool matters only when required for that project's work
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation, validation, or automated PR review underway; includes waiting for review results and resolving findings.
-- `Blocked` -> cannot proceed because of an external blocker; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, or `Rework`.
+- `Blocked` -> cannot proceed because of an external blocker or review convergence escalation; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, or `Rework`.
 - `Human Review` -> PR is attached, validated, and automated review has completed for the latest commit with all findings resolved; waiting on human approval.
 - `Merging` -> approved by human; execute the `symphony-land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.
@@ -205,9 +207,69 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments, then satisfy the automated review gate below. An empty feedback sweep alone does not mean review has finished.
+4. Wait for the configured reviewers to complete the pass for the reviewed SHA,
+   then collect all findings before editing. Record each finding and resolution
+   in the workpad. Inspect the underlying invariant, callers/consumers, and
+   adjacent lifecycle paths before fixing the reported example. For stateful
+   changes, examine startup, cancellation, timeout, retry, reconciliation, and
+   restart together; add meaningful regressions for supported failure paths.
+5. Batch related fixes, run the required validation, and push the validated batch
+   before requesting the next review. Do not request a review per finding.
+6. Repeat this sweep subject to the review convergence policy until there are no outstanding actionable comments, then satisfy the automated review gate below. An empty feedback sweep alone does not mean review has finished.
+
+## Review convergence policy (required)
+
+This policy applies during implementation, rework, and merging, including when
+using `symphony-land`. It bounds automatic review requests without weakening
+validation or merge gates. These are agent instructions, not a runtime-enforced
+review counter.
+
+- Before editing feedback or requesting/rerunning review, read `### Review rounds`
+  in the existing workpad. Keep an issue-wide ledger containing the budget epoch,
+  completed unsuccessful round count, PR and reviewed SHA, reviewer result links,
+  findings/root causes, fix commits, validation evidence, and pending requests.
+- A round is the completed pass from all configured automated reviewers for one
+  head SHA. Count it once if it contains actionable findings requiring changes;
+  multiple reviewers/findings, polling, duplicate requests, and failed/cancelled
+  jobs do not count as additional rounds. Record partial results, but do not fix
+  or request another pass until the configured pass completes or external review
+  service failure is handled under the blocked-access escape hatch.
+- Persist completed results before fixes and pending requests before triggering
+  review. Reconcile the ledger with live PR review history after a restart or
+  interrupted update; recover missing entries and avoid double counting. Carry
+  the ledger across retries, compaction, rework, replacement PRs, and merge
+  attempts. A new session, branch, PR, or head SHA never resets the budget.
+- Allow at most three unsuccessful rounds per budget epoch. After the third,
+  record the current head, remaining findings, fixes and validation already
+  completed, review history, and the decision needed. Move the issue to `Blocked`
+  with reason `review convergence: human decision required`, then end the run.
+  Do not start another automatic fix/review round or request/rerun review. Reviews
+  automatically triggered by a push still belong in the ledger; do not add a
+  duplicate manual request when one is pending or completed for the same head.
+- This is a specific human-decision exception to the external-blocker-only rule.
+  It never means review passed, authorizes a merge, or qualifies for `Human Review`.
+  If the tracker lacks `Blocked` or the transition fails, preserve the escalation
+  marker in the workpad, report the failed transition, and end the run. A later
+  dispatch must honor that marker before doing more work.
+- Resume only after an explicit human decision recorded on the issue authorizes
+  further work and returns it to an active state. Moving it alone does not reset
+  the budget. If more automated rounds are authorized, append the decision and
+  a new budget epoch to the ledger, preserving prior history. Missing tracker
+  access uses the blocked-access escape hatch; never assume authorization.
+
+For each manual review request, use the repository's documented trigger and
+include the following coverage request, adapting the checks to the target repo:
+
+```text
+@codex review the complete PR diff and affected execution paths. Continue after
+finding a defect and report all independently actionable findings discovered in
+this pass. Group related failure paths by root cause; identify concrete supported
+triggers and consequences, excluding speculative concerns. Check the repository's
+Code Review Rules, especially state ownership, startup, cancellation, timeout,
+retry, reconciliation, restart, configuration consumers, and test/live isolation.
+```
+
+This requests broader coverage; it cannot guarantee that a pass finds every bug.
 
 ## Automated PR review gate (required)
 
@@ -218,10 +280,10 @@ Keep the issue `In Progress` while automated review is pending or findings are b
    - No comments yet, green unrelated checks, a reaction/acknowledgment, or a result for an older commit does not establish completed review of the current head.
    - Pending, queued, failed, cancelled, skipped, or missing review results do not pass this gate. Poll while review is running; use the repository's documented trigger or rerun procedure if review did not start or failed. Do not treat a non-blocking review job as optional.
 3. Address every actionable finding through the PR feedback sweep protocol. Record the review source, reviewed SHA, findings, and their resolutions in the workpad. Acknowledging a comment or marking a thread resolved alone does not resolve a finding; provide the fix and validation evidence, or an explicit, justified pushback reply explaining why no change is needed.
-4. If resolving findings changes the branch, push the validated changes and wait for completed automated review of the new head. Request a fresh review through the documented procedure when pushes do not trigger it automatically. Repeat until review is complete and no actionable findings remain.
+4. If resolving findings changes the branch, push the validated changes and wait for completed automated review of the new head. Request a fresh review through the documented procedure when pushes do not trigger it automatically. Repeat until review is complete and no actionable findings remain, subject to the review convergence policy.
 5. Immediately before moving to `Human Review`, re-fetch the PR head and feedback. Confirm the completed review evidence still matches that SHA, all findings are resolved, and checks pass. If the head changed or new findings arrived, repeat the gate. Record the final reviewed SHA and review evidence in the workpad.
 
-Normal review latency is ongoing work, not an external blocker. If review cannot complete because required access or the review service is unavailable after applicable recovery attempts, follow the blocked-access escape hatch; never substitute `Human Review` for missing review evidence.
+Normal review latency is ongoing work, not an external blocker. The review convergence escalation is the separate human-decision exception described above. If review cannot complete because required access or the review service is unavailable after applicable recovery attempts, follow the blocked-access escape hatch; never substitute `Human Review` for missing review evidence.
 
 ## Blocked-access escape hatch (required behavior)
 
@@ -272,7 +334,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Satisfy the automated PR review gate for the latest PR head; remain in the active state while waiting for review or resolving findings.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until automated review has completed for the latest head, no outstanding actionable findings remain, and checks are fully passing.
+    - Repeat this check-address-verify loop, subject to the review convergence policy, until automated review has completed for the latest head, no outstanding actionable findings remain, and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
     - If required work cannot be completed because of an external blocker, use `Blocked` with the blocker brief and explicit unblock actions; do not use `Human Review`.
@@ -288,7 +350,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `symphony-land`, then run it in a loop until the PR is merged. Do not call `gh pr merge` directly.
+5. When the issue is in `Merging`, open and follow `symphony-land`, then run it in a loop until the PR is merged or the review convergence policy requires escalation. Do not call `gh pr merge` directly.
    - Keep review polling in the current turn; report waiting status as progress and continue watching. A progress message does not end the turn or consume a continuation turn.
 6. After merge is complete, move the issue to `Done`.
 
@@ -297,11 +359,11 @@ Use this only when completion is blocked by missing required tools or missing au
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue.
+4. Preserve the existing `## Codex Workpad` comment and its review ledger; refresh the plan for rework without resetting the review budget.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Create a new bootstrap `## Codex Workpad` comment.
+   - Reuse the workpad and its review ledger; create a bootstrap comment only if none exists, recovering prior review history first.
    - Build a fresh plan/checklist and execute end-to-end.
 
 ## Completion bar before Human Review
@@ -330,7 +392,7 @@ Use this only when completion is blocked by missing required tools or missing au
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
 - Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
-- Use `Blocked` for external blockers; never use `Human Review` to request missing access or tools.
+- Use `Blocked` for external blockers or review convergence escalation; never use `Human Review` for either case.
 - In `Human Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
@@ -362,6 +424,13 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ### Validation
 
 - [ ] targeted tests: `<command>`
+
+### Review rounds
+
+- Budget epoch: 1; completed unsuccessful rounds: 0/3; escalation: none.
+- Pending request: <PR, head SHA, reviewers, request link, or none>.
+- History: <reviewed SHA, result links, findings/root causes, fix commits, validation>.
+- Human decisions: <authorization and new epoch, or none; preserve prior history>.
 
 ### Notes
 

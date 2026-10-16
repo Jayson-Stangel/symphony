@@ -13,7 +13,7 @@ description:
 - Keep CI green and fix failures when they occur.
 - Squash-merge the PR once checks pass.
 - Do not yield to the user until the PR is merged; keep the watcher loop running
-  unless blocked.
+  unless blocked or the review convergence policy requires human judgment.
 - No need to delete remote branches after merge; the repo auto-deletes head
   branches.
 
@@ -24,7 +24,22 @@ description:
 
 ## Steps
 
-1. Locate the PR for the current branch.
+1. Locate the PR for the current branch and read the workpad review ledger.
+   Apply the target workflow's review convergence policy before edits, review
+   requests, reruns, or merging; it takes precedence over keep-watching guidance.
+   If no policy exists, use at most three completed unsuccessful review rounds
+   per human-authorized budget epoch. Count one completed configured-reviewer
+   pass per head SHA that requires changes, not each comment, poll, or retry.
+   Persist reviewed SHAs, results, findings, fixes, validation, and pending
+   requests in the workpad; reconcile live review history after interruptions.
+   Preserve this issue-wide history across retries, replacement PRs, and rework.
+   After the third unsuccessful round, record the outstanding findings and
+   current head, move the issue to `Blocked` for human judgment, and end the run.
+   If the state transition is unavailable, retain an escalation marker, report
+   the limitation, and end the run; honor that marker on later dispatches.
+   Resume only on an explicit recorded human decision; moving the issue alone
+   does not reset the budget. Preserve prior history when authorizing a new epoch.
+   Escalation never passes the review gate or authorizes merging.
 2. Confirm the target repository's required validation is green locally before
    any push. Discover commands and tools from its instructions and ticket;
    Symphony's Elixir build and PR-body checks are not shared prerequisites.
@@ -33,8 +48,11 @@ description:
 4. Check mergeability and conflicts against main.
 5. If conflicts exist, use `symphony-pull` to fetch/merge `origin/main` and
    resolve conflicts, then use `symphony-push` to publish the updated branch.
-6. Ensure Codex review comments (if present) are acknowledged and any required
-   fixes are handled before merging.
+6. Require completed review from every configured automated reviewer for the
+   current PR head, with all actionable findings fixed and validated or explicitly
+   rebutted with evidence. An acknowledgment, resolved thread, green unrelated
+   checks, or watcher success alone does not pass this gate. Apply the workflow's
+   review convergence policy before another fix/review round.
 7. Watch checks until complete.
 8. If checks fail, pull logs, fix the issue, commit with `symphony-commit`,
    push with `symphony-push`, and re-run checks.
@@ -121,8 +139,8 @@ Exit codes:
 - If checks fail, pull details with `gh pr checks` and `gh run view --log`, then
   fix locally, commit with `symphony-commit`, push with `symphony-push`, and
   re-run the watch.
-- Use judgment to identify flaky failures. If a failure is a flake (e.g., a
-  timeout on only one platform), you may proceed without fixing it.
+- Investigate suspected flaky failures and rerun the affected checks. Required
+  checks must pass before merging; suspected flakiness does not waive the gate.
 - If CI pushes an auto-fix commit (authored by GitHub Actions), it does not
   trigger a fresh CI run. Detect the updated PR head, pull locally, merge
   `origin/main` if needed, add a real author commit, and force-push to retrigger
@@ -180,7 +198,10 @@ Exit codes:
     (`[codex] ...`) **as an inline reply to the original review comment** using
     the review comment endpoint and `in_reply_to` (do not use issue comments for
     this).
-  - Implement fixes, commit, push.
+  - Wait for the configured review pass to complete and collect all findings.
+    Inspect the affected invariant and adjacent lifecycle paths, add meaningful
+    regressions, and batch related fixes before validation, commit, and push.
+    Check the review budget before starting another fix/review round.
   - Reply with the fix details and commit sha (`[codex] ...`) in the same place
     you acknowledged the feedback (issue comment for Codex reviews, inline reply
     for review comments).
@@ -201,7 +222,13 @@ Exit codes:
     Tests: <commands run>
     ```
   - Only request a new review if there is at least one new commit since the
-    previous request.
+    previous request and the review budget permits it. Record the pending
+    request before triggering it; do not duplicate an automatic review.
+  - Include a request to inspect the complete diff and affected execution paths,
+    continue after the first defect, and report all actionable findings discovered
+    in the pass with concrete triggers and consequences. Group related paths by
+    root cause and apply the repository's Code Review Rules. Broader coverage
+    is a goal, not a guarantee of exhaustive review.
   - Wait for the next Codex review comment before merging.
 
 ## Scope + PR Metadata
