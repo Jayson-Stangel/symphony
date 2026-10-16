@@ -1841,7 +1841,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "agent runner continues with a follow-up turn while the issue remains active" do
+  test "agent runner counts real turns rather than review progress messages" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1883,9 +1883,19 @@ defmodule SymphonyElixir.CoreTest do
             ;;
           4)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
+            progress=0
+            while [ "$progress" -lt 25 ]; do
+              printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","phase":"commentary","text":"Review is still running"}}}'
+              progress=$((progress + 1))
+            done
+            printf '%s\\n' '{"method":"thread/status/changed","params":{"status":{"type":"idle"}}}'
+            printf '%s\\n' '{"id":99,"method":"item/tool/call","params":{"name":"unknown_review_probe","arguments":{}}}'
             ;;
           5)
+            printf 'PROBE_REPLIED:%s\\n' "$line" >> "$trace_file"
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          6)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
@@ -1908,6 +1918,7 @@ defmodule SymphonyElixir.CoreTest do
       parent = self()
 
       state_fetcher = fn [_issue_id] ->
+        assert File.read!(trace_file) =~ "PROBE_REPLIED:"
         attempt = Process.get(:agent_turn_fetch_count, 0) + 1
         Process.put(:agent_turn_fetch_count, attempt)
         send(parent, {:issue_state_fetch, attempt})

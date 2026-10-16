@@ -430,30 +430,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
+      # Item completion and thread status are notifications, not turn boundaries.
+      # In particular, review-wait commentary must not start a continuation turn.
       {:ok, %{"method" => "turn/completed"} = payload} ->
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
         {:ok, :turn_completed}
-
-      {:ok, %{"method" => "thread/status/changed", "params" => %{"status" => %{"type" => "idle"}}} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
-
-      {:ok, %{"method" => "item/completed"} = payload} ->
-        if completed_agent_message_item?(payload) do
-          emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-          {:ok, :turn_completed}
-        else
-          handle_turn_method(
-            port,
-            on_message,
-            payload,
-            payload_string,
-            "item/completed",
-            timeout_ms,
-            tool_executor,
-            auto_approve_requests
-          )
-        end
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
         emit_turn_event(
@@ -535,14 +516,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       },
       metadata_from_message(port, payload)
     )
-  end
-
-  defp completed_agent_message_item?(payload) when is_map(payload) do
-    item = get_in(payload, ["params", "item"])
-
-    item_type = if is_map(item), do: Map.get(item, "type") || Map.get(item, :type)
-
-    item_type in ["agentMessage", "agent_message"]
   end
 
   defp handle_turn_method(

@@ -264,6 +264,9 @@ Then start Symphony and its optional local dashboard:
 symphony run --port 4010
 ```
 
+Review polling and progress updates stay within the current Codex turn; only completed turns
+count toward the worker continuation limit.
+
 Visit `http://localhost:4010` to observe the listener. For a first run, temporarily set
 `required_labels: ["symphony-smoke-test"]` in `WORKFLOW.md` and create one harmless matching
 Linear issue. Inspect the workspace, branch, Linear updates, and pull request before removing that

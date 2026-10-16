@@ -1049,7 +1049,9 @@ the active turn terminates.
 
 Completion conditions:
 
-- Targeted-protocol turn completion signal -> success
+- `turn/completed` -> success
+- Completed message items (including commentary) and thread idle status -> notifications only;
+  keep processing the active turn without starting or charging a continuation turn
 - Targeted-protocol turn failure signal -> failure
 - Targeted-protocol turn cancellation signal -> failure
 - turn stream silence timeout (`turn_timeout_ms`) -> failure

@@ -289,6 +289,7 @@ Use this only when completion is blocked by missing required tools or missing au
 3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
 4. If approved, human moves the issue to `Merging`.
 5. When the issue is in `Merging`, open and follow `symphony-land`, then run it in a loop until the PR is merged. Do not call `gh pr merge` directly.
+   - Keep review polling in the current turn; report waiting status as progress and continue watching. A progress message does not end the turn or consume a continuation turn.
 6. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling

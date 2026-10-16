@@ -272,7 +272,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server treats idle thread status after a turn as completion" do
+  test "app server keeps processing after idle status until the turn completes" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -303,6 +303,7 @@ defmodule SymphonyElixir.AppServerTest do
           3)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
             printf '%s\\n' '{"method":"thread/status/changed","params":{"threadId":"thread-1002","status":{"type":"idle"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
           *)
@@ -323,19 +324,26 @@ defmodule SymphonyElixir.AppServerTest do
         id: "issue-idle-status-completion",
         identifier: "MT-1002",
         title: "Idle status completion",
-        description: "Current Codex app-server marks turn completion through thread idle status",
+        description: "Thread idle status is a notification",
         state: "In Progress",
         url: "https://example.org/issues/MT-1002",
         labels: ["backend"]
       }
 
-      assert {:ok, %{result: :turn_completed}} = AppServer.run(workspace, "Complete on idle", issue)
+      parent = self()
+
+      assert {:ok, %{result: :turn_completed}} =
+               AppServer.run(workspace, "Wait for turn completion", issue, on_message: &send(parent, {:stream, &1}))
+
+      assert_receive {:stream, %{event: :notification, payload: %{"method" => "thread/status/changed"}}}
+      assert_receive {:stream, %{event: :turn_completed}}
+      refute_receive {:stream, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "app server treats completed agent message item as completion" do
+  test "app server preserves failures after completed progress messages" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -365,7 +373,8 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           3)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1003"}}}'
-            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"msg_1003","type":"agentMessage","status":"completed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"msg_1003","type":"agentMessage","phase":"commentary","status":"completed"}}}'
+            printf '%s\\n' '{"method":"turn/failed","params":{"error":"review probe failed"}}'
             exit 0
             ;;
           *)
@@ -386,15 +395,67 @@ defmodule SymphonyElixir.AppServerTest do
         id: "issue-agent-message-completion",
         identifier: "MT-1003",
         title: "Agent message completion",
-        description: "Current Codex app-server can mark turn completion through completed agent message items",
+        description: "Completed progress messages do not hide subsequent failures",
         state: "In Progress",
         url: "https://example.org/issues/MT-1003",
         labels: ["backend"]
       }
 
-      assert {:ok, %{result: :turn_completed}} = AppServer.run(workspace, "Complete on agent message", issue)
+      parent = self()
+
+      assert {:error, {:turn_failed, %{"error" => "review probe failed"}}} =
+               AppServer.run(workspace, "Wait for review", issue, on_message: &send(parent, {:stream, &1}))
+
+      assert_receive {:stream, %{event: :notification, payload: %{"method" => "item/completed"}}}
+      refute_receive {:stream, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  for outcome <- [:port_exit, :timeout] do
+    @outcome outcome
+    test "app server does not hide #{@outcome} after review progress and idle status" do
+      test_root = Path.join(System.tmp_dir!(), "symphony-review-wait-#{System.unique_integer([:positive])}")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-review")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+      on_exit(fn -> File.rm_rf(test_root) end)
+
+      terminal = if @outcome == :port_exit, do: "exit 7", else: "sleep 1"
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      while IFS= read -r line; do
+        case "$line" in
+          *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          *'"method":"thread/start"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review"}}}' ;;
+          *'"method":"turn/start"'*)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-review"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","phase":"commentary"}}}'
+            printf '%s\\n' '{"method":"thread/status/changed","params":{"status":{"type":"idle"}}}'
+            #{terminal}
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 100
+      )
+
+      issue = %Issue{id: "review", identifier: "MT-review", title: "Review wait", state: "Merging"}
+      result = AppServer.run(workspace, "Wait for review", issue)
+
+      case @outcome do
+        :port_exit -> assert {:error, {:port_exit, 7}} = result
+        :timeout -> assert {:error, :turn_timeout} = result
+      end
     end
   end
 
