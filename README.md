@@ -77,20 +77,19 @@ Docker-compatible OCI runtime: Docker Desktop or OrbStack on macOS; Docker Engin
 Podman on Unix.
 
 From an initialized repository whose external Symphony environment contains a fine-grained
-`GITHUB_TOKEN` (or `GH_TOKEN`), create a dedicated Codex access token for Symphony. Do not reuse
-or mount the developer's `~/.codex/auth.json`. Store the token with a secret manager or pass it
-directly from standard input:
+`GITHUB_TOKEN` (or `GH_TOKEN`), authenticate the bundled Codex CLI. This opens a device-login
+flow and saves its session in a Docker-managed volume, not the developer's `~/.codex` directory:
 
 ```bash
-your-secret-command | symphony auth codex set --from-stdin
+symphony auth codex login
 symphony auth codex check
 ```
 
-The token is stored with mode `0600` at
-`~/.config/symphony/secrets/<repository>/codex_access_token`, outside the repository and the
-container image. The runner mounts that file read-only and provides it as `CODEX_ACCESS_TOKEN` to
-its Codex runtime. Use a dedicated, revocable token with the shortest practical expiry: code
-executed by an autonomous agent can access credentials available inside its own container.
+The session is stored in the `symphony-codex-auth` Docker volume (override with
+`SYMPHONY_CODEX_AUTH_VOLUME`) and is mounted into isolated workers. It is outside repositories,
+the container image, and the host Codex configuration. It remains a credential available to code
+inside a worker, so use a dedicated account when one is available and remove the session with
+`symphony auth codex remove` when it is no longer needed.
 
 Then start the isolated worker:
 
