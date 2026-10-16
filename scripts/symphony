@@ -459,7 +459,7 @@ project_doctor() {
     [ -d "$root/.codex/skills/$(skill_name "$skill")" ] && override_count=$((override_count + 1))
   done
   [ -e "$root/script/symphony" ] && wrapper=true
-  if [ -f "$workflow" ] && grep -Eq '\.codex/skills/(commit|push|pull|linear|land)' "$workflow"; then legacy_refs=true; fi
+  if [ -f "$workflow" ] && grep -Eq '(`(linear|commit|push|pull|land)`|\.codex/skills/(commit|push|pull|linear|land))' "$workflow"; then legacy_refs=true; fi
 
   if "$json"; then
     printf '{"mode":"project-doctor","workflow":%s,"credentials":%s,"global_skills":%s,"legacy_manifest":%s,"legacy_skill_count":%s,"local_override_count":%s,"legacy_workflow_references":%s,"legacy_wrapper":%s}\n' \

@@ -100,10 +100,10 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Related skills
 
-- `linear`: interact with Linear.
-- `commit`: produce clean, logical commits during implementation.
-- `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `symphony-linear`: interact with Linear during this Symphony session.
+- `symphony-commit`: produce clean, logical commits during implementation.
+- `symphony-push`: keep the current branch published and its pull request current.
+- `symphony-pull`: merge the latest `origin/main` into the current branch before handoff.
 - `symphony-land`: when a ticket reaches `Merging`, explicitly open and follow
   the globally installed `symphony-land` skill, which includes the land loop.
   A repository may deliberately override it with `.codex/skills/symphony-land`.
@@ -165,8 +165,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
-    - Include a `pull skill evidence` note with:
+9.  Run `symphony-pull` to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
+    - Include a `symphony-pull` evidence note with:
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
       - resulting `HEAD` short SHA.
@@ -202,7 +202,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
-1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
+1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `symphony-pull` sync result is already recorded in the workpad before implementation continues.
 2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
 3.  Load the existing workpad comment and treat it as the active execution checklist.
     - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
