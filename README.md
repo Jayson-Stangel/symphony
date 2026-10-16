@@ -63,8 +63,10 @@ symphony update
 ```
 
 The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
-installation of this fork tracks `jayson/main`, not OpenAI's `origin`. It refreshes the global
-command and skill links without changing project credentials or workflows.
+installation of this fork tracks `jayson/main`, not OpenAI's `origin`. When source changes, it
+automatically rebuilds the pinned runtime; it also refreshes the global command and skill links
+without changing project credentials or workflows. You do not need to run `symphony setup` after
+a successful update.
 
 Use `SYMPHONY_BIN_DIR`, `SYMPHONY_CONFIG_HOME`, and `SYMPHONY_SKILLS_DIR` to relocate the command,
 configuration, and skills (or pass the equivalent flags to `install`, `doctor`, or `update`). Use

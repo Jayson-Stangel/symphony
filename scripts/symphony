@@ -237,6 +237,9 @@ update() {
   after=$(git -C "$symphony_home" rev-parse HEAD)
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die 'update left unexpected working-tree changes'
   "$symphony_home/scripts/symphony" install --bin-dir "$bin_dir" --config-dir "$config_home" --skills-dir "$skills_dir"
+  if [ "$before" != "$after" ]; then
+    "$symphony_home/scripts/symphony" setup
+  fi
   printf 'Updated: %s -> %s\n' "$before" "$after"
 }
 
