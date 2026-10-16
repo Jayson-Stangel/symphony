@@ -11,6 +11,7 @@ RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.ge
 COPY elixir ./
 RUN MIX_ENV=prod mix escript.build
 
+COPY .codex/skills /opt/symphony/skills
 RUN install -d -m 700 /root/.codex /workspaces /var/lib/symphony
 COPY runner/entrypoint.sh /usr/local/bin/symphony-runner
 RUN chmod 755 /usr/local/bin/symphony-runner
