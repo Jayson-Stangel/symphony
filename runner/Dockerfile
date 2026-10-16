@@ -1,7 +1,15 @@
 FROM elixir:1.19
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git gh nodejs npm python3 ripgrep \
+    ca-certificates curl git nodejs npm python3 ripgrep \
+  && install -d -m 755 /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
+  && gh --version \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global @openai/codex@latest
 

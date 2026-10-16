@@ -12,6 +12,16 @@ description:
 - `gh` CLI is installed and available in `PATH`.
 - `gh auth status` succeeds for GitHub operations in this repo.
 
+## Repository policy
+
+Symphony manages repositories with different languages and build systems. Read
+the target repository's `AGENTS.md`, `WORKFLOW.md`, development documentation,
+and ticket validation requirements before choosing checks or PR formatting.
+Use that repository's commands and tools. Symphony's own `make -C elixir all`
+and `mix pr_body.check` apply only when the target repository requires them;
+they are not prerequisites for using this skill. Do not install or report
+missing Elixir tooling for a project that does not use it.
+
 ## Goals
 
 - Push current branch changes to `origin` safely.
@@ -26,7 +36,7 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation (`make -C elixir all`) before pushing.
+2. Run the target repository's required validation before pushing.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:
@@ -44,7 +54,7 @@ description:
    - Write a proper PR title that clearly describes the change outcome
    - For branch updates, explicitly reconsider whether current PR title still
      matches the latest scope; update it if it no longer does.
-6. Write/update PR body explicitly using `.github/pull_request_template.md`:
+6. Write/update PR body using the target repository's PR template when present:
    - Fill every section with concrete content for this change.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
@@ -52,7 +62,11 @@ description:
      scope (all intended work on the branch), not just the newest commits,
      including newly added work, removed work, or changed approach.
    - Do not reuse stale description text from earlier iterations.
-7. Validate PR body with `mix pr_body.check` and fix all reported issues.
+   - If no template exists, describe the outcome, rationale, validation results,
+     and material limitations without creating a template or borrowing one from
+     Symphony.
+7. Run the target repository's PR-body validator when one is documented. Otherwise
+   review the body against its requirements and actual validation evidence.
 8. Reply with the PR URL from `gh pr view`.
 
 ## Commands
@@ -61,8 +75,8 @@ description:
 # Identify branch
 branch=$(git branch --show-current)
 
-# Minimal validation gate
-make -C elixir all
+# Before pushing, run the validation commands discovered in the target repo.
+# For example, use npm run validate only if that repository requires it.
 
 # Initial push: respect the current origin remote.
 git push -u origin HEAD
@@ -89,20 +103,22 @@ pr_title="<clear PR title written for this change>"
 if [ -z "$pr_state" ]; then
   gh pr create --title "$pr_title"
 else
-  # Reconsider title on every branch update; edit if scope shifted.
-  gh pr edit --title "$pr_title"
+  # REST avoids deprecated Projects (classic) queries in older gh pr edit.
+  pr_number=$(gh pr view --json number -q .number)
+  gh api --method PATCH "repos/{owner}/{repo}/pulls/$pr_number" \
+    -f title="$pr_title" --jq .html_url
 fi
 
-# Write/edit PR body to match .github/pull_request_template.md before validation.
+# Write the body to a file, following the target repo's template if present.
 # Example workflow:
-# 1) open the template and draft body content for this PR
-# 2) gh pr edit --body-file /tmp/pr_body.md
-# 3) for branch updates, re-check that title/body still match current diff
+# 1) draft the body and run the repo's documented body validator, if any
+# 2) publish the validated file via REST (preserves actual newlines)
+# 3) re-read the published title/body and compare with the current diff
+pr_number=$(gh pr view --json number -q .number)
+gh api --method PATCH "repos/{owner}/{repo}/pulls/$pr_number" \
+  -F body=@/tmp/pr_body.md --jq .html_url
 
-tmp_pr_body=$(mktemp)
-gh pr view --json body -q .body > "$tmp_pr_body"
-(cd elixir && mix pr_body.check --file "$tmp_pr_body")
-rm -f "$tmp_pr_body"
+gh pr view --json title,body
 
 # Show PR URL for the reply
 gh pr view --json url -q .url
@@ -110,6 +126,13 @@ gh pr view --json url -q .url
 
 ## Notes
 
+- If a GitHub CLI command fails on deprecated `projectCards` / Projects
+  (classic), use explicit `gh pr view --json <needed-fields>` reads or the
+  equivalent `gh api` REST endpoint, then verify the result. This is a CLI/API
+  compatibility failure, not a requirement to configure GitHub Projects or a
+  repository dependency. Check `gh --version` inside the worker; the host's
+  version does not establish the container's version. Do not silently ignore
+  unrelated auth, permission, or network failures.
 - Do not use `--force`; only use `--force-with-lease` as the last resort.
 - Distinguish sync problems from remote auth/permission problems:
   - Use the `symphony-pull` skill for non-fast-forward or stale-branch issues.

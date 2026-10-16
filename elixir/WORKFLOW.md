@@ -102,6 +102,12 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Related skills
 
+Shared skills provide operational procedures; the target repository defines
+validation commands, dependencies, PR templates, and body validators. Discover
+those requirements from its `AGENTS.md`, development docs, and ticket. Do not
+apply Symphony's Elixir checks to another project unless that project explicitly
+requires them. A missing tool matters only when required for that project's work.
+
 - `symphony-linear`: interact with Linear during this Symphony session.
 - `symphony-commit`: produce clean, logical commits during implementation.
 - `symphony-push`: keep the current branch published and its pull request current.
@@ -182,9 +188,14 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
 
 1. Identify the PR number from issue links/attachments.
 2. Gather feedback from all channels:
-   - Top-level PR comments (`gh pr view --comments`).
+   - Top-level PR comments (`gh api --paginate repos/<owner>/<repo>/issues/<pr>/comments`).
    - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
    - Review summaries/states (`gh pr view --json reviews`).
+   - If a CLI command fails on deprecated `projectCards` / Projects (classic),
+     use explicit JSON fields or the equivalent REST endpoint. For PR title/body
+     updates, use `PATCH repos/<owner>/<repo>/pulls/<pr>` and verify the result.
+     Check the worker's `gh --version`; this compatibility error does not require
+     adding GitHub Projects to the repository.
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.

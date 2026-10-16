@@ -148,6 +148,14 @@ Symphony’s shared skills are global and namespaced—`symphony-commit`, `symph
 `symphony-pull`, `symphony-linear`, and `symphony-land`. They carry reusable operational
 procedures, not repository policy, and update with the stable runtime. The workflow defines each
 repository’s behavior, credentials, tracker states, workspace, hooks, and guardrails.
+Workers use the target repository's validation commands and PR conventions;
+Symphony's Elixir tooling is not a requirement for other projects. The runner
+installs GitHub CLI from its official signed package repository to avoid obsolete
+Projects (classic) API queries in older distribution packages. Shared procedures
+also use REST for PR metadata updates and comment reads.
+Running listeners retain their bundled tools and skills until their containers
+are recreated; roll out updates between work items. Existing `WORKFLOW.md` files
+are preserved by `init`, so apply workflow guidance changes explicitly there.
 
 #### Local skill overrides
 

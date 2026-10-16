@@ -25,7 +25,9 @@ description:
 ## Steps
 
 1. Locate the PR for the current branch.
-2. Confirm the full gauntlet is green locally before any push.
+2. Confirm the target repository's required validation is green locally before
+   any push. Discover commands and tools from its instructions and ticket;
+   Symphony's Elixir build and PR-body checks are not shared prerequisites.
 3. If the working tree has uncommitted changes, commit with `symphony-commit`
    and push with `symphony-push` before proceeding.
 4. Check mergeability and conflicts against main.
