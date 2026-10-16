@@ -589,9 +589,13 @@ auth() {
 }
 
 runner_status() {
-  local root=$1 runtime name
+  local root=$1 runtime name state
   runtime=$(container_runtime); name=$(runner_id "$root")
-  "$runtime" inspect --format '{{.State.Running}}' "$name" 2>/dev/null || printf 'missing\n'
+  if state=$("$runtime" inspect --format '{{.State.Running}}' "$name" 2>/dev/null); then
+    printf '%s\n' "$state"
+  else
+    printf 'missing\n'
+  fi
 }
 
 runner_report() {

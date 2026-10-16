@@ -23,7 +23,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     printf '\\n' >> "$FIXTURE_LOG"
     case "$1" in
       inspect)
-        [ -f "$FIXTURE_STATE" ] || exit 1
+        [ -f "$FIXTURE_STATE" ] || { printf '\\n'; exit 1; }
         case "$*" in
           *State.Running*) cat "$FIXTURE_STATE" ;;
           *com.symphony.mode*) echo listener ;;
@@ -51,6 +51,16 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     ]
 
     %{repo: repo, env: env, log: Path.join(root, "calls")}
+  end
+
+  test "missing container inspection discards stdout before reporting or creating", ctx do
+    assert {"Isolated worker: not running\n", 0} = launch(ctx, "status")
+    assert {_, 0} = launch(ctx, "start")
+
+    calls = File.read!(ctx.log) |> String.split("\n", trim: true)
+    assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
+    refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
+    refute Enum.any?(calls, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage")))
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
