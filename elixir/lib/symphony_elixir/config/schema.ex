@@ -480,6 +480,7 @@ defmodule SymphonyElixir.Config.Schema do
           settings
           | worker: %{settings.worker | ssh_hosts: []},
             workspace: %{settings.workspace | root: "/workspaces"},
+            server: %{settings.server | host: "0.0.0.0"},
             codex: %{
               settings.codex
               | approval_policy: "never",

@@ -16,6 +16,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, settings} = Schema.parse(%{"tracker" => %{"kind" => "memory"}})
     assert settings.worker.ssh_hosts == []
     assert settings.workspace.root == "/workspaces"
+    assert settings.server.host == "0.0.0.0"
     assert settings.codex.approval_policy == "never"
     assert settings.codex.thread_sandbox == "danger-full-access"
     assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
