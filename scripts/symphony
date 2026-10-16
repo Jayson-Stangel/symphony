@@ -589,6 +589,22 @@ runner_status() {
   "$runtime" inspect --format '{{.State.Running}}' "$name" 2>/dev/null || printf 'missing\n'
 }
 
+runner_report() {
+  local root=$1 state name env_file
+  state=$(runner_status "$root"); name=$(runner_id "$root")
+  case "$state" in
+    true)
+      env_file=$(runner_env_file "$root")
+      [ -r "$env_file" ] || die "runner is running but its configuration is missing: $env_file"
+      set -a; . "$env_file"; set +a
+      printf 'Isolated worker: running\nContainer: %s\nWorker endpoint: %s\nWorker workspaces: %s (container only)\nCodex session: Docker volume %s\n' \
+        "$name" "$SYMPHONY_RUNNER_SSH_HOSTS" "$SYMPHONY_RUNNER_WORKSPACE_ROOT" "$codex_auth_volume"
+      ;;
+    missing) printf 'Isolated worker: not running\n' ;;
+    *) printf 'Isolated worker: stopped (%s)\n' "$state" ;;
+  esac
+}
+
 runner_start() {
   local root=$1 id project_env runtime name state runner_dir key image port env_file ssh_config git_token
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
@@ -650,8 +666,11 @@ runner_stop() {
 }
 
 runner_doctor() {
-  local root=$1 env_file
+  local root=$1 env_file runtime name
   runner_start "$root"
+  runtime=$(container_runtime); name=$(runner_id "$root")
+  "$runtime" exec "$name" codex login status >/dev/null
+  printf 'Runner Codex session verified.\n'
   env_file=$(runner_env_file "$root")
   set -a; . "$env_file"; set +a
   # SSH's destination syntax does not accept host:port. The generated config
@@ -678,7 +697,7 @@ runner() {
   case "$command" in
     start) runner_start "$root" ;;
     stop) runner_stop "$root" ;;
-    status) printf 'Runner: %s\n' "$(runner_status "$root")" ;;
+    status) runner_report "$root" ;;
     doctor) runner_doctor "$root" ;;
     --help|-h|'') printf 'Usage: symphony runner start|stop|status|doctor\n' ;;
     *) die "unknown runner command: $command" ;;
@@ -697,6 +716,7 @@ run() {
   if "$isolated"; then
     runner_start "$root"
     set -a; . "$(runner_env_file "$root")"; set +a
+    runner_report "$root"
   fi
   runtime="$symphony_home/elixir/bin/symphony"
   exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
