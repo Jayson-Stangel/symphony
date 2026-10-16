@@ -195,6 +195,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:live_max_total_tokens, :integer, default: 0)
+      field(:live_max_turns, :integer, default: 0)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -209,7 +211,9 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :live_max_total_tokens,
+          :live_max_turns
         ],
         empty_values: []
       )
@@ -224,6 +228,8 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:live_max_total_tokens, greater_than_or_equal_to: 0)
+      |> validate_number(:live_max_turns, greater_than_or_equal_to: 0)
     end
   end
 
@@ -460,7 +466,32 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    settings
+    |> Map.put(:tracker, tracker)
+    |> Map.put(:workspace, workspace)
+    |> Map.put(:codex, codex)
+    |> apply_container_overrides()
+  end
+
+  defp apply_container_overrides(settings) do
+    case System.get_env("SYMPHONY_CONTAINERIZED") do
+      "1" ->
+        %{
+          settings
+          | worker: %{settings.worker | ssh_hosts: []},
+            workspace: %{settings.workspace | root: "/workspaces"},
+            server: %{settings.server | host: "0.0.0.0"},
+            codex: %{
+              settings.codex
+              | approval_policy: "never",
+                thread_sandbox: "danger-full-access",
+                turn_sandbox_policy: %{"type" => "dangerFullAccess"}
+            }
+        }
+
+      _ ->
+        settings
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do

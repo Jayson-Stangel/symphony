@@ -29,6 +29,10 @@ defmodule SymphonyElixir.AgentRunner do
       :ok ->
         :ok
 
+      {:error, {:max_turns_reached, _details} = reason} ->
+        Logger.error("Agent run failed closed for #{issue_context(issue)}: #{inspect(reason)}")
+        exit(reason)
+
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
@@ -128,7 +132,14 @@ defmodule SymphonyElixir.AgentRunner do
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+          {:error,
+           {:max_turns_reached,
+            %{
+              issue_id: refreshed_issue.id,
+              identifier: refreshed_issue.identifier,
+              max_turns: max_turns,
+              workspace: workspace
+            }}}
 
         {:done, _refreshed_issue} ->
           :ok

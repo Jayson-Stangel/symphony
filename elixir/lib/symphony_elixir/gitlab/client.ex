@@ -19,7 +19,12 @@ defmodule SymphonyElixir.GitLab.Client do
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
 
-    ["GITLAB_PAT", "GITLAB_ACCESS_TOKEN" | env_reference_names([provider["api_key"]])]
+    [
+      "GITLAB_PAT",
+      "GITLAB_ACCESS_TOKEN",
+      "GITLAB_TOKEN",
+      "OAUTH_TOKEN" | env_reference_names([provider["api_key"]])
+    ]
     |> Enum.uniq()
   end
 
@@ -373,7 +378,7 @@ defmodule SymphonyElixir.GitLab.Client do
   defp gitlab_headers(api_key) do
     [
       {"Accept", "application/json"},
-      {"PRIVATE-TOKEN", api_key}
+      {"Authorization", "Bearer " <> api_key}
     ]
   end
 

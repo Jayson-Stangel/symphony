@@ -5,6 +5,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
+  test "container environment gives the local worker full access" do
+    keys = ["SYMPHONY_CONTAINERIZED"]
+    previous = Map.new(keys, &{&1, System.get_env(&1)})
+
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
+
+    System.put_env("SYMPHONY_CONTAINERIZED", "1")
+
+    assert {:ok, settings} = Schema.parse(%{"tracker" => %{"kind" => "memory"}})
+    assert settings.worker.ssh_hosts == []
+    assert settings.workspace.root == "/workspaces"
+    assert settings.server.host == "0.0.0.0"
+    assert settings.codex.approval_policy == "never"
+    assert settings.codex.thread_sandbox == "danger-full-access"
+    assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+  end
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
@@ -1112,6 +1129,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "codex.stall_timeout_ms"
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_live_max_total_tokens: "bad")
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.live_max_total_tokens"
+
+    write_workflow_file!(Workflow.workflow_file_path(), codex_live_max_turns: "bad")
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "codex.live_max_turns"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},

@@ -1,9 +1,8 @@
 ---
-name: land
+name: symphony-land
 description:
-  Land a PR by monitoring conflicts, resolving them, waiting for checks, and
-  squash-merging when green; use when asked to land, merge, or shepherd a PR to
-  completion.
+  Land a pull request for a Symphony-managed task by monitoring conflicts,
+  resolving them, waiting for checks, and squash-merging when green.
 ---
 
 # Land
@@ -27,16 +26,16 @@ description:
 
 1. Locate the PR for the current branch.
 2. Confirm the full gauntlet is green locally before any push.
-3. If the working tree has uncommitted changes, commit with the `commit` skill
-   and push with the `push` skill before proceeding.
+3. If the working tree has uncommitted changes, commit with `symphony-commit`
+   and push with `symphony-push` before proceeding.
 4. Check mergeability and conflicts against main.
-5. If conflicts exist, use the `pull` skill to fetch/merge `origin/main` and
-   resolve conflicts, then use the `push` skill to publish the updated branch.
+5. If conflicts exist, use `symphony-pull` to fetch/merge `origin/main` and
+   resolve conflicts, then use `symphony-push` to publish the updated branch.
 6. Ensure Codex review comments (if present) are acknowledged and any required
    fixes are handled before merging.
 7. Watch checks until complete.
-8. If checks fail, pull logs, fix the issue, commit with the `commit` skill,
-   push with the `push` skill, and re-run checks.
+8. If checks fail, pull logs, fix the issue, commit with `symphony-commit`,
+   push with `symphony-push`, and re-run checks.
 9. When all checks are green and review feedback is addressed, squash-merge and
    delete the branch using the PR title/body for the merge subject/body.
 10. **Context guard:** Before implementing review feedback, confirm it does not
@@ -68,8 +67,8 @@ pr_body=$(gh pr view --json body -q .body)
 mergeable=$(gh pr view --json mergeable -q .mergeable)
 
 if [ "$mergeable" = "CONFLICTING" ]; then
-  # Run the `pull` skill to handle fetch + merge + conflict resolution.
-  # Then run the `push` skill to publish the updated branch.
+  # Run symphony-pull to handle fetch + merge + conflict resolution.
+  # Then run symphony-push to publish the updated branch.
 fi
 
 # Preferred: use the Async Watch Helper below. The manual loop is a fallback
@@ -104,7 +103,9 @@ Preferred: use the asyncio watcher to monitor review comments, CI, and head
 updates in parallel:
 
 ```
-python3 .codex/skills/land/land_watch.py
+skill_dir=.codex/skills/symphony-land
+[ -d "$skill_dir" ] || skill_dir="${CODEX_HOME:-$HOME/.codex}/skills/symphony-land"
+python3 "$skill_dir/land_watch.py"
 ```
 
 Exit codes:
@@ -116,7 +117,7 @@ Exit codes:
 ## Failure Handling
 
 - If checks fail, pull details with `gh pr checks` and `gh run view --log`, then
-  fix locally, commit with the `commit` skill, push with the `push` skill, and
+  fix locally, commit with `symphony-commit`, push with `symphony-push`, and
   re-run the watch.
 - Use judgment to identify flaky failures. If a failure is a flake (e.g., a
   timeout on only one platform), you may proceed without fixing it.

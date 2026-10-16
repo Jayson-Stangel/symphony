@@ -1,8 +1,8 @@
 ---
-name: linear
+name: symphony-linear
 description: |
-  Use Symphony's `linear_graphql` client tool for raw Linear GraphQL
-  operations such as comment editing and upload flows.
+  Use Symphony's `linear_graphql` client tool for raw Linear GraphQL operations
+  during a Symphony app-server session. Do not use outside that session.
 ---
 
 # Linear GraphQL

@@ -165,6 +165,12 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
+  total token usage at or above this value, Symphony stops the worker and exposes the issue as
+  blocked instead of retrying it. Set to `0` to disable. Default: `0`.
+- `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
+  run. When the count reaches this value, Symphony stops the worker and exposes the issue as
+  blocked instead of retrying it. Set to `0` to disable. Default: `0`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -252,9 +258,9 @@ codex:
   repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
-  `body`; Symphony executes it host-side with the session-bound token, strips `GITHUB_TOKEN` and
-  configured `$VAR` token names from the Codex child, and leaves raw tool access limited by that
-  token's GitHub permissions.
+  `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
+  credentials and provider authentication aliases from the Codex child, and leaves raw tool access
+  limited by that token's GitHub permissions.
 
 ### Jira Cloud adapter
 
@@ -284,8 +290,8 @@ codex:
 - Configure `tracker.kind: gitlab` with `tracker.provider.project_path`, optional `api_url`, and
   `api_key` (default `GITLAB_PAT`); use `opened` and `closed` tracker states.
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
-- `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps GitLab token env vars
-  out of the Codex child.
+- `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
+  credentials and provider authentication aliases out of the Codex child.
 
 ## Web dashboard
 

@@ -18,6 +18,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.codex.live_max_total_tokens == 0
+    assert config.codex.live_max_turns == 0
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -33,6 +35,14 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_live_max_total_tokens: 50_000,
+      codex_live_max_turns: 3
+    )
+
+    assert Config.settings!().codex.live_max_total_tokens == 50_000
+    assert Config.settings!().codex.live_max_turns == 3
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -1059,6 +1069,51 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
+  test "max-turn worker exit blocks instead of scheduling continuation retry" do
+    issue_id = "issue-max-turn-block"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :MaxTurnBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-561",
+      issue: %Issue{id: issue_id, identifier: "MT-561", state: "In Progress"},
+      workspace_path: "/workspaces/MT-561",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:max_turns_reached, %{max_turns: 12}}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-561",
+             workspace_path: "/workspaces/MT-561",
+             error: "agent.max_turns reached with issue still active after 12 turns"
+           } = state.blocked[issue_id]
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1511,7 +1566,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true external blocker"
     assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
+    assert prompt =~ "open and follow `symphony-land`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Follow-up context:"
     assert prompt =~ "follow-up attempt #2"
@@ -1996,7 +2051,15 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert {:max_turns_reached,
+              %{
+                issue_id: "issue-max-turns",
+                identifier: "MT-248",
+                max_turns: 2,
+                workspace: max_turn_workspace
+              }} = catch_exit(AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher))
+
+      assert String.ends_with?(max_turn_workspace, "/workspaces/MT-248")
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1
