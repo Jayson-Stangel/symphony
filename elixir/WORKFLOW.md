@@ -9,6 +9,8 @@ tracker:
     - In Progress
     - Merging
     - Rework
+  blocked_states:
+    - Blocked
   terminal_states:
     - Closed
     - Cancelled
@@ -113,8 +115,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `Backlog` -> out of scope for this workflow; do not modify.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
-- `In Progress` -> implementation actively underway.
-- `Human Review` -> PR is attached and validated; waiting on human approval.
+- `In Progress` -> implementation, validation, or automated PR review underway; includes waiting for review results and resolving findings.
+- `Blocked` -> cannot proceed because of an external blocker; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, or `Rework`.
+- `Human Review` -> PR is attached, validated, and automated review has completed for the latest commit with all findings resolved; waiting on human approval.
 - `Merging` -> approved by human; execute the `symphony-land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.
 - `Done` -> terminal state; no further action required.
@@ -128,6 +131,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
+   - `Blocked` -> stop; wait for the blocker to be resolved and the issue to return to an active state.
    - `Human Review` -> wait and poll for decision/review updates.
    - `Merging` -> on entry, open and follow `symphony-land`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
@@ -186,15 +190,29 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
    - explicit, justified pushback reply is posted on that thread.
 4. Update the workpad plan/checklist to include each feedback item and its resolution status.
 5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
+6. Repeat this sweep until there are no outstanding actionable comments, then satisfy the automated review gate below. An empty feedback sweep alone does not mean review has finished.
+
+## Automated PR review gate (required)
+
+Keep the issue `In Progress` while automated review is pending or findings are being addressed. If executing in `Rework`, retain that active state until this gate passes. No separate review status is required.
+
+1. After creating the PR and after every push, identify the current PR head SHA and the repository's configured automated reviewers. Inspect their review runs, check results, review summaries, and PR comments; automated review may report through comments rather than a required CI check.
+2. Wait for an explicit completed review result from every configured automated reviewer for that head SHA. A clean review or an explicit no-findings/all-good result qualifies. A completed review containing findings starts the feedback-resolution loop; it does not authorize handoff.
+   - No comments yet, green unrelated checks, a reaction/acknowledgment, or a result for an older commit does not establish completed review of the current head.
+   - Pending, queued, failed, cancelled, skipped, or missing review results do not pass this gate. Poll while review is running; use the repository's documented trigger or rerun procedure if review did not start or failed. Do not treat a non-blocking review job as optional.
+3. Address every actionable finding through the PR feedback sweep protocol. Record the review source, reviewed SHA, findings, and their resolutions in the workpad. Acknowledging a comment or marking a thread resolved alone does not resolve a finding; provide the fix and validation evidence, or an explicit, justified pushback reply explaining why no change is needed.
+4. If resolving findings changes the branch, push the validated changes and wait for completed automated review of the new head. Request a fresh review through the documented procedure when pushes do not trigger it automatically. Repeat until review is complete and no actionable findings remain.
+5. Immediately before moving to `Human Review`, re-fetch the PR head and feedback. Confirm the completed review evidence still matches that SHA, all findings are resolved, and checks pass. If the head changed or new findings arrived, repeat the gate. Record the final reviewed SHA and review evidence in the workpad.
+
+Normal review latency is ongoing work, not an external blocker. If review cannot complete because required access or the review service is unavailable after applicable recovery attempts, follow the blocked-access escape hatch; never substitute `Human Review` for missing review evidence.
 
 ## Blocked-access escape hatch (required behavior)
 
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `Human Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `Human Review` with a short blocker brief in the workpad that includes:
+- Do not move to `Blocked` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
+- If a required tool, auth, permission, or secret is unavailable after exhausting applicable fallbacks, move the ticket to `Blocked` with a short blocker brief in the workpad that includes:
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
@@ -234,15 +252,17 @@ Use this only when completion is blocked by missing required tools or missing au
 11. Before moving to `Human Review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
+    - Satisfy the automated PR review gate for the latest PR head; remain in the active state while waiting for review or resolving findings.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
+    - Repeat this check-address-verify loop until automated review has completed for the latest head, no outstanding actionable findings remain, and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
+    - If required work cannot be completed because of an external blocker, use `Blocked` with the blocker brief and explicit unblock actions; do not use `Human Review`.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
+    - Satisfy the automated PR review gate for the latest PR head, including a fresh review after feedback-driven pushes.
     - Then move to `Human Review`.
 
 ## Step 3: Human Review and merge handling
@@ -272,6 +292,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - Acceptance criteria and required ticket-provided validation items are complete.
 - Validation/tests are green for the latest commit.
 - PR feedback sweep is complete and no actionable comments remain.
+- Every configured automated reviewer has completed review of the latest PR head, all actionable findings are resolved, and the workpad records the reviewed SHA and review evidence.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
 - If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
@@ -291,6 +312,7 @@ Use this only when completion is blocked by missing required tools or missing au
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
 - Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
+- Use `Blocked` for external blockers; never use `Human Review` to request missing access or tools.
 - In `Human Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.

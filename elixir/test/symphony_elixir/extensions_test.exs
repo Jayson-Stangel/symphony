@@ -484,6 +484,33 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert live_view_js =~ "var LiveView = (() => {"
   end
 
+  test "dashboard renders tracker blockers without runtime session history" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_blocked_states: ["Blocked"])
+
+    issue = %Issue{
+      id: "restored",
+      identifier: "MT-RESTORED",
+      title: "Needs access",
+      state: "Blocked",
+      dispatchable: true,
+      url: "https://example.org/issues/MT-RESTORED"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    name = Module.concat(__MODULE__, :RestoredBlockOrchestrator)
+    pid = start_supervised!({Orchestrator, name: name})
+    send(pid, :run_poll_cycle)
+    assert %{blocked: [_]} = Orchestrator.snapshot(name, 1_000)
+    start_test_endpoint(orchestrator: name, snapshot_timeout_ms: 1_000)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "Blocked issues"
+    assert html =~ "MT-RESTORED"
+    assert html =~ ~s(href="https://example.org/issues/MT-RESTORED")
+    assert html =~ "see issue workpad for blocker and unblock action"
+    assert html =~ "n/a"
+  end
+
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()

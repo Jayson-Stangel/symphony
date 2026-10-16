@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       blocked: %{},
+      tracker_blocked: %{},
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil
@@ -289,9 +290,9 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_blocked_issues()
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.active_states),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+         {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
+      state = refresh_tracker_blocked(state, issues)
+      if available_slots(state) > 0, do: choose_issues(issues, state), else: state
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Tracker API token missing in WORKFLOW.md")
@@ -330,10 +331,25 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to fetch from issue tracker: #{inspect(reason)}")
         state
-
-      false ->
-        state
     end
+  end
+
+  defp observed_issue_states do
+    tracker = Config.settings!().tracker
+    Enum.uniq(tracker.active_states ++ tracker.blocked_states)
+  end
+
+  defp refresh_tracker_blocked(state, issues) do
+    blocked_states = Config.settings!().tracker.blocked_states |> Enum.map(&normalize_issue_state/1) |> MapSet.new()
+
+    blocked =
+      issues
+      |> Enum.filter(&(is_binary(&1.state) and MapSet.member?(blocked_states, normalize_issue_state(&1.state)) and issue_routable?(&1)))
+      |> Map.new(fn issue ->
+        {issue.id, %{issue: issue, identifier: issue.identifier, error: "Blocked in tracker; see issue workpad for blocker and unblock action."}}
+      end)
+
+    %{state | tracker_blocked: blocked}
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -1506,7 +1522,10 @@ defmodule SymphonyElixir.Orchestrator do
       end)
 
     blocked =
-      state.blocked
+      state.tracker_blocked
+      |> Map.merge(state.blocked, fn _id, tracker_entry, runtime_entry ->
+        Map.put(runtime_entry, :issue, tracker_entry.issue)
+      end)
       |> Enum.map(fn {issue_id, metadata} ->
         %{
           issue_id: issue_id,

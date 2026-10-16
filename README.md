@@ -10,6 +10,18 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
+The supplied workflow uses `Blocked` for work requiring external intervention and reserves
+`Human Review` for validated work ready for approval. Work stays `In Progress` while automated PR
+review is pending or findings are being resolved. Handoff requires completed automated review of
+the latest PR commit with no outstanding actionable findings; green CI alone is insufficient.
+New projects inherit this gate from the supplied workflow. Existing project workflows are
+preserved by `symphony init` and `symphony update`; adopt the automated PR review gate from
+[`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) in each existing project's delivery contract.
+Configure `tracker.blocked_states` to keep
+blocked tracker issues visible in the web dashboard across service restarts; move them back to an
+active state after resolving the blocker. Existing workflows must add this configuration and their
+tracker must provide the corresponding status.
+
 ## Running Symphony
 
 ### Requirements

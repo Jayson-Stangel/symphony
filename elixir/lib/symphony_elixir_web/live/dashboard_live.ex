@@ -215,13 +215,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Blocked sessions</h2>
-              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
+              <h2 class="section-title">Blocked issues</h2>
+              <p class="section-copy">Tracker issues in a blocked state and sessions stopped for input, approval, or execution limits.</p>
             </div>
           </div>
 
           <%= if @payload.blocked == [] do %>
-            <p class="empty-state">No blocked sessions.</p>
+            <p class="empty-state">No blocked issues.</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table" style="min-width: 760px;">

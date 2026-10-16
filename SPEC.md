@@ -395,6 +395,16 @@ Fields:
 - `active_states` (list of strings)
   - REQUIRED unless the selected adapter profile documents a default.
   - Values are provider-native state names compared case-insensitively by the scheduler.
+- `blocked_states` (list of strings, OPTIONAL extension)
+  - Default: `[]`.
+  - Provider-native state names identifying durable blockers, compared using trim and lowercase.
+  - MUST NOT overlap active or terminal states; overlap fails configuration validation.
+  - Changes apply dynamically. Poll these states alongside active work regardless of available slots.
+  - Expose matching, routed issues in dashboard/API blocked rows after startup and on each successful
+    poll. Do not dispatch them. A successful poll replaces the cached tracker blocked view; read
+    failures preserve the previous view. Moving an issue out of these states removes its tracker row.
+  - Tracker-backed rows need not have a session ID or known blocked timestamp. Runtime stops may
+    contribute session details but are not durable unless the issue is also blocked in the tracker.
 - `terminal_states` (list of strings)
   - REQUIRED unless the selected adapter profile documents a default.
   - Values are provider-native state names compared case-insensitively by the scheduler.

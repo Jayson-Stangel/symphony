@@ -32,8 +32,21 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
-entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-tracker issue can become a dispatch candidate again after restart.
+session details are in memory only; restarting the orchestrator clears those runtime stops, so any
+still-active tracker issue can become a dispatch candidate again after restart.
+
+For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create that status in the
+tracker. These states must not overlap active or terminal states. Symphony polls them alongside
+active work and shows matching issues in the dashboard and JSON API, including after a restart.
+Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
+`Human Review` is reserved for validated work with an attached PR whose automated review has
+completed for the latest commit and whose actionable findings are resolved. Pending automated
+review and feedback fixes remain `In Progress` (or `Rework` during a rework attempt); green CI or
+an empty comment list alone does not authorize handoff. See the automated PR review gate in
+[`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
+`Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
+blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
+Tracker read failures preserve the last successful blocked view until polling recovers.
 
 ## How to use it
 
@@ -49,7 +62,7 @@ tracker issue can become a dispatch candidate again after restart.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
+     issue statuses: "Blocked", "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
@@ -213,7 +226,7 @@ codex:
   `$VAR`), required `project_slug`, and optional `assignee` (a Linear user ID or `me`,
   defaulting to `LINEAR_ASSIGNEE`).
   The legacy flat `tracker.endpoint`, `api_key`, `project_slug`, and `assignee` aliases remain
-  supported. `required_labels`, `active_states`, and `terminal_states` stay under `tracker`.
+  supported. `required_labels`, `active_states`, `blocked_states`, and `terminal_states` stay under `tracker`.
 - Scope and paging: candidate reads filter the configured project slug and requested state names,
   following Linear pages of 50. ID refreshes are also project-scoped and batch up to 50 IDs. Empty
   state/ID lists return `{:ok, []}` without a Linear request.
