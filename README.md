@@ -91,18 +91,18 @@ the container image, and the host Codex configuration. It remains a credential a
 inside a worker, so use a dedicated account when one is available and remove the session with
 `symphony auth codex remove` when it is no longer needed.
 
-Then start the isolated worker:
+Then start the isolated Symphony container:
 
 ```bash
 symphony runner doctor
-symphony run --isolated --port 4010
+symphony run --port 4010
 ```
 
-The first command builds and starts a project-specific worker container, verifies its Codex session,
-then proves that Git can create a branch and commit inside it. Use `symphony runner status` at any
-time to show the container name, loopback endpoint, container-only workspace root, and Codex session
-volume. `run --isolated` reuses that worker and routes only Codex and issue workspaces through it;
-the host listener remains the controller. The container receives a
+The first command builds and starts the project-specific listener container, verifies its Codex
+session, then proves that Git can create a branch and commit inside it. Use `symphony runner status`
+at any time to show the container name, loopback dashboard, container-only workspace root, and
+Codex session volume. `run` reuses that listener; the host CLI only launches and observes it. The
+container receives a
 repository-scoped GitHub token and a read-only dedicated Codex token, but it does not mount the
 developer checkout, home directory, SSH keys, or local Codex login. Stop it when it is no longer
 needed:

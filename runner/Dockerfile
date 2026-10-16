@@ -1,23 +1,20 @@
-FROM node:20-bookworm-slim
+FROM elixir:1.19
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    ca-certificates \
-    gh \
-    git \
-    openssh-server \
-    python3 \
-    ripgrep \
-  && rm -rf /var/lib/apt/lists/*
+    ca-certificates git gh nodejs npm python3 ripgrep \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install --global @openai/codex@latest
 
-RUN install -d -m 700 /root/.ssh /run/symphony/ssh /var/run/sshd /workspaces
+WORKDIR /opt/symphony/elixir
+COPY elixir/mix.exs elixir/mix.lock ./
+RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod
+COPY elixir ./
+RUN MIX_ENV=prod mix escript.build
 
-RUN npm install --global @openai/codex@latest
-
-COPY sshd_config /etc/ssh/sshd_config.d/symphony-runner.conf
-COPY entrypoint.sh /usr/local/bin/symphony-runner
+RUN install -d -m 700 /root/.codex /workspaces /var/lib/symphony
+COPY runner/entrypoint.sh /usr/local/bin/symphony-runner
 RUN chmod 755 /usr/local/bin/symphony-runner
 
-EXPOSE 22
+EXPOSE 4010
 
 ENTRYPOINT ["/usr/local/bin/symphony-runner"]

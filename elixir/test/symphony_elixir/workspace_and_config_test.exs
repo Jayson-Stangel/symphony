@@ -5,37 +5,20 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
-  test "isolated runner environment routes work to a remote full-access worker" do
-    keys = ["SYMPHONY_ISOLATED_RUNNER", "SYMPHONY_RUNNER_SSH_HOSTS", "SYMPHONY_RUNNER_WORKSPACE_ROOT"]
+  test "container environment gives the local worker full access" do
+    keys = ["SYMPHONY_CONTAINERIZED"]
     previous = Map.new(keys, &{&1, System.get_env(&1)})
 
     on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
 
-    System.put_env("SYMPHONY_ISOLATED_RUNNER", "1")
-    System.put_env("SYMPHONY_RUNNER_SSH_HOSTS", "worker-a:2222, worker-b:2223")
-    System.put_env("SYMPHONY_RUNNER_WORKSPACE_ROOT", "/workspaces")
+    System.put_env("SYMPHONY_CONTAINERIZED", "1")
 
     assert {:ok, settings} = Schema.parse(%{"tracker" => %{"kind" => "memory"}})
-    assert settings.worker.ssh_hosts == ["worker-a:2222", "worker-b:2223"]
+    assert settings.worker.ssh_hosts == []
     assert settings.workspace.root == "/workspaces"
     assert settings.codex.approval_policy == "never"
     assert settings.codex.thread_sandbox == "danger-full-access"
     assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
-  end
-
-  test "isolated runner rejects an incomplete environment" do
-    keys = ["SYMPHONY_ISOLATED_RUNNER", "SYMPHONY_RUNNER_SSH_HOSTS", "SYMPHONY_RUNNER_WORKSPACE_ROOT"]
-    previous = Map.new(keys, &{&1, System.get_env(&1)})
-
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
-
-    System.put_env("SYMPHONY_ISOLATED_RUNNER", "1")
-    System.delete_env("SYMPHONY_RUNNER_SSH_HOSTS")
-    System.delete_env("SYMPHONY_RUNNER_WORKSPACE_ROOT")
-
-    assert_raise ArgumentError, ~r/requires SYMPHONY_RUNNER_SSH_HOSTS/, fn ->
-      Schema.parse(%{"tracker" => %{"kind" => "memory"}})
-    end
   end
 
   test "workspace bootstrap can be implemented in after_create hook" do
