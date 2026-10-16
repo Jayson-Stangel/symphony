@@ -370,7 +370,7 @@ init() {
     esac
   done
   [ -n "$slug" ] || die 'init requires --linear-project <slug>'
-  global_skills_ready || die 'global Symphony skills are missing; run symphony install first'
+  global_skills_ready || ensure_global_skills
   root=$(repo_root)
   id=$(project_id "$root")
   remote=$(git -C "$root" remote get-url origin 2>/dev/null || die 'the repository needs an origin remote')
