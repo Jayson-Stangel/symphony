@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-RUN install -d -m 700 /root/.ssh /root/.codex /run/symphony/ssh /var/run/sshd /workspaces
+RUN install -d -m 700 /root/.ssh /run/symphony/ssh /run/secrets /var/run/sshd /workspaces
 
 RUN npm install --global @openai/codex@latest
 

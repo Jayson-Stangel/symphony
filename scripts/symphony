@@ -18,6 +18,7 @@ config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"
 bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
 skills_dir=${SYMPHONY_SKILLS_DIR:-"${CODEX_HOME:-$HOME/.codex}/skills"}
 runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
+secrets_home=${SYMPHONY_SECRETS_HOME:-"$config_home/secrets"}
 managed_skills=(commit push pull linear land)
 
 source_revision() { git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
@@ -151,6 +152,7 @@ Usage:
   symphony skill migrate-local NAME
   symphony skill use-global NAME
   symphony project doctor [--json]
+  symphony auth codex {set|check|remove}
   symphony runner start|stop|status|doctor
   symphony run [--isolated] [--port PORT]
 
@@ -173,9 +175,14 @@ Credentials created by init are stored outside the repository at:
 GitHub tokens should be fine-grained and repository-scoped. Grant Contents and
 Pull requests: Read and write; grant Issues or Workflows only when needed.
 
+An isolated runner needs a dedicated Codex access token. Store it outside the
+repository with `symphony auth codex set --from-stdin`; never mount a host
+Codex login or add the token to a project .env file.
+
 `symphony run --isolated` uses a Docker- or Podman-compatible SSH worker. The
 worker is the only process given unrestricted Git metadata access; it owns the
-ticket workspaces and does not mount the developer checkout or home directory.
+ticket workspaces and does not mount the developer checkout, home directory,
+or host Codex login.
 EOF
 }
 
@@ -438,7 +445,7 @@ EOF
   if [ "${#local_skills[@]}" -gt 0 ]; then
     for skill in "${local_skills[@]}"; do create_local_override "$root" "$skill"; done
   fi
-  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\nNext: fill credentials, then run symphony run\n' "$workflow" "$env_file"
+  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\nNext: fill credentials, configure a dedicated Codex token with symphony auth codex set --from-stdin, then run symphony run\n' "$workflow" "$env_file"
 }
 
 skill() {
@@ -527,6 +534,51 @@ container_runtime() {
 runner_id() { printf '%s\n' "symphony-$(project_id "$1")"; }
 runner_env_file() { printf '%s/%s.env\n' "$runner_home" "$(project_id "$1")"; }
 runner_ssh_config() { printf '%s/%s/ssh_config\n' "$runner_home" "$(project_id "$1")"; }
+codex_token_file() { printf '%s/%s/codex_access_token\n' "$secrets_home" "$(project_id "$1")"; }
+
+auth_codex_set() {
+  local root=$1 token_file token
+  [ "${2:-}" = --from-stdin ] || die 'Usage: symphony auth codex set --from-stdin'
+  token=$(cat)
+  token=$(printf '%s' "$token" | tr -d '\r\n')
+  [ -n "$token" ] || die 'Codex access token is empty'
+  root=$(repo_root)
+  token_file=$(codex_token_file "$root")
+  (umask 077; mkdir -p "$(dirname "$token_file")"; printf '%s\n' "$token" >"$token_file")
+  printf 'Codex access token stored: %s\n' "$token_file"
+}
+
+auth_codex_remove() {
+  local root=$1 token_file
+  root=$(repo_root)
+  token_file=$(codex_token_file "$root")
+  [ -e "$token_file" ] || die "Codex access token is already absent: $token_file"
+  rm "$token_file"
+  printf 'Codex access token removed: %s\nRestart any runner to revoke its mounted secret.\n' "$token_file"
+}
+
+auth_codex_check() {
+  local root=$1 token_file runtime name
+  root=$(repo_root)
+  token_file=$(codex_token_file "$root")
+  [ -s "$token_file" ] || die "missing Codex access token: $token_file"
+  runner_start "$root"
+  runtime=$(container_runtime); name=$(runner_id "$root")
+  "$runtime" exec "$name" codex login status
+  printf 'Codex access token is available to the isolated runner.\n'
+}
+
+auth() {
+  local provider=${1:-} action=${2:-}
+  [ "$provider" = codex ] || { printf 'Usage: symphony auth codex {set|check|remove}\n' >&2; return 2; }
+  shift 2 || true
+  case "$action" in
+    set) auth_codex_set "$(repo_root)" "$@" ;;
+    check) [ "$#" -eq 0 ] || die 'Usage: symphony auth codex check'; auth_codex_check "$(repo_root)" ;;
+    remove) [ "$#" -eq 0 ] || die 'Usage: symphony auth codex remove'; auth_codex_remove "$(repo_root)" ;;
+    *) printf 'Usage: symphony auth codex {set|check|remove}\n' >&2; return 2 ;;
+  esac
+}
 
 runner_status() {
   local root=$1 runtime name
@@ -535,16 +587,16 @@ runner_status() {
 }
 
 runner_start() {
-  local root=$1 id project_env runtime name state runner_dir key auth image port env_file ssh_config git_token
+  local root=$1 id project_env token_file runtime name state runner_dir key image port env_file ssh_config git_token
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
   runner_dir="$runner_home/$id"; key="$runner_dir/id_ed25519"; env_file="$runner_home/$id.env"
   ssh_config="$runner_dir/ssh_config"; image="${SYMPHONY_RUNNER_IMAGE:-symphony-runner:local}"
   project_env="$config_home/projects/$id.env"
   [ -r "$project_env" ] || die "missing credentials file: $project_env"
   set -a; . "$project_env"; set +a
-  auth="${CODEX_HOME:-$HOME/.codex}/auth.json"
+  token_file=$(codex_token_file "$root")
   git_token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
-  [ -r "$auth" ] || die "missing Codex authentication file for runner: $auth"
+  [ -s "$token_file" ] || die "missing Codex access token for runner: $token_file (run: symphony auth codex set --from-stdin)"
   [ -n "$git_token" ] || die 'missing GITHUB_TOKEN or GH_TOKEN for the isolated runner'
 
   state=$(runner_status "$root")
@@ -564,7 +616,7 @@ runner_start() {
     --publish 127.0.0.1::22 \
     --env "GH_TOKEN=$git_token" \
     --volume "$key.pub:/run/symphony/ssh/authorized_key.pub:ro" \
-    --volume "$auth:/root/.codex/auth.json:ro" \
+    --volume "$token_file:/run/secrets/codex_access_token:ro" \
     "$image" >/dev/null
   port=$("$runtime" port "$name" 22/tcp | sed -n '1s/.*://p')
   [ -n "$port" ] || die "unable to determine SSH port for runner: $name"
@@ -659,6 +711,7 @@ case "${1:-}" in
   init) shift; init "$@" ;;
   skill) shift; skill "$@" ;;
   project) shift; project "$@" ;;
+  auth) shift; auth "$@" ;;
   runner) shift; runner "$@" ;;
   run) shift; run "$@" ;;
   *) usage >&2; exit 2 ;;

@@ -77,7 +77,22 @@ Docker-compatible OCI runtime: Docker Desktop or OrbStack on macOS; Docker Engin
 Podman on Unix.
 
 From an initialized repository whose external Symphony environment contains a fine-grained
-`GITHUB_TOKEN` (or `GH_TOKEN`):
+`GITHUB_TOKEN` (or `GH_TOKEN`), create a dedicated Codex access token for Symphony. Do not reuse
+or mount the developer's `~/.codex/auth.json`. Store the token with a secret manager or pass it
+directly from standard input:
+
+```bash
+your-secret-command | symphony auth codex set --from-stdin
+symphony auth codex check
+```
+
+The token is stored with mode `0600` at
+`~/.config/symphony/secrets/<repository>/codex_access_token`, outside the repository and the
+container image. The runner mounts that file read-only and provides it as `CODEX_ACCESS_TOKEN` to
+its Codex runtime. Use a dedicated, revocable token with the shortest practical expiry: code
+executed by an autonomous agent can access credentials available inside its own container.
+
+Then start the isolated worker:
 
 ```bash
 symphony runner doctor
@@ -87,8 +102,9 @@ symphony run --isolated --port 4010
 The first command builds and starts a project-specific worker container, then proves that Git can
 create a branch and commit inside it. `run --isolated` reuses that worker and routes only Codex and
 issue workspaces through it; the host listener remains the controller. The container receives a
-repository-scoped GitHub token and a read-only Codex auth file, but it does not mount the developer
-checkout, home directory, or SSH keys. Stop it when it is no longer needed:
+repository-scoped GitHub token and a read-only dedicated Codex token, but it does not mount the
+developer checkout, home directory, SSH keys, or local Codex login. Stop it when it is no longer
+needed:
 
 ```bash
 symphony runner stop
