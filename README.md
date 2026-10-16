@@ -34,9 +34,10 @@ git clone git@github.com:Jayson-Stangel/symphony.git ~/src/symphony
 ~/src/symphony/scripts/symphony install
 ```
 
-`install` is safe to rerun: it creates `~/.config/symphony/` with protected permissions and links
-`~/.local/bin/symphony` to the stable checkout. It never replaces an existing file or symlink.
-Ensure `~/.local/bin` is on your `PATH`.
+`install` is safe to rerun: it creates `~/.config/symphony/` with protected permissions, links
+`~/.local/bin/symphony` to the stable checkout, and links the Symphony skills into
+`~/.codex/skills/`. It never replaces an existing file or symlink. Ensure `~/.local/bin` is on
+your `PATH`.
 
 Set up or repair dependencies explicitly:
 
@@ -62,14 +63,12 @@ symphony update
 ```
 
 The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
-installation of this fork tracks `jayson/main`, not OpenAI's `origin`. It refreshes the launcher
-without changing project credentials, workflows, or copied skills. `symphony update --skills`
-reports projects whose copied skill bundle predates the current runtime; reviewing and updating
-those project files remains an intentional human decision.
+installation of this fork tracks `jayson/main`, not OpenAI's `origin`. It refreshes the global
+command and skill links without changing project credentials or workflows.
 
-Use `SYMPHONY_BIN_DIR` and `SYMPHONY_CONFIG_HOME` to relocate the command and configuration (or
-pass `--bin-dir` and `--config-dir` to `install`, `doctor`, or `update`). Use `SYMPHONY_HOME` only
-when invoking a copy of the script outside its source checkout.
+Use `SYMPHONY_BIN_DIR`, `SYMPHONY_CONFIG_HOME`, and `SYMPHONY_SKILLS_DIR` to relocate the command,
+configuration, and skills (or pass the equivalent flags to `install`, `doctor`, or `update`). Use
+`SYMPHONY_HOME` only when invoking a copy of the script outside its source checkout.
 
 #### Initialize a repository
 
@@ -81,10 +80,62 @@ symphony init --linear-project my-service-linear-project-slug
 ```
 
 On first use this creates a repository-specific `WORKFLOW.md` from Symphony's full operating
-contract, copies the versioned `commit`, `push`, `pull`, `linear`, and `land` skills into
-`.codex/skills/`, records their source revision in `.codex/symphony-skills.yml`, and creates the
-repository launcher `script/symphony`. Existing workflow, credentials, and skill directories are
-preserved. Review the generated workflow before starting the listener.
+contract. Existing workflow and credentials are preserved. Review the generated workflow before
+starting the listener.
+
+Symphony’s shared skills are global and namespaced—`symphony-commit`, `symphony-push`,
+`symphony-pull`, `symphony-linear`, and `symphony-land`. They carry reusable operational
+procedures, not repository policy, and update with the stable runtime. The workflow defines each
+repository’s behavior, credentials, tracker states, workspace, hooks, and guardrails.
+
+#### Local skill overrides
+
+Most repositories should not have local skills. When a repository truly needs to customize a
+shared skill, create an explicit copy that shadows the global skill:
+
+```bash
+symphony skill override land
+# Or during initialization:
+symphony init --linear-project my-service-linear-project-slug --local-skill land
+```
+
+The override is written as `.codex/skills/symphony-land/` and recorded in
+`.codex/symphony-skill-overrides.yml`. It stops receiving global updates until it is removed, so
+keep it small and document why it differs. This namespacing keeps Symphony-specific procedures
+from changing how Codex behaves in unrelated repositories.
+
+To return one overridden skill to the global version without discarding team changes:
+
+```bash
+symphony skill use-global land
+```
+
+The local override is moved to `.codex/symphony-skill-backups/` rather than deleted. If a legacy
+project has an older copied skill that contains intentional changes, preserve it as a namespaced
+override first:
+
+```bash
+symphony skill migrate-local land
+```
+
+Migration preserves the original legacy skill and creates a namespaced local copy. Review its
+cross-skill references after migration, since a customized older skill may still mention generic
+skill names.
+
+#### Review an existing repository
+
+Use the read-only project doctor before updating a repository bootstrapped by an older Symphony
+version:
+
+```bash
+symphony project doctor
+```
+
+It reports legacy copied skills, the old skill manifest and `script/symphony` wrapper, workflow
+references to legacy skill paths, external credential availability, and global-skill readiness. It
+does not alter `WORKFLOW.md`, credentials, local skills, or repository files. Use `--json` for
+automation. Review any workflow migration as an ordinary repository change: its policy may have
+been customized by the team.
 
 For a brand-new repository, make its first commit and push it before initializing so the `origin`
 remote can be cloned into a Symphony workspace.
@@ -120,7 +171,7 @@ gh repo view <owner>/<repository>
 Then start Symphony and its optional local dashboard:
 
 ```bash
-script/symphony --port 4010
+symphony run --port 4010
 ```
 
 Visit `http://localhost:4010` to observe the listener. For a first run, temporarily set

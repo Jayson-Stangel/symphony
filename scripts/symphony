@@ -16,6 +16,8 @@ script_dir=$(cd "$(dirname "$script_path")" && pwd)
 symphony_home=${SYMPHONY_HOME:-$(cd "$script_dir/.." && pwd)}
 config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"}
 bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
+skills_dir=${SYMPHONY_SKILLS_DIR:-"${CODEX_HOME:-$HOME/.codex}/skills"}
+managed_skills=(commit push pull linear land)
 
 source_revision() { git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
 
@@ -93,34 +95,75 @@ project_id() {
   printf '%s\n' "$name"
 }
 
-project_record_path() { printf '%s/projects/%s.project\n' "$config_home" "$1"; }
+skill_name() { printf 'symphony-%s\n' "$1"; }
 
-register_project() {
-  local id=$1 root=$2 manifest=$3 record
-  record=$(project_record_path "$id")
-  (umask 077; mkdir -p "$(dirname "$record")")
-  (umask 077; printf 'root=%s\nmanifest=%s\nrevision=%s\n' "$root" "$manifest" "$(source_revision)" >"$record")
+skill_source() { printf '%s/.codex/skills/%s\n' "$symphony_home" "$1"; }
+
+global_skill_path() { printf '%s/%s\n' "$skills_dir" "$(skill_name "$1")"; }
+
+managed_skill() {
+  local skill
+  for skill in "${managed_skills[@]}"; do [ "$skill" = "$1" ] && return 0; done
+  return 1
+}
+
+ensure_global_skills() {
+  local skill source target
+  for skill in "${managed_skills[@]}"; do
+    source=$(skill_source "$skill")
+    target=$(global_skill_path "$skill")
+    [ -d "$source" ] || die "missing bundled skill: $skill"
+    if [ -L "$target" ]; then
+      [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing global skill link: $target"
+    elif [ -e "$target" ]; then
+      die "refusing to replace existing global skill: $target"
+    fi
+  done
+  mkdir -p "$skills_dir"
+  for skill in "${managed_skills[@]}"; do
+    source=$(skill_source "$skill")
+    target=$(global_skill_path "$skill")
+    [ -L "$target" ] || ln -s "$source" "$target"
+  done
+  printf 'Skills: linked globally (%s)\n' "$skills_dir"
+}
+
+global_skills_ready() {
+  local skill source target
+  for skill in "${managed_skills[@]}"; do
+    source=$(skill_source "$skill")
+    target=$(global_skill_path "$skill")
+    [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ] || return 1
+  done
 }
 
 usage() {
   cat <<'EOF'
 Usage:
   symphony --version
-  symphony install [--bin-dir PATH] [--config-dir PATH]
+  symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
-  symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH]
-  symphony update [--skills] [--bin-dir PATH] [--config-dir PATH]
-  symphony init --linear-project SLUG
+  symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony update [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony init --linear-project SLUG [--local-skill NAME]...
+  symphony skill override NAME
+  symphony skill migrate-local NAME
+  symphony skill use-global NAME
+  symphony project doctor [--json]
   symphony run [--port PORT]
 
 Run this command from a clean, stable Symphony checkout such as ~/src/symphony.
 `install` only links the command and creates protected configuration storage.
 `setup` deliberately installs or repairs prerequisites and the pinned mise runtime.
-`update` fast-forwards the tracked main branch and reports copied skill bundles
-that are older than the stable runtime; it never overwrites project files.
+`update` fast-forwards the tracked main branch and keeps its global skills linked
+to the stable runtime; it never overwrites project files.
 
 Use SYMPHONY_HOME when this script is copied outside its checkout. Set
-SYMPHONY_BIN_DIR and SYMPHONY_CONFIG_HOME to use alternate locations.
+SYMPHONY_BIN_DIR, SYMPHONY_CONFIG_HOME, and SYMPHONY_SKILLS_DIR to use alternate
+locations. Symphony installs namespaced global skills, such as `symphony-land`,
+to avoid affecting unrelated Codex work. Use `skill override` only when a
+repository genuinely needs to customize one of them. `project doctor` is
+read-only and identifies legacy project configuration safely.
 
 Credentials created by init are stored outside the repository at:
   $SYMPHONY_CONFIG_HOME/projects/<repository>.env
@@ -135,12 +178,14 @@ install() {
     case "$1" in
       --bin-dir) [ "$#" -ge 2 ] || die '--bin-dir requires a path'; bin_dir=$2; shift 2 ;;
       --config-dir) [ "$#" -ge 2 ] || die '--config-dir requires a path'; config_home=$2; shift 2 ;;
-      --help|-h) printf 'Usage: symphony install [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      --skills-dir) [ "$#" -ge 2 ] || die '--skills-dir requires a path'; skills_dir=$2; shift 2 ;;
+      --help|-h) printf 'Usage: symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown install option: $1" ;;
     esac
   done
   ensure_launcher_link "$symphony_home/scripts/symphony" "$bin_dir/symphony"
   (umask 077; mkdir -p "$config_home/projects")
+  ensure_global_skills
   printf 'Runtime: %s\nConfiguration: %s\nNext: run symphony setup, then symphony init inside a Git repository.\n' \
     "$symphony_home" "$config_home"
 }
@@ -167,33 +212,14 @@ setup() {
   printf 'Runtime setup complete: %s\n' "$symphony_home/elixir"
 }
 
-report_stale_skills() {
-  local record root manifest installed current stale=0
-  current=$(source_revision)
-  for record in "$config_home"/projects/*.project; do
-    [ -f "$record" ] || continue
-    root=$(sed -n 's/^root=//p' "$record" | head -n 1)
-    manifest=$(sed -n 's/^manifest=//p' "$record" | head -n 1)
-    installed=$(sed -n 's/^revision=//p' "$record" | head -n 1)
-    if [ "$installed" != "$current" ]; then
-      printf 'Skill bundle needs review: %s (installed %s, runtime %s)\n' "$root" "$installed" "$current"
-      stale=1
-    fi
-    [ -f "$manifest" ] || printf 'Missing skill manifest: %s\n' "$manifest"
-  done
-  return "$stale"
-}
-
 update() {
-  local check_skills=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --skills) check_skills=true; shift ;;
-      --bin-dir|--config-dir)
+      --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
-        if [ "$1" = --bin-dir ]; then bin_dir=$2; else config_home=$2; fi
+        if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony update [--skills] [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony update [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown update option: $1" ;;
     esac
   done
@@ -210,9 +236,8 @@ update() {
   git -C "$symphony_home" merge --ff-only "$upstream"
   after=$(git -C "$symphony_home" rev-parse HEAD)
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die 'update left unexpected working-tree changes'
-  install --bin-dir "$bin_dir" --config-dir "$config_home"
+  "$symphony_home/scripts/symphony" install --bin-dir "$bin_dir" --config-dir "$config_home" --skills-dir "$skills_dir"
   printf 'Updated: %s -> %s\n' "$before" "$after"
-  if "$check_skills"; then report_stale_skills || true; fi
 }
 
 doctor() {
@@ -220,16 +245,16 @@ doctor() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true; shift ;;
-      --bin-dir|--config-dir)
+      --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
-        if [ "$1" = --bin-dir ]; then bin_dir=$2; else config_home=$2; fi
+        if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown doctor option: $1" ;;
     esac
   done
 
-  local git_ok mise_ok gh_ok codex_ok runtime_ok launcher_ok source_ok ready=true
+  local git_ok mise_ok gh_ok codex_ok runtime_ok launcher_ok source_ok skills_ok ready=true
   git_ok=false; tool_available git && git_ok=true
   mise_ok=false; tool_available mise && mise_ok=true
   gh_ok=false; tool_available gh && gh_ok=true
@@ -237,38 +262,122 @@ doctor() {
   runtime_ok=false; runtime_ready && runtime_ok=true
   launcher_ok=false; [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$symphony_home/scripts/symphony" ] && launcher_ok=true
   source_ok=false; [ -x "$symphony_home/elixir/bin/symphony" ] && source_ok=true
-  "$git_ok" && "$mise_ok" && "$gh_ok" && "$codex_ok" && "$runtime_ok" && "$launcher_ok" && "$source_ok" || ready=false
+  skills_ok=false; global_skills_ready && skills_ok=true
+  "$git_ok" && "$mise_ok" && "$gh_ok" && "$codex_ok" && "$runtime_ok" && "$launcher_ok" && "$source_ok" && "$skills_ok" || ready=false
 
   if "$json"; then
-    printf '{"mode":"doctor","ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"git":%s,"mise":%s,"gh":%s,"codex":%s,"runtime":%s}}\n' \
+    printf '{"mode":"doctor","ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"skills":%s,"git":%s,"mise":%s,"gh":%s,"codex":%s,"runtime":%s}}\n' \
       "$(bool "$ready")" "$(source_revision)" "$(source_state)" "$(bool "$source_ok")" "$(bool "$launcher_ok")" \
-      "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$gh_ok")" "$(bool "$codex_ok")" "$(bool "$runtime_ok")"
+      "$(bool "$skills_ok")" "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$gh_ok")" "$(bool "$codex_ok")" "$(bool "$runtime_ok")"
   else
     printf 'Symphony %s (%s)\n' "$(source_revision)" "$(source_state)"
-    printf 'source=%s launcher=%s git=%s mise=%s gh=%s codex=%s runtime=%s\n' \
-      "$source_ok" "$launcher_ok" "$git_ok" "$mise_ok" "$gh_ok" "$codex_ok" "$runtime_ok"
+    printf 'source=%s launcher=%s skills=%s git=%s mise=%s gh=%s codex=%s runtime=%s\n' \
+      "$source_ok" "$launcher_ok" "$skills_ok" "$git_ok" "$mise_ok" "$gh_ok" "$codex_ok" "$runtime_ok"
     "$ready" && printf 'Ready.\n' || printf 'Not ready. Run symphony install and symphony setup as needed.\n' >&2
   fi
   "$ready"
 }
 
+record_local_override() {
+  local root=$1 skill=$2 origin=$3 manifest
+  manifest="$root/.codex/symphony-skill-overrides.yml"
+  if [ ! -e "$manifest" ]; then
+    cat >"$manifest" <<'EOF'
+# Local skills in this file deliberately shadow Symphony's global skills.
+# They stop receiving runtime updates until this override is removed.
+overrides:
+EOF
+  fi
+  printf '  - name: %s\n    source: %s\n    source_revision: %s\n' \
+    "$(skill_name "$skill")" "$origin" "$(source_revision)" >>"$manifest"
+}
+
+remove_override_record() {
+  local root=$1 skill=$2 manifest temporary name
+  manifest="$root/.codex/symphony-skill-overrides.yml"
+  [ -f "$manifest" ] || return 0
+  name=$(skill_name "$skill")
+  temporary=$(mktemp "${TMPDIR:-/tmp}/symphony-overrides.XXXXXX")
+  awk -v name="$name" '
+    $0 == "  - name: " name { skip = 1; next }
+    skip && /^    source: / { next }
+    skip && /^    source_revision: / { skip = 0; next }
+    { print }
+  ' "$manifest" >"$temporary"
+  mv "$temporary" "$manifest"
+}
+
+create_local_override() {
+  local root=$1 skill=$2 source target
+  managed_skill "$skill" || die "unknown managed skill: $skill"
+  source=$(skill_source "$skill")
+  target="$root/.codex/skills/$(skill_name "$skill")"
+  [ -d "$source" ] || die "missing bundled skill: $skill"
+  [ ! -e "$target" ] || die "local override already exists: $target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source" "$target"
+  record_local_override "$root" "$skill" 'global'
+  printf 'Local skill override: %s\n' "$target"
+}
+
+set_skill_name() {
+  local directory=$1 name=$2 temporary
+  temporary=$(mktemp "${TMPDIR:-/tmp}/symphony-skill.XXXXXX")
+  awk -v name="$name" '
+    !updated && /^name: / { print "name: " name; updated = 1; next }
+    { print }
+  ' "$directory/SKILL.md" >"$temporary"
+  mv "$temporary" "$directory/SKILL.md"
+}
+
+migrate_legacy_skill() {
+  local root=$1 skill=$2 source target
+  managed_skill "$skill" || die "unknown managed skill: $skill"
+  source="$root/.codex/skills/$skill"
+  target="$root/.codex/skills/$(skill_name "$skill")"
+  [ -d "$source" ] || die "legacy local skill is missing: $source"
+  [ ! -e "$target" ] || die "local override already exists: $target"
+  mkdir -p "$(dirname "$target")"
+  cp -R "$source" "$target"
+  set_skill_name "$target" "$(skill_name "$skill")"
+  record_local_override "$root" "$skill" "legacy:$source"
+  printf 'Legacy skill preserved as local override: %s\nOriginal preserved: %s\n' "$target" "$source"
+}
+
+use_global_skill() {
+  local root=$1 skill=$2 target backup
+  managed_skill "$skill" || die "unknown managed skill: $skill"
+  target="$root/.codex/skills/$(skill_name "$skill")"
+  [ -d "$target" ] || die "local override is missing: $target"
+  backup="$root/.codex/symphony-skill-backups/$(date +%Y%m%d%H%M%S)-$(skill_name "$skill")"
+  [ ! -e "$backup" ] || die "refusing to replace existing backup: $backup"
+  mkdir -p "$(dirname "$backup")"
+  mv "$target" "$backup"
+  remove_override_record "$root" "$skill"
+  printf 'Global skill restored: %s\nLocal override backed up: %s\n' "$(global_skill_path "$skill")" "$backup"
+}
+
 init() {
-  local slug=${1:-}
+  local slug='' root id remote workflow env_file skill
+  local -a local_skills
+  local_skills=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --linear-project) [ "$#" -ge 2 ] || die '--linear-project requires a slug'; slug=$2; shift 2 ;;
+      --local-skill) [ "$#" -ge 2 ] || die '--local-skill requires a name'; local_skills+=("$2"); shift 2 ;;
+      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--local-skill NAME]...\n'; return ;;
+      *) die "unknown init option: $1" ;;
+    esac
+  done
   [ -n "$slug" ] || die 'init requires --linear-project <slug>'
-  local root id remote workflow env_file skills_dir manifest launcher revision skill
+  global_skills_ready || die 'global Symphony skills are missing; run symphony install first'
   root=$(repo_root)
   id=$(project_id "$root")
   remote=$(git -C "$root" remote get-url origin 2>/dev/null || die 'the repository needs an origin remote')
   workflow="$root/WORKFLOW.md"
   env_file="$config_home/projects/$id.env"
-  skills_dir="$root/.codex/skills"
-  manifest="$root/.codex/symphony-skills.yml"
-  launcher="$root/script/symphony"
-  revision=$(source_revision)
-  for skill in commit push pull linear land; do [ -d "$symphony_home/.codex/skills/$skill" ] || die "missing bundled skill: $skill"; done
 
   (umask 077; mkdir -p "$(dirname "$env_file")")
-  mkdir -p "$skills_dir" "$(dirname "$launcher")"
   if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
 # Linear: Settings → Security & access → Personal API keys
 LINEAR_API_KEY=
@@ -317,22 +426,77 @@ EOF
     printf 'Workflow: preserved (%s)\n' "$workflow"
   fi
 
-  for skill in commit push pull linear land; do [ -e "$skills_dir/$skill" ] || cp -R "$symphony_home/.codex/skills/$skill" "$skills_dir/"; done
-  cat >"$manifest" <<EOF
-bundle:
-  source: $symphony_home
-  revision: $revision
-  mode: copied
-skills: [commit, push, pull, linear, land]
-EOF
-  cat >"$launcher" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec symphony run "$@"
-EOF
-  chmod +x "$launcher"
-  register_project "$id" "$root" "$manifest"
-  printf 'Project: initialized (%s)\nCredentials: %s\nNext: fill credentials, then run %s\n' "$workflow" "$env_file" "$launcher"
+  if [ "${#local_skills[@]}" -gt 0 ]; then
+    for skill in "${local_skills[@]}"; do create_local_override "$root" "$skill"; done
+  fi
+  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\nNext: fill credentials, then run symphony run\n' "$workflow" "$env_file"
+}
+
+skill() {
+  local action=${1:-} name=${2:-}
+  case "$action" in
+    override|migrate-local|use-global) ;;
+    *) printf 'Usage: symphony skill {override|migrate-local|use-global} NAME\n' >&2; return 2 ;;
+  esac
+  [ -n "$name" ] || die "skill $action requires a skill name"
+  global_skills_ready || die 'global Symphony skills are missing; run symphony install first'
+  case "$action" in
+    override) create_local_override "$(repo_root)" "$name" ;;
+    migrate-local) migrate_legacy_skill "$(repo_root)" "$name" ;;
+    use-global) use_global_skill "$(repo_root)" "$name" ;;
+  esac
+}
+
+project_doctor() {
+  local json=$1 root id workflow env_file legacy_manifest legacy_count=0 override_count=0 legacy_refs=false wrapper=false skill
+  root=$(repo_root)
+  id=$(project_id "$root")
+  workflow="$root/WORKFLOW.md"
+  env_file="$config_home/projects/$id.env"
+  legacy_manifest="$root/.codex/symphony-skills.yml"
+  for skill in "${managed_skills[@]}"; do
+    [ -d "$root/.codex/skills/$skill" ] && legacy_count=$((legacy_count + 1))
+    [ -d "$root/.codex/skills/$(skill_name "$skill")" ] && override_count=$((override_count + 1))
+  done
+  [ -e "$root/script/symphony" ] && wrapper=true
+  if [ -f "$workflow" ] && grep -Eq '\.codex/skills/(commit|push|pull|linear|land)' "$workflow"; then legacy_refs=true; fi
+
+  if "$json"; then
+    printf '{"mode":"project-doctor","workflow":%s,"credentials":%s,"global_skills":%s,"legacy_manifest":%s,"legacy_skill_count":%s,"local_override_count":%s,"legacy_workflow_references":%s,"legacy_wrapper":%s}\n' \
+      "$(bool "$( [ -f "$workflow" ] && printf true || printf false )")" \
+      "$(bool "$( [ -f "$env_file" ] && printf true || printf false )")" \
+      "$(bool "$( global_skills_ready && printf true || printf false )")" \
+      "$(bool "$( [ -f "$legacy_manifest" ] && printf true || printf false )")" \
+      "$legacy_count" "$override_count" "$(bool "$legacy_refs")" "$(bool "$wrapper")"
+    return
+  fi
+
+  printf 'Project: %s\nWorkflow: %s\nCredentials: %s\nGlobal skills: %s\n' \
+    "$root" "$([ -f "$workflow" ] && printf present || printf missing)" \
+    "$([ -f "$env_file" ] && printf present || printf missing)" \
+    "$(global_skills_ready && printf ready || printf missing)"
+  printf 'Legacy copied skills: %s\nLocal namespaced overrides: %s\nLegacy skill manifest: %s\nLegacy wrapper: %s\nLegacy workflow references: %s\n' \
+    "$legacy_count" "$override_count" "$([ -f "$legacy_manifest" ] && printf present || printf absent)" "$wrapper" "$legacy_refs"
+  if [ "$legacy_count" -gt 0 ]; then
+    printf '\nLegacy skills are preserved and are not changed automatically. If a skill contains intentional team changes, preserve it with:\n  symphony skill migrate-local NAME\nThis creates a namespaced override and preserves the original; review cross-skill references afterward.\n'
+  fi
+  if "$legacy_refs"; then
+    printf '\nWORKFLOW.md still names legacy local-skill paths. It is preserved; review it and change only the intended references to the namespaced global skill names.\n'
+  fi
+  if "$wrapper"; then
+    printf '\nThe legacy script/symphony wrapper is redundant. Keep or remove it through the repository’s normal review process.\n'
+  fi
+}
+
+project() {
+  local command=${1:-} json=false
+  [ "$command" = doctor ] || { printf 'Usage: symphony project doctor [--json]\n' >&2; return 2; }
+  case "${2:-}" in
+    '') ;;
+    --json) json=true ;;
+    *) die "unknown project doctor option: $2" ;;
+  esac
+  project_doctor "$json"
 }
 
 run() {
@@ -355,7 +519,9 @@ case "${1:-}" in
   setup) shift; setup "$@" ;;
   doctor) shift; doctor "$@" ;;
   update) shift; update "$@" ;;
-  init) shift; [ "${1:-}" = --linear-project ] || { usage >&2; exit 2; }; init "${2:-}" ;;
+  init) shift; init "$@" ;;
+  skill) shift; skill "$@" ;;
+  project) shift; project "$@" ;;
   run) shift; run "$@" ;;
   *) usage >&2; exit 2 ;;
 esac

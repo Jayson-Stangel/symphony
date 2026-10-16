@@ -1,10 +1,8 @@
 ---
-name: pull
+name: symphony-pull
 description:
-  Pull latest origin/main into the current local branch and resolve merge
-  conflicts (aka update-branch). Use when Codex needs to sync a feature branch
-  with origin, perform a merge-based update (not rebase), and guide conflict
-  resolution best practices.
+  Synchronize a Symphony-managed feature branch with origin/main using a merge,
+  resolving conflicts safely. Do not use for unrelated repositories or work.
 ---
 
 # Pull
