@@ -185,6 +185,49 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "interrupted bootstrap is retained and never mistaken for a ready checkout" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "bootstrap-recovery")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: root,
+      hook_after_create: "printf partial > partial.txt; sleep 1"
+    )
+
+    {pid, ref} = spawn_monitor(fn -> Workspace.create_for_issue("MT-BOOTSTRAP") end)
+    {:ok, workspace} = SymphonyElixir.PathSafety.canonicalize(Path.join(Config.local_workspace_root(), "MT-BOOTSTRAP"))
+
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    wait_for_bootstrap_file(Path.join(workspace, "partial.txt"), deadline)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+    assert {:error, {:workspace_bootstrap_interrupted, ^workspace}} = Workspace.create_for_issue("MT-BOOTSTRAP")
+    assert File.read!(Path.join(workspace, "partial.txt")) == "partial"
+    assert {:ok, _} = Workspace.remove(workspace)
+    refute File.exists?(Path.join([root, ".symphony", "bootstrap", "MT-BOOTSTRAP"]))
+  end
+
+  test "bootstrap metadata cannot collide with another issue checkout" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "bootstrap-namespace")
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)
+    assert {:ok, other} = Workspace.create_for_issue("MT-A.symphony-initializing")
+    File.write!(Path.join(other, "progress"), "preserve")
+    assert {:ok, _} = Workspace.create_for_issue("MT-A")
+    assert {:ok, reserved} = Workspace.create_for_issue(".symphony")
+    refute Path.basename(reserved) == ".symphony"
+    assert File.read!(Path.join(other, "progress")) == "preserve"
+  end
+
+  defp wait_for_bootstrap_file(path, deadline) do
+    if File.exists?(path) do
+      :ok
+    else
+      assert System.monotonic_time(:millisecond) < deadline
+      Process.sleep(5)
+      wait_for_bootstrap_file(path, deadline)
+    end
+  end
+
   test "workspace rejects symlink escapes under the configured root" do
     test_root =
       Path.join(

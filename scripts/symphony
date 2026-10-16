@@ -531,6 +531,13 @@ container_runtime() {
 }
 
 runner_id() { printf '%s\n' "symphony-$(project_id "$1")"; }
+runner_storage_id() {
+  local remote digest
+  remote=$(git -C "$1" remote get-url origin)
+  remote=$(printf '%s' "$remote" | sed -E 's#^[^@/]+@([^:]+):#\1/#; s#^[[:alnum:]+.-]+://##; s#^[^/@]+@##; s#\.git/?$##; s#/$##')
+  digest=$(printf '%s' "$remote" | git hash-object --stdin)
+  printf '%s-%s\n' "$(runner_id "$1")" "${digest:0:12}"
+}
 runner_env_file() { printf '%s/%s.env\n' "$runner_home" "$(project_id "$1")"; }
 
 runner_image() { printf '%s\n' "${SYMPHONY_RUNNER_IMAGE:-symphony-runner:local}"; }
@@ -588,15 +595,22 @@ runner_status() {
 }
 
 runner_report() {
-  local root=$1 state name env_file
+  local root=$1 state name env_file storage_id runtime
+  runtime=$(container_runtime)
   state=$(runner_status "$root"); name=$(runner_id "$root")
   case "$state" in
     true)
       env_file=$(runner_env_file "$root")
       [ -r "$env_file" ] || die "runner is running but its configuration is missing: $env_file"
       set -a; . "$env_file"; set +a
-      printf 'Isolated Symphony: running\nContainer: %s\nDashboard: http://127.0.0.1:%s\nWorkspaces: /workspaces (container only)\nCodex session: Docker volume %s\n' \
-        "$name" "$SYMPHONY_RUNNER_PORT" "$codex_auth_volume"
+      storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
+      if [ -z "$storage_id" ] || [ "$storage_id" = '<no value>' ]; then
+        printf 'Isolated Symphony: running (legacy container)\nContainer: %s\nWorkspaces: ephemeral; back up before replacement\n' "$name"
+        return
+      fi
+      [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name belongs to another repository; refusing to report it as this project's listener"
+      printf 'Isolated Symphony: running\nContainer: %s\nDashboard: http://127.0.0.1:%s\nWorkspaces: /workspaces (volume %s-workspaces)\nRuntime logs: volume %s-state\nCodex session: Docker volume %s\n' \
+        "$name" "$SYMPHONY_RUNNER_PORT" "$storage_id" "$storage_id" "$codex_auth_volume"
       ;;
     missing) printf 'Isolated worker: not running\n' ;;
     *) printf 'Isolated worker: stopped (%s)\n' "$state" ;;
@@ -604,9 +618,10 @@ runner_report() {
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} id project_env runtime name state image env_file git_token workflow
+  local root=$1 port=${2:-4010} id project_env runtime name state image env_file git_token workflow storage_id existing_storage
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
   env_file="$runner_home/$id.env"; image=$(runner_image); workflow="$root/WORKFLOW.md"
+  storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
   [ -r "$project_env" ] || die "missing credentials file: $project_env"
   set -a; . "$project_env"; set +a
@@ -615,23 +630,36 @@ runner_start() {
   [ -n "$git_token" ] || die 'missing GITHUB_TOKEN or GH_TOKEN for the isolated runner'
 
   state=$(runner_status "$root")
+  if [ "$state" != missing ]; then
+    existing_storage=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
+    if [ -n "$existing_storage" ] && [ "$existing_storage" != '<no value>' ]; then
+      [ "$existing_storage" = "$storage_id" ] || die "container $name belongs to another repository; refusing to replace it"
+    fi
+  fi
   if [ "$state" = true ]; then
     if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")" = listener ]; then
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")" = "$storage_id" ] ||
+        die "existing listener $name has legacy or different repository storage; back up its workspaces before stopping and replacing it"
       [ -r "$env_file" ] || die "runner is running but its configuration is missing: $env_file"
       return
     fi
-    "$runtime" rm -f "$name" >/dev/null
+    "$runtime" stop --time 30 "$name" >/dev/null
   fi
   [ "$state" = missing ] || "$runtime" rm -f "$name" >/dev/null
 
   runner_build_image
-  "$runtime" run --detach --rm --name "$name" \
+  "$runtime" volume create "$storage_id-workspaces" >/dev/null
+  "$runtime" volume create "$storage_id-state" >/dev/null
+  "$runtime" run --detach --restart unless-stopped --name "$name" \
     --label com.symphony.mode=listener \
+    --label "com.symphony.storage=$storage_id" \
     --publish "127.0.0.1:$port:4010" \
     --env-file "$project_env" \
     --env SYMPHONY_CONTAINERIZED=1 \
     --env SYMPHONY_PORT=4010 \
     --volume "$workflow:/etc/symphony/WORKFLOW.md:ro" \
+    --volume "$storage_id-workspaces:/workspaces" \
+    --volume "$storage_id-state:/var/lib/symphony" \
     --volume "$codex_auth_volume:/root/.codex" \
     "$image" >/dev/null
   umask 077
@@ -642,10 +670,19 @@ EOF
 }
 
 runner_stop() {
-  local root=$1 runtime name
+  local root=$1 runtime name storage_id
   runtime=$(container_runtime); name=$(runner_id "$root")
-  "$runtime" rm -f "$name" >/dev/null 2>&1 || true
-  printf 'Runner stopped: %s\n' "$name"
+  if "$runtime" inspect "$name" >/dev/null 2>&1; then
+    storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
+    if [ -n "$storage_id" ] && [ "$storage_id" != '<no value>' ]; then
+      [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name belongs to another repository; refusing to stop it"
+    fi
+    "$runtime" stop --time 30 "$name" >/dev/null
+    if "$runtime" inspect "$name" >/dev/null 2>&1; then
+      "$runtime" rm "$name" >/dev/null
+    fi
+  fi
+  printf 'Runner stopped: %s\nWorkspace and log volumes retained.\n' "$name"
 }
 
 runner_doctor() {

@@ -753,6 +753,13 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
+- Successful polls also clean retained local terminal workspaces after stopping any associated worker,
+  including issues completed while unclaimed or after a failed startup tracker read. Tracker
+  failures MUST NOT cause retained workspaces to be deleted.
+- Container deployments SHOULD retain workspace storage across container replacement by default.
+  Recovery reuses existing checkouts and current tracker state; exact agent conversation or
+  in-memory retry restoration is not required. Interrupted workspace bootstrap MUST NOT be
+  mistaken for successful setup or silently replay arbitrary setup hooks over partial contents.
 
 ## 8. Polling, Scheduling, and Reconciliation
 
@@ -767,7 +774,8 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
+3. Fetch observed issues from tracker using active, blocked, and terminal states; clean terminal
+   workspaces only after stopping their workers.
 4. Sort issues by dispatch priority.
 5. Dispatch eligible issues while slots remain.
 6. Notify observability/status consumers of state changes.

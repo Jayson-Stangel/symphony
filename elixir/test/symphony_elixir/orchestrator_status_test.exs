@@ -851,6 +851,53 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms >= 0
   end
 
+  test "polling cleans retained unclaimed terminal workspaces after startup" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      max_concurrent_agents: 1,
+      poll_interval_ms: 10,
+      hook_before_remove: "printf cleaned >> ../cleanup-count"
+    )
+
+    issue = %Issue{id: "retained-review", identifier: "MT-RETAINED", title: "Await review", state: "Human Review"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "keep until finished")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :RetainedCleanup)})
+    assert is_map(GenServer.call(pid, :snapshot))
+    assert File.read!(Path.join(workspace, "progress")) == "keep until finished"
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Done"}])
+
+    assert is_map(wait_for_snapshot(pid, fn _ -> not File.exists?(workspace) end, 1_000))
+    assert File.read!(Path.join(workspace_root, "cleanup-count")) == "cleaned"
+  end
+
+  test "startup cleanup removes finished checkouts and preserves unfinished ones" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      max_concurrent_agents: 1
+    )
+
+    active = %Issue{id: "retained-active", identifier: "MT-ACTIVE", title: "Continue", state: "In Progress", dispatchable: false}
+    done = %{active | id: "retained-done", identifier: "MT-DONE", state: "Done"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [active, done])
+    assert {:ok, active_path} = Workspace.create_for_issue(active)
+    assert {:ok, done_path} = Workspace.create_for_issue(done)
+    File.write!(Path.join(active_path, "progress"), "retained")
+
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :StartupCleanup)})
+    assert is_map(GenServer.call(pid, :snapshot))
+    refute File.exists?(done_path)
+    assert File.read!(Path.join(active_path, "progress")) == "retained"
+  end
+
   test "orchestrator poll cycle resets next refresh countdown after a check" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",

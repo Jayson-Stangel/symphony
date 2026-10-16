@@ -291,6 +291,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
+      state = cleanup_terminal_issues(state, issues)
       state = refresh_tracker_blocked(state, issues)
       if available_slots(state) > 0, do: choose_issues(issues, state), else: state
     else
@@ -336,7 +337,27 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp observed_issue_states do
     tracker = Config.settings!().tracker
-    Enum.uniq(tracker.active_states ++ tracker.blocked_states)
+    # SSH deployments retain their existing startup/claimed-issue cleanup. A
+    # recurring sweep of all terminal history would repeatedly contact every
+    # remote host, even for checkouts that were already removed.
+    terminal_states = if Config.settings!().worker.ssh_hosts == [], do: tracker.terminal_states, else: []
+    Enum.uniq(tracker.active_states ++ tracker.blocked_states ++ terminal_states)
+  end
+
+  defp cleanup_terminal_issues(state, issues) do
+    terminal_states = terminal_state_set()
+
+    Enum.reduce(issues, state, fn issue, state ->
+      if terminal_issue_state?(issue.state, terminal_states) do
+        # Stop any worker before deleting its checkout, including a state change
+        # observed after the running-issue reconciliation earlier in this tick.
+        state = terminate_running_issue(state, issue.id, true)
+        cleanup_issue_workspace(issue)
+        state
+      else
+        state
+      end
+    end)
   end
 
   defp refresh_tracker_blocked(state, issues) do

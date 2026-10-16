@@ -23,6 +23,7 @@ defmodule SymphonyElixir.Workspace do
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host) do
         case maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
           :ok ->
+            if created? and is_nil(worker_host), do: clear_bootstrap_marker(workspace)
             {:ok, workspace}
 
           {:error, _reason} = error ->
@@ -39,6 +40,9 @@ defmodule SymphonyElixir.Workspace do
 
   defp ensure_workspace(workspace, nil) do
     cond do
+      File.exists?(bootstrap_marker(workspace)) ->
+        {:error, {:workspace_bootstrap_interrupted, workspace}}
+
       File.dir?(workspace) ->
         {:ok, workspace, false}
 
@@ -85,9 +89,17 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp create_workspace(workspace) do
-    File.rm_rf!(workspace)
-    File.mkdir_p!(workspace)
-    {:ok, workspace, true}
+    # Keep the marker outside the checkout so hooks such as `git clone ... .`
+    # still receive an empty directory. Never replay arbitrary interrupted hooks.
+    marker = bootstrap_marker(workspace)
+
+    with :ok <- validate_workspace_path(marker, nil) do
+      File.mkdir_p!(Path.dirname(marker))
+      File.write!(marker, "Workspace bootstrap has not completed. Inspect before retrying.\n", [:exclusive])
+      File.rm_rf!(workspace)
+      File.mkdir_p!(workspace)
+      {:ok, workspace, true}
+    end
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
@@ -95,18 +107,16 @@ defmodule SymphonyElixir.Workspace do
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
-    case File.exists?(workspace) do
-      true ->
-        case validate_workspace_path(workspace, nil) do
-          :ok ->
-            remove_local_workspace(workspace)
+    if File.exists?(workspace) or File.exists?(bootstrap_marker(workspace)) do
+      case validate_workspace_path(workspace, nil) do
+        :ok ->
+          remove_local_workspace(workspace)
 
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
-
-      false ->
-        File.rm_rf(workspace)
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
+      File.rm_rf(workspace)
     end
   end
 
@@ -158,7 +168,28 @@ defmodule SymphonyElixir.Workspace do
 
   defp remove_local_workspace(workspace) do
     maybe_run_before_remove_hook(workspace, nil)
-    File.rm_rf(workspace)
+
+    case File.rm_rf(workspace) do
+      {:ok, _} = result ->
+        clear_bootstrap_marker(workspace)
+        result
+
+      error ->
+        error
+    end
+  end
+
+  defp bootstrap_marker(workspace) do
+    Path.join([Path.dirname(workspace), ".symphony", "bootstrap", Path.basename(workspace)])
+  end
+
+  defp clear_bootstrap_marker(workspace) do
+    marker = bootstrap_marker(workspace)
+
+    case validate_workspace_path(marker, nil) do
+      :ok -> File.rm(marker)
+      {:error, reason} -> Logger.warning("Skipping unsafe bootstrap marker cleanup workspace=#{workspace} reason=#{inspect(reason)}")
+    end
   end
 
   @spec remove_issue_workspaces(term()) :: :ok
@@ -268,7 +299,7 @@ defmodule SymphonyElixir.Workspace do
   def workspace_key(identifier) when is_binary(identifier) do
     safe_identifier = safe_identifier(identifier)
 
-    if safe_identifier == identifier do
+    if safe_identifier == identifier and identifier != ".symphony" do
       safe_identifier
     else
       "#{safe_identifier}--#{short_identifier_hash(identifier)}"
@@ -309,6 +340,7 @@ defmodule SymphonyElixir.Workspace do
   defp cleanup_failed_new_workspace(workspace, true, nil) do
     case File.rm_rf(workspace) do
       {:ok, _removed} ->
+        clear_bootstrap_marker(workspace)
         :ok
 
       {:error, reason, path} ->

@@ -112,7 +112,7 @@ symphony run --port 4010
 
 The first command builds and starts the project-specific listener container, verifies its Codex
 session, then proves that Git can create a branch and commit inside it. Use `symphony runner status`
-at any time to show the container name, loopback dashboard, container-only workspace root, and
+at any time to show the container name, loopback dashboard, persistent workspace and log volumes, and
 Codex session volume. `run` reuses that listener; the host CLI only launches and observes it. The
 container receives a
 repository-scoped GitHub token and a read-only dedicated Codex token, but it does not mount the
@@ -122,6 +122,27 @@ needed:
 ```bash
 symphony runner stop
 ```
+
+Workspaces and runtime logs live in repository-specific named volumes by default.
+Stopping or replacing the container retains them. The listener automatically
+returns after a container-engine restart unless explicitly stopped. On startup,
+Symphony reads current tracker state and resumes eligible tickets from their
+existing checkouts, including uncommitted changes and untracked evidence, using
+fresh Codex sessions. Tickets awaiting review or blocked in the tracker retain
+their workspaces without dispatch. Terminal tickets are cleaned at startup and
+on later successful polls, including tickets completed while Symphony was offline.
+Tracker read failures leave retained workspaces intact until reconciliation succeeds.
+
+`runner stop` allows 30 seconds for graceful shutdown before container removal;
+it retains both named volumes. Empty volumes and historical logs remain available
+after per-ticket checkout cleanup. Volume names include the repository remote's
+identity so repositories with the same name under different owners do not share
+checkouts. Do not run multiple listeners against the same workspace volume.
+
+Existing containers without these mounts remain ephemeral until replaced. Before
+replacing one, finish its active work or back up `/workspaces` and
+`/var/lib/symphony`; recreating it cannot recover files from an already removed
+ephemeral container. New mounts do not migrate existing container files automatically.
 
 Set `SYMPHONY_CONTAINER_RUNTIME=docker` or `podman` if both are installed. The runner image is a
 portable Node/Git/Codex base; add project-specific dependencies in `hooks.after_create` or publish

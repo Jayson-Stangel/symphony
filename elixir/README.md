@@ -29,6 +29,24 @@ the Codex child, so the agent does not need a second tracker login.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
+Successful polls also clean retained local terminal workspaces that no longer have a
+running agent, such as a ticket completed after human review. Startup performs
+the same terminal cleanup; failed tracker reads preserve retained checkouts.
+
+The container launcher mounts persistent repository-specific volumes at
+`/workspaces` and `/var/lib/symphony`. Restart recovery uses the tracker and
+existing files, with fresh Codex sessions; in-memory retry counts and session
+history are not restored. Completed workspace setup is reused without rerunning
+`after_create`. If shutdown interrupts a local `after_create` hook, a marker in
+`workspace.root/.symphony/bootstrap/<workspace-key>` causes subsequent attempts to fail
+with `workspace_bootstrap_interrupted`, preserving the partial checkout. Inspect
+and repair that checkout before removing the marker, or remove the partial
+checkout and marker to allow a fresh bootstrap. Arbitrary setup hooks are not
+automatically replayed against partial contents. Normal hook failures still
+remove new partial workspaces so a later attempt can retry.
+`.symphony` is reserved for local workspace metadata; an issue with that exact
+identifier receives a hashed workspace key. SSH deployments retain their existing
+startup and claimed-issue cleanup behavior without polling all terminal history.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked

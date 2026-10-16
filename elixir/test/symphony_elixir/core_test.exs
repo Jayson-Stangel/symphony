@@ -408,6 +408,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_kind: "memory",
       workspace_root: test_root,
       poll_interval_ms: 10,
+      hook_after_create: "printf bootstrap >> \"#{test_root}/bootstrap-count\"; git init -q; printf original > source.txt",
       hook_before_run: "mkfifo \"#{hook_fifo}\"; : > \"#{hook_marker}\"; read _ < \"#{hook_fifo}\"",
       hook_timeout_ms: 60_000
     )
@@ -440,6 +441,10 @@ defmodule SymphonyElixir.CoreTest do
     assert is_pid(first_worker_pid)
     assert Process.alive?(first_worker_pid)
     assert eventually_value(fn -> if File.exists?(hook_marker), do: true end)
+
+    workspace = Path.join(test_root, issue.identifier)
+    File.write!(Path.join(workspace, "source.txt"), "uncommitted edit")
+    File.write!(Path.join(workspace, "progress.txt"), "untracked progress")
 
     monitor_ref = Process.monitor(orchestrator_pid)
     Process.exit(orchestrator_pid, :kill)
@@ -479,6 +484,10 @@ defmodule SymphonyElixir.CoreTest do
 
     assert is_pid(second_worker_pid)
     assert Process.alive?(second_worker_pid)
+    assert File.dir?(Path.join(workspace, ".git"))
+    assert File.read!(Path.join(workspace, "source.txt")) == "uncommitted edit"
+    assert File.read!(Path.join(workspace, "progress.txt")) == "untracked progress"
+    assert File.read!(Path.join(test_root, "bootstrap-count")) == "bootstrap"
   end
 
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
