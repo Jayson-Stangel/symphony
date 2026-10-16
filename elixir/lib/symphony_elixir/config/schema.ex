@@ -466,7 +466,44 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    settings
+    |> Map.put(:tracker, tracker)
+    |> Map.put(:workspace, workspace)
+    |> Map.put(:codex, codex)
+    |> apply_isolated_runner_overrides()
+  end
+
+  defp apply_isolated_runner_overrides(settings) do
+    case System.get_env("SYMPHONY_ISOLATED_RUNNER") do
+      "1" ->
+        hosts =
+          System.get_env("SYMPHONY_RUNNER_SSH_HOSTS", "")
+          |> String.split(",", trim: true)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        workspace_root = System.get_env("SYMPHONY_RUNNER_WORKSPACE_ROOT", "")
+
+        if hosts == [] or workspace_root == "" do
+          raise ArgumentError,
+                "isolated runner requires SYMPHONY_RUNNER_SSH_HOSTS and SYMPHONY_RUNNER_WORKSPACE_ROOT"
+        end
+
+        %{
+          settings
+          | worker: %{settings.worker | ssh_hosts: hosts},
+            workspace: %{settings.workspace | root: workspace_root},
+            codex: %{
+              settings.codex
+              | approval_policy: "never",
+                thread_sandbox: "danger-full-access",
+                turn_sandbox_policy: %{"type" => "dangerFullAccess"}
+            }
+        }
+
+      _ ->
+        settings
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do

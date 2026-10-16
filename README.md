@@ -68,6 +68,36 @@ automatically rebuilds the pinned runtime; it also refreshes the global command 
 without changing project credentials or workflows. You do not need to run `symphony setup` after
 a successful update.
 
+#### Run unattended work in an isolated container
+
+An unattended listener must be able to write Git metadata to create branches, commits, and pushes.
+Codex intentionally protects `.git` in its normal workspace-write sandbox, so use Symphony's
+isolated runner rather than granting broad access to a developer's host account. The runner uses a
+Docker-compatible OCI runtime: Docker Desktop or OrbStack on macOS; Docker Engine or rootless
+Podman on Unix.
+
+From an initialized repository whose external Symphony environment contains a fine-grained
+`GITHUB_TOKEN` (or `GH_TOKEN`):
+
+```bash
+symphony runner doctor
+symphony run --isolated --port 4010
+```
+
+The first command builds and starts a project-specific worker container, then proves that Git can
+create a branch and commit inside it. `run --isolated` reuses that worker and routes only Codex and
+issue workspaces through it; the host listener remains the controller. The container receives a
+repository-scoped GitHub token and a read-only Codex auth file, but it does not mount the developer
+checkout, home directory, or SSH keys. Stop it when it is no longer needed:
+
+```bash
+symphony runner stop
+```
+
+Set `SYMPHONY_CONTAINER_RUNTIME=docker` or `podman` if both are installed. The runner image is a
+portable Node/Git/Codex base; add project-specific dependencies in `hooks.after_create` or publish
+your own compatible image and set `SYMPHONY_RUNNER_IMAGE`.
+
 Use `SYMPHONY_BIN_DIR`, `SYMPHONY_CONFIG_HOME`, and `SYMPHONY_SKILLS_DIR` to relocate the command,
 configuration, and skills (or pass the equivalent flags to `install`, `doctor`, or `update`). Use
 `SYMPHONY_HOME` only when invoking a copy of the script outside its source checkout.
