@@ -130,7 +130,7 @@ requires them. A missing tool matters only when required for that project's work
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
 - `In Progress` -> implementation, validation, or automated PR review underway; includes waiting for review results and resolving findings.
-- `Blocked` -> cannot proceed because of an external blocker or review convergence escalation; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, or `Rework`.
+- `Blocked` -> cannot proceed because of an external blocker or review convergence escalation; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, `Rework`, or `Merging`.
 - `Human Review` -> PR is attached, validated, and automated review has completed for the latest commit with all findings resolved; waiting on human approval.
 - `Merging` -> approved by human; execute the `symphony-land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.

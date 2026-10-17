@@ -67,7 +67,7 @@ applies during merging and survives retries/rework; it is agent-directed rather 
 a runtime counter, and escalation never waives review or validation. See the automated PR review
 gate in
 [`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
-`Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
+`Todo`, `In Progress`, `Rework`, or `Merging` to resume it. Restored rows have no session history or known
 blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
 Tracker read failures preserve the last successful blocked view until polling recovers.
 
