@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.Tracker do
   @moduledoc """
-  Adapter boundary for issue tracker reads and provider-native agent tools.
+  Adapter boundary for issue tracker access and provider-native agent tools.
 
-  The orchestrator only depends on the read callbacks. Agent-side mutations stay
+  The orchestrator can request an optional blocked-state transition. Agent-side mutations stay
   behind optional provider-native tools so tracker-specific capabilities do not
   leak into scheduler policy.
   """
@@ -26,7 +26,10 @@ defmodule SymphonyElixir.Tracker do
   @callback secret_environment_names(map()) :: [String.t()]
   @callback validate_config(map()) :: :ok | {:error, term()}
 
-  @optional_callbacks agent_tool_specs: 0,
+  @callback block_issue(String.t()) :: :ok | {:error, term()}
+
+  @optional_callbacks block_issue: 1,
+                      agent_tool_specs: 0,
                       execute_agent_tool: 3,
                       validate_config: 1
 
@@ -38,6 +41,17 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids) do
     adapter().fetch_issues_by_ids(issue_ids)
+  end
+
+  @spec block_issue(String.t()) :: :ok | {:error, term()}
+  def block_issue(issue_id) do
+    adapter = adapter()
+
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :block_issue, 1) do
+      adapter.block_issue(issue_id)
+    else
+      {:error, :unsupported_block_transition}
+    end
   end
 
   @doc """

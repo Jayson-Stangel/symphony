@@ -223,6 +223,10 @@ Keep the issue `In Progress` while automated review is pending or findings are b
 
 Normal review latency is ongoing work, not an external blocker. If review cannot complete because required access or the review service is unavailable after applicable recovery attempts, follow the blocked-access escape hatch; never substitute `Human Review` for missing review evidence.
 
+Turn-limit exhaustion (`agent.max_turns` or `codex.live_max_turns`) automatically moves active
+Linear issues to their team’s `Blocked` status. After investigating the exhausted run, move the
+issue back to an active state to resume work.
+
 ## Blocked-access escape hatch (required behavior)
 
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.

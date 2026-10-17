@@ -17,6 +17,8 @@ the latest PR commit with no outstanding actionable findings; green CI alone is 
 New projects inherit this gate from the supplied workflow. Existing project workflows are
 preserved by `symphony init` and `symphony update`; adopt the automated PR review gate from
 [`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) in each existing project's delivery contract.
+When a Linear issue reaches `agent.max_turns` or `codex.live_max_turns`, Symphony moves it to
+`Blocked`; failed transitions retry while the issue remains locally blocked and active.
 Configure `tracker.blocked_states` to keep
 blocked tracker issues visible in the web dashboard across service restarts; move them back to an
 active state after resolving the blocker. Existing workflows must add this configuration and their

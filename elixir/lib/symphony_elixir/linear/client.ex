@@ -136,6 +136,58 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  @block_context_query """
+  query SymphonyBlockContext($id: String!) {
+    issue(id: $id) {
+      state { name }
+      team { states(filter: {name: {eq: "Blocked"}}, first: 2) { nodes { id } } }
+    }
+  }
+  """
+
+  @block_mutation """
+  mutation SymphonyBlockIssue($id: String!, $stateId: String!) {
+    issueUpdate(id: $id, input: {stateId: $stateId}) { success }
+  }
+  """
+
+  @spec block_issue(String.t(), keyword()) :: :ok | {:error, term()}
+  def block_issue(issue_id, opts \\ []) do
+    with {:ok, body} <- graphql(@block_context_query, %{"id" => issue_id}, opts) do
+      block_active_issue(issue_id, body, opts)
+    end
+  end
+
+  defp block_active_issue(issue_id, %{"data" => %{"issue" => %{"state" => %{"name" => state}, "team" => team}}} = body, opts)
+       when is_binary(state) do
+    active_states = Config.settings!().tracker.active_states
+
+    cond do
+      Map.has_key?(body, "errors") ->
+        {:error, :linear_block_context_failed}
+
+      not Enum.any?(active_states, &(String.downcase(String.trim(&1)) == String.downcase(String.trim(state)))) ->
+        :ok
+
+      true ->
+        update_blocked_state(issue_id, team, opts)
+    end
+  end
+
+  defp block_active_issue(_issue_id, _body, _opts), do: {:error, :linear_block_context_failed}
+
+  defp update_blocked_state(issue_id, %{"states" => %{"nodes" => [%{"id" => state_id}]}}, opts)
+       when is_binary(state_id) do
+    with {:ok, result} <- graphql(@block_mutation, %{"id" => issue_id, "stateId" => state_id}, opts) do
+      case result do
+        %{"data" => %{"issueUpdate" => %{"success" => true}}} when not is_map_key(result, "errors") -> :ok
+        _ -> {:error, :linear_block_update_failed}
+      end
+    end
+  end
+
+  defp update_blocked_state(_issue_id, _team, _opts), do: {:error, :linear_blocked_state_missing_or_ambiguous}
+
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do
