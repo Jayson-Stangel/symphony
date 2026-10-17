@@ -356,15 +356,22 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 4: Rework handling
 
-1. Treat `Rework` as a full approach reset, not incremental patching.
-2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
-3. Close the existing PR tied to the issue.
-4. Preserve the existing `## Codex Workpad` comment and its review ledger; refresh the plan for rework without resetting the review budget.
-5. Create a fresh branch from `origin/main`.
-6. Start over from the normal kickoff flow:
-   - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Reuse the workpad and its review ledger; create a bootstrap comment only if none exists, recovering prior review history first.
-   - Build a fresh plan/checklist and execute end-to-end.
+1. Reassess the approach against the full issue body and human comments; explain
+   what will change in the existing workpad before implementation.
+2. Inspect and reuse the existing branch, working tree, open PR, and workpad.
+   `Rework` is a routing state, not permission to close a PR, discard fixes, or
+   create a replacement branch. This applies on first entry, retries, process
+   restarts, and resumption after a convergence escalation.
+3. Preserve the review ledger and prior validation evidence. Reconcile live
+   review history and honor escalation markers before editing or requesting
+   review. An explicit human decision authorizing another epoch resumes work on
+   the current PR and reviewed head; it does not reset the implementation.
+4. If the PR is actually closed or merged, use Step 0's fresh-branch handling
+   while preserving the issue-wide review history and budget. Never close an
+   open PR solely to force this path.
+5. Refresh the plan, acceptance criteria, and validation checklist in place and
+   continue the execution and feedback sweep protocols in `Rework`, subject to
+   the same automated review gate and convergence policy.
 
 ## Completion bar before Human Review
 
