@@ -196,6 +196,10 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+  For Linear, reaching this cap or `codex.live_max_turns` moves the issue to its team’s `Blocked`
+  state. Create that state and configure `tracker.blocked_states: ["Blocked"]` for visibility after
+  restart. Failed writes retain the local block and retry on reconciliation while the issue is
+  active; unsupported trackers keep the local block only. Pending writes are held in memory.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports

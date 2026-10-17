@@ -656,6 +656,11 @@ not require recognizing or validating extension fields unless that extension is 
 
 ## 7. Orchestration State Machine
 
+For Linear, exhaustion of `agent.max_turns` or `codex.live_max_turns` requests a transition to
+the issue team’s `Blocked` state. The client rechecks the current state and only changes active
+issues. Failed transitions retain the local block and retry during reconciliation; pending
+transitions are in memory. Other adapters may optionally implement this transition.
+
 The orchestrator is the only component that mutates scheduling state. All worker outcomes are
 reported back to it and converted into explicit state transitions.
 

@@ -1079,6 +1079,7 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "max-turn worker exit blocks instead of scheduling continuation retry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     issue_id = "issue-max-turn-block"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :MaxTurnBlockOrchestrator)
@@ -1096,10 +1097,12 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-561",
-      issue: %Issue{id: issue_id, identifier: "MT-561", state: "In Progress"},
+      issue: %Issue{id: issue_id, identifier: "MT-561", state: "In Progress", dispatchable: true},
       workspace_path: "/workspaces/MT-561",
       started_at: DateTime.utc_now()
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
 
     :sys.replace_state(pid, fn _ ->
       initial_state

@@ -34,6 +34,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids), do: client_module().fetch_issues_by_ids(issue_ids)
 
+  @spec block_issue(String.t()) :: :ok | {:error, term()}
+  def block_issue(issue_id), do: client_module().block_issue(issue_id)
+
   @spec agent_tool_specs() :: [map()]
   def agent_tool_specs, do: AgentTool.tool_specs()
 

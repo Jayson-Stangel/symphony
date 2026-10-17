@@ -194,7 +194,7 @@ defmodule SymphonyElixir.Orchestrator do
             state =
               state
               |> record_session_completion_totals(updated_running_entry)
-              |> stop_and_block_issue(issue_id, updated_running_entry, error)
+              |> stop_and_block_issue(issue_id, Map.put(updated_running_entry, :sync_tracker_block, String.starts_with?(error, "codex live turn budget exceeded:")), error)
 
             notify_dashboard()
             {:noreply, state}
@@ -246,7 +246,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
 
-    block_issue_from_entry(state, issue_id, running_entry, error)
+    block_issue_from_entry(state, issue_id, Map.put(running_entry, :sync_tracker_block, true), error)
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
@@ -530,8 +530,13 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
+      active_issue_state?(issue.state, active_states) and Map.get(state.blocked[issue.id], :sync_tracker_block) == :synced ->
+        release_issue_claim(state, issue.id)
+
       active_issue_state?(issue.state, active_states) ->
-        refresh_blocked_issue_state(state, issue)
+        state
+        |> refresh_blocked_issue_state(issue)
+        |> sync_tracker_block(issue.id)
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
@@ -851,6 +856,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
       error: error,
+      sync_tracker_block: Map.get(running_entry, :sync_tracker_block, false),
       blocked_at: DateTime.utc_now(),
       codex_input_tokens: Map.get(running_entry, :codex_input_tokens),
       codex_output_tokens: Map.get(running_entry, :codex_output_tokens),
@@ -868,6 +874,30 @@ defmodule SymphonyElixir.Orchestrator do
         claimed: MapSet.put(state.claimed, issue_id),
         blocked: Map.put(state.blocked, issue_id, blocked_entry)
     }
+    |> sync_tracker_block(issue_id)
+  end
+
+  defp sync_tracker_block(state, issue_id) do
+    case state.blocked[issue_id] do
+      %{sync_tracker_block: true} = entry ->
+        case Tracker.block_issue(issue_id) do
+          :ok ->
+            %{state | blocked: Map.put(state.blocked, issue_id, %{entry | sync_tracker_block: :synced})}
+
+          {:error, :unsupported_block_transition} ->
+            %{state | blocked: Map.put(state.blocked, issue_id, %{entry | sync_tracker_block: false})}
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to sync turn-limit block: issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{entry.session_id} reason=#{inspect(reason)}; will retry on reconciliation"
+            )
+
+            state
+        end
+
+      _ ->
+        state
+    end
   end
 
   defp choose_issues(issues, state) do
