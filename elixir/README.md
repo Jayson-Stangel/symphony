@@ -60,9 +60,14 @@ Blocked issues are not dispatched. The issue workpad holds the blocker and exact
 `Human Review` is reserved for validated work with an attached PR whose automated review has
 completed for the latest commit and whose actionable findings are resolved. Pending automated
 review and feedback fixes remain `In Progress` (or `Rework` during a rework attempt); green CI or
-an empty comment list alone does not authorize handoff. See the automated PR review gate in
+an empty comment list alone does not authorize handoff. After three unsuccessful
+review rounds the supplied workflow uses `Blocked` for a human convergence decision,
+with review history and the budget persisted in the issue workpad. This policy also
+applies during merging and survives retries/rework; it is agent-directed rather than
+a runtime counter, and escalation never waives review or validation. See the automated PR review
+gate in
 [`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
-`Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
+`Todo`, `In Progress`, `Rework`, or `Merging` to resume it. Restored rows have no session history or known
 blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
 Tracker read failures preserve the last successful blocked view until polling recovers.
 

@@ -14,8 +14,13 @@ The supplied workflow uses `Blocked` for work requiring external intervention an
 `Human Review` for validated work ready for approval. Work stays `In Progress` while automated PR
 review is pending or findings are being resolved. Handoff requires completed automated review of
 the latest PR commit with no outstanding actionable findings; green CI alone is insufficient.
-New projects inherit this gate from the supplied workflow. Existing project workflows are
-preserved by `symphony init` and `symphony update`; adopt the automated PR review gate from
+The workflow batches review fixes and requests coverage of related lifecycle paths.
+After three unsuccessful review rounds it escalates to `Blocked` for human judgment;
+this does not pass the review gate or authorize merging. An issue-wide workpad ledger
+preserves the budget across retries and rework. This is an agent instruction policy,
+not a runtime-enforced limit.
+New projects inherit this gate and convergence policy from the supplied workflow. Existing project
+workflows are preserved by `symphony init` and `symphony update`; adopt the review gate and convergence policy from
 [`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) in each existing project's delivery contract.
 Configure `tracker.blocked_states` to keep
 blocked tracker issues visible in the web dashboard across service restarts; move them back to an

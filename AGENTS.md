@@ -57,3 +57,18 @@ These rules apply to all work in this repository. Also follow directory-specific
   gates. Do not push directly to protected branches or merge with failing required
   checks. Update the stable installation only through `symphony update` after the
   change has been promoted to `main`.
+
+## Code Review Rules
+
+- Inspect the complete diff and affected callers, consumers, and lifecycle paths;
+  continue after the first defect and report all independently actionable findings
+  discovered in the pass. Group related paths by root cause and give a concrete
+  supported trigger and consequence. This is a coverage goal, not a guarantee of
+  exhaustive review; avoid speculative concerns and mechanical checks owned by CI.
+- For orchestration changes, check dispatch, concurrency limits, retries,
+  cancellation, reconciliation, and restart recovery together. A retry or restart
+  must preserve workspace ownership, existing work, and durable escalation state.
+- Check workspace containment, credential boundaries, and isolation of development
+  or simulated execution from stable installations and live tracker/provider state.
+  Follow configuration changes through load/reload, adapters, and status reporting;
+  reported outcomes must agree with authoritative execution state.
