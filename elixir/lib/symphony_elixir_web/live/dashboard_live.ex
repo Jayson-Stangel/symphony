@@ -57,7 +57,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <div id="runner-identity" class="runner-identity" role="group" aria-label="Runner identity">
                 <div class="runner-agent"><span class="runner-label">Agent:</span> <strong><%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></strong></div>
                 <div class="runner-model"><span class="runner-label">Model:</span> <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model] do %><span class="runner-source">last session</span><% end %></div>
-                <span class="runner-state" data-ready={agent.readiness[:ready] && !agent.draining && !agent.pause}>
+                <span class="runner-state" data-ready={if agent.readiness[:ready] && !agent.draining && !agent.pause, do: "true", else: "false"}>
                   <span class="runner-state-dot" aria-hidden="true"></span>
                   <%= cond do %>
                     <% agent.draining -> %>Draining
