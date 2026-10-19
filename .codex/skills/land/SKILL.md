@@ -105,7 +105,7 @@ Preferred: use the asyncio watcher to monitor review comments, CI, and head
 updates in parallel:
 
 ```
-skill_dir=.codex/skills/symphony-land
+skill_dir="${SYMPHONY_SKILLS_ROOT:-.codex/skills}/symphony-land"
 [ -d "$skill_dir" ] || skill_dir="${CODEX_HOME:-$HOME/.codex}/skills/symphony-land"
 python3 "$skill_dir/land_watch.py"
 ```

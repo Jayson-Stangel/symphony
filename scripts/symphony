@@ -14,11 +14,16 @@ while [ -L "$script_path" ]; do
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 symphony_home=${SYMPHONY_HOME:-$(cd "$script_dir/.." && pwd)}
-config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"}
+runner_namespace=${SYMPHONY_RUNNER_NAMESPACE:-}
+if [ -n "$runner_namespace" ]; then
+  [[ "$runner_namespace" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die 'SYMPHONY_RUNNER_NAMESPACE must contain 1-32 lowercase letters, digits or hyphens, starting with a letter or digit'
+fi
+runtime_prefix="symphony${runner_namespace:+-$runner_namespace}"
+config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/$runtime_prefix"}
 bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
 skills_dir=${SYMPHONY_SKILLS_DIR:-"${CODEX_HOME:-$HOME/.codex}/skills"}
 runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
-codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-symphony-codex-auth}
+codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-$runtime_prefix-codex-auth}
 managed_skills=(commit push pull linear land)
 
 source_revision() { git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
@@ -146,15 +151,16 @@ Usage:
   symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
   symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony update [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --linear-project SLUG [--local-skill NAME]...
   symphony skill override NAME
   symphony skill migrate-local NAME
   symphony skill use-global NAME
   symphony project doctor [--json]
   symphony auth codex {login|check|remove}
-  symphony runner start|stop|status|doctor|logs
-  symphony run [--port PORT] [--host]
+  symphony auth claude {login|check|remove|attest --overages-disabled}
+  symphony runner start|stop|status|doctor|logs|drain|resume|recheck
+  symphony run [--agent codex|claude] [--port PORT] [--host]
 
 Run this command from a clean, stable Symphony checkout such as ~/src/symphony.
 `install` only links the command and creates protected configuration storage.
@@ -168,6 +174,13 @@ locations. Symphony installs namespaced global skills, such as `symphony-land`,
 to avoid affecting unrelated Codex work. Use `skill override` only when a
 repository genuinely needs to customize one of them. `project doctor` is
 read-only and identifies legacy project configuration safely.
+
+For a separate development checkout, set SYMPHONY_RUNNER_NAMESPACE as well as
+separate configuration paths and a separate dashboard port. The namespace
+isolates Docker container names, images, workspace/state and native auth volumes.
+`update --development-runner --agent ...` transitions only that namespace using
+the current checkout; it does not fetch main, install links or run host setup.
+See docs/development.md. Leave the namespace unset for the stable installation.
 
 Credentials created by init are stored outside the repository at:
   $SYMPHONY_CONFIG_HOME/projects/<repository>.env
@@ -224,16 +237,45 @@ setup() {
 }
 
 update() {
+  local transition_target= development_runner=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --agent)
+        [ "$#" -ge 2 ] || die '--agent requires codex or claude'
+        [ -z "$transition_target" ] || die 'choose only one runner transition'
+        validate_agent "$2"; transition_target=$2; shift 2 ;;
+      --pause-runner)
+        [ -z "$transition_target" ] || die 'choose only one runner transition'
+        transition_target=pause; shift ;;
+      --rollback-runner)
+        [ -z "$transition_target" ] || die 'choose only one runner transition'
+        transition_target=rollback; shift ;;
+      --development-runner) development_runner=true; shift ;;
       --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
         if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony update [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown update option: $1" ;;
     esac
   done
+
+  if "$development_runner"; then
+    [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
+    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner or --rollback-runner'
+    case "$transition_target" in
+      pause) runner_pause "$(repo_root)" ;;
+      rollback) runner_rollback "$(repo_root)" ;;
+      *) runner_transition "$(repo_root)" "$transition_target" ;;
+    esac
+    return
+  fi
+
+  if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)"; return; fi
+  if [ "$transition_target" = rollback ]; then
+    runner_rollback "$(repo_root)"
+    return
+  fi
 
   [ -d "$symphony_home/.git" ] || die "Symphony source is not a Git checkout: $symphony_home"
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die "Symphony source has uncommitted changes; update it manually: $symphony_home"
@@ -251,6 +293,7 @@ update() {
   if [ "$before" != "$after" ]; then
     "$symphony_home/scripts/symphony" setup
   fi
+  if [ -n "$transition_target" ]; then runner_transition "$(repo_root)" "$transition_target"; fi
   printf 'Updated: %s -> %s\n' "$before" "$after"
 }
 
@@ -530,7 +573,7 @@ container_runtime() {
   die 'no compatible container runtime found; install Docker, OrbStack, or Podman'
 }
 
-runner_id() { printf '%s\n' "symphony-$(project_id "$1")"; }
+runner_id() { printf '%s\n' "$runtime_prefix-$(project_id "$1")"; }
 runner_storage_id() {
   local remote digest
   remote=$(git -C "$1" remote get-url origin)
@@ -540,12 +583,113 @@ runner_storage_id() {
 }
 runner_env_file() { printf '%s/%s.env\n' "$runner_home" "$(project_id "$1")"; }
 
-runner_image() { printf '%s\n' "${SYMPHONY_RUNNER_IMAGE:-symphony-runner:local}"; }
+validate_agent() {
+  case "$1" in codex|claude) ;; *) die 'agent must be codex or claude' ;; esac
+}
+
+runner_local_image() {
+  local agent=${1:-codex}
+  validate_agent "$agent"
+  if [ "$agent" = claude ]; then printf '%s-runner-claude:local\n' "$runtime_prefix"
+  else printf '%s-runner:local\n' "$runtime_prefix"; fi
+}
+
+runner_image() {
+  if [ -n "${SYMPHONY_RUNNER_IMAGE:-}" ]; then printf '%s\n' "$SYMPHONY_RUNNER_IMAGE"
+  else runner_local_image "${1:-codex}"; fi
+}
 
 runner_build_image() {
-  local runtime image
-  runtime=$(container_runtime); image=$(runner_image)
-  "$runtime" build --file "$symphony_home/runner/Dockerfile" -t "$image" "$symphony_home"
+  local runtime image agent=${1:-codex}
+  validate_agent "$agent"
+  runtime=$(container_runtime); image=$(runner_image "$agent")
+  "$runtime" build --target "$agent" --file "$symphony_home/runner/Dockerfile" -t "$image" "$symphony_home"
+}
+
+claude_auth_volume() { printf '%s-claude-auth\n' "$(runner_storage_id "$1")"; }
+claude_policy_dir() { printf '%s/claude/%s\n' "$config_home" "$(runner_storage_id "$1")"; }
+
+claude_image_ready() {
+  local runtime=$1 image=$2 agent uid
+  agent=$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")
+  uid=$("$runtime" image inspect --format '{{.Config.User}}' "$image")
+  [ "$agent" = claude ] && [ "$uid" = 11001:11001 ] || die 'Claude image does not meet the non-root runner contract'
+}
+
+ensure_claude_auth_volume() {
+  local root=$1 runtime=$2 volume=$3 storage owner
+  storage=$(runner_storage_id "$root")
+  if "$runtime" volume inspect "$volume" >/dev/null 2>&1; then
+    owner=$("$runtime" volume inspect --format '{{ index .Labels "com.symphony.storage" }}' "$volume")
+    [ "$owner" = "$storage" ] || die 'refusing a foreign or unqualified Claude auth volume'
+  else
+    "$runtime" volume create --label "com.symphony.storage=$storage" "$volume" >/dev/null
+  fi
+}
+
+claude_auth() {
+  local action=$1 root runtime image volume policy temporary users
+  shift
+  case "$action" in
+    attest) [ "$#" = 1 ] && [ "$1" = --overages-disabled ] || die 'Usage: symphony auth claude attest --overages-disabled' ;;
+    login|check|remove) [ "$#" = 0 ] || die "auth claude $action takes no arguments" ;;
+    *) die 'Usage: symphony auth claude login|check|remove|attest --overages-disabled' ;;
+  esac
+  root=$(repo_root); runtime=$(container_runtime); image=$(runner_image claude)
+  volume=$(claude_auth_volume "$root"); policy=$(claude_policy_dir "$root")
+  if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
+    [ "$action" = login ] || die 'Claude image is missing; provision it with symphony auth claude login first'
+    runner_build_image claude
+  fi
+  claude_image_ready "$runtime" "$image"
+  if [ "$action" != login ]; then
+    "$runtime" volume inspect "$volume" >/dev/null 2>&1 || die 'no project-scoped Claude login; run symphony auth claude login'
+  fi
+  ensure_claude_auth_volume "$root" "$runtime" "$volume"
+  if [ "$action" = login ] || [ "$action" = attest ]; then mkdir -p "$policy"; chmod 755 "$policy"; fi
+  [ -d "$policy" ] || die 'Claude policy directory is missing; run symphony auth claude attest --overages-disabled'
+  if [ "$action" = login ] || [ "$action" = remove ]; then
+    users=$("$runtime" ps --filter "volume=$volume" --format '{{.ID}}')
+    [ -z "$users" ] || die 'Claude profile is in use; drain it through symphony update before changing its native login'
+  fi
+  if [ "$action" = login ]; then
+    "$runtime" run --rm --interactive --tty --name "$(runner_storage_id "$root")-claude-auth" \
+      --label "com.symphony.storage=$(runner_storage_id "$root")" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs login
+    printf 'Native login retained. Disable account paid overages, then run: symphony auth claude attest --overages-disabled\n'
+  elif [ "$action" = attest ]; then
+    temporary=$(mktemp "$policy/.attestation.XXXXXX")
+    if "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
+      --label "com.symphony.storage=$(runner_storage_id "$root")" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" \
+      /opt/symphony/claude/auth.mjs attest --overages-disabled >"$temporary"; then
+      [ "$(wc -c <"$temporary")" -le 4096 ] || { rm -f "$temporary"; die 'invalid attestation output'; }
+      chmod 644 "$temporary"; mv "$temporary" "$policy/attestation.json"
+      printf 'Disabled overages recorded as owner attestation, not automated billing verification.\n'
+    else
+      rm -f "$temporary"; die 'native subscription profile could not be qualified for attestation'
+    fi
+  elif [ "$action" = check ]; then
+    "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
+      --label "com.symphony.storage=$(runner_storage_id "$root")" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --volume "$volume:/home/claude" --mount "type=bind,source=$policy,target=/etc/symphony/claude,readonly" \
+      --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs check
+  else
+    "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
+      --label "com.symphony.storage=$(runner_storage_id "$root")" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs logout
+    "$runtime" volume rm "$volume" >/dev/null
+    [ ! -f "$policy/attestation.json" ] || rm "$policy/attestation.json"
+    printf 'Native logout completed and local profile removed; server revocation follows native runtime semantics.\n'
+  fi
 }
 
 auth_codex_login() {
@@ -578,6 +722,7 @@ auth_codex_check() {
 
 auth() {
   local provider=${1:-} action=${2:-}
+  if [ "$provider" = claude ]; then shift 2 || true; claude_auth "$action" "$@"; return; fi
   [ "$provider" = codex ] || { printf 'Usage: symphony auth codex {login|check|remove}\n' >&2; return 2; }
   shift 2 || true
   case "$action" in
@@ -599,64 +744,115 @@ runner_status() {
 }
 
 runner_report() {
-  local root=$1 state name env_file storage_id runtime
-  runtime=$(container_runtime)
-  state=$(runner_status "$root"); name=$(runner_id "$root")
-  case "$state" in
-    true)
-      env_file=$(runner_env_file "$root")
-      [ -r "$env_file" ] || die "runner is running but its configuration is missing: $env_file"
-      set -a; . "$env_file"; set +a
-      storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
-      if [ -z "$storage_id" ] || [ "$storage_id" = '<no value>' ]; then
-        printf 'Isolated Symphony: running (legacy container)\nContainer: %s\nWorkspaces: ephemeral; back up before replacement\n' "$name"
-        return
-      fi
-      [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name belongs to another repository; refusing to report it as this project's listener"
-      printf 'Isolated Symphony: running\nContainer: %s\nDashboard: http://127.0.0.1:%s\nWorkspaces: /workspaces (volume %s-workspaces)\nRuntime logs: volume %s-state\nCodex session: Docker volume %s\n' \
-        "$name" "$SYMPHONY_RUNNER_PORT" "$storage_id" "$storage_id" "$codex_auth_volume"
-      ;;
-    missing) printf 'Isolated worker: not running\n' ;;
-    *) printf 'Isolated worker: stopped (%s)\n' "$state" ;;
-  esac
+  local root=$1 state name storage_id runtime agent port image
+  runtime=$(container_runtime); state=$(runner_status "$root"); name=$(runner_id "$root")
+  if [ "$state" = missing ]; then printf 'Isolated worker: not running\n'; return; fi
+  storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
+  [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name has unknown or foreign repository storage"
+  if [ "$state" != true ]; then printf 'Isolated worker: stopped (%s)\n' "$state"; return; fi
+  agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  validate_agent "$agent"
+  port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
+  image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  printf 'Isolated Symphony: running\nContainer: %s\nAgent: %s\nImage: %s\nDashboard: http://127.0.0.1:%s\nWorkspaces: /workspaces (volume %s-workspaces)\nRuntime logs: volume %s-state\n' \
+    "$name" "$agent" "$image" "$port" "$storage_id" "$storage_id"
+  if [ "$agent" = claude ]; then
+    printf 'Claude native login: project-scoped volume %s\n' "$(claude_auth_volume "$root")"
+  else
+    printf 'Codex session: Docker volume %s\n' "$codex_auth_volume"
+  fi
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} id project_env runtime name state image env_file git_token workflow storage_id existing_storage
+  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none policy auth_volume
+  validate_agent "$agent"
+  case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
-  env_file="$runner_home/$id.env"; image=$(runner_image); workflow="$root/WORKFLOW.md"
+  env_file="$runner_home/$id.env"; image=$(runner_image "$agent"); workflow="$root/WORKFLOW.md"
   storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
   [ -r "$project_env" ] || die "missing credentials file: $project_env"
-  set -a; . "$project_env"; set +a
-  git_token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
-  "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
+  git_token=$(unset GH_TOKEN GITHUB_TOKEN; set -a; . "$project_env"; printf '%s' "${GH_TOKEN:-${GITHUB_TOKEN:-}}")
+  if [ "$agent" = codex ]; then
+    "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
+  else
+    auth_volume=$(claude_auth_volume "$root"); policy=$(claude_policy_dir "$root")
+    "$runtime" volume inspect "$auth_volume" >/dev/null 2>&1 || die 'no project-scoped Claude session; run: symphony auth claude login'
+    ensure_claude_auth_volume "$root" "$runtime" "$auth_volume"
+    [ -r "$policy/attestation.json" ] || die 'missing disabled-overage attestation; run: symphony auth claude attest --overages-disabled'
+    profile=$(sed -n 's/^.*"profile":"\([a-f0-9]\{64\}\)".*$/\1/p' "$policy/attestation.json")
+    [ "${#profile}" = 64 ] || die 'invalid Claude profile attestation'
+  fi
   [ -n "$git_token" ] || die 'missing GITHUB_TOKEN or GH_TOKEN for the isolated runner'
 
   state=$(runner_status "$root")
   if [ "$state" != missing ]; then
     existing_storage=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
-    if [ -n "$existing_storage" ] && [ "$existing_storage" != '<no value>' ]; then
-      [ "$existing_storage" = "$storage_id" ] || die "container $name belongs to another repository; refusing to replace it"
-    fi
+    [ "$existing_storage" = "$storage_id" ] || die "container $name has legacy or foreign storage; refusing to replace it"
+    [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")" = listener ] || die 'existing container is not a qualified listener; use the installed updater'
   fi
   if [ "$state" = true ]; then
     if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")" = listener ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")" = "$storage_id" ] ||
         die "existing listener $name has legacy or different repository storage; back up its workspaces before stopping and replacing it"
       [ -r "$env_file" ] || die "runner is running but its configuration is missing: $env_file"
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")" = "$port" ] ||
+        die 'listener port differs; transition through symphony update --agent'
+      existing_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+      [ "$existing_agent" = "$agent" ] || die 'listener agent differs or is unqualified; transition through symphony update --agent'
+      image_id=$("$runtime" image inspect --format '{{.Id}}' "$image")
+      existing_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+      [ -n "$image_id" ] && [ "$image_id" = "$existing_image" ] || die 'listener image differs; transition through symphony update --agent'
+      if [ "$agent" = claude ]; then
+        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")" = "$profile" ] || die 'listener native profile differs; transition through symphony update --agent'
+      fi
       return
     fi
-    "$runtime" stop --time 30 "$name" >/dev/null
+    die 'existing container cannot be reused; use the installed updater'
   fi
-  [ "$state" = missing ] || "$runtime" rm -f "$name" >/dev/null
+  if [ -r "$env_file" ] && [ "$authority" != update ]; then
+    (
+      . "$env_file"
+      [ "${SYMPHONY_RUNNER_AGENT:-}" = "$agent" ] || die 'provider transition requires symphony update --agent'
+    ) || return 1
+  fi
 
-  runner_build_image
-  "$runtime" volume create "$storage_id-workspaces" >/dev/null
-  "$runtime" volume create "$storage_id-state" >/dev/null
+  if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image "$agent"; fi
+  image_id=$("$runtime" image inspect --format '{{.Id}}' "$image")
+  [ -n "$image_id" ] || die 'runner image identity is unavailable'
+  if [ -r "$env_file" ] && [ "$authority" != update ]; then
+    (
+      . "$env_file"
+      [ "${SYMPHONY_RUNNER_IMAGE_ID:-}" = "$image_id" ] || die 'image change requires symphony update --agent'
+      [ "${SYMPHONY_RUNNER_PROFILE:-none}" = "$profile" ] || die 'native profile change requires symphony update --agent'
+    ) || return 1
+  fi
+  if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
+  [ "$state" = missing ] || "$runtime" rm "$name" >/dev/null
+  "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-workspaces" >/dev/null
+  "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-state" >/dev/null
+  mkdir -p "$runner_home"
+  if [ "$agent" = claude ]; then
+    export SYMPHONY_GIT_TOKEN="$git_token"
+    "$runtime" run --detach --restart unless-stopped --name "$name" \
+      --label com.symphony.mode=listener --label "com.symphony.storage=$storage_id" \
+      --label com.symphony.agent=claude --label "com.symphony.profile=$profile" \
+      --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
+      --publish "127.0.0.1:$port:4010" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 \
+      --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+      --env-file "$project_env" --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
+      --mount "type=bind,source=$workflow,target=/etc/symphony/WORKFLOW.md,readonly" \
+      --mount "type=bind,source=$policy,target=/etc/symphony/claude,readonly" \
+      --volume "$storage_id-workspaces:/workspaces" --volume "$storage_id-state:/var/lib/symphony" \
+      --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
+    unset SYMPHONY_GIT_TOKEN
+  else
   "$runtime" run --detach --restart unless-stopped --name "$name" \
     --label com.symphony.mode=listener \
     --label "com.symphony.storage=$storage_id" \
+    --label com.symphony.agent=codex --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
     --publish "127.0.0.1:$port:4010" \
     --env-file "$project_env" \
     --env SYMPHONY_CONTAINERIZED=1 \
@@ -665,37 +861,245 @@ runner_start() {
     --volume "$storage_id-workspaces:/workspaces" \
     --volume "$storage_id-state:/var/lib/symphony" \
     --volume "$codex_auth_volume:/root/.codex" \
-    "$image" >/dev/null
+    "$image_id" >/dev/null
+  fi
   umask 077
-  cat >"$env_file" <<EOF
+  local metadata_tmp
+  metadata_tmp=$(mktemp "$runner_home/.runner.XXXXXX")
+  cat >"$metadata_tmp" <<EOF
 SYMPHONY_RUNNER_PORT=$port
+SYMPHONY_RUNNER_AGENT=$agent
+SYMPHONY_RUNNER_IMAGE_ID=$image_id
+SYMPHONY_RUNNER_PROFILE=$profile
 EOF
+  mv "$metadata_tmp" "$env_file"
   printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
 }
+
+# Runner transitions are owned by the installed updater. Every failure retains
+# volumes and leaves a drain marker; rollback is a separate updater operation.
+runner_owned() {
+  local root=$1 runtime=$2 name=$3 storage mode agent mounts
+  storage=$(runner_storage_id "$root")
+  [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")" = "$storage" ] || die 'unknown or foreign runner storage; updater refused'
+  mode=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")
+  [ "$mode" = listener ] || die 'unqualified legacy runner; updater refused'
+  agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  validate_agent "$agent"
+  mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
+  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-workspaces /workspaces" || die 'workspace mount identity differs; updater refused'
+  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-state /var/lib/symphony" || die 'state mount identity differs; updater refused'
+}
+
+runner_transition_lock() {
+  local path=$1 owner
+  [ ! -L "$path" ] || die 'unsafe updater lock'
+  if [ -d "$path" ]; then
+    [ -f "$path/owner" ] || die 'updater lock has no verifiable owner; inspect it before recovery'
+    owner=$(cat "$path/owner")
+    case "$owner" in ''|*[!0-9]*) die 'invalid updater lock owner' ;; esac
+    if kill -0 "$owner" 2>/dev/null; then die 'another updater is active'; fi
+    rm "$path/owner"; rmdir "$path"
+  fi
+  mkdir "$path" || die 'another updater acquired the project lock'
+  printf '%s\n' "$$" >"$path/owner"
+}
+
+runner_resume_when_ready() {
+  local port=$1 attempt data
+  for attempt in $(seq 1 15); do
+    if data=$(curl --fail --silent --max-time 3 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state"); then
+      if printf '%s' "$data" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("agent",{}); sys.exit(0 if a.get("draining") is False and a.get("readiness",{}).get("ready") is True else 1)'; then return; fi
+      runner_control_request "$port" resume >/dev/null
+      return
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+runner_control_request() {
+  local port=$1 action=$2
+  curl --fail --silent --show-error --max-time 45 --max-filesize 1048576 \
+    -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
+    -d '{}' "http://127.0.0.1:$port/api/v1/agent/$action"
+}
+
+runner_wait_idle() {
+  local port=$1 attempt data
+  for attempt in $(seq 1 30); do
+    data=$(curl --fail --silent --show-error --max-time 5 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state") || return 1
+    if printf '%s' "$data" | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s.get("agent",{}).get("draining") is True and s.get("counts",{}).get("running") == 0 else 1)'; then return; fi
+    sleep 1
+  done
+  die 'runner is still draining; active work was retained. Retry symphony update when idle'
+}
+
+runner_pause() {
+  local root=$1 runtime name state port
+  runtime=$(container_runtime); name=$(runner_id "$root"); state=$(runner_status "$root")
+  [ "$state" != missing ] || die 'no qualified runner to pause'
+  runner_owned "$root" "$runtime" "$name"
+  if [ "$state" = true ]; then
+    if [ "$("$runtime" inspect --format '{{.State.Restarting}}' "$name")" = true ] &&
+       [ "$("$runtime" inspect --format '{{.State.Pid}}' "$name")" = 0 ]; then
+      "$runtime" stop --time 30 "$name" >/dev/null
+      printf 'Updater stopped an empty restarting container; retained work was not dispatched.\n'
+      return
+    fi
+    port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
+    case "$port" in ''|*[!0-9]*) die 'unknown runner port; updater refused' ;; esac
+    runner_control_request "$port" drain >/dev/null
+    runner_wait_idle "$port"
+    "$runtime" stop --time 30 "$name" >/dev/null
+  fi
+  printf 'Runner paused by updater; workspaces, state and native login retained.\n'
+}
+
+runner_finish_journal() {
+  local journal=$1
+  [ ! -e "$journal.complete" ] || die 'completed transition metadata already exists; inspect it before retrying'
+  mv "$journal" "$journal.complete"
+  rm "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+  rmdir "$journal.complete"
+}
+
+runner_transition() (
+  local root=$1 agent=$2 runtime name storage id env_file journal backup candidate port=4010 state users owner old_agent
+  validate_agent "$agent"
+  runtime=$(container_runtime); name=$(runner_id "$root"); storage=$(runner_storage_id "$root"); id=$(project_id "$root")
+  mkdir -p "$runner_home"
+  journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
+  runner_transition_lock "$journal.lock"
+  if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
+    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+    rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
+  fi
+  trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
+  candidate="$runtime_prefix-runner-$agent:$(source_revision)"
+  export SYMPHONY_RUNNER_IMAGE="$candidate"
+  if [ -d "$journal" ]; then
+    candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+    [ "$(cat "$journal/target")" = "$agent" ] || die 'a different transition is pending; finish it or use symphony update --rollback-runner'
+  else
+    [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
+    [ "$(runner_status "$root")" != missing ] || die 'start a fresh project with symphony run --agent; no existing runner to transition'
+    runner_owned "$root" "$runtime" "$name"
+    "$runtime" inspect "$backup" >/dev/null 2>&1 && die 'a retained prior runner exists; inspect it before another transition'
+    [ -r "$env_file" ] || die 'runner metadata is missing; updater refused'
+    port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
+    case "$port" in ''|*[!0-9]*) die 'unknown runner port; updater refused' ;; esac
+    runner_build_image "$agent"
+    runner_doctor "$root" "$agent"
+    local journal_tmp
+    journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
+    cp "$env_file" "$journal_tmp/previous.env"
+    printf '%s\n' "$agent" >"$journal_tmp/target"
+    printf '%s\n' "$port" >"$journal_tmp/port"
+    "$runtime" image inspect --format '{{.Id}}' "$candidate" >"$journal_tmp/image"
+    mv "$journal_tmp" "$journal"
+  fi
+  port=$(cat "$journal/port")
+  candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+  if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
+    if [ "$(runner_status "$root")" = true ] &&
+       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ]; then
+      runner_owned "$root" "$runtime" "$name"
+      runner_resume_when_ready "$port" || die 'candidate recovery refused'
+      "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
+      runner_finish_journal "$journal"
+      printf 'Previously completed runner transition recovered.\n'
+      return
+    fi
+    runner_pause "$root"
+    "$runtime" rename "$name" "$backup"
+  fi
+  runner_owned "$root" "$runtime" "$backup"
+  [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
+  if [ "$(runner_status "$root")" = missing ]; then
+    for owner in "$storage-workspaces" "$storage-state"; do
+      users=$("$runtime" ps --filter "volume=$owner" --format '{{.ID}}')
+      [ -z "$users" ] || die 'retained volume is in use by another container; updater refused'
+    done
+    # A stopped source may never have persisted drain (for example after a host
+    # shutdown). Keep the candidate idle until its readiness has been verified.
+    "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+      --security-opt no-new-privileges --user 0:0 --entrypoint sh \
+      --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$candidate" \
+      -ceu 'printf "draining\n" > /state/agent-draining
+        if [ "$1" = claude ]; then
+          chown -hR 11001:11001 /workspaces /state
+          rm -f /state/claude-cleanup-unconfirmed
+        fi' sh "$agent"
+    runner_start "$root" "$port" "$agent" update
+  else
+    runner_owned "$root" "$runtime" "$name"
+    [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
+    [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
+  fi
+  runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
+  "$runtime" rm "$backup" >/dev/null
+  runner_finish_journal "$journal"
+  printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"
+)
+
+runner_rollback() (
+  local root=$1 runtime name backup id journal port env_file previous_agent previous_image
+  runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
+  journal="$runner_home/$id.transition"; env_file=$(runner_env_file "$root")
+  [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
+  runner_transition_lock "$journal.lock"
+  if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
+    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+    rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
+  fi
+  trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
+  if "$runtime" inspect "$backup" >/dev/null 2>&1; then
+    runner_owned "$root" "$runtime" "$backup"
+    if [ "$(runner_status "$root")" != missing ]; then
+      runner_pause "$root"
+      "$runtime" rm "$name" >/dev/null
+    fi
+    "$runtime" rename "$backup" "$name"
+    cp "$journal/previous.env" "$env_file"
+    "$runtime" start "$name" >/dev/null
+  else
+    runner_owned "$root" "$runtime" "$name"
+    local previous_image
+    previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
+    [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
+    cp "$journal/previous.env" "$env_file"
+    if [ "$(runner_status "$root")" != true ]; then "$runtime" start "$name" >/dev/null; fi
+  fi
+  port=$(cat "$journal/port")
+  runner_resume_when_ready "$port" || die 'prior runner retained but not ready; repair authentication then retry recovery'
+  previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"
+  runner_finish_journal "$journal"
+  printf 'Prior runner restored; workspaces, unpushed commits and logs retained.\n'
+)
 
 runner_stop() {
   local root=$1 runtime name storage_id
   runtime=$(container_runtime); name=$(runner_id "$root")
   if "$runtime" inspect "$name" >/dev/null 2>&1; then
     storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
-    if [ -n "$storage_id" ] && [ "$storage_id" != '<no value>' ]; then
-      [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name belongs to another repository; refusing to stop it"
-    fi
+    [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name has unknown or foreign storage; refusing to stop it"
     "$runtime" stop --time 30 "$name" >/dev/null
-    if "$runtime" inspect "$name" >/dev/null 2>&1; then
-      "$runtime" rm "$name" >/dev/null
-    fi
   fi
-  printf 'Runner stopped: %s\nWorkspace and log volumes retained.\n' "$name"
+  printf 'Runner stopped: %s\nContainer, workspace and log volumes retained for restart or updater transition.\n' "$name"
 }
 
 runner_doctor() {
-  local root=$1 env_file runtime name port
-  runner_start "$root"
-  runtime=$(container_runtime); name=$(runner_id "$root")
-  "$runtime" exec "$name" codex login status >/dev/null
-  printf 'Runner Codex session verified.\n'
-  "$runtime" exec "$name" sh -ceu '
+  local root=$1 agent=${2:-codex} runtime image
+  validate_agent "$agent"
+  runtime=$(container_runtime); image=$(runner_image "$agent")
+  if [ "$agent" = claude ]; then claude_auth check
+  else auth_codex_check; fi
+  "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --tmpfs /tmp:rw,exec,nosuid,nodev,size=32m --entrypoint sh "$image" -ceu '
     set -eu
     workspace=$(mktemp -d /tmp/symphony-git-preflight.XXXXXX)
     trap "rm -rf \"$workspace\"" EXIT
@@ -707,41 +1111,57 @@ runner_doctor() {
     git -C "$workspace" add READY
     git -C "$workspace" commit -qm preflight
   '
-  env_file=$(runner_env_file "$root"); set -a; . "$env_file"; set +a; port=$SYMPHONY_RUNNER_PORT
-  curl --fail --silent "http://127.0.0.1:$port/api/v1/state" >/dev/null
-  printf 'Runner Git and dashboard preflight passed.\n'
+  printf 'Native authentication/policy and isolated Git preflight passed. No listener or model request was started.\n'
 }
 
 runner() {
-  local command=${1:-} root
+  local command=${1:-} root agent=codex
   root=$(repo_root)
   case "$command" in
     start) runner_start "$root" "${2:-4010}" ;;
     stop) runner_stop "$root" ;;
     status) runner_report "$root" ;;
-    doctor) runner_doctor "$root" ;;
-    logs) runtime=$(container_runtime); "$runtime" logs --follow "$(runner_id "$root")" ;;
+    doctor)
+      shift
+      if [ "$#" -gt 0 ]; then [ "$#" = 2 ] && [ "$1" = --agent ] || die 'Usage: symphony runner doctor [--agent codex|claude]'; agent=$2; fi
+      validate_agent "$agent"; runner_doctor "$root" "$agent" ;;
+    logs)
+      runtime=$(container_runtime)
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
+      "$runtime" logs --follow "$(runner_id "$root")" ;;
+    drain|resume|recheck)
+      runtime=$(container_runtime)
+      runner_owned "$root" "$runtime" "$(runner_id "$root")"
+      port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$(runner_id "$root")")
+      runner_control_request "$port" "$command" ;;
     --help|-h|'') printf 'Usage: symphony runner start [PORT]|stop|status|doctor|logs\n' ;;
     *) die "unknown runner command: $command" ;;
   esac
 }
 
 run() {
-  local root id env_file workflow runtime host=false port=4010
+  local root id env_file workflow runtime host=false port=4010 agent=codex agent_seen=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host=true; shift ;;
       --isolated) shift ;;
+      --agent)
+        [ "$#" -ge 2 ] || die '--agent requires codex or claude'
+        ! "$agent_seen" || die '--agent may be specified only once'
+        agent=$2; validate_agent "$agent"; agent_seen=true; shift 2 ;;
       --port) [ "$#" -ge 2 ] || die '--port requires a value'; port=$2; shift 2 ;;
       *) die "unknown run option: $1" ;;
     esac
   done
+  case "$port" in ''|*[!0-9]*) die '--port requires an integer' ;; esac
+  [ "$port" -le 65535 ] || die 'port must not exceed 65535'
+  if "$host" && [ "$agent" = claude ]; then die 'Claude host/SSH execution is unsupported; use the isolated runner'; fi
   root=$(repo_root); id=$(project_id "$root")
   env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
   [ -r "$env_file" ] || die "missing credentials file: $env_file"
   [ -f "$workflow" ] || die "missing workflow: $workflow"
   if ! "$host"; then
-    runner_start "$root" "$port"
+    runner_start "$root" "$port" "$agent"
     runner_report "$root"
     return
   fi
@@ -749,7 +1169,7 @@ run() {
   set -a; . "$env_file"; set +a
   runtime="$symphony_home/elixir/bin/symphony"
   exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
-    --i-understand-that-this-will-be-running-without-the-usual-guardrails "$workflow" "$@"
+    --i-understand-that-this-will-be-running-without-the-usual-guardrails --agent codex --port "$port" "$workflow" "$@"
 }
 
 case "${1:-}" in

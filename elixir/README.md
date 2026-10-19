@@ -436,3 +436,17 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
+
+## Selecting Claude
+
+`bin/symphony --agent codex|claude` selects one startup-owned coding provider;
+Codex is the default. Claude runs only in its qualified nonroot container image.
+Workflow reload cannot change providers. See [the Claude runner contract](../docs/claude.md)
+for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
+tracker-side-effect recovery and updater-owned provider/image transitions.
+The state API adds an `agent` object while retaining existing token fields.
+
+Development verification now also requires Node 24.18.0 (included in mise.toml).
+Run `make setup` to install the locked helper dependencies without install scripts;
+`make all` includes the credential-free Node protocol/process tests. Native process
+ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.

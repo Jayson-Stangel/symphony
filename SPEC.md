@@ -2347,3 +2347,27 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+
+## Optional Claude runtime extension
+
+The Elixir implementation can select one coding provider at startup. Codex is
+the default and keeps the app-server contract above. The qualified Claude
+container profile uses a pinned native SDK helper through a bounded versioned
+stdio protocol; OTP retains workspace, continuation, tracker binding and
+scheduling authority. Selection survives workflow reload. One worker and Sonnet
+are initially supported. Native subscription authentication and a dated
+account-bound disabled-overages attestation gate dispatch without model probes.
+No API-key inference fallback is configured.
+
+Native terminal results must correlate to the current input; text, malformed
+frames or partial EOF cannot complete a turn. Authoritative quota/auth/policy
+failures persist project pauses. Known quota resets permit one durable probe;
+unknown resets require explicit recheck. A probe is consumed durably before model
+input; failure or restart cannot automatically replay it. External tracker calls persist intent
+before execution and clear it only on helper acknowledgement. Unknown outcomes
+require operator reconciliation rather than automatic replay. Drain is durable,
+account identity is pinned, and unconfirmed process cleanup blocks readiness
+until updater-owned container recovery. Public state adds provider/readiness/
+pause fields without removing legacy token fields. See docs/claude.md for the
+closed configuration, isolation assumptions and qualified transition contract.

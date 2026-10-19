@@ -1,0 +1,433 @@
+defmodule SymphonyElixir.Claude.Adapter do
+  @moduledoc "CodingAgent transport for the pinned, subscription-authenticated SDK helper."
+  @behaviour SymphonyElixir.CodingAgent
+
+  alias SymphonyElixir.{AgentPause, Config, Tracker, Workspace}
+  alias SymphonyElixir.Claude.{Instructions, Skills}
+
+  @max_frame 1_048_576
+  @pause_kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
+  @codes %{
+    "auth_required" => :auth_required,
+    "quota_exhausted" => :quota_exhausted,
+    "policy_blocked" => :policy_blocked,
+    "protocol_error" => :protocol_error,
+    "tool_outcome_uncertain" => :tool_outcome_uncertain
+  }
+
+  @impl true
+  def start_session(workspace, opts) do
+    case Keyword.get(opts, :worker_host) do
+      nil -> start_local_session(workspace, opts)
+      _ -> {:error, :claude_ssh_unsupported}
+    end
+  end
+
+  defp start_local_session(workspace, opts) do
+    with {:ok, workspace} <- Workspace.validate_agent_cwd(workspace),
+         {:ok, instructions} <- Instructions.context(workspace),
+         {:ok, skills} <- Skills.sources(workspace),
+         {:ok, env} <- Config.claude_child_environment(),
+         {:ok, port} <- start_port(workspace, env, opts) do
+      initialize_or_close(port, workspace, instructions, skills, opts)
+    end
+  end
+
+  defp initialize_or_close(port, workspace, instructions, skills, opts) do
+    case initialize(port, workspace, instructions, skills, opts) do
+      {:ok, session} ->
+        {:ok, session}
+
+      {:error, reason} ->
+        close_port(port)
+        {:error, reason}
+    end
+  end
+
+  defp initialize(port, workspace, instructions, skills, opts) do
+    config = Config.settings!().claude
+    id = new_id()
+    start_id = new_id()
+    binding = Keyword.get(opts, :tool_binding, Tracker.bind_agent_tools())
+
+    with {:ok, %{"v" => 1, "type" => "hello", "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1}} <- frame(port, deadline(35_000)),
+         :ok <-
+           write(port, %{
+             v: 1,
+             type: "start",
+             session_id: id,
+             request_id: start_id,
+             workspace: workspace,
+             config: Map.take(Map.from_struct(config), [:model, :max_agentic_turns, :turn_timeout_ms]),
+             tools: binding.tool_specs,
+             skills: skills,
+             instructions: instructions
+           }),
+         {:ok, %{"v" => 1, "type" => "ready", "session_id" => ^id, "request_id" => ^start_id, "identity" => %{"profile" => profile} = identity, "owned_native" => owned}} <-
+           frame(port, deadline(15_000)),
+         true <- valid_profile?(profile) and valid_owned?(owned),
+         :ok <- match_expected_profile(profile, Keyword.get(opts, :expected_profile)) do
+      {:ok,
+       %{
+         port: port,
+         owner: self(),
+         id: id,
+         workspace: workspace,
+         config: config,
+         binding: binding,
+         identity: identity,
+         owned_native: owned,
+         helper_identity: port_identity(port),
+         node: Keyword.get(opts, :node_path, Config.claude_node_path()),
+         cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
+       }}
+    else
+      {:error, :native_identity_mismatch} -> paused_start("policy_blocked")
+      {:ok, %{"ready" => false, "code" => code}} -> paused_start(code)
+      {:ok, %{"type" => "error", "code" => code}} -> paused_start(code)
+      _ -> paused_start("protocol_error")
+    end
+  end
+
+  defp match_expected_profile(_profile, nil), do: :ok
+  defp match_expected_profile(profile, profile), do: :ok
+  defp match_expected_profile(_profile, _expected), do: {:error, :native_identity_mismatch}
+
+  @impl true
+  def run_turn(%{owner: owner} = session, prompt, issue, opts) when owner == self() do
+    expected_profile = session.identity["profile"]
+
+    case AgentPause.current() do
+      {:paused, value} ->
+        pause(session, value["kind"], Map.take(value, ["resets_at"]))
+
+      {:probe, %{"profile" => profile}} when profile != expected_profile ->
+        pause(session, "policy_blocked", %{})
+
+      _ ->
+        case AgentPause.begin_turn(expected_profile) do
+          :ok -> do_run_turn(session, prompt, issue, opts)
+          _ -> pause(session, "policy_blocked", %{})
+        end
+    end
+  end
+
+  def run_turn(_session, _prompt, _issue, _opts), do: {:error, :wrong_session_owner}
+
+  defp do_run_turn(session, prompt, issue, opts) do
+    request = new_id()
+    event_id = "claude:#{session.id}:#{request}"
+    callback = Keyword.get(opts, :on_message, fn _ -> :ok end)
+
+    case write(session.port, %{v: 1, type: "turn", session_id: session.id, request_id: request, prompt: prompt}) do
+      :ok ->
+        emit(callback, :session_started, %{session_id: event_id, provider: :claude})
+        await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), %{})
+
+      _ ->
+        pause(session, "protocol_error", %{})
+    end
+  end
+
+  @spec await_turn(map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  defp await_turn(session, request, event_id, issue, callback, until, pending) do
+    case frame(session.port, min(until, deadline(session.config.read_timeout_ms))) do
+      {:error, :timeout} ->
+        if System.monotonic_time(:millisecond) >= until do
+          pause(session, "protocol_error", %{})
+        else
+          await_turn(session, request, event_id, issue, callback, until, pending)
+        end
+
+      {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
+        handle_message(message, session, request, event_id, issue, callback, until, pending)
+
+      _ ->
+        pause(session, "protocol_error", %{})
+    end
+  end
+
+  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  defp handle_message(%{"type" => "progress", "activity" => activity}, session, request, event_id, issue, callback, until, pending)
+       when activity in ["agent", "tool"] do
+    emit(callback, :agent_progress, %{session_id: event_id, activity: activity, provider: :claude})
+    await_turn(session, request, event_id, issue, callback, until, pending)
+  end
+
+  defp handle_message(%{"type" => "usage", "totals" => totals}, session, request, event_id, issue, callback, until, pending) do
+    if valid_usage?(totals) do
+      payload = %{"tokenUsage" => %{"total" => totals}}
+      emit(callback, :token_usage_updated, %{session_id: event_id, usage: totals, payload: payload, provider: :claude})
+      await_turn(session, request, event_id, issue, callback, until, pending)
+    else
+      pause(session, "protocol_error", %{})
+    end
+  end
+
+  defp handle_message(%{"type" => "tool_call", "tool_id" => tool, "name" => name, "arguments" => args}, session, request, event_id, issue, callback, until, pending) do
+    seen_key = {__MODULE__, session.id, :tools}
+    seen = Process.get(seen_key, %{})
+
+    with true <- valid_tool_call?(session, seen, tool, name, args),
+         :ok <- AgentPause.begin_tool(session.identity["profile"], issue.id, tool, name) do
+      Process.put(seen_key, Map.put(seen, tool, true))
+
+      result = execute_tool(session.binding, name, args, issue)
+
+      case send_tool_result(session, request, tool, result) do
+        :ok -> await_turn(session, request, event_id, issue, callback, until, Map.put(pending, tool, true))
+        _ -> pause(session, "tool_outcome_uncertain", %{})
+      end
+    else
+      _ -> pause(session, "protocol_error", %{})
+    end
+  end
+
+  defp handle_message(%{"type" => "tool_result_accepted", "tool_id" => tool}, session, request, event_id, issue, callback, until, pending) do
+    if Map.has_key?(pending, tool) and AgentPause.finish_tool(tool) == :ok do
+      await_turn(session, request, event_id, issue, callback, until, Map.delete(pending, tool))
+    else
+      pause(session, "tool_outcome_uncertain", %{})
+    end
+  end
+
+  defp handle_message(%{"type" => "turn_result", "outcome" => "completed"}, session, _request, event_id, _issue, _callback, _until, pending) do
+    if map_size(pending) == 0 do
+      case AgentPause.complete_probe(session.identity["profile"]) do
+        :ok -> {:ok, %{session_id: event_id, provider: :claude}}
+        _ -> pause(session, "policy_blocked", %{})
+      end
+    else
+      pause(session, "tool_outcome_uncertain", %{})
+    end
+  end
+
+  defp handle_message(%{"type" => "turn_result", "outcome" => outcome} = message, session, _request, _event_id, _issue, _callback, _until, _pending) do
+    cond do
+      outcome in @pause_kinds -> pause(session, outcome, Map.take(message, ["resets_at"]))
+      outcome in ["permission_blocked", "agent_turn_limit"] -> {:error, {:agent_blocked, outcome}}
+      outcome == "transient_error" -> {:error, :claude_transient_error}
+      outcome == "cancelled" -> {:error, :claude_cancelled}
+      true -> pause(session, "protocol_error", %{})
+    end
+  end
+
+  defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, _pending),
+    do: pause(session, "protocol_error", %{})
+
+  defp valid_tool_call?(session, seen, tool, name, args) do
+    is_binary(tool) and Enum.any?(session.binding.tool_specs, &(&1["name"] == name)) and
+      not Map.has_key?(seen, tool) and map_size(seen) < 4096 and
+      is_map(args) and byte_size(Jason.encode!(args)) <= 524_288
+  end
+
+  defp execute_tool(binding, name, args, issue) do
+    result = Tracker.execute_bound_agent_tool(binding, name, args, issue: issue)
+    if confirmed_tracker_response?(result, args), do: result, else: :uncertain
+  rescue
+    _ -> :uncertain
+  catch
+    _, _ -> :uncertain
+  end
+
+  defp confirmed_tracker_response?(%{"success" => true}, _args), do: true
+  defp confirmed_tracker_response?(%{"success" => false}, %{"method" => method}) when method in ["GET", "get"], do: true
+
+  defp confirmed_tracker_response?(%{"success" => false, "output" => output}, _args) when is_binary(output) do
+    # A transport/tool error is not evidence that a remote mutation was rejected.
+    # Only a definite client-error HTTP response is safe to hand back for correction.
+    case Jason.decode(output) do
+      {:ok, %{"status" => status}} -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
+      _ -> false
+    end
+  end
+
+  defp confirmed_tracker_response?(_result, _args), do: false
+
+  defp send_tool_result(session, request, tool, %{"success" => success, "output" => output})
+       when is_boolean(success) and is_binary(output) and byte_size(output) <= 524_288 do
+    write(session.port, %{v: 1, type: "tool_result", session_id: session.id, request_id: request, tool_id: tool, result: %{success: success, output: output}})
+  end
+
+  defp send_tool_result(_session, _request, _tool, _result), do: {:error, :uncertain}
+
+  @impl true
+  def stop_session(session) do
+    result = stop_owned_session(session)
+
+    close_port(session.port)
+    Process.delete({__MODULE__, session.id, :tools})
+    result
+  end
+
+  defp stop_owned_session(session) do
+    if Port.info(session.port) && self() == session.owner do
+      write(session.port, %{v: 1, type: "stop", session_id: session.id, request_id: new_id()})
+      await_stop_or_cleanup(session)
+    else
+      cleanup_owned(session)
+    end
+  end
+
+  defp await_stop_or_cleanup(session) do
+    case await_stopped(session.port, deadline(5_000)) do
+      :ok -> :ok
+      _ -> cleanup_owned(session)
+    end
+  end
+
+  @impl true
+  def interrupt(session, _reason) do
+    # This may be called by the scheduler while the Port owner is waiting on a
+    # tracker request. Cleanup uses captured process generations, never a broad kill.
+    case cleanup_owned(session) do
+      :ok -> close_port(session.port)
+      error -> error
+    end
+  end
+
+  defp cleanup_owned(%{owned_native: [], helper_identity: nil}), do: :ok
+
+  defp cleanup_owned(session) do
+    result =
+      try do
+        if File.regular?(session.cleanup) do
+          case System.cmd(session.node, [session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
+                 env: Config.claude_cleanup_environment(),
+                 stderr_to_stdout: true
+               ) do
+            {_output, 0} -> :ok
+            _ -> {:error, :cleanup_unconfirmed}
+          end
+        else
+          {:error, :cleanup_unconfirmed}
+        end
+      rescue
+        _ -> {:error, :cleanup_unconfirmed}
+      end
+
+    if result != :ok do
+      File.mkdir_p(Config.agent_state_root())
+      File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync])
+      AgentPause.record(:policy_blocked, %{profile: session.identity["profile"]})
+    end
+
+    result
+  end
+
+  defp await_stopped(port, until) do
+    case frame(port, until) do
+      {:ok, %{"type" => "stopped", "v" => 1}} -> :ok
+      {:ok, _other} -> await_stopped(port, until)
+      {:error, :helper_exited} -> {:error, :unclean_helper_exit}
+      error -> error
+    end
+  end
+
+  defp pause(session, kind, details) do
+    details = Map.put(details, "profile", session.identity["profile"])
+    AgentPause.record(kind, details)
+    {:error, {:agent_pause, @codes[kind] || :policy_blocked, details}}
+  end
+
+  defp paused_start(code) do
+    kind = if code in ["auth_required", "unqualified_auth", "unknown_auth_status"], do: :auth_required, else: :policy_blocked
+    AgentPause.record(kind)
+    safe_codes = ~w(auth_required unqualified_auth unknown_auth_status unsupported_tool_schema duplicate_tool_name
+                    native_ownership_unavailable native_initialization_timeout unexpected_native_restart policy_blocked protocol_error)
+    safe_code = if code in safe_codes, do: code, else: "runtime_unavailable"
+    {:error, {:agent_pause, kind, %{startup_code: safe_code}}}
+  end
+
+  defp start_port(workspace, env, opts) do
+    node = Keyword.get(opts, :node_path, Config.claude_node_path())
+    helper = Keyword.get(opts, :helper_path, Config.claude_helper_path())
+
+    if File.regular?(node) and File.regular?(helper) do
+      port_env = Enum.map(env, fn {key, value} -> {String.to_charlist(key), if(is_nil(value), do: false, else: String.to_charlist(value))} end)
+      {:ok, Port.open({:spawn_executable, String.to_charlist(node)}, [:binary, :exit_status, args: [String.to_charlist(helper)], cd: String.to_charlist(workspace), env: port_env, line: @max_frame])}
+    else
+      {:error, :claude_runtime_missing}
+    end
+  end
+
+  defp frame(port, until, buffer \\ "") do
+    wait = max(0, until - System.monotonic_time(:millisecond))
+
+    receive do
+      {^port, {:data, {:noeol, chunk}}} ->
+        if byte_size(buffer) + byte_size(chunk) <= @max_frame do
+          frame(port, until, buffer <> chunk)
+        else
+          {:error, :frame_too_large}
+        end
+
+      {^port, {:data, {:eol, chunk}}} ->
+        if byte_size(buffer) + byte_size(chunk) <= @max_frame do
+          case Jason.decode(buffer <> chunk) do
+            {:ok, value} when is_map(value) -> {:ok, value}
+            _ -> {:error, :invalid_frame}
+          end
+        else
+          {:error, :frame_too_large}
+        end
+
+      {^port, {:exit_status, _status}} ->
+        {:error, :helper_exited}
+    after
+      wait -> {:error, :timeout}
+    end
+  end
+
+  defp write(port, message) do
+    data = Jason.encode!(message) <> "\n"
+
+    if byte_size(data) <= @max_frame do
+      try do
+        Port.command(port, data)
+        :ok
+      rescue
+        ArgumentError -> {:error, :port_closed}
+      end
+    else
+      {:error, :frame_too_large}
+    end
+  end
+
+  defp port_identity(port) do
+    with {:os_pid, pid} <- Port.info(port, :os_pid),
+         {:ok, data} <- File.read("/proc/#{pid}/stat"),
+         [_, fields] <- Regex.run(~r/^\d+ \(.*\) (.*)$/s, String.trim(data)),
+         start when is_binary(start) <- Enum.at(String.split(fields), 19) do
+      %{pid: pid, start: start}
+    else
+      _ -> nil
+    end
+  end
+
+  defp valid_owned?(owned) when is_list(owned) and length(owned) <= 1 do
+    Enum.all?(owned, fn
+      %{"pid" => pid, "start" => start} when is_integer(pid) and pid > 1 and is_binary(start) -> Regex.match?(~r/^\d+$/, start)
+      _ -> false
+    end)
+  end
+
+  defp valid_owned?(_owned), do: false
+  defp valid_profile?(profile) when is_binary(profile), do: Regex.match?(~r/^[a-f0-9]{64}$/, profile)
+  defp valid_profile?(_profile), do: false
+  defp valid_usage?(totals) when is_map(totals), do: Enum.all?(~w(input_tokens output_tokens total_tokens), &(is_integer(totals[&1]) and totals[&1] >= 0))
+  defp valid_usage?(_totals), do: false
+  defp emit(callback, event, details), do: callback.(Map.merge(details, %{event: event, timestamp: DateTime.utc_now()}))
+  defp deadline(ms), do: System.monotonic_time(:millisecond) + ms
+  defp new_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+
+  defp close_port(port) do
+    try do
+      Port.close(port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    :ok
+  end
+end

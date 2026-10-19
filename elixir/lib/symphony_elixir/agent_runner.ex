@@ -1,11 +1,10 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single tracker work item in its workspace with Codex.
+  Executes a single tracker work item in its workspace with the selected coding agent.
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{CodingAgent, Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -31,6 +30,12 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, {:max_turns_reached, _details} = reason} ->
         Logger.error("Agent run failed closed for #{issue_context(issue)}: #{inspect(reason)}")
+        exit(reason)
+
+      {:error, {:agent_pause, _kind, _details} = reason} ->
+        exit(reason)
+
+      {:error, {:agent_blocked, _kind} = reason} ->
         exit(reason)
 
       {:error, reason} ->
@@ -93,11 +98,24 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    session_opts = [worker_host: worker_host, expected_profile: Keyword.get(opts, :expected_profile)]
+
+    session_opts =
+      case Keyword.fetch(opts, :coding_agent_adapter) do
+        {:ok, adapter} -> Keyword.put(session_opts, :adapter, adapter)
+        :error -> session_opts
+      end
+
+    with {:ok, session} <- CodingAgent.start_session(workspace, session_opts) do
+      if is_pid(codex_update_recipient), do: send(codex_update_recipient, {:worker_agent_session, issue.id, session})
+
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
-        AppServer.stop_session(session)
+        case CodingAgent.stop_session(session) do
+          :ok -> :ok
+          {:error, _reason} -> exit({:agent_pause, :policy_blocked, %{}})
+        end
       end
     end
   end
@@ -106,7 +124,7 @@ defmodule SymphonyElixir.AgentRunner do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           AppServer.run_turn(
+           CodingAgent.run_turn(
              app_session,
              prompt,
              issue,
@@ -156,7 +174,7 @@ defmodule SymphonyElixir.AgentRunner do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the tracker work item is still in an active state.
+    - The previous coding-agent turn completed normally, but the tracker work item is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.

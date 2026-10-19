@@ -78,6 +78,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
+        <%= if agent = Map.get(@payload, :agent) do %>
+          <p class="metric-detail">
+            Agent: <%= agent.provider %> ·
+            <%= if agent.draining, do: "draining", else: if(agent.readiness[:ready], do: "ready", else: "blocked") %>
+            <%= if agent.pause, do: " · #{agent.pause["kind"]}" %>
+          </p>
+        <% end %>
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -99,16 +106,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="metric-card">
             <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+            <p class="metric-value numeric"><%= token_total(@payload, :total_tokens) %></p>
             <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
+              In <%= token_total(@payload, :input_tokens) %> / Out <%= token_total(@payload, :output_tokens) %>
             </p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
+            <p class="metric-detail">Total agent runtime across completed and active sessions.</p>
           </article>
         </section>
 
@@ -150,7 +157,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Agent update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -379,6 +386,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
+  end
+
+  defp token_total(payload, key) do
+    case Map.get(payload, :agent) do
+      %{usage_available: false} -> "unavailable"
+      _ -> format_int(payload.codex_totals[key])
+    end
   end
 
   defp total_runtime_seconds(payload, now) do

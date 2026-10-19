@@ -330,6 +330,32 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp format_agent_tokens(%{agent: %{usage_available: false}}, _input, _output, _total),
+    do: colorize("│ Tokens: unavailable", @ansi_gray)
+
+  defp format_agent_tokens(_snapshot, input, output, total) do
+    colorize("│ Tokens: ", @ansi_bold) <>
+      colorize("in #{format_count(input)}", @ansi_yellow) <>
+      colorize(" | ", @ansi_gray) <>
+      colorize("out #{format_count(output)}", @ansi_yellow) <>
+      colorize(" | ", @ansi_gray) <>
+      colorize("total #{format_count(total)}", @ansi_yellow)
+  end
+
+  defp format_agent_status(%{agent: %{provider: provider, readiness: readiness, draining: draining, pause: pause}}) do
+    status =
+      cond do
+        draining -> "draining"
+        pause -> pause["kind"]
+        readiness[:ready] -> "ready"
+        true -> "blocked"
+      end
+
+    "│ Coding agent: #{provider} (#{status})"
+  end
+
+  defp format_agent_status(_snapshot), do: []
+
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
@@ -341,7 +367,7 @@ defmodule SymphonyElixir.StatusDashboard do
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
         codex_seconds_running = Map.get(codex_totals, :seconds_running, 0)
         agent_count = length(running)
-        max_agents = Config.settings!().agent.max_concurrent_agents
+        max_agents = Config.max_concurrent_agents()
         running_event_width = running_event_width(terminal_columns_override)
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
@@ -353,15 +379,11 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("#{agent_count}", @ansi_green) <>
              colorize("/", @ansi_gray) <>
              colorize("#{max_agents}", @ansi_gray),
+           format_agent_status(snapshot),
            colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
            colorize("│ Runtime: ", @ansi_bold) <>
              colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
-           colorize("│ Tokens: ", @ansi_bold) <>
-             colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
+           format_agent_tokens(snapshot, codex_input_tokens, codex_output_tokens, codex_total_tokens),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
            project_link_lines,
            project_refresh_line,
