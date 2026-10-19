@@ -336,6 +336,14 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+Both the web and terminal dashboards show the selected coding agent and model
+near the top, including while idle. Claude displays its configured model alias
+(currently `sonnet`). Codex displays the model returned by its most recent
+session startup, labelled “last session”; before the first report it shows
+“Not yet reported” rather than guessing from a command or account.
+The JSON state API includes `agent.model` and `agent.model_source` (`configured`
+or `last_session`). Reported Codex identity resets when the runner restarts.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks

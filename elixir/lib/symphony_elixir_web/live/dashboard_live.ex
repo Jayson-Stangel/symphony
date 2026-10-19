@@ -53,6 +53,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+            <%= if agent = Map.get(@payload, :agent) do %>
+              <div id="runner-identity" class="runner-identity">
+                <p class="runner-agent">Agent: <%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></p>
+                <p class="runner-model">Model: <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model], do: " · last session" %></p>
+                <p class="metric-detail">
+                  <%= cond do %>
+                    <% agent.draining -> %>Draining
+                    <% agent.pause -> %><%= agent.pause["kind"] %>
+                    <% agent.readiness[:ready] -> %>Ready
+                    <% true -> %>Blocked
+                  <% end %>
+                </p>
+              </div>
+            <% end %>
           </div>
 
           <div class="status-stack">
@@ -78,13 +92,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <%= if agent = Map.get(@payload, :agent) do %>
-          <p class="metric-detail">
-            Agent: <%= agent.provider %> ·
-            <%= if agent.draining, do: "draining", else: if(agent.readiness[:ready], do: "ready", else: "blocked") %>
-            <%= if agent.pause, do: " · #{agent.pause["kind"]}" %>
-          </p>
-        <% end %>
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>

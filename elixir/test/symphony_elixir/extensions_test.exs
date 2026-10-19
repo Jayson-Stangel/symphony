@@ -513,7 +513,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = static_snapshot()
+    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil})
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -531,6 +531,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert has_element?(view, "#runner-identity", "Agent: Claude Code")
+    assert has_element?(view, "#runner-identity", "Model: sonnet")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -594,6 +596,22 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: nil, model_source: "last_session"}))
+    end)
+
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "#runner-identity", "Agent: Codex")
+    assert has_element?(view, "#runner-identity", "Not yet reported")
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}))
+    end)
+
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "#runner-identity", "Model: gpt-example")
+    assert has_element?(view, "#runner-identity", "last session")
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
