@@ -19,6 +19,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
           thread_id: String.t(),
+          model: String.t() | nil,
           workspace: Path.t(),
           worker_host: String.t() | nil,
           dynamic_tool_binding: map()
@@ -45,7 +46,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id} <-
+           {:ok, thread_id, model} <-
              do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
         {:ok,
          %{
@@ -56,6 +57,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
+           model: model,
            workspace: expanded_workspace,
            worker_host: worker_host,
            dynamic_tool_binding: dynamic_tool_binding
@@ -299,9 +301,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     })
 
     case await_response(port, @thread_start_id) do
-      {:ok, %{"thread" => thread_payload}} ->
+      {:ok, %{"thread" => thread_payload} = result} ->
         case thread_payload do
-          %{"id" => thread_id} -> {:ok, thread_id}
+          %{"id" => thread_id} -> {:ok, thread_id, Map.get(result, "model")}
           _ -> {:error, {:invalid_thread_payload, thread_payload}}
         end
 

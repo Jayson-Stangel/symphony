@@ -469,3 +469,20 @@ pre,
     padding: 1rem;
   }
 }
+
+.runner-identity {
+  margin-top: 1.25rem;
+  padding: 0.875rem 1rem;
+  border-left: 3px solid currentColor;
+  overflow-wrap: anywhere;
+}
+
+.runner-agent {
+  margin: 0 0 0.375rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.runner-model {
+  margin: 0 0 0.375rem;
+}
