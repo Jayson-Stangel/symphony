@@ -35,6 +35,7 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_token,
       :readiness,
       :expected_profile,
+      :agent_model,
       readiness_opts: [],
       draining: false,
       agent_usage_observed: false,
@@ -162,8 +163,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:worker_agent_session, issue_id, session}, %{running: running} = state) do
     case Map.get(running, issue_id) do
-      nil -> {:noreply, state}
-      entry -> {:noreply, %{state | running: Map.put(running, issue_id, Map.put(entry, :agent_session, session))}}
+      nil ->
+        {:noreply, state}
+
+      entry ->
+        model =
+          case session do
+            %{native: %{model: model}} -> model
+            _ -> nil
+          end
+
+        model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
+        notify_dashboard()
+        {:noreply, %{state | agent_model: model, running: Map.put(running, issue_id, Map.put(entry, :agent_session, session))}}
     end
   end
 
@@ -1688,6 +1700,8 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        agent: %{
          provider: Config.coding_agent(),
+         model: if(Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: state.agent_model),
+         model_source: if(Config.coding_agent() == :claude, do: "configured", else: "last_session"),
          readiness: state.readiness,
          draining: state.draining,
          pause: public_agent_pause(),

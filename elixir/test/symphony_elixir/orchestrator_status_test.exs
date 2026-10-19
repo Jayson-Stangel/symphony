@@ -1,6 +1,39 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  test "live terminal snapshot retains agent identity and unavailable token usage" do
+    previous = Application.get_env(:symphony_elixir, :coding_agent)
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:symphony_elixir, :coding_agent, previous)
+      else
+        Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+    parent = self()
+    name = Module.concat(__MODULE__, :IdentityDashboard)
+    render_fun = fn content -> send(parent, {:identity_frame, content}) end
+    opts = [name: name, enabled: true, refresh_ms: 60_000, render_fun: render_fun]
+    pid = start_supervised!({StatusDashboard, opts})
+    send(pid, :refresh)
+    StatusDashboard.notify_update(name)
+    assert_receive {:identity_frame, content}, 1_000
+    assert content =~ "Agent: Claude Code"
+    assert content =~ "Model: sonnet"
+    assert content =~ "Tokens: unavailable"
+
+    snapshot = Orchestrator.snapshot()
+    agent = %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: agent}}, 0.0)
+    assert rendered =~ "Agent: Codex"
+    assert rendered =~ "Model: gpt-example (last session)"
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
+    assert rendered =~ "Not yet reported (CLI default)"
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -64,6 +97,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
 
     :sys.replace_state(pid, fn _ -> state_with_issue end)
+    send(pid, {:worker_agent_session, issue_id, %{native: %{model: "gpt-example"}}})
 
     now = DateTime.utc_now()
 
@@ -88,6 +122,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.agent.model == "gpt-example"
+    assert snapshot.agent.model_source == "last_session"
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"

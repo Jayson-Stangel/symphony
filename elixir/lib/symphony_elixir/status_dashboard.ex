@@ -317,7 +317,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             agent: Map.get(snapshot, :agent)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -342,7 +343,7 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize("total #{format_count(total)}", @ansi_yellow)
   end
 
-  defp format_agent_status(%{agent: %{provider: provider, readiness: readiness, draining: draining, pause: pause}}) do
+  defp format_agent_status(%{agent: %{provider: provider, readiness: readiness, draining: draining, pause: pause} = agent}) do
     status =
       cond do
         draining -> "draining"
@@ -351,7 +352,10 @@ defmodule SymphonyElixir.StatusDashboard do
         true -> "blocked"
       end
 
-    "│ Coding agent: #{provider} (#{status})"
+    name = if provider in [:claude, "claude"], do: "Claude Code", else: "Codex"
+    model = agent[:model] || "Not yet reported (CLI default)"
+    source = if agent[:model_source] == "last_session" and agent[:model], do: " (last session)", else: ""
+    ["│ Agent: #{name} · #{status}", "│ Model: #{model}#{source}"]
   end
 
   defp format_agent_status(_snapshot), do: []
@@ -585,7 +589,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             agent: Map.get(snapshot, :agent)
            }}
 
         _ ->
