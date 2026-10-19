@@ -4,7 +4,7 @@ COPY runner/claude/package.json runner/claude/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
 COPY runner/claude/*.mjs ./
 
-FROM elixir:1.19@sha256:db1cbca0b49e26e65dd804c75f27ec5f01835f1d29f8b8e4cc8a51f01f986f9f AS common
+FROM elixir:1.19@sha256:db1cbca0b49e26e65dd804c75f27ec5f01835f1d29f8b8e4cc8a51f01f986f9f AS browser-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git nodejs npm python3 ripgrep \
@@ -18,6 +18,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && gh --version \
   && rm -rf /var/lib/apt/lists/*
 
+# Keep browser binaries shared across the root Codex and non-root Claude users.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/symphony/ms-playwright
+WORKDIR /opt/symphony/browser
+COPY runner/browser/package.json runner/browser/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+  && ./node_modules/.bin/playwright install --with-deps chromium \
+  && ln -s /opt/symphony/browser/node_modules/.bin/playwright /usr/local/bin/playwright \
+  && chmod -R a+rX /opt/symphony/browser /opt/symphony/ms-playwright \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm cache clean --force
+COPY runner/browser/smoke.cjs ./
+RUN node smoke.cjs
+
+FROM browser-tools AS common
 WORKDIR /opt/symphony/elixir
 COPY elixir/mix.exs elixir/mix.lock ./
 RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod \

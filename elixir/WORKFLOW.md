@@ -122,6 +122,49 @@ requires them. A missing tool matters only when required for that project's work
   the globally installed `symphony-land` skill, which includes the land loop.
   A repository may deliberately override it with `.codex/skills/symphony-land`.
 
+## App runtime validation (required)
+
+For web application changes, start the app using the target repository's documented
+command, wait for it to be ready, and exercise the changed user flow in a browser.
+Verify the expected result and capture screenshots in the issue workspace. Record
+the commands, results, and artifact paths in the workpad. Follow repository-specific
+media upload procedures when available. Stop any servers you started after testing.
+
+The standard Symphony container includes headless Chromium and Playwright for both
+Codex and Claude. No desktop browser or browser MCP tool is required: use the shell.
+`playwright --version` reports the bundled version. For a quick screenshot, run
+`playwright screenshot --browser chromium http://127.0.0.1:3000 artifacts/page.png`
+after creating the output directory and starting your app on the appropriate port.
+For interactions, use the bundled JavaScript API from any workspace directory:
+
+```bash
+mkdir -p artifacts
+node <<'JS'
+const { chromium } = require('/opt/symphony/browser/node_modules/@playwright/test');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto('http://127.0.0.1:3000');
+    // Exercise the changed flow and assert its expected result here.
+    await page.screenshot({ path: 'artifacts/page.png', fullPage: true });
+  } finally {
+    await browser.close();
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+JS
+```
+
+Replace the URL and add task-specific interactions/assertions; a screenshot alone
+does not prove a user flow works. Use loopback URLs for apps running in the same
+container. Prefer existing project browser tests when present. The bundled package
+and Chromium are version-matched; a project's different Playwright version may
+need its own browser installation. In that case, export `PLAYWRIGHT_BROWSERS_PATH`
+to a writable directory inside the workspace before both
+`npx playwright install chromium` and the project's test command. Do not report a
+missing browser solely because an interactive browser tool is absent.
+If launch fails, capture the actual command and error before treating it as blocked.
+
 ## Status map
 
 - `Backlog` -> out of scope for this workflow; do not modify.
@@ -254,7 +297,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
+    - For web app changes, follow `App runtime validation (required)` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
@@ -313,7 +356,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - Every configured automated reviewer has completed review of the latest PR head, all actionable findings are resolved, and the workpad records the reviewed SHA and review evidence.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+- For web app changes, runtime validation requirements from `App runtime validation (required)` are complete.
 
 ## Guardrails
 

@@ -1,0 +1,29 @@
+name: browser-smoke
+
+on:
+  pull_request:
+    paths:
+      - runner/Dockerfile
+      - runner/browser/**
+      - .github/workflows/browser-smoke.yml
+  push:
+    branches: [dev, main]
+    paths:
+      - runner/Dockerfile
+      - runner/browser/**
+      - .github/workflows/browser-smoke.yml
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build shared browser layer
+        run: docker build --target browser-tools -f runner/Dockerfile -t symphony-browser-test .
+      - name: Verify CLI and browser for both agent users
+        run: |
+          docker run --rm --entrypoint playwright symphony-browser-test --version
+          docker run --rm --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
+          docker run --rm --user 11001:11001 --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
+          docker run --rm --user 11001:11001 --workdir /tmp --entrypoint playwright symphony-browser-test screenshot --browser chromium about:blank /tmp/browser-smoke.png
