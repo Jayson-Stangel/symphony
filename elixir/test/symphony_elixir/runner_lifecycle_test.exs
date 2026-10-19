@@ -76,6 +76,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             done ;;
           *"auth.mjs attest"*) printf '%s\\n' '{"version":1,"policy":1,"profile":"#{String.duplicate("a", 64)}","overages_disabled":true,"attested_at":"#{DateTime.utc_now() |> DateTime.to_iso8601()}"}' ;;
           *"auth.mjs check"*) printf '%s\\n' '{"ready":true,"model_requests":0}' ;;
+          *"/state/agent-upgrade-unresumed"*) touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining" ;;
+        esac ;;
+      exec)
+        case "$*" in
+          *agent-upgrade-unresumed*) test -f "$FIXTURE_STATE.unresumed" && test -f "$FIXTURE_STATE.draining" ;;
         esac ;;
       stop) echo false > "$FIXTURE_STATE" ;;
       start)
@@ -280,6 +285,48 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     assert message =~ "Prior runner restored"
     refute File.read!(Path.join(ctx.root, "curl-calls")) =~ "/agent/resume"
+    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.read!(ctx.log) =~ "volume\trm"
+  end
+
+  test "rollback recovers an API-dead unresumed candidate and refuses unproven or foreign candidates", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
+    curl = Path.join(ctx.root, "curl")
+
+    File.write!(curl, """
+    #!/bin/sh
+    if [ "$(cat "$FIXTURE_STATE.agent")" = claude ]; then exit 1; fi
+    printf '%s' '{"agent":{"draining":false,"readiness":{"ready":true}}}'
+    """)
+
+    File.chmod!(curl, 0o755)
+    File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
+    File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    assert File.exists?(ctx.state <> ".unresumed")
+
+    File.rm!(ctx.state <> ".unresumed")
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rm\t"
+    assert File.exists?(ctx.state <> ".backup")
+
+    File.write!(ctx.state <> ".unresumed", "")
+    File.write!(ctx.state <> ".image", "foreign-image")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "candidate image differs"
+    refute File.read!(ctx.log) =~ "stop\t"
+
+    File.write!(ctx.state <> ".image", "fixture-claude-image")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "Prior runner restored"
+    assert File.read!(ctx.state <> ".agent") == "codex"
+    refute File.exists?(ctx.state <> ".backup")
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
   end

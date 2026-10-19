@@ -1592,7 +1592,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
 
-  test "status dashboard coalesces rapid updates to one render per interval" do
+  test "status dashboard samples agent metadata and coalesces rapid updates" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
     runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
@@ -1617,6 +1617,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                )
     end
 
+    previous_agent = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    {:ok, orchestrator} = Orchestrator.start_link(readiness_opts: [node_path: "/missing-native-check"])
+
+    on_exit(fn ->
+      if Process.alive?(orchestrator), do: GenServer.stop(orchestrator)
+
+      case previous_agent do
+        {:ok, value} -> Application.put_env(:symphony_elixir, :coding_agent, value)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
     {:ok, pid} =
       StatusDashboard.start_link(
         name: dashboard_name,
@@ -1635,7 +1650,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     StatusDashboard.notify_update(dashboard_name)
-    assert_receive {:render, first_render_ms, _content}, 200
+    assert_receive {:render, first_render_ms, content}, 1_000
+    assert content =~ "Coding agent: claude (blocked)"
+    assert content =~ "Tokens: unavailable"
+    :sys.replace_state(orchestrator, &%{&1 | draining: true})
 
     :sys.replace_state(pid, fn state ->
       %{state | last_snapshot_fingerprint: :force_next_change, last_rendered_content: nil}
@@ -1644,7 +1662,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     StatusDashboard.notify_update(dashboard_name)
     StatusDashboard.notify_update(dashboard_name)
 
-    assert_receive {:render, second_render_ms, _content}, 200
+    assert_receive {:render, second_render_ms, content}, 1_000
+    assert content =~ "Coding agent: claude (draining)"
     assert second_render_ms > first_render_ms
     refute_receive {:render, _third_render_ms, _content}, 60
   end

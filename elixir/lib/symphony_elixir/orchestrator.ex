@@ -1769,7 +1769,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
 
   defp remove_drain do
-    case File.rm(drain_path()) do
+    with :ok <- remove_drain_marker("agent-upgrade-unresumed"), do: remove_drain_marker("agent-draining")
+  end
+
+  defp remove_drain_marker(name) do
+    case File.rm(Path.join(Config.agent_state_root(), name)) do
       :ok -> :ok
       {:error, :enoent} -> :ok
       error -> error
