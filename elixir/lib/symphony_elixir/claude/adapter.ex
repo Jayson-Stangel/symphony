@@ -238,6 +238,7 @@ defmodule SymphonyElixir.Claude.Adapter do
     # Only a definite client-error HTTP response is safe to hand back for correction.
     case Jason.decode(output) do
       {:ok, %{"status" => status}} -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
+      {:ok, %{"error" => %{"status" => status}} = payload} when map_size(payload) == 1 -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
       _ -> false
     end
   end

@@ -5,6 +5,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   @helper Path.expand("../../../runner/claude/test/fixtures/port-probe.mjs", __DIR__)
 
   defmodule BoundTool do
+    alias SymphonyElixir.Linear.AgentTool
+
     @spec execute_agent_tool(String.t(), map(), keyword()) :: map()
     def execute_agent_tool("probe_tool", args, opts) do
       if args["query"] == "tool-uncertain", do: raise("tracker response lost")
@@ -16,6 +18,19 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       result(args["query"])
     end
 
+    defp result("tool-linear-definite-error"), do: linear_error({:error, {:linear_api_status, 400}})
+    defp result("tool-linear-server-error"), do: linear_error({:error, {:linear_api_status, 503}})
+
+    defp result("tool-linear-partial-error") do
+      response = %{
+        "data" => %{"issueUpdate" => nil},
+        "errors" => [%{"message" => "partial mutation failure"}],
+        "error" => %{"status" => 400}
+      }
+
+      linear_error({:ok, response})
+    end
+
     defp result(query) do
       case query do
         "tool-shape" -> :unexpected
@@ -25,6 +40,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         "tool-server-error" -> %{"success" => false, "output" => Jason.encode!(%{status: 503})}
         _ -> %{"success" => true, "output" => "tracker result"}
       end
+    end
+
+    defp linear_error(response) do
+      AgentTool.execute("linear_graphql", %{"query" => "query { viewer { id } }"}, linear_client: fn _q, _v, _opts -> response end)
     end
   end
 
@@ -122,7 +141,20 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     opts = ctx.opts |> Keyword.put(:helper_path, helper) |> Keyword.put(:tool_binding, binding)
 
-    for prompt <- ["tool-noack", "tool-uncertain", "tool-throw", "tool-shape", "tool-close", "tool-failed", "tool-server-error", "tool-definite-error", "tool-read-error"] do
+    for prompt <- [
+          "tool-noack",
+          "tool-uncertain",
+          "tool-throw",
+          "tool-shape",
+          "tool-close",
+          "tool-failed",
+          "tool-server-error",
+          "tool-definite-error",
+          "tool-read-error",
+          "tool-linear-definite-error",
+          "tool-linear-server-error",
+          "tool-linear-partial-error"
+        ] do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
       binding = put_in(session.binding.tracker_settings[:port], session.port)
@@ -130,7 +162,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       try do
         result = Adapter.run_turn(binding, prompt, ctx.issue, [])
 
-        if prompt in ["tool-definite-error", "tool-read-error"] do
+        if prompt in ["tool-definite-error", "tool-read-error", "tool-linear-definite-error"] do
           assert {:ok, _} = result
           assert :ready = AgentPause.current()
         else

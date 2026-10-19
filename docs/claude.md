@@ -95,6 +95,10 @@ retains a durable intent marker so a crash cannot silently replay a side effect.
 Reconcile the external result before clearing that marker with the explicit API
 confirmation below.
 
+Definite tracker client rejections, including a Linear HTTP 400 for an invalid
+GraphQL document, are returned to Claude so it can correct the request. Transport
+failures, server errors and partial GraphQL results still pause for reconciliation.
+
 ```sh
 symphony runner drain
 symphony runner recheck  # requires zero active workers and healthy native policy
