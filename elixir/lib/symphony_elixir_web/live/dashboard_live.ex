@@ -56,7 +56,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <%= if agent = Map.get(@payload, :agent) do %>
               <div id="runner-identity" class="runner-identity">
                 <p class="runner-agent">Agent: <%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></p>
-                <p class="runner-model">Model: <strong><%= agent[:model] || "Not yet reported (CLI default)" %></strong><%= if agent[:model_source] == "last_session" and agent[:model], do: " · last session" %></p>
+                <p class="runner-model">Model: <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model], do: " · last session" %></p>
                 <p class="metric-detail">
                   <%= cond do %>
                     <% agent.draining -> %>Draining

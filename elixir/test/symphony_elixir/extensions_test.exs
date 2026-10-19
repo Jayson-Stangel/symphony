@@ -603,7 +603,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     send(view.pid, :observability_updated)
     assert has_element?(view, "#runner-identity", "Agent: Codex")
-    assert has_element?(view, "#runner-identity", "Not yet reported (CLI default)")
+    assert has_element?(view, "#runner-identity", "Not yet reported")
 
     :sys.replace_state(orchestrator_pid, fn state ->
       Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}))

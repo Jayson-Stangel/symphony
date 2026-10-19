@@ -31,7 +31,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered =~ "Agent: Codex"
     assert rendered =~ "Model: gpt-example (last session)"
     rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
-    assert rendered =~ "Not yet reported (CLI default)"
+    assert rendered =~ "Not yet reported"
   end
 
   test "snapshot returns :timeout when snapshot server is unresponsive" do

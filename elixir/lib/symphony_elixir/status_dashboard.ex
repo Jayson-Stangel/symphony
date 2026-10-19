@@ -353,7 +353,7 @@ defmodule SymphonyElixir.StatusDashboard do
       end
 
     name = if provider in [:claude, "claude"], do: "Claude Code", else: "Codex"
-    model = agent[:model] || "Not yet reported (CLI default)"
+    model = agent[:model] || "Not yet reported"
     source = if agent[:model_source] == "last_session" and agent[:model], do: " (last session)", else: ""
     ["│ Agent: #{name} · #{status}", "│ Model: #{model}#{source}"]
   end
