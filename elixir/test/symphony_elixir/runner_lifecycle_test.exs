@@ -155,10 +155,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert calls =~ "rename\tsymphony-review-service\tsymphony-review-service-before-update"
     assert calls =~ "/state/agent-draining"
     assert calls =~ "com.symphony.agent=claude"
+    assert calls =~ "tag\tfixture-claude-image\tsymphony-review-runner-claude:local"
     assert calls =~ "rm\tsymphony-review-service-before-update"
     refute calls =~ "stop\t"
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
   end
 
   test "development namespace separates container, storage, native login and image identities", ctx do

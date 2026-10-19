@@ -587,12 +587,16 @@ validate_agent() {
   case "$1" in codex|claude) ;; *) die 'agent must be codex or claude' ;; esac
 }
 
-runner_image() {
+runner_local_image() {
   local agent=${1:-codex}
   validate_agent "$agent"
-  if [ -n "${SYMPHONY_RUNNER_IMAGE:-}" ]; then printf '%s\n' "$SYMPHONY_RUNNER_IMAGE"
-  elif [ "$agent" = claude ]; then printf '%s-runner-claude:local\n' "$runtime_prefix"
+  if [ "$agent" = claude ]; then printf '%s-runner-claude:local\n' "$runtime_prefix"
   else printf '%s-runner:local\n' "$runtime_prefix"; fi
+}
+
+runner_image() {
+  if [ -n "${SYMPHONY_RUNNER_IMAGE:-}" ]; then printf '%s\n' "$SYMPHONY_RUNNER_IMAGE"
+  else runner_local_image "${1:-codex}"; fi
 }
 
 runner_build_image() {
@@ -1002,6 +1006,7 @@ runner_transition() (
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ]; then
       runner_owned "$root" "$runtime" "$name"
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
+      "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
       runner_finish_journal "$journal"
       printf 'Previously completed runner transition recovered.\n'
       return
@@ -1033,13 +1038,14 @@ runner_transition() (
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
   fi
   runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
   printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"
 )
 
 runner_rollback() (
-  local root=$1 runtime name backup id journal port env_file
+  local root=$1 runtime name backup id journal port env_file previous_agent previous_image
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"; env_file=$(runner_env_file "$root")
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
@@ -1068,6 +1074,9 @@ runner_rollback() (
   fi
   port=$(cat "$journal/port")
   runner_resume_when_ready "$port" || die 'prior runner retained but not ready; repair authentication then retry recovery'
+  previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"
   runner_finish_journal "$journal"
   printf 'Prior runner restored; workspaces, unpushed commits and logs retained.\n'
 )
