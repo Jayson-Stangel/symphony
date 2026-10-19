@@ -40,3 +40,9 @@ for (const mode of ['eof', 'signal', 'owner-death']) test(`Linux owned subproces
   assert.equal(existsSync(sentinel), false);
   assert.equal(ready.owned_native.some(ownedGroupAlive), false);
 });
+
+test('cleanup of an empty owned-process record is idempotent', { skip: process.platform !== 'linux', timeout: 5000 }, async () => {
+  const cleanup = spawn(process.execPath, [new URL('../cleanup.mjs', import.meta.url).pathname, JSON.stringify({ helper: null, native: [] })]);
+  cleanup.stderr.resume();
+  assert.equal((await once(cleanup, 'exit'))[0], 0);
+});

@@ -101,3 +101,15 @@ test('existing REST schemas preserve unconstrained optional JSON request bodies'
     properties: { method: { type: 'string' }, path: { type: 'string' }, body: { description: 'JSON body' } } });
   assert.deepEqual(validate({ method: 'PATCH', path: '/repos/owner/repo/issues/1', body: { nested: [null, true] } }).body, { nested: [null, true] });
 });
+
+// A read-only root does not make a nested writable policy bind safe.
+test('containment requires the effective root and policy mounts to be read-only', async () => {
+  const { isReadOnlyMount } = await import('../runtime.mjs');
+  const root = '1 0 0:1 / / ro,relatime - overlay overlay ro';
+  const policy = '2 1 0:2 / /etc/symphony/claude rw,relatime - tmpfs tmpfs rw';
+  assert.equal(isReadOnlyMount('/', root), true);
+  assert.equal(isReadOnlyMount('/', root.replace('ro,relatime', 'rw,relatime')), false);
+  assert.equal(isReadOnlyMount('/etc/symphony/claude/attestation.json', root + '\n' + policy), false);
+  assert.equal(isReadOnlyMount('/etc/symphony/claude/attestation.json', root + '\n' + policy.replace('rw,relatime', 'ro,relatime')), true);
+  assert.equal(isReadOnlyMount('/', ''), false);
+});

@@ -29,6 +29,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   end
 
   setup do
+    SymphonyElixir.TestSupport.isolate_inference_environment()
     root = Path.join(System.tmp_dir!(), "symphony-claude-adapter-#{System.unique_integer([:positive])}")
     workspace = Path.join(root, "workspaces/issue")
     File.mkdir_p!(workspace)

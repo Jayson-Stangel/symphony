@@ -3,6 +3,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
   alias SymphonyElixir.{AgentPause, AgentReadiness}
 
   setup do
+    SymphonyElixir.TestSupport.isolate_inference_environment()
     root = Path.join(System.tmp_dir!(), "symphony-readiness-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     keys = [:coding_agent, :agent_state_root]

@@ -82,11 +82,19 @@ export function validateAttestation(value, profile, now = Date.now()) {
   if (!Number.isFinite(time) || time > now || now - time > 30 * 24 * 60 * 60 * 1000) throw new RuntimeError('overage_attestation_expired');
 }
 
+export function isReadOnlyMount(path, mountinfo) {
+  const mounts = mountinfo.trim().split('\n').map(line => line.split(' '))
+    .filter(fields => fields.length >= 6 && (fields[4] === '/' || path === fields[4] || path.startsWith(fields[4] + '/')))
+    .sort((a, b) => b[4].length - a[4].length);
+  return mounts.length > 0 && mounts[0][5].split(',').includes('ro');
+}
+
 export function validateContainer() {
   if (process.getuid?.() !== 11001) throw new RuntimeError('nonroot_profile_required');
   const status = readFileSync('/proc/self/status', 'utf8');
+  const mounts = readFileSync('/proc/self/mountinfo', 'utf8');
   if (process.env.SYMPHONY_CONTAINERIZED !== '1' || !/^CapEff:\s+0+$/m.test(status)
-    || !/^NoNewPrivs:\s+1$/m.test(status) || existsSync('/var/run/docker.sock')) throw new RuntimeError('container_profile_required');
+    || !/^NoNewPrivs:\s+1$/m.test(status) || existsSync('/var/run/docker.sock') || !isReadOnlyMount('/', mounts)) throw new RuntimeError('container_profile_required');
 }
 
 export function readiness({ workspace, requireAttestation = true } = {}) {
@@ -96,6 +104,7 @@ export function readiness({ workspace, requireAttestation = true } = {}) {
   const binary = nativeExecutable();
   const identity = nativeIdentity(binary, env);
   if (requireAttestation) {
+    if (!isReadOnlyMount(attestationPath, readFileSync('/proc/self/mountinfo', 'utf8'))) throw new RuntimeError('container_profile_required');
     let value;
     try { value = JSON.parse(readFileSync(attestationPath, 'utf8')); } catch { throw new RuntimeError('overage_attestation_required'); }
     validateAttestation(value, identity.profile);

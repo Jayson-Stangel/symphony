@@ -23,7 +23,7 @@ async function main() {
   signalHelper(owned.helper, 'SIGKILL');
   await delay(100);
   const helper = owned.helper && processIdentity(owned.helper.pid);
-  if (owned.native.some(ownedGroupAlive) || (helper?.start === owned.helper?.start && !['Z', 'X'].includes(helper?.state))) {
+  if (owned.native.some(ownedGroupAlive) || (owned.helper && helper?.start === owned.helper.start && !['Z', 'X'].includes(helper?.state))) {
     throw new Error('cleanup_unconfirmed');
   }
 }
