@@ -551,8 +551,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert has_element?(view, "#runner-identity .runner-state-current[data-ready=true]", "Ready")
 
     updated_snapshot =
       put_in(snapshot.running, [
