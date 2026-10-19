@@ -98,9 +98,17 @@ defmodule SymphonyElixir.Claude.Adapter do
     expected_profile = session.identity["profile"]
 
     case AgentPause.current() do
-      {:paused, value} -> pause(session, value["kind"], Map.take(value, ["resets_at"]))
-      {:probe, %{"profile" => profile}} when profile != expected_profile -> pause(session, "policy_blocked", %{})
-      _ -> do_run_turn(session, prompt, issue, opts)
+      {:paused, value} ->
+        pause(session, value["kind"], Map.take(value, ["resets_at"]))
+
+      {:probe, %{"profile" => profile}} when profile != expected_profile ->
+        pause(session, "policy_blocked", %{})
+
+      _ ->
+        case AgentPause.begin_turn(expected_profile) do
+          :ok -> do_run_turn(session, prompt, issue, opts)
+          _ -> pause(session, "policy_blocked", %{})
+        end
     end
   end
 

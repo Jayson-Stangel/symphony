@@ -57,6 +57,23 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
 
+  test "a transient probe failure leaves a durable blocker instead of spending another probe", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    profile = session.identity["profile"]
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+
+    try do
+      assert {:error, :claude_transient_error} = Adapter.run_turn(session, "transient_error", ctx.issue, [])
+      assert {:paused, %{"kind" => "probe_inflight"}} = AgentPause.claim_due_probe()
+      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "unqualified handshakes and invalid native ownership cannot start a session", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
@@ -156,6 +173,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64)})
     assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
     state_root = Path.join(ctx.root, "state")
+    File.chmod!(state_root, 0o500)
+
+    try do
+      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
+    after
+      File.chmod!(state_root, 0o700)
+    end
 
     callback = fn
       %{event: :session_started} -> File.chmod!(state_root, 0o500)

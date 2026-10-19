@@ -60,6 +60,26 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
 
+  test "a probe is spent durably before input and cannot replay after a failure or restart", ctx do
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert {:error, :probe_not_available} = AgentPause.begin_turn(String.duplicate("b", 64))
+    File.chmod!(ctx.root, 0o500)
+
+    try do
+      assert {:error, _} = AgentPause.begin_turn(@profile)
+    after
+      File.chmod!(ctx.root, 0o700)
+    end
+
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert {:paused, %{"kind" => "probe_inflight"}} = Task.async(fn -> AgentPause.claim_due_probe() end) |> Task.await()
+    assert {:error, :probe_not_available} = AgentPause.begin_turn(@profile)
+    assert :ok = AgentPause.complete_probe(@profile)
+    assert :ready = AgentPause.current()
+  end
+
   test "tracker call intent survives a crash and needs explicit reconciliation" do
     assert :ok = AgentPause.begin_tool(@profile, "issue-one", "tool-one", "probe")
     assert {:error, :eexist} = AgentPause.begin_tool(@profile, "issue-one", "tool-one", "probe")

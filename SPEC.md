@@ -2363,7 +2363,8 @@ No API-key inference fallback is configured.
 Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authoritative quota/auth/policy
 failures persist project pauses. Known quota resets permit one durable probe;
-unknown resets require explicit recheck. External tracker calls persist intent
+unknown resets require explicit recheck. A probe is consumed durably before model
+input; failure or restart cannot automatically replay it. External tracker calls persist intent
 before execution and clear it only on helper acknowledgement. Unknown outcomes
 require operator reconciliation rather than automatic replay. Drain is durable,
 account identity is pinned, and unconfirmed process cleanup blocks readiness

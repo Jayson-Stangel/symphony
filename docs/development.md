@@ -1,0 +1,129 @@
+# Dedicated development workspace
+
+Keep the installed `symphony` command and its stable checkout unchanged. Use a
+separate clone of `dev`, an explicit development command, separate configuration,
+a Docker resource namespace and a separate loopback port. A different checkout
+or configuration directory alone does not isolate Docker resources.
+
+Prerequisites: Docker running, Git, Bash, curl and Python 3. Native Claude login
+is interactive. The container builds its own pinned runtime; host Symphony setup
+and global command/skill installation are unnecessary.
+
+## Create the workspace
+
+Choose a new directory; do not overwrite an existing checkout. Replace the remote
+with your intended upstream if necessary:
+
+```sh
+workspace="$HOME/Repos/symphony-dev-workspace"
+mkdir "$workspace"
+git clone --branch dev https://github.com/Jayson-Stangel/symphony.git "$workspace/source"
+git -C "$workspace/source" switch -c codex/claude-dev-workspace
+mkdir -p "$workspace/bin" "$workspace/config/projects" "$workspace/config/runners"
+chmod 700 "$workspace/config" "$workspace/config/projects" "$workspace/config/runners"
+cat > "$workspace/bin/symphony-dev" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export SYMPHONY_HOME="$workspace/source"
+export SYMPHONY_CONFIG_HOME="$workspace/config"
+export SYMPHONY_RUNNER_HOME="$workspace/config/runners"
+export SYMPHONY_BIN_DIR="$workspace/bin"
+export SYMPHONY_SKILLS_DIR="$workspace/skills"
+export SYMPHONY_RUNNER_NAMESPACE=claude-dev
+export SYMPHONY_CODEX_AUTH_VOLUME=symphony-claude-dev-codex-auth
+unset SYMPHONY_RUNNER_IMAGE
+case "${1:-}" in
+  update)
+    shift
+    exec "$SYMPHONY_HOME/scripts/symphony" update --development-runner "$@" ;;
+  run)
+    shift
+    for arg in "$@"; do
+      [ "$arg" != --host ] || { echo 'Use the isolated development container' >&2; exit 1; }
+    done
+    exec "$SYMPHONY_HOME/scripts/symphony" run --port 14030 "$@" ;;
+  auth|runner|--version|--help|-h)
+    exec "$SYMPHONY_HOME/scripts/symphony" "$@" ;;
+  *) echo 'Use: symphony-dev auth|run|runner|update|--version|--help' >&2; exit 1 ;;
+esac
+SH
+chmod 755 "$workspace/bin/symphony-dev"
+"$workspace/bin/symphony-dev" --version
+```
+
+Use a unique namespace and port for each additional development workspace. Do
+not export these development variables globally or run the stable updater from
+this wrapper. The ordinary global `symphony` command remains the stable command.
+
+## Prepare a disposable target repository
+
+Clone a private disposable target under `projects/` and provide its test
+`WORKFLOW.md`. Restrict its tracker scope and hooks to that repository. Keep
+production trackers and production repository credentials out of this workspace.
+The tracker operates on the remote service: a second local clone does not
+isolate issues, comments or pull requests.
+
+Save a fine-grained token restricted to that disposable repository in
+`config/projects/<repository-name>.env`, with `GITHUB_TOKEN=...`. Grant Contents,
+Issues and Pull requests read/write for a GitHub issue pilot. Set file mode 600.
+Never paste the token into chat, commit it, or use the broad host GitHub login as
+the worker credential.
+
+From inside the disposable target clone:
+
+```sh
+dev="$HOME/Repos/symphony-dev-workspace/bin/symphony-dev"
+"$dev" auth claude login
+# Finish the native login in this terminal. Disable paid usage/overages first.
+"$dev" auth claude attest --overages-disabled
+"$dev" auth claude check
+"$dev" runner doctor --agent claude
+"$dev" run --agent claude
+```
+
+The first login builds the namespaced development image. Login is separate from
+host Claude, the qualification lab, and stable; it does not copy credentials.
+Check/doctor make zero model requests. `run` polls the configured tracker and can
+dispatch open work immediately. Start with one small disposable issue. Visit
+<http://127.0.0.1:14030>, inspect provider/readiness, and verify the workpad, tests
+and test PR. Confirm included allowance and no paid usage in the account UI.
+
+To finish a test without accepting more work:
+
+```sh
+"$dev" runner drain
+# Wait for the dashboard to show zero running workers, then:
+"$dev" runner stop
+```
+
+Stop retains the qualified container, workspaces, state, logs and native login.
+Use the same development command for status/logs/recovery. Never stop or remove
+containers by a broad name filter.
+
+## Refresh the development build
+
+Preserve local edits. Inspect status and divergence before integrating upstream:
+
+```sh
+git -C "$HOME/Repos/symphony-dev-workspace/source" status --short
+git -C "$HOME/Repos/symphony-dev-workspace/source" fetch origin dev
+git -C "$HOME/Repos/symphony-dev-workspace/source" merge --ff-only origin/dev
+# From the disposable target clone, with an existing development runner:
+"$dev" update --agent claude
+```
+
+The wrapper supplies `--development-runner`. This requires a nonempty namespace
+and uses the current development source without fetching `main`, changing global
+links or running host setup. It builds a revision-tagged namespaced candidate,
+preflights it, drains active work, retains the prior container, and resumes only
+after readiness succeeds. A stopped source is supported. A fresh project uses
+`run` instead. If the updater refuses, inspect the reported condition; do not
+delete metadata or force-replace active work. For a retained failed transition:
+
+```sh
+"$dev" update --rollback-runner
+```
+
+Stable deployment remains a separate reviewed `dev` → `main` promotion followed
+by the installed global `symphony update` command.

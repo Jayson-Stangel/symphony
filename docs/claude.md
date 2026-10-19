@@ -11,6 +11,10 @@ this implementation does not resolve that question.
 
 ## Set up a fresh project
 
+To test the integration branch before a production release, follow the
+[dedicated development workspace guide](development.md). It isolates Docker
+resources as well as the checkout, configuration and dashboard port.
+
 After the feature has passed review, been promoted to main, and been installed
 through the existing stable `symphony update` command, run these commands from the
 target repository:
@@ -82,7 +86,10 @@ Claude usage totals include cached input and do not imply dollar costs.
 
 Authoritative quota events can provide a reset time. One persisted probe is
 allowed after that time; absent/unknown reset times require explicit operator
-recheck. Native authentication, policy and protocol failures pause the project
+recheck. That probe is consumed on disk before sending model input. A failed or
+interrupted probe remains blocked as `probe_inflight`, including after restart;
+inspect the failure and explicitly recheck before another attempt. Native
+authentication, policy and protocol failures pause the project
 instead of consuming issue retries indefinitely. An unresolved tracker call
 retains a durable intent marker so a crash cannot silently replay a side effect.
 Reconcile the external result before clearing that marker with the explicit API
@@ -122,6 +129,9 @@ symphony runner recheck
 Native logout/removal refuses a profile mounted by an active container and never
 removes workspaces or logs. Account changes are not silently adopted by an
 existing listener.
+
+`runner stop` retains the stopped container and its metadata as a qualified
+source for a later updater transition. A normal run can restart the same profile.
 
 ## Provider and image transitions
 

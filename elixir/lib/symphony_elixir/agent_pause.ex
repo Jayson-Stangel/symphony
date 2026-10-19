@@ -4,8 +4,8 @@ defmodule SymphonyElixir.AgentPause do
   alias SymphonyElixir.Config
 
   @kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
-  @stored_kinds @kinds ++ ["operator_recheck"]
-  @rank %{"operator_recheck" => 0, "quota_exhausted" => 1, "auth_required" => 2, "policy_blocked" => 3, "protocol_error" => 4, "tool_outcome_uncertain" => 5}
+  @stored_kinds @kinds ++ ["operator_recheck", "probe_inflight"]
+  @rank %{"operator_recheck" => 0, "probe_inflight" => 0, "quota_exhausted" => 1, "auth_required" => 2, "policy_blocked" => 3, "protocol_error" => 4, "tool_outcome_uncertain" => 5}
 
   @spec current() :: :ready | {:paused | :probe, map()}
   def current do
@@ -39,11 +39,24 @@ defmodule SymphonyElixir.AgentPause do
     end)
   end
 
+  @doc "Consumes a durable probe before sending input, so a failed attempt or restart cannot replay it."
+  @spec begin_turn(String.t()) :: :ok | {:error, term()}
+  def begin_turn(profile) do
+    serialized(fn ->
+      case current() do
+        :ready -> :ok
+        {:probe, %{"profile" => ^profile} = value} -> atomic_write(pause_path(), %{value | "kind" => "probe_inflight", "phase" => "waiting", "resets_at" => nil})
+        _ -> {:error, :probe_not_available}
+      end
+    end)
+  end
+
   @spec complete_probe(String.t()) :: :ok | {:error, term()}
   def complete_probe(profile) do
     serialized(fn ->
       case current() do
         {:probe, %{"profile" => ^profile}} -> remove_pause()
+        {:paused, %{"kind" => "probe_inflight", "profile" => ^profile}} -> remove_pause()
         :ready -> :ok
         {:paused, _value} -> :ok
         _ -> {:error, :pause_not_clearable}

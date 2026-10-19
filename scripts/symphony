@@ -14,11 +14,16 @@ while [ -L "$script_path" ]; do
 done
 script_dir=$(cd "$(dirname "$script_path")" && pwd)
 symphony_home=${SYMPHONY_HOME:-$(cd "$script_dir/.." && pwd)}
-config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/symphony"}
+runner_namespace=${SYMPHONY_RUNNER_NAMESPACE:-}
+if [ -n "$runner_namespace" ]; then
+  [[ "$runner_namespace" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die 'SYMPHONY_RUNNER_NAMESPACE must contain 1-32 lowercase letters, digits or hyphens, starting with a letter or digit'
+fi
+runtime_prefix="symphony${runner_namespace:+-$runner_namespace}"
+config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/$runtime_prefix"}
 bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
 skills_dir=${SYMPHONY_SKILLS_DIR:-"${CODEX_HOME:-$HOME/.codex}/skills"}
 runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
-codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-symphony-codex-auth}
+codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-$runtime_prefix-codex-auth}
 managed_skills=(commit push pull linear land)
 
 source_revision() { git -C "$symphony_home" rev-parse HEAD 2>/dev/null || printf 'unknown\n'; }
@@ -146,7 +151,7 @@ Usage:
   symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
   symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony update [--agent codex|claude | --pause-runner | --rollback-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --linear-project SLUG [--local-skill NAME]...
   symphony skill override NAME
   symphony skill migrate-local NAME
@@ -169,6 +174,13 @@ locations. Symphony installs namespaced global skills, such as `symphony-land`,
 to avoid affecting unrelated Codex work. Use `skill override` only when a
 repository genuinely needs to customize one of them. `project doctor` is
 read-only and identifies legacy project configuration safely.
+
+For a separate development checkout, set SYMPHONY_RUNNER_NAMESPACE as well as
+separate configuration paths and a separate dashboard port. The namespace
+isolates Docker container names, images, workspace/state and native auth volumes.
+`update --development-runner --agent ...` transitions only that namespace using
+the current checkout; it does not fetch main, install links or run host setup.
+See docs/development.md. Leave the namespace unset for the stable installation.
 
 Credentials created by init are stored outside the repository at:
   $SYMPHONY_CONFIG_HOME/projects/<repository>.env
@@ -225,7 +237,7 @@ setup() {
 }
 
 update() {
-  local transition_target=
+  local transition_target= development_runner=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --agent)
@@ -238,14 +250,26 @@ update() {
       --rollback-runner)
         [ -z "$transition_target" ] || die 'choose only one runner transition'
         transition_target=rollback; shift ;;
+      --development-runner) development_runner=true; shift ;;
       --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
         if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony update [--agent codex|claude | --rollback-runner | --pause-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown update option: $1" ;;
     esac
   done
+
+  if "$development_runner"; then
+    [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
+    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner or --rollback-runner'
+    case "$transition_target" in
+      pause) runner_pause "$(repo_root)" ;;
+      rollback) runner_rollback "$(repo_root)" ;;
+      *) runner_transition "$(repo_root)" "$transition_target" ;;
+    esac
+    return
+  fi
 
   if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)"; return; fi
   if [ "$transition_target" = rollback ]; then
@@ -549,7 +573,7 @@ container_runtime() {
   die 'no compatible container runtime found; install Docker, OrbStack, or Podman'
 }
 
-runner_id() { printf '%s\n' "symphony-$(project_id "$1")"; }
+runner_id() { printf '%s\n' "$runtime_prefix-$(project_id "$1")"; }
 runner_storage_id() {
   local remote digest
   remote=$(git -C "$1" remote get-url origin)
@@ -567,8 +591,8 @@ runner_image() {
   local agent=${1:-codex}
   validate_agent "$agent"
   if [ -n "${SYMPHONY_RUNNER_IMAGE:-}" ]; then printf '%s\n' "$SYMPHONY_RUNNER_IMAGE"
-  elif [ "$agent" = claude ]; then printf 'symphony-runner-claude:local\n'
-  else printf 'symphony-runner:local\n'; fi
+  elif [ "$agent" = claude ]; then printf '%s-runner-claude:local\n' "$runtime_prefix"
+  else printf '%s-runner:local\n' "$runtime_prefix"; fi
 }
 
 runner_build_image() {
@@ -859,8 +883,8 @@ runner_owned() {
   agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
   validate_agent "$agent"
   mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
-  printf '%s\n' "$mounts" | rg -q "^$storage-workspaces /workspaces$" || die 'workspace mount identity differs; updater refused'
-  printf '%s\n' "$mounts" | rg -q "^$storage-state /var/lib/symphony$" || die 'state mount identity differs; updater refused'
+  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-workspaces /workspaces" || die 'workspace mount identity differs; updater refused'
+  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-state /var/lib/symphony" || die 'state mount identity differs; updater refused'
 }
 
 runner_transition_lock() {
@@ -948,7 +972,7 @@ runner_transition() (
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
   fi
   trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
-  candidate="symphony-runner-$agent:$(source_revision)"
+  candidate="$runtime_prefix-runner-$agent:$(source_revision)"
   export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ -d "$journal" ]; then
     candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
@@ -992,12 +1016,16 @@ runner_transition() (
       users=$("$runtime" ps --filter "volume=$owner" --format '{{.ID}}')
       [ -z "$users" ] || die 'retained volume is in use by another container; updater refused'
     done
-    if [ "$agent" = claude ]; then
-      "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-        --security-opt no-new-privileges --user 0:0 --entrypoint sh \
-        --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$candidate" \
-        -ceu 'chown -hR 11001:11001 /workspaces /state; rm -f /state/claude-cleanup-unconfirmed'
-    fi
+    # A stopped source may never have persisted drain (for example after a host
+    # shutdown). Keep the candidate idle until its readiness has been verified.
+    "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+      --security-opt no-new-privileges --user 0:0 --entrypoint sh \
+      --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$candidate" \
+      -ceu 'printf "draining\n" > /state/agent-draining
+        if [ "$1" = claude ]; then
+          chown -hR 11001:11001 /workspaces /state
+          rm -f /state/claude-cleanup-unconfirmed
+        fi' sh "$agent"
     runner_start "$root" "$port" "$agent" update
   else
     runner_owned "$root" "$runtime" "$name"
@@ -1051,11 +1079,8 @@ runner_stop() {
     storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
     [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name has unknown or foreign storage; refusing to stop it"
     "$runtime" stop --time 30 "$name" >/dev/null
-    if "$runtime" inspect "$name" >/dev/null 2>&1; then
-      "$runtime" rm "$name" >/dev/null
-    fi
   fi
-  printf 'Runner stopped: %s\nWorkspace and log volumes retained.\n' "$name"
+  printf 'Runner stopped: %s\nContainer, workspace and log volumes retained for restart or updater transition.\n' "$name"
 }
 
 runner_doctor() {
