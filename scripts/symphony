@@ -1041,6 +1041,7 @@ runner_transition() (
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
     cp "$env_file" "$journal_tmp/previous.env"
     if runner_is_legacy "$runtime" "$name"; then
+      sed '/^SYMPHONY_RUNNER_IMAGE_ID=/d' "$env_file" >"$journal_tmp/previous.env"
       printf 'SYMPHONY_RUNNER_IMAGE_ID=%s\n' "$("$runtime" inspect --format '{{.Image}}' "$name")" >>"$journal_tmp/previous.env"
     fi
     printf '%s\n' "$agent" >"$journal_tmp/target"
