@@ -316,6 +316,7 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              retrying: retrying,
              codex_totals: codex_totals,
+             agent: Map.get(snapshot, :agent),
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling),
              agent: Map.get(snapshot, :agent)
@@ -588,6 +589,7 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              retrying: retrying,
              codex_totals: codex_totals,
+             agent: Map.get(snapshot, :agent),
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling),
              agent: Map.get(snapshot, :agent)

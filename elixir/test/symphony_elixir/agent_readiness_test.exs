@@ -62,6 +62,8 @@ defmodule SymphonyElixir.AgentReadinessTest do
     File.write!(ctx.helper, Jason.encode!(ready()))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
     assert {:ok, %{draining: true, running: 0}} = GenServer.call(pid, {:agent_control, :drain, false})
+    guard = Path.join([ctx.root, "state", "agent-upgrade-unresumed"])
+    File.write!(guard, "unresumed\n")
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     GenServer.stop(pid)
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
@@ -69,13 +71,30 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
     assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert File.exists?(guard)
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.write!(ctx.helper, Jason.encode!(ready()))
     assert :ok = AgentPause.record(:auth_required, %{profile: String.duplicate("a", 64)})
     assert {:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :recheck, false})
+    refute File.exists?(guard)
+    assert {:ok, %{draining: true}} = GenServer.call(pid, {:agent_control, :drain, false})
+    refute File.exists?(guard)
     assert {:probe, _} = AgentPause.current()
     assert {:error, :invalid_action} = GenServer.call(pid, {:agent_control, :unknown, false})
     GenServer.stop(pid)
+  end
+
+  test "resume stays drained if the durable upgrade marker cannot be invalidated", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    guard = Path.join([ctx.root, "state", "agent-upgrade-unresumed"])
+    File.mkdir_p!(guard)
+    File.write!(Path.join([ctx.root, "state", "agent-draining"]), "draining\n")
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
+    File.rmdir!(guard)
+    assert {:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :resume, false})
   end
 
   test "unready startup does not clean terminal workspaces or begin work", ctx do

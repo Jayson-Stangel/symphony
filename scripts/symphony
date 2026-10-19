@@ -1077,6 +1077,7 @@ runner_transition() (
       --security-opt no-new-privileges --user 0:0 --entrypoint sh \
       --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$candidate" \
       -ceu 'printf "draining\n" > /state/agent-draining
+        printf "unresumed\n" > /state/agent-upgrade-unresumed
         if [ "$1" = claude ]; then
           chown -hR 11001:11001 /workspaces /state
           rm -f /state/claude-cleanup-unconfirmed
@@ -1108,7 +1109,15 @@ runner_rollback() (
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
     if [ "$(runner_status "$root")" != missing ]; then
-      runner_pause "$root"
+      runner_owned "$root" "$runtime" "$name"
+      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$(cat "$journal/image")" ] || die 'candidate image differs; rollback refused'
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$(cat "$journal/target")" ] || die 'candidate provider differs; rollback refused'
+      if [ "$(runner_status "$root")" = true ] &&
+         "$runtime" exec "$name" sh -ceu 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'; then
+        "$runtime" stop --time 30 "$name" >/dev/null
+      else
+        runner_pause "$root"
+      fi
       "$runtime" rm "$name" >/dev/null
     fi
     "$runtime" rename "$backup" "$name"
