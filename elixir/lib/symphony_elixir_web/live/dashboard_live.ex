@@ -53,11 +53,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+
+          </div>
+
             <%= if agent = Map.get(@payload, :agent) do %>
               <div id="runner-identity" class="runner-identity" role="group" aria-label="Runner identity">
                 <div class="runner-agent"><span class="runner-label">Agent:</span> <strong><%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></strong></div>
                 <div class="runner-model"><span class="runner-label">Model:</span> <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model] do %><span class="runner-source">last session</span><% end %></div>
-                <span class="runner-state" data-ready={if agent.readiness[:ready] && !agent.draining && !agent.pause, do: "true", else: "false"}>
+                <span class="runner-state runner-state-current" data-ready={if agent.readiness[:ready] && !agent.draining && !agent.pause, do: "true", else: "false"}>
                   <span class="runner-state-dot" aria-hidden="true"></span>
                   <%= cond do %>
                     <% agent.draining -> %>Draining
@@ -66,20 +69,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <% true -> %>Blocked
                   <% end %>
                 </span>
+                <span class="runner-state runner-state-offline"><span class="runner-state-dot" aria-hidden="true"></span>Offline</span>
               </div>
             <% end %>
-          </div>
-
-          <div class="status-stack">
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
-          </div>
         </div>
       </header>
 
