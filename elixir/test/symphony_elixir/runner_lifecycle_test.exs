@@ -78,6 +78,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *"auth.mjs check"*) printf '%s\\n' '{"ready":true,"model_requests":0}' ;;
         esac ;;
       stop) echo false > "$FIXTURE_STATE" ;;
+      start)
+        if [ -f "${FIXTURE_FAIL_START_FILE:-/nonexistent}" ]; then
+          rm "$FIXTURE_FAIL_START_FILE"; exit 1
+        fi
+        echo true > "$FIXTURE_STATE" ;;
       rm) rm -f "$state" ;;
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
@@ -260,6 +265,20 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     assert message =~ "Prior runner restored"
     assert File.read!(ctx.state <> ".agent") == "<no value>"
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    previous = Path.join(ctx.config, "runners/service.transition/previous.env")
+    image_keys = File.read!(previous) |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "SYMPHONY_RUNNER_IMAGE_ID="))
+    assert image_keys == ["SYMPHONY_RUNNER_IMAGE_ID=fixture-image"]
+    File.write!(Path.join(ctx.root, "curl-calls"), "")
+    fail_start = Path.join(ctx.root, "fail-start-once")
+    File.write!(fail_start, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_FAIL_START_FILE", fail_start}])
+    assert File.read!(ctx.state <> ".agent") == "<no value>"
+    refute File.exists?(ctx.state <> ".backup")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "Prior runner restored"
     refute File.read!(Path.join(ctx.root, "curl-calls")) =~ "/agent/resume"
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
