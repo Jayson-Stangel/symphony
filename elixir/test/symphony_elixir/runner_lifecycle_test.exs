@@ -30,11 +30,18 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *State.Running*) cat "$state" ;;
           *com.symphony.mode*) echo listener ;;
           *com.symphony.agent*) cat "$state.agent" ;;
-          *com.symphony.port*) cat "$state.port" ;;
+          *com.symphony.port*)
+            if [ "$(cat "$state.agent")" = '<no value>' ]; then echo '<no value>'; else cat "$state.port"; fi ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
           *com.symphony.storage*) cat "$state.storage" ;;
-          *Mounts*) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n' "$storage" "$storage" ;;
+          *Config.Entrypoint*) echo "${FIXTURE_ENTRYPOINT:-/usr/local/bin/symphony-runner}" ;;
+          *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
+          *Mounts*)
+            case "$*" in
+              *Source*) printf '%s/WORKFLOW.md /etc/symphony/WORKFLOW.md false\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
+              *) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n%s /root/.codex\\n' "$storage" "$storage" "symphony${SYMPHONY_RUNNER_NAMESPACE:+-$SYMPHONY_RUNNER_NAMESPACE}-codex-auth" ;;
+            esac ;;
         esac ;;
       image)
         case "$*" in
@@ -74,6 +81,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       rm) rm -f "$state" ;;
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
+        case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
         for suffix in '' .agent .port .profile .image .storage; do
           if [ -f "$from$suffix" ]; then mv "$from$suffix" "$to$suffix"; fi
         done ;;
@@ -161,6 +169,100 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
+  end
+
+  test "legacy listeners require explicit updater pause and migrate to either provider", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+
+    for agent <- ["claude", "codex"] do
+      assert {_, 0} = launch_args(ctx, ["run"], env)
+      File.write!(ctx.state <> ".agent", "<no value>")
+      File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+      assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
+      curl = Path.join(ctx.root, "curl")
+      File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true}}}'\n")
+      File.chmod!(curl, 0o755)
+      env = env ++ [{"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
+      assert message =~ "use symphony update --pause-runner"
+      refute File.read!(ctx.log) =~ "stop\t"
+      refute File.read!(ctx.log) =~ "rename\t"
+      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+      assert message =~ "Legacy listener has no drain API"
+      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
+      assert message =~ "Runner transition complete: #{agent}"
+      assert File.read!(ctx.state <> ".agent") == agent
+      refute File.read!(ctx.log) =~ "volume\trm"
+      # Reset the disposable fixture through its supported stop operation.
+      assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+      File.rm!(ctx.state)
+      File.rm!(Path.join(ctx.config, "runners/service.env"))
+    end
+  end
+
+  test "legacy qualification rejects unknown entrypoints and mismatched port metadata", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    File.write!(ctx.state <> ".agent", "<no value>")
+    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env ++ [{"FIXTURE_ENTRYPOINT", "/foreign"}])
+    assert message =~ "unknown legacy entrypoint"
+    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4999\n")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert message =~ "legacy loopback port differs"
+    refute File.read!(ctx.log) =~ "stop\t"
+  end
+
+  test "resuming a transition cannot implicitly stop a restarted legacy listener", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    File.write!(ctx.state <> ".agent", "<no value>")
+    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    journal = Path.join(ctx.config, "runners/service.transition")
+    File.mkdir_p!(journal)
+    File.write!(Path.join(journal, "target"), "claude\n")
+    File.write!(Path.join(journal, "port"), "4010\n")
+    File.write!(Path.join(journal, "image"), "fixture-claude-image\n")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "use symphony update --pause-runner"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
+    assert File.exists?(journal)
+  end
+
+  test "failed legacy migration rolls back through the old state API without resume support", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    File.write!(ctx.state <> ".agent", "<no value>")
+    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
+    curl = Path.join(ctx.root, "curl")
+
+    File.write!(curl, """
+    #!/bin/sh
+    printf '%s\\n' "$*" >> "#{ctx.root}/curl-calls"
+    case "$*" in */api/v1/agent/resume*) exit 1 ;; esac
+    if [ "$(cat "$FIXTURE_STATE.agent")" = claude ]; then
+      printf '%s' '{"counts":{"running":0},"agent":{"draining":true,"readiness":{"ready":false}}}'
+    else
+      printf '%s' '{"counts":{"running":0}}'
+    fi
+    """)
+
+    File.chmod!(curl, 0o755)
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    File.write!(Path.join(ctx.root, "curl-calls"), "")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "Prior runner restored"
+    assert File.read!(ctx.state <> ".agent") == "<no value>"
+    refute File.read!(Path.join(ctx.root, "curl-calls")) =~ "/agent/resume"
+    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.read!(ctx.log) =~ "volume\trm"
   end
 
   test "development namespace separates container, storage, native login and image identities", ctx do
