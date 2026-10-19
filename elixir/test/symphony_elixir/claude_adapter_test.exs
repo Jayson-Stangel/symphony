@@ -21,6 +21,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     defp result("tool-linear-definite-error"), do: linear_error({:error, {:linear_api_status, 400}})
     defp result("tool-linear-server-error"), do: linear_error({:error, {:linear_api_status, 503}})
 
+    defp result("tool-linear-read-error"), do: linear_error({:ok, %{"data" => nil, "errors" => [%{"message" => "read failed", "extensions" => %{"code" => "INPUT_ERROR"}}]}}, "query { viewer { id } }")
+    defp result("tool-linear-read-timeout"), do: linear_error({:error, {:linear_api_request, :timeout}}, "query { viewer { id } }")
+    defp result("tool-linear-local-error"), do: AgentTool.execute("linear_graphql", %{}, linear_client: fn _, _, _ -> raise "must not reach network" end)
+
     defp result("tool-linear-partial-error") do
       response = %{
         "data" => %{"issueUpdate" => nil},
@@ -33,6 +37,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     defp result(query) do
       case query do
+        "tool-invalid-success" -> %{"success" => "invalid", "output" => "malformed reply", "execution" => %{"certainty" => "confirmed"}}
         "tool-shape" -> :unexpected
         "tool-failed" -> %{"success" => false, "output" => "transport response lost"}
         "tool-read-error" -> %{"success" => false, "output" => "read response lost"}
@@ -42,8 +47,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       end
     end
 
-    defp linear_error(response) do
-      AgentTool.execute("linear_graphql", %{"query" => "query { viewer { id } }"}, linear_client: fn _q, _v, _opts -> response end)
+    defp linear_error(response, query \\ "mutation { issueUpdate(id: \"one\", input: {title: \"x\"}) { success } }") do
+      AgentTool.execute("linear_graphql", %{"query" => query}, linear_client: fn _q, _v, _opts -> response end)
     end
   end
 
@@ -146,6 +151,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
           "tool-uncertain",
           "tool-throw",
           "tool-shape",
+          "tool-invalid-success",
           "tool-close",
           "tool-failed",
           "tool-server-error",
@@ -153,7 +159,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
           "tool-read-error",
           "tool-linear-definite-error",
           "tool-linear-server-error",
-          "tool-linear-partial-error"
+          "tool-linear-partial-error",
+          "tool-linear-read-error",
+          "tool-linear-read-timeout",
+          "tool-linear-local-error"
         ] do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
@@ -162,7 +171,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       try do
         result = Adapter.run_turn(binding, prompt, ctx.issue, [])
 
-        if prompt in ["tool-definite-error", "tool-read-error", "tool-linear-definite-error"] do
+        if prompt in ["tool-definite-error", "tool-read-error", "tool-linear-definite-error", "tool-linear-read-error", "tool-linear-read-timeout", "tool-linear-local-error"] do
           assert {:ok, _} = result
           assert :ready = AgentPause.current()
         else

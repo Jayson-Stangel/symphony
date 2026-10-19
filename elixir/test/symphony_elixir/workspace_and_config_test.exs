@@ -671,7 +671,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                     }}
   end
 
-  test "linear client logs response bodies for non-200 graphql responses" do
+  test "linear client logs redacted operation diagnostics for non-200 graphql responses" do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
         assert {:error, {:linear_api_status, 400}} =
@@ -680,7 +680,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                    %{},
                    request_fun: fn _payload, _headers ->
                      {:ok,
-                      %{
+                      %Req.Response{
                         status: 400,
                         body: %{
                           "errors" => [
@@ -696,8 +696,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       end)
 
     assert log =~ "Linear GraphQL request failed status=400"
-    assert log =~ ~s(body=%{"errors" => [%{"extensions" => %{"code" => "BAD_USER_INPUT"})
-    assert log =~ "Variable \\\"$ids\\\" got invalid value"
+    assert log =~ "BAD_USER_INPUT"
+    assert log =~ "document_sha256"
+    refute log =~ "Variable"
+    refute log =~ "body="
   end
 
   test "linear graphql honors a bound tracker-settings snapshot without loading live config" do
