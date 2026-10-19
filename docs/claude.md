@@ -99,6 +99,10 @@ Definite tracker client rejections, including a Linear HTTP 400 for an invalid
 GraphQL document, are returned to Claude so it can correct the request. Transport
 failures, server errors and partial GraphQL results still pause for reconciliation.
 
+An intentional scheduler stop when an issue leaves active states is cancellation,
+not a helper protocol failure. Confirmed cleanup can finish a non-quota operator
+recheck; quota probes and unresolved tracker intents remain blocked until reconciled.
+
 ```sh
 symphony runner drain
 symphony runner recheck  # requires zero active workers and healthy native policy

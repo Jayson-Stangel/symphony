@@ -2371,3 +2371,7 @@ account identity is pinned, and unconfirmed process cleanup blocks readiness
 until updater-owned container recovery. Public state adds provider/readiness/
 pause fields without removing legacy token fields. See docs/claude.md for the
 closed configuration, isolation assumptions and qualified transition contract.
+
+Expected scheduler cancellation when an issue leaves active states must not
+create a helper protocol failure. Confirmed cleanup can end a non-quota operator
+recheck; it must not clear consumed quota probes or unresolved tracker intents.

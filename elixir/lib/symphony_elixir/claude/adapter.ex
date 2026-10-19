@@ -140,6 +140,9 @@ defmodule SymphonyElixir.Claude.Adapter do
           await_turn(session, request, event_id, issue, callback, until, pending)
         end
 
+      {:error, :interrupted} ->
+        {:error, :claude_cancelled}
+
       {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
         handle_message(message, session, request, event_id, issue, callback, until, pending)
 
@@ -279,12 +282,14 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   @impl true
-  def interrupt(session, _reason) do
+  def interrupt(session, reason) do
     # This may be called by the scheduler while the Port owner is waiting on a
     # tracker request. Cleanup uses captured process generations, never a broad kill.
-    case cleanup_owned(session) do
-      :ok -> close_port(session.port)
-      error -> error
+    send(session.owner, {:claude_session_interrupt, session.port})
+
+    with :ok <- cleanup_owned(session),
+         :ok <- close_port(session.port) do
+      if reason == :issue_state_change, do: AgentPause.cancel_recheck(session.identity["profile"]), else: :ok
     end
   end
 
@@ -357,6 +362,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     wait = max(0, until - System.monotonic_time(:millisecond))
 
     receive do
+      {:claude_session_interrupt, ^port} ->
+        {:error, :interrupted}
+
       {^port, {:data, {:noeol, chunk}}} ->
         if byte_size(buffer) + byte_size(chunk) <= @max_frame do
           frame(port, until, buffer <> chunk)

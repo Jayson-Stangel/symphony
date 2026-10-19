@@ -195,6 +195,35 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ok = Adapter.stop_session(session)
   end
 
+  test "scheduler handoff cancels a real waiting Port without recording a protocol failure", ctx do
+    assert :ok = AgentPause.record(:protocol_error, %{profile: String.duplicate("a", 64)})
+    assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
+    parent = self()
+
+    worker =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:waiting_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue,
+            on_message: fn
+              %{event: :session_started} -> send(parent, :waiting_turn)
+              _ -> :ok
+            end
+          )
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:waiting_session, session}, 1_000
+    assert_receive :waiting_turn, 1_000
+    assert :ok = Adapter.interrupt(session, :issue_state_change)
+    assert {:error, :claude_cancelled} = Task.await(worker, 10_000)
+    assert :ready = AgentPause.current()
+  end
+
   test "a different account's probe cannot run and unwritable probe completion cannot clear policy", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
@@ -224,6 +253,54 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       File.chmod!(state_root, 0o700)
       Adapter.stop_session(session)
     end
+  end
+
+  test "orchestrator Human Review reconciliation keeps the next issue dispatchable", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:protocol_error, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:handoff_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue,
+            on_message: fn
+              %{event: :session_started} -> send(parent, :handoff_turn)
+              _ -> :ok
+            end
+          )
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:handoff_session, session}, 1_000
+    assert_receive :handoff_turn, 1_000
+
+    entry = %{
+      pid: pid,
+      ref: ref,
+      identifier: ctx.issue.identifier,
+      issue: ctx.issue,
+      started_at: DateTime.utc_now(),
+      agent_session: %{adapter: Adapter, native: session}
+    }
+
+    state = %Orchestrator.State{
+      running: %{ctx.issue.id => entry},
+      claimed: MapSet.new([ctx.issue.id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    issue = %{ctx.issue | state: "Human Review", dispatchable: true}
+    state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    assert state.running == %{}
+    refute MapSet.member?(state.claimed, ctx.issue.id)
+    assert AgentPause.current() == :ready
   end
 
   test "missing cleanup executables do not falsely confirm an explicit interrupt", ctx do

@@ -94,6 +94,41 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert {:error, :invalid_tool_id} = AgentPause.finish_tool(nil)
   end
 
+  test "expected handoff clears only a non-quota recheck with no pending effects", ctx do
+    assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert {:paused, %{"kind" => "operator_recheck_inflight"}} = AgentPause.current()
+    assert :ok = AgentPause.cancel_recheck(String.duplicate("b", 64))
+    assert :ok = AgentPause.begin_tool(@profile, "issue", "pending", "probe")
+    assert :ok = AgentPause.cancel_recheck(@profile)
+    assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = AgentPause.current()
+    assert :ok = AgentPause.finish_tool("pending")
+    File.chmod!(ctx.root, 0o500)
+
+    try do
+      assert {:error, _} = AgentPause.cancel_recheck(@profile)
+    after
+      File.chmod!(ctx.root, 0o700)
+    end
+
+    assert :ok = AgentPause.cancel_recheck(@profile)
+    assert :ready = AgentPause.current()
+    assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert :ok = AgentPause.complete_probe(@profile)
+    assert :ready = AgentPause.current()
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert {:probe, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert :ok = AgentPause.cancel_recheck(@profile)
+    assert {:paused, %{"kind" => "probe_inflight"}} = AgentPause.current()
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert {:probe, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+  end
+
   test "a due quota probe cannot proceed when durable state cannot be written", ctx do
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
     path = Path.join(ctx.root, "claude-pause.json")
