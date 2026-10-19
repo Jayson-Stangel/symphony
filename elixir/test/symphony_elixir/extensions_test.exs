@@ -463,9 +463,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".runner-state-current"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-current"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
 
     favicon_conn = get(build_conn(), "/favicon.png")
@@ -543,16 +543,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
+    refute has_element?(view, ".status-badge-live")
+    assert has_element?(view, "#runner-identity .runner-state-offline", "Offline")
     assert html =~ "Copy ID"
     assert html =~ "Agent update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert has_element?(view, "#runner-identity .runner-state-current[data-ready=true]", "Ready")
 
     updated_snapshot =
       put_in(snapshot.running, [
