@@ -5,6 +5,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   @helper Path.expand("../../../runner/claude/test/fixtures/port-probe.mjs", __DIR__)
 
   defmodule BoundTool do
+    alias SymphonyElixir.Linear.AgentTool
+
     @spec execute_agent_tool(String.t(), map(), keyword()) :: map()
     def execute_agent_tool("probe_tool", args, opts) do
       if args["query"] == "tool-uncertain", do: raise("tracker response lost")
@@ -16,6 +18,19 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       result(args["query"])
     end
 
+    defp result("tool-linear-definite-error"), do: linear_error({:error, {:linear_api_status, 400}})
+    defp result("tool-linear-server-error"), do: linear_error({:error, {:linear_api_status, 503}})
+
+    defp result("tool-linear-partial-error") do
+      response = %{
+        "data" => %{"issueUpdate" => nil},
+        "errors" => [%{"message" => "partial mutation failure"}],
+        "error" => %{"status" => 400}
+      }
+
+      linear_error({:ok, response})
+    end
+
     defp result(query) do
       case query do
         "tool-shape" -> :unexpected
@@ -25,6 +40,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         "tool-server-error" -> %{"success" => false, "output" => Jason.encode!(%{status: 503})}
         _ -> %{"success" => true, "output" => "tracker result"}
       end
+    end
+
+    defp linear_error(response) do
+      AgentTool.execute("linear_graphql", %{"query" => "query { viewer { id } }"}, linear_client: fn _q, _v, _opts -> response end)
     end
   end
 
@@ -122,7 +141,20 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     opts = ctx.opts |> Keyword.put(:helper_path, helper) |> Keyword.put(:tool_binding, binding)
 
-    for prompt <- ["tool-noack", "tool-uncertain", "tool-throw", "tool-shape", "tool-close", "tool-failed", "tool-server-error", "tool-definite-error", "tool-read-error"] do
+    for prompt <- [
+          "tool-noack",
+          "tool-uncertain",
+          "tool-throw",
+          "tool-shape",
+          "tool-close",
+          "tool-failed",
+          "tool-server-error",
+          "tool-definite-error",
+          "tool-read-error",
+          "tool-linear-definite-error",
+          "tool-linear-server-error",
+          "tool-linear-partial-error"
+        ] do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
       binding = put_in(session.binding.tracker_settings[:port], session.port)
@@ -130,7 +162,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       try do
         result = Adapter.run_turn(binding, prompt, ctx.issue, [])
 
-        if prompt in ["tool-definite-error", "tool-read-error"] do
+        if prompt in ["tool-definite-error", "tool-read-error", "tool-linear-definite-error"] do
           assert {:ok, _} = result
           assert :ready = AgentPause.current()
         else
@@ -163,6 +195,35 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ok = Adapter.stop_session(session)
   end
 
+  test "scheduler handoff cancels a real waiting Port without recording a protocol failure", ctx do
+    assert :ok = AgentPause.record(:protocol_error, %{profile: String.duplicate("a", 64)})
+    assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
+    parent = self()
+
+    worker =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:waiting_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue,
+            on_message: fn
+              %{event: :session_started} -> send(parent, :waiting_turn)
+              _ -> :ok
+            end
+          )
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:waiting_session, session}, 1_000
+    assert_receive :waiting_turn, 1_000
+    assert :ok = Adapter.interrupt(session, :issue_state_change)
+    assert {:error, :claude_cancelled} = Task.await(worker, 10_000)
+    assert :ready = AgentPause.current()
+  end
+
   test "a different account's probe cannot run and unwritable probe completion cannot clear policy", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
@@ -192,6 +253,54 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       File.chmod!(state_root, 0o700)
       Adapter.stop_session(session)
     end
+  end
+
+  test "orchestrator Human Review reconciliation keeps the next issue dispatchable", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:protocol_error, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:handoff_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue,
+            on_message: fn
+              %{event: :session_started} -> send(parent, :handoff_turn)
+              _ -> :ok
+            end
+          )
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:handoff_session, session}, 1_000
+    assert_receive :handoff_turn, 1_000
+
+    entry = %{
+      pid: pid,
+      ref: ref,
+      identifier: ctx.issue.identifier,
+      issue: ctx.issue,
+      started_at: DateTime.utc_now(),
+      agent_session: %{adapter: Adapter, native: session}
+    }
+
+    state = %Orchestrator.State{
+      running: %{ctx.issue.id => entry},
+      claimed: MapSet.new([ctx.issue.id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    issue = %{ctx.issue | state: "Human Review", dispatchable: true}
+    state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    assert state.running == %{}
+    refute MapSet.member?(state.claimed, ctx.issue.id)
+    assert AgentPause.current() == :ready
   end
 
   test "missing cleanup executables do not falsely confirm an explicit interrupt", ctx do

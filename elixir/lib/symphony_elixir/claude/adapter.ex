@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
+  @client_error_statuses [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
   @pause_kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
   @codes %{
     "auth_required" => :auth_required,
@@ -139,6 +140,9 @@ defmodule SymphonyElixir.Claude.Adapter do
           await_turn(session, request, event_id, issue, callback, until, pending)
         end
 
+      {:error, :interrupted} ->
+        {:error, :claude_cancelled}
+
       {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
         handle_message(message, session, request, event_id, issue, callback, until, pending)
 
@@ -237,7 +241,8 @@ defmodule SymphonyElixir.Claude.Adapter do
     # A transport/tool error is not evidence that a remote mutation was rejected.
     # Only a definite client-error HTTP response is safe to hand back for correction.
     case Jason.decode(output) do
-      {:ok, %{"status" => status}} -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
+      {:ok, %{"status" => status}} -> status in @client_error_statuses
+      {:ok, %{"error" => %{"status" => status}} = payload} when map_size(payload) == 1 -> status in @client_error_statuses
       _ -> false
     end
   end
@@ -277,12 +282,14 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   @impl true
-  def interrupt(session, _reason) do
+  def interrupt(session, reason) do
     # This may be called by the scheduler while the Port owner is waiting on a
     # tracker request. Cleanup uses captured process generations, never a broad kill.
-    case cleanup_owned(session) do
-      :ok -> close_port(session.port)
-      error -> error
+    send(session.owner, {:claude_session_interrupt, session.port})
+
+    with :ok <- cleanup_owned(session),
+         :ok <- close_port(session.port) do
+      if reason == :issue_state_change, do: AgentPause.cancel_recheck(session.identity["profile"]), else: :ok
     end
   end
 
@@ -355,6 +362,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     wait = max(0, until - System.monotonic_time(:millisecond))
 
     receive do
+      {:claude_session_interrupt, ^port} ->
+        {:error, :interrupted}
+
       {^port, {:data, {:noeol, chunk}}} ->
         if byte_size(buffer) + byte_size(chunk) <= @max_frame do
           frame(port, until, buffer <> chunk)

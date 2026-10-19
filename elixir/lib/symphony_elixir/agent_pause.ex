@@ -4,8 +4,17 @@ defmodule SymphonyElixir.AgentPause do
   alias SymphonyElixir.Config
 
   @kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
-  @stored_kinds @kinds ++ ["operator_recheck", "probe_inflight"]
-  @rank %{"operator_recheck" => 0, "probe_inflight" => 0, "quota_exhausted" => 1, "auth_required" => 2, "policy_blocked" => 3, "protocol_error" => 4, "tool_outcome_uncertain" => 5}
+  @stored_kinds @kinds ++ ["operator_recheck", "operator_recheck_inflight", "probe_inflight"]
+  @rank %{
+    "operator_recheck" => 0,
+    "operator_recheck_inflight" => 0,
+    "probe_inflight" => 0,
+    "quota_exhausted" => 1,
+    "auth_required" => 2,
+    "policy_blocked" => 3,
+    "protocol_error" => 4,
+    "tool_outcome_uncertain" => 5
+  }
 
   @spec current() :: :ready | {:paused | :probe, map()}
   def current do
@@ -44,22 +53,42 @@ defmodule SymphonyElixir.AgentPause do
   def begin_turn(profile) do
     serialized(fn ->
       case current() do
-        :ready -> :ok
-        {:probe, %{"profile" => ^profile} = value} -> atomic_write(pause_path(), %{value | "kind" => "probe_inflight", "phase" => "waiting", "resets_at" => nil})
-        _ -> {:error, :probe_not_available}
+        :ready ->
+          :ok
+
+        {:probe, %{"profile" => ^profile} = value} ->
+          kind = inflight_kind(value["kind"])
+          atomic_write(pause_path(), %{value | "kind" => kind, "phase" => "waiting", "resets_at" => nil})
+
+        _ ->
+          {:error, :probe_not_available}
       end
     end)
   end
+
+  defp inflight_kind("operator_recheck"), do: "operator_recheck_inflight"
+  defp inflight_kind(_kind), do: "probe_inflight"
 
   @spec complete_probe(String.t()) :: :ok | {:error, term()}
   def complete_probe(profile) do
     serialized(fn ->
       case current() do
         {:probe, %{"profile" => ^profile}} -> remove_pause()
-        {:paused, %{"kind" => "probe_inflight", "profile" => ^profile}} -> remove_pause()
+        {:paused, %{"kind" => kind, "profile" => ^profile}} when kind in ["probe_inflight", "operator_recheck_inflight"] -> remove_pause()
         :ready -> :ok
         {:paused, _value} -> :ok
         _ -> {:error, :pause_not_clearable}
+      end
+    end)
+  end
+
+  @doc "Clear only a non-quota recheck after confirmed cleanup for an issue state change."
+  @spec cancel_recheck(String.t()) :: :ok | {:error, term()}
+  def cancel_recheck(profile) do
+    serialized(fn ->
+      case current() do
+        {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} -> remove_pause()
+        _ -> :ok
       end
     end)
   end
@@ -140,8 +169,11 @@ defmodule SymphonyElixir.AgentPause do
   defp recheck_pause(:ready, _profile), do: :ok
 
   defp recheck_pause({_, %{"kind" => "quota_exhausted", "resets_at" => reset}}, profile) when is_integer(reset) and reset > 0 do
-    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: write_probe(profile)
+    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: write_probe(profile, "quota_exhausted")
   end
+
+  defp recheck_pause({_, %{"kind" => kind}}, profile) when kind in ["quota_exhausted", "probe_inflight"],
+    do: write_probe(profile, "quota_exhausted")
 
   defp recheck_pause(_pause, profile), do: write_probe(profile)
 
@@ -161,8 +193,8 @@ defmodule SymphonyElixir.AgentPause do
     end)
   end
 
-  defp write_probe(profile) do
-    atomic_write(pause_path(), %{"version" => 1, "kind" => "operator_recheck", "profile" => profile, "phase" => "probe", "resets_at" => nil})
+  defp write_probe(profile, kind \\ "operator_recheck") do
+    atomic_write(pause_path(), %{"version" => 1, "kind" => kind, "profile" => profile, "phase" => "probe", "resets_at" => nil})
   end
 
   defp read_pause do

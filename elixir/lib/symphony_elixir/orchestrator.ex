@@ -445,7 +445,7 @@ defmodule SymphonyElixir.Orchestrator do
       if terminal_issue_state?(issue.state, terminal_states) do
         # Stop any worker before deleting its checkout, including a state change
         # observed after the running-issue reconciliation earlier in this tick.
-        state = terminate_running_issue(state, issue.id, true)
+        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
         cleanup_if_stopped(state, issue)
         state
       else
@@ -587,12 +587,12 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, true)
+        terminate_running_issue(state, issue.id, true, :issue_state_change)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :issue_state_change)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -600,7 +600,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :issue_state_change)
     end
   end
 
@@ -720,7 +720,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_stopped_workspace(false, _entry, _identifier), do: :ok
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace, reason \\ :scheduler_stop) do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
@@ -728,7 +728,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
 
-        case stop_running_task(pid, ref, state.task_supervisor, Map.get(running_entry, :agent_session)) do
+        case stop_running_task(pid, ref, state.task_supervisor, Map.get(running_entry, :agent_session), reason) do
           :ok ->
             cleanup_stopped_workspace(cleanup_workspace, running_entry, identifier)
 
@@ -929,10 +929,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid, _task_supervisor), do: :ok
 
-  defp stop_running_task(pid, ref, task_supervisor, session) do
+  defp stop_running_task(pid, ref, task_supervisor, session, reason \\ :scheduler_stop) do
     result =
       case session do
-        %{adapter: SymphonyElixir.Claude.Adapter} -> SymphonyElixir.CodingAgent.interrupt(session, :scheduler_stop)
+        %{adapter: SymphonyElixir.Claude.Adapter} -> SymphonyElixir.CodingAgent.interrupt(session, reason)
         _ -> :ok
       end
 

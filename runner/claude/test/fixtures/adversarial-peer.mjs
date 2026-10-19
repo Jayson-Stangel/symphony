@@ -30,7 +30,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     send({ ...base, type: 'turn_result', outcome: type });
   } else if (c.type === 'tool_result') {
-    if (['tool-definite-error', 'tool-read-error'].includes(activePrompt)) send({ ...active, type: 'tool_result_accepted', tool_id: 'one' });
+    if (['tool-definite-error', 'tool-read-error', 'tool-linear-definite-error', 'tool-linear-server-error', 'tool-linear-partial-error'].includes(activePrompt)) send({ ...active, type: 'tool_result_accepted', tool_id: 'one' });
     send({ ...active, type: 'turn_result', outcome: 'completed' }); // Deliberately missing tool ACK.
   } else if (c.type === 'stop') {
     if (mode === 'exit-on-stop') process.exit(1);
