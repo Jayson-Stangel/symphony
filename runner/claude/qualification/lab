@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Development lab only. Never calls the global Symphony launcher or updater.
+set -euo pipefail
+lab_root=$(cd "$(dirname "$0")" && pwd)
+lab_namespace=symphony-claude-qualification-01a15554
+lab_image="$lab_namespace:0.3.303-2.1.303"
+lab_auth="$lab_namespace-auth"
+lab_workspace="$lab_namespace-workspace"
+lab_label=com.symphony.claude-qualification
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+owned_volume() {
+  local volume=$1 owner
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    owner=$(docker volume inspect --format "{{index .Labels \"$lab_label\"}}" "$volume")
+    [ "$owner" = "$lab_namespace" ] || fail "Refusing foreign lab volume: $volume"
+  else
+    docker volume create --label "$lab_label=$lab_namespace" "$volume" >/dev/null
+  fi
+}
+
+verify_image() {
+  local owner
+  owner=$(docker image inspect --format "{{index .Config.Labels \"$lab_label\"}}" "$lab_image")
+  [ "$owner" = "$lab_namespace" ] || fail 'Qualification image identity mismatch; run lab build.'
+  # Pin to the resolved immutable image for this invocation.
+  lab_image=$(docker image inspect --format '{{.Id}}' "$lab_image")
+}
+
+usage() {
+  printf 'Usage: %s build|test|inspect|login|status|live|cancel --confirm-overages-disabled\n' "$0"
+  printf 'Isolated development resources. live sends two model turns; cancel sends one.\n'
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$command" in
+  build)
+    [ "$#" = 0 ] || fail 'build takes no arguments'
+    docker build --label "$lab_label=$lab_namespace" --tag "$lab_image" "$lab_root"
+    ;;
+  test)
+    [ "$#" = 0 ] || fail 'test takes no arguments'
+    verify_image
+    docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --tmpfs /tmp:rw,exec,nosuid,nodev,size=32m \
+      --entrypoint npm --workdir /opt/symphony-claude-lab "$lab_image" test
+    ;;
+  inspect|login|status|live|cancel)
+    if [ "$command" = live ] || [ "$command" = cancel ]; then
+      [ "$#" = 1 ] && [ "$1" = --confirm-overages-disabled ] || fail 'Live test requires --confirm-overages-disabled after checking Claude account settings.'
+    else
+      [ "$#" = 0 ] || fail "$command takes no arguments"
+    fi
+    verify_image
+    owned_volume "$lab_auth"
+    owned_volume "$lab_workspace"
+    flags=(--network bridge)
+    [ "$command" != inspect ] || flags=(--network none)
+    [ "$command" != login ] || flags+=(-it)
+    docker run --rm --name "$lab_namespace-active" "${flags[@]}" \
+      --label "$lab_label=$lab_namespace" \
+      --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --pids-limit 256 --memory 2g --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --mount "type=volume,source=$lab_auth,target=/home/claude" \
+      --mount "type=volume,source=$lab_workspace,target=/lab-workspace" \
+      "$lab_image" "$command" "$@"
+    ;;
+  help|--help|-h) usage ;;
+  *) usage >&2; exit 1 ;;
+esac
