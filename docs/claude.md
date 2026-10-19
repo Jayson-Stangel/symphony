@@ -172,8 +172,12 @@ stop with retained volumes; it cannot drain an old listener. Retry
 stopped listener. Rollback understands its previous state API. Unknown legacy
 formats or mismatched ownership are refused. Do not repair
 or restart a stable installation manually when the updater refuses; report the
-limitation. An unresponsive active candidate is also refused unless Docker
-verifies it is an empty restarting container. Never kill active work to bypass a
+limitation. Rollback can stop a verified candidate whose control API never became
+usable while its durable upgrade marker proves it has never resumed. The runtime
+removes this marker before permitting work, including on manual resume; later
+drains do not recreate it. Candidates that may have resumed must drain normally.
+An unresponsive active candidate is otherwise refused unless Docker verifies it is
+an empty restarting container. Never kill active work to bypass a
 failed drain.
 
 ## Runtime contract
