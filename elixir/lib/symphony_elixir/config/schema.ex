@@ -253,6 +253,45 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Claude do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    @fields [:model, :max_concurrent_agents, :max_agentic_turns, :read_timeout_ms, :turn_timeout_ms, :stall_timeout_ms]
+
+    embedded_schema do
+      field(:model, :string, default: "sonnet")
+      field(:max_concurrent_agents, :integer, default: 1)
+      field(:max_agentic_turns, :integer, default: 50)
+      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      changeset =
+        schema
+        |> cast(attrs, @fields, empty_values: [])
+        |> validate_inclusion(:model, ["sonnet"])
+        |> validate_number(:max_concurrent_agents, greater_than: 0, less_than_or_equal_to: 1)
+        |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
+        |> validate_number(:read_timeout_ms, greater_than: 0, less_than_or_equal_to: 60_000)
+        |> validate_number(:turn_timeout_ms, greater_than: 0, less_than_or_equal_to: 3_600_000)
+        |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+
+      allowed = Enum.map(@fields, &Atom.to_string/1)
+
+      if Enum.any?(Map.keys(attrs), &(&1 not in allowed)) do
+        add_error(changeset, :model, "unsupported Claude setting; authentication and billing policy are runtime-owned")
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -322,6 +361,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:claude, Claude, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -416,6 +456,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:claude, with: &Claude.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

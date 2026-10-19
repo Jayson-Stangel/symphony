@@ -145,8 +145,27 @@ replacing one, finish its active work or back up `/workspaces` and
 ephemeral container. New mounts do not migrate existing container files automatically.
 
 Set `SYMPHONY_CONTAINER_RUNTIME=docker` or `podman` if both are installed. The runner image is a
-portable Node/Git/Codex base; add project-specific dependencies in `hooks.after_create` or publish
-your own compatible image and set `SYMPHONY_RUNNER_IMAGE`.
+portable Node/Git/agent base with Playwright and headless Chromium; add project-specific
+dependencies in `hooks.after_create` or publish your own compatible image and set
+`SYMPHONY_RUNNER_IMAGE`.
+
+Both agent images include a version-matched Playwright/Chromium installation and its
+Linux dependencies. Use `playwright --version` or `playwright screenshot --browser chromium
+http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interactions, load
+`require('/opt/symphony/browser/node_modules/@playwright/test')` in Node.js. Browser binaries
+are shared through `PLAYWRIGHT_BROWSERS_PATH`; projects using a different Playwright version
+may need to set that variable to a writable workspace directory and install their own
+matching browser before running tests. The workflow template includes web app
+validation guidance. Existing project workflows are preserved, so copy that section into
+them explicitly when adopting this capability.
+
+To verify just the browser layer without credentials or a running listener:
+
+```bash
+docker build --target browser-tools -f runner/Dockerfile -t symphony-browser-test .
+docker run --rm --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
+docker run --rm --user 11001:11001 --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
+```
 
 Use `SYMPHONY_BIN_DIR`, `SYMPHONY_CONFIG_HOME`, and `SYMPHONY_SKILLS_DIR` to relocate the command,
 configuration, and skills (or pass the equivalent flags to `install`, `doctor`, or `update`). Use
@@ -293,3 +312,14 @@ help with the setup:
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+## Claude subscription workers
+
+Codex remains the default. A qualified personal Claude profile adds one isolated
+Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
+It requires disabled-overage owner attestation, project-scoped credentials and
+model-free readiness checks. See [setup, pauses and updater transitions](docs/claude.md)
+for the contract and its limits. Existing stable installations change only through
+reviewed promotion and the installed `symphony update` command.
+For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
+with separate configuration, Docker resource names and a separate dashboard port.
