@@ -4,6 +4,14 @@ defmodule SymphonyElixir.CodingAgent.Codex do
 
   alias SymphonyElixir.{AgentPause, Codex.AppServer}
 
+  @pause_kinds %{
+    "tool_outcome_uncertain" => :tool_outcome_uncertain,
+    "protocol_error" => :protocol_error,
+    "policy_blocked" => :policy_blocked,
+    "auth_required" => :auth_required,
+    "quota_exhausted" => :quota_exhausted
+  }
+
   @impl true
   def start_session(workspace, opts), do: AppServer.start_session(workspace, opts)
 
@@ -11,13 +19,23 @@ defmodule SymphonyElixir.CodingAgent.Codex do
   def run_turn(session, prompt, issue, opts) do
     profile = AgentPause.codex_profile()
 
-    with :ok <- AgentPause.begin_turn(profile),
+    with :ok <- check_turn(profile),
          {:ok, result} <- AppServer.run_turn(session, prompt, issue, opts),
          :ok <- AgentPause.complete_probe(profile) do
       {:ok, result}
-    else
-      {:error, :probe_not_available} -> {:error, {:agent_pause, :tool_outcome_uncertain, %{profile: profile}}}
-      error -> error
+    end
+  end
+
+  defp check_turn(profile) do
+    case AgentPause.current() do
+      {:paused, %{"kind" => kind}} ->
+        {:error, {:agent_pause, Map.get(@pause_kinds, kind, :policy_blocked), %{profile: profile}}}
+
+      _ ->
+        case AgentPause.begin_turn(profile) do
+          :ok -> :ok
+          _ -> {:error, {:agent_pause, :policy_blocked, %{profile: profile}}}
+        end
     end
   end
 

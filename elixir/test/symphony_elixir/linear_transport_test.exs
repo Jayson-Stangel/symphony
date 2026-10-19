@@ -90,6 +90,26 @@ defmodule SymphonyElixir.LinearTransportTest do
     end
   end
 
+  test "Codex blocked turns preserve the pause reason without sending native input", ctx do
+    for kind <- [:protocol_error, :policy_blocked, :auth_required, :quota_exhausted] do
+      File.rm_rf!(Path.join(ctx.root, "state"))
+      assert :ok = AgentPause.record(kind, %{profile: AgentPause.codex_profile()})
+      assert {:error, {:agent_pause, ^kind, _}} = Codex.run_turn(nil, "not sent", ctx.issue, [])
+    end
+
+    assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile())
+    File.chmod!(Path.join(ctx.root, "state"), 0o500)
+
+    try do
+      assert {:error, {:agent_pause, :policy_blocked, _}} = Codex.run_turn(nil, "probe not persisted", ctx.issue, [])
+    after
+      File.chmod!(Path.join(ctx.root, "state"), 0o700)
+    end
+
+    assert :ok = AgentPause.begin_turn(AgentPause.codex_profile())
+    assert {:error, {:agent_pause, :policy_blocked, _}} = Codex.run_turn(nil, "not replayed", ctx.issue, [])
+  end
+
   defp configure_peer(ctx, mode, query) do
     trace = Path.join(ctx.root, "#{mode}.jsonl")
     File.write!(trace, "")
