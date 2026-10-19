@@ -74,8 +74,11 @@ managed projects.
 symphony update
 ```
 
-The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
-installation of this fork tracks `jayson/main`, not OpenAI's `origin`. When source changes, it
+The updater only fast-forwards a clean `main` checkout from its configured upstream.
+Its fetch prunes stale tracking branches only for that upstream remote, resolving branch-name
+collisions while preserving local branches, tags, and other remotes' tracking refs. Custom fetch
+mappings cannot expand that pruning scope. A typical installation of this fork tracks
+`jayson/main`, not OpenAI's `origin`. When source changes, it
 automatically rebuilds the pinned runtime; it also refreshes the global command and skill links
 without changing project credentials or workflows. You do not need to run `symphony setup` after
 a successful update.

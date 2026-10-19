@@ -285,7 +285,9 @@ update() {
   upstream=$(git -C "$symphony_home" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || die 'main has no upstream; configure it before updating'
   remote=${upstream%%/*}
   before=$(git -C "$symphony_home" rev-parse HEAD)
-  git -C "$symphony_home" fetch "$remote"
+  # Restrict pruning to this remote's tracking branches, even with custom fetch mappings.
+  git -C "$symphony_home" fetch --prune --no-prune-tags --refmap= "$remote" \
+    "+refs/heads/*:refs/remotes/$remote/*"
   git -C "$symphony_home" merge --ff-only "$upstream"
   after=$(git -C "$symphony_home" rev-parse HEAD)
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die 'update left unexpected working-tree changes'
