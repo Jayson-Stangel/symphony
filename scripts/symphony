@@ -264,14 +264,14 @@ update() {
     [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
     [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner or --rollback-runner'
     case "$transition_target" in
-      pause) runner_pause "$(repo_root)" ;;
+      pause) runner_pause "$(repo_root)" true ;;
       rollback) runner_rollback "$(repo_root)" ;;
       *) runner_transition "$(repo_root)" "$transition_target" ;;
     esac
     return
   fi
 
-  if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)"; return; fi
+  if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)" true; return; fi
   if [ "$transition_target" = rollback ]; then
     runner_rollback "$(repo_root)"
     return
@@ -885,10 +885,41 @@ runner_owned() {
   mode=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")
   [ "$mode" = listener ] || die 'unqualified legacy runner; updater refused'
   agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
-  validate_agent "$agent"
+  case "$agent" in
+    ''|'<no value>')
+      [ "$("$runtime" inspect --format '{{join .Config.Entrypoint " "}}' "$name")" = /usr/local/bin/symphony-runner ] || die 'unknown legacy entrypoint; updater refused'
+      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
+      printf '%s\n' "$mounts" | grep -Fxq -- "$codex_auth_volume /root/.codex" || die 'legacy Codex login mount differs; updater refused'
+      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$name")
+      printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'legacy workflow mount differs; updater refused'
+      runner_update_port "$root" "$runtime" "$name" >/dev/null
+      ;;
+    *) validate_agent "$agent" ;;
+  esac
   mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
   printf '%s\n' "$mounts" | grep -Fxq -- "$storage-workspaces /workspaces" || die 'workspace mount identity differs; updater refused'
   printf '%s\n' "$mounts" | grep -Fxq -- "$storage-state /var/lib/symphony" || die 'state mount identity differs; updater refused'
+}
+
+runner_is_legacy() {
+  case "$("$1" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$2")" in
+    ''|'<no value>') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+runner_update_port() {
+  local root=$1 runtime=$2 name=$3 port bindings
+  if runner_is_legacy "$runtime" "$name"; then
+    port=$(sed -n 's/^SYMPHONY_RUNNER_PORT=//p' "$(runner_env_file "$root")")
+    bindings=$("$runtime" inspect --format '{{range (index .HostConfig.PortBindings "4010/tcp")}}{{println .HostIp .HostPort}}{{end}}' "$name")
+    [ "$bindings" = "127.0.0.1 $port" ] || die 'legacy loopback port differs from metadata; updater refused'
+  else
+    port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
+  fi
+  case "$port" in ''|*[!0-9]*) die 'unknown runner port; updater refused' ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'invalid runner port; updater refused'
+  printf '%s\n' "$port"
 }
 
 runner_transition_lock() {
@@ -906,9 +937,14 @@ runner_transition_lock() {
 }
 
 runner_resume_when_ready() {
-  local port=$1 attempt data
+  local port=$1 legacy=${2:-false} attempt data
   for attempt in $(seq 1 15); do
     if data=$(curl --fail --silent --max-time 3 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state"); then
+      if "$legacy"; then
+        if printf '%s' "$data" | python3 -c 'import json,sys; s=json.load(sys.stdin); n=s.get("counts",{}).get("running"); sys.exit(0 if type(n) is int and n >= 0 and "error" not in s else 1)'; then return; fi
+        sleep 1
+        continue
+      fi
       if printf '%s' "$data" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("agent",{}); sys.exit(0 if a.get("draining") is False and a.get("readiness",{}).get("ready") is True else 1)'; then return; fi
       runner_control_request "$port" resume >/dev/null
       return
@@ -936,11 +972,19 @@ runner_wait_idle() {
 }
 
 runner_pause() {
-  local root=$1 runtime name state port
+  local root=$1 allow_legacy_stop=${2:-false} runtime name state port
   runtime=$(container_runtime); name=$(runner_id "$root"); state=$(runner_status "$root")
   [ "$state" != missing ] || die 'no qualified runner to pause'
   runner_owned "$root" "$runtime" "$name"
   if [ "$state" = true ]; then
+    if runner_is_legacy "$runtime" "$name"; then
+      "$allow_legacy_stop" || die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
+      # Only the explicit pause action may stop an old listener without a drain API.
+      # Transition refuses a running legacy source before reaching this function.
+      printf 'Legacy listener has no drain API; updater is stopping it gracefully. Retained work will resume after migration.\n'
+      "$runtime" stop --time 30 "$name" >/dev/null
+      return
+    fi
     if [ "$("$runtime" inspect --format '{{.State.Restarting}}' "$name")" = true ] &&
        [ "$("$runtime" inspect --format '{{.State.Pid}}' "$name")" = 0 ]; then
       "$runtime" stop --time 30 "$name" >/dev/null
@@ -985,15 +1029,20 @@ runner_transition() (
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
     [ "$(runner_status "$root")" != missing ] || die 'start a fresh project with symphony run --agent; no existing runner to transition'
     runner_owned "$root" "$runtime" "$name"
+    if runner_is_legacy "$runtime" "$name" && [ "$(runner_status "$root")" = true ]; then
+      die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
+    fi
     "$runtime" inspect "$backup" >/dev/null 2>&1 && die 'a retained prior runner exists; inspect it before another transition'
     [ -r "$env_file" ] || die 'runner metadata is missing; updater refused'
-    port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
-    case "$port" in ''|*[!0-9]*) die 'unknown runner port; updater refused' ;; esac
+    port=$(runner_update_port "$root" "$runtime" "$name")
     runner_build_image "$agent"
     runner_doctor "$root" "$agent"
     local journal_tmp
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
     cp "$env_file" "$journal_tmp/previous.env"
+    if runner_is_legacy "$runtime" "$name"; then
+      printf 'SYMPHONY_RUNNER_IMAGE_ID=%s\n' "$("$runtime" inspect --format '{{.Image}}' "$name")" >>"$journal_tmp/previous.env"
+    fi
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
     "$runtime" image inspect --format '{{.Id}}' "$candidate" >"$journal_tmp/image"
@@ -1073,8 +1122,14 @@ runner_rollback() (
     if [ "$(runner_status "$root")" != true ]; then "$runtime" start "$name" >/dev/null; fi
   fi
   port=$(cat "$journal/port")
-  runner_resume_when_ready "$port" || die 'prior runner retained but not ready; repair authentication then retry recovery'
-  previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  if runner_is_legacy "$runtime" "$name"; then
+    # The previous API has no agent readiness or resume endpoint.
+    runner_resume_when_ready "$port" true || die 'prior legacy runner retained but not ready; retry rollback when healthy'
+    previous_agent=codex
+  else
+    runner_resume_when_ready "$port" || die 'prior runner retained but not ready; repair authentication then retry recovery'
+    previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  fi
   previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
   "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"
   runner_finish_journal "$journal"

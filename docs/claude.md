@@ -160,8 +160,17 @@ candidate only after native policy readiness, then removes the stopped prior
 container. Rollback retains Git commits, untracked files, state and logs.
 
 `run` refuses provider, image, port or native-profile mismatches. It does not
-replace an active listener. Legacy containers without verifiable provider,
-storage/mount identity or drain support are refused by the updater. Do not repair
+replace an active listener. The previous Codex listener format has no provider or
+port labels and no drain API. The updater qualifies it using repository storage,
+workspace/state/login mounts, the read-only workflow mount, the original entrypoint,
+and the loopback port recorded in its metadata. First use `symphony update` without
+flags to install the new command if the installed version predates provider support.
+To migrate the runner, finish active work, then use
+`symphony update --pause-runner` explicitly. This performs a graceful
+stop with retained volumes; it cannot drain an old listener. Retry
+`symphony update --agent codex` or `symphony update --agent claude` to replace the
+stopped listener. Rollback understands its previous state API. Unknown legacy
+formats or mismatched ownership are refused. Do not repair
 or restart a stable installation manually when the updater refuses; report the
 limitation. An unresponsive active candidate is also refused unless Docker
 verifies it is an empty restarting container. Never kill active work to bypass a
