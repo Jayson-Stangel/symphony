@@ -471,18 +471,100 @@ pre,
 }
 
 .runner-identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.125rem;
+  width: fit-content;
+  max-width: 100%;
   margin-top: 1.25rem;
-  padding: 0.875rem 1rem;
-  border-left: 3px solid currentColor;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--page-soft);
+}
+
+.runner-agent,
+.runner-model {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.9375rem;
   overflow-wrap: anywhere;
 }
 
-.runner-agent {
-  margin: 0 0 0.375rem;
-  font-size: 1.25rem;
-  font-weight: 700;
+.runner-label {
+  color: var(--muted);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .runner-model {
-  margin: 0 0 0.375rem;
+  padding-left: 1.125rem;
+  border-left: 1px solid var(--line-strong);
+}
+
+.runner-model strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.runner-source {
+  color: var(--muted);
+  font-size: 0.6875rem;
+}
+
+.runner-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  background: var(--card-muted);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.runner-state[data-ready="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.runner-state-dot {
+  flex: 0 0 0.375rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+@media (max-width: 560px) {
+  .runner-identity {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.625rem 0.75rem;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.75rem;
+  }
+
+  .runner-model {
+    grid-column: 1 / -1;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .runner-state {
+    grid-column: 2;
+    grid-row: 1;
+    max-width: 8rem;
+  }
 }
