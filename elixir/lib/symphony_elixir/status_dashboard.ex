@@ -318,8 +318,7 @@ defmodule SymphonyElixir.StatusDashboard do
              codex_totals: codex_totals,
              agent: Map.get(snapshot, :agent),
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling),
-             agent: Map.get(snapshot, :agent)
+             polling: Map.get(snapshot, :polling)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -591,8 +590,7 @@ defmodule SymphonyElixir.StatusDashboard do
              codex_totals: codex_totals,
              agent: Map.get(snapshot, :agent),
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling),
-             agent: Map.get(snapshot, :agent)
+             polling: Map.get(snapshot, :polling)
            }}
 
         _ ->
