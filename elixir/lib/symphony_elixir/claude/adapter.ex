@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
+  @client_error_statuses [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
   @pause_kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
   @codes %{
     "auth_required" => :auth_required,
@@ -237,8 +238,8 @@ defmodule SymphonyElixir.Claude.Adapter do
     # A transport/tool error is not evidence that a remote mutation was rejected.
     # Only a definite client-error HTTP response is safe to hand back for correction.
     case Jason.decode(output) do
-      {:ok, %{"status" => status}} -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
-      {:ok, %{"error" => %{"status" => status}} = payload} when map_size(payload) == 1 -> status in [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
+      {:ok, %{"status" => status}} -> status in @client_error_statuses
+      {:ok, %{"error" => %{"status" => status}} = payload} when map_size(payload) == 1 -> status in @client_error_statuses
       _ -> false
     end
   end
