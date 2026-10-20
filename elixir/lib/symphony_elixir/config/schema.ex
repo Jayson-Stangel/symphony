@@ -132,12 +132,15 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      field(:clone_url, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:root], empty_values: [])
+      |> cast(attrs, [:root, :clone_url], empty_values: [])
+      |> update_change(:clone_url, fn value -> if is_binary(value) and String.trim(value) == "", do: nil, else: value end)
+      |> validate_format(:clone_url, ~r/^[^\x00\r\n]+$/)
     end
   end
 
@@ -480,6 +483,24 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> validate_clone_configuration()
+  end
+
+  defp validate_clone_configuration(changeset) do
+    if changeset.valid? and match?(%Workspace{clone_url: url} when is_binary(url), get_field(changeset, :workspace)) do
+      cond do
+        get_field(changeset, :hooks).after_create not in [nil, ""] ->
+          add_error(changeset, :workspace, "clone_url cannot be combined with hooks.after_create")
+
+        get_field(changeset, :worker).ssh_hosts != [] ->
+          add_error(changeset, :workspace, "clone_url supports local workspaces only")
+
+        true ->
+          changeset
+      end
+    else
+      changeset
+    end
   end
 
   defp finalize_settings(settings) do

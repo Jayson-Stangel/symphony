@@ -460,9 +460,8 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/.local/share/symphony/workspaces/$id
+  clone_url: "$remote"
 hooks:
-  after_create: |
-    git clone --depth 1 "$remote" .
   before_remove: |
     git clean -ffdqx
 agent:
