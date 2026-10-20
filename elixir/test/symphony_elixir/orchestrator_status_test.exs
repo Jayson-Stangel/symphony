@@ -1721,7 +1721,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Application.put_env(:symphony_elixir, :coding_agent, :claude)
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
-    {:ok, orchestrator} = Orchestrator.start_link(readiness_opts: [node_path: "/missing-native-check"])
+    tasks = start_supervised!({Task.Supervisor, []})
+    {:ok, orchestrator} = Orchestrator.start_link(task_supervisor: tasks, readiness_opts: [node_path: "/missing-native-check"])
 
     on_exit(fn ->
       if Process.alive?(orchestrator), do: GenServer.stop(orchestrator)
@@ -1751,7 +1752,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     StatusDashboard.notify_update(dashboard_name)
     assert_receive {:render, first_render_ms, content}, 1_000
-    assert content =~ "Agent: Claude Code · policy_blocked"
+    assert content =~ "Agent: Claude Code · blocked"
     assert content =~ "Tokens: unavailable"
     :sys.replace_state(orchestrator, &%{&1 | draining: true})
 

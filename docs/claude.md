@@ -89,8 +89,10 @@ The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
 model support and account policies may cap the effective level. The web UI
 shows status; edit `WORKFLOW.md` to change the setting.
 
-`agent.max_turns` still bounds Symphony continuation turns, while
-`claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
+`agent.max_turns` bounds continuation turns within one worker attempt for both
+providers. Reaching it closes that session normally; the existing scheduler
+continuation check revalidates active work and can start another attempt in the
+same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
 unknown keys, arbitrary commands, authentication overrides and raw SDK options.
 The initial worker cap is one even if general agent limits are higher.
 
@@ -126,13 +128,43 @@ longer gate dispatch, including after restart; work is revalidated against the
 current tracker state and resumes in its preserved workspace. A repeated quota
 rejection defers the next attempt again.
 
-Native authentication and shared policy failures still require explicit operator
-recovery. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
+Model-free readiness failures remain observations and are not written as durable
+account pauses. Startup returns while checking; one supervised check refreshes
+the observation every 30 seconds after completion, and on refresh/resume/recheck.
+Repairing authentication or readiness is recognized automatically without restart
+or recheck when no separate durable runtime pause exists. Explicit drain remains
+in force. The last completed observation remains visible during periodic refresh;
+explicit resume/recheck waits asynchronously for verification without blocking
+snapshots, drain or worker exits.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress. Drain cancels a waiting resume.
+
+The external check uses GNU timeout to kill its own process group after at most
+35 seconds; native version/authentication checks retain 15-second limits. If the
+supervised task or scheduler dies, a model-free OS check may survive until that
+deadline, so a restart can briefly overlap the old bounded check. No model request
+is made. This does not promise immediate OS-process quiescence on owner loss.
+
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission still validates the attestation.
+
+Authentication and shared policy failures reported by actual native sessions still
+require explicit operator recovery. Older readiness failures and actual session
+startup failures wrote indistinguishable unscoped pause records. Those ambiguous
+legacy records remain intact and still need explicit recheck after repair; the
+automatic-observation repair does not resolve that migration limitation. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and
-turn-limit stops remain blocked. Startup ownership/initialization failures remain
-fail-closed; this retry recovery applies to established sessions. Explicit drains
+native turn-limit stops remain blocked. Transient startup protocol or native initialization failures also retry once the
+helper acknowledges owned-native cleanup for that exact session/request. The
+cleanup wait is bounded; a missing or foreign acknowledgement retains the original
+startup cause and creates the existing cleanup-unconfirmed stop. Explicit startup
+auth/policy/schema/identity failures remain gated. A helper crash before ownership
+handoff still requires recovery because native cleanup cannot be proven. Explicit drains
 remain durable and prevent queued retries from dispatching.
 
 Both providers follow the original Codex tool recovery model: tracker responses,

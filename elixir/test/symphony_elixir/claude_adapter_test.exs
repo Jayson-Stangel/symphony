@@ -177,12 +177,66 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-start", "error-start", "bad-version", "bad-profile", "bad-owned", "bad-pid"] do
+    for mode <- ["auth-hello", "auth-start", "error-start", "bad-version", "bad-profile", "bad-owned", "bad-pid"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
     end
 
     assert {:error, :claude_runtime_missing} = Adapter.start_session(ctx.workspace, Keyword.put(opts, :node_path, "/missing"))
+  end
+
+  test "startup protocol failure retries only after a correlated cleanup acknowledgement", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+
+    for {mode, code} <- [{"protocol-start", "protocol_error"}, {"timeout-start", "native_initialization_timeout"}, {"stopped-start", "protocol_error"}] do
+      File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
+      assert {:error, {:claude_startup_failed, ^code}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    end
+
+    assert :ready = AgentPause.current()
+    refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    assert :ok = Adapter.stop_session(session)
+  end
+
+  test "lost or foreign startup cleanup acknowledgement retains the cause and blocks recovery", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+
+    for mode <- ["lost-start", "wrong-stop", "wrong-session-stop", "silent-stop"] do
+      File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
+
+      assert {:error, {:agent_pause, :policy_blocked, %{startup_code: "protocol_error", cleanup: :unconfirmed}}} =
+               Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+
+      assert File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+    end
+  end
+
+  @tag skip: :os.type() != {:unix, :linux}
+  test "Linux startup rejection confirms real native process cleanup before retry result", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/startup-failure-probe.mjs", __DIR__)
+
+    for mode <- ["initialization", "stream", "eof"] do
+      File.write!(Path.join(ctx.workspace, "startup-fail-mode"), mode)
+      assert {:error, {:claude_startup_failed, "protocol_error"}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+      owned = ctx.workspace |> Path.join("startup-owned.json") |> File.read!() |> Jason.decode!()
+
+      assert is_integer(owned["pid"]) and owned["pid"] > 1
+      assert is_binary(owned["start"])
+
+      {output, 0} =
+        System.cmd(
+          System.find_executable("node"),
+          ["--input-type=module", "-e", "import {ownedGroupAlive} from './runner/claude/processes.mjs'; console.log(ownedGroupAlive(JSON.parse(process.argv[1])));", Jason.encode!(owned)],
+          cd: Path.expand("..", File.cwd!())
+        )
+
+      assert String.trim(output) == "false"
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+    end
   end
 
   test "uncorrelated, oversized and invalid stream frames fail closed", ctx do
