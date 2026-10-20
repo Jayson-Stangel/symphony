@@ -465,7 +465,8 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 
 `bin/symphony --agent codex|claude` selects one startup-owned coding provider;
 Codex is the default. Claude runs only in its qualified nonroot container image.
-Workflow reload cannot change providers. See [the Claude runner contract](../docs/claude.md)
+Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
+accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.

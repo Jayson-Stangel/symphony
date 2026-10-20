@@ -467,7 +467,8 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 <!-- Optional startup-selected Claude profile: see ../docs/claude.md.
 Claude configuration lives in a `claude` front-matter mapping. Only `model`
-(sonnet), `max_concurrent_agents` (1), `max_agentic_turns` (1–100),
+(sonnet by default; current model IDs and family aliases listed in docs/claude.md),
+`max_concurrent_agents` (1), `max_agentic_turns` (1–100),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider

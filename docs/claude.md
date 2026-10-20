@@ -2,8 +2,8 @@
 
 Symphony can run a local isolated worker through pinned Claude Code and the
 Claude Agent SDK. Codex remains the default. The initial Claude profile supports
-one worker, Sonnet, Docker-compatible Linux isolation, and native Claude Pro/Max
-subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
+one worker, configurable Claude models (Sonnet by default), Docker-compatible
+Linux isolation, and native Claude Pro/Max subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
 
 This profile is intended for an owner-operated installation. Permission to offer
 subscription sign-in as a third-party service is a separate distribution question;
@@ -63,6 +63,19 @@ claude:
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 ```
+
+`claude.model` accepts the family aliases `sonnet` (default), `opus`, `haiku`,
+and `fable`, or the current model IDs `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, and `claude-fable-5-1`. These match Anthropic's
+[model lineup](https://platform.claude.com/docs/en/models/overview) and
+[Claude Code aliases](https://code.claude.com/docs/en/model-config), checked
+October 20, 2026. For example, set `claude.model: claude-opus-5-5` to select
+Opus 5.5. Values are passed unchanged to the SDK; aliases follow the pinned
+Claude Code runtime's resolution. Account access and included subscription
+allowance still determine whether a selected model can run. Model validation
+is not live qualification: the original live pilot exercised Sonnet only.
+Unknown IDs, special modes such as `opusplan`, and provider-specific IDs remain
+rejected by both workflow and runner validation.
 
 `agent.max_turns` still bounds Symphony continuation turns, while
 `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject

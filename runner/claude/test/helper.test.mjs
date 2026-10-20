@@ -21,7 +21,7 @@ class FakeQuery {
   interrupt() { this.interrupted = true; return Promise.resolve(); }
 }
 
-async function fixture(t) {
+async function fixture(t, model = 'sonnet') {
   const messages = [];
   let query;
   const helper = new Helper({ identity: { profile: 'test' }, env: {}, binary: '/test/native',
@@ -29,7 +29,7 @@ async function fixture(t) {
     makeQuery: params => { query = new FakeQuery(params); return query; } });
   t.after(() => helper.stop('test_cleanup'));
   await helper.command({ type: 'start', session_id: 'session', request_id: 'start', workspace: process.cwd(),
-    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
+    config: { model, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
   query.push({ type: 'system', subtype: 'init', session_id: 'native-one' });
   await tick();
   const input = query.params.prompt[Symbol.asyncIterator]();
@@ -45,6 +45,15 @@ function result(query, input, extra = {}) {
   query.push({ type: 'result', subtype: 'success', is_error: false, uuid: randomUUID(),
     session_id: 'native-one', user_message_uuid: input.uuid, ...extra });
 }
+
+test('an explicit Opus model reaches the SDK unchanged', async t => {
+  const ctx = await fixture(t, 'claude-opus-5-5');
+  assert.equal(ctx.query.params.options.model, 'claude-opus-5-5');
+  const input = await turn(ctx);
+  result(ctx.query, input);
+  await tick();
+  assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, 'completed');
+});
 
 test('one conversation retains native context and emits one outcome per input', async t => {
   const ctx = await fixture(t);
