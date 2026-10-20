@@ -499,6 +499,10 @@ for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
 
+Development updater retries refresh stale pending images from the current checkout,
+preserving the rollback container until the replacement passes readiness. See
+[development updates](../docs/development.md#refresh-the-development-build).
+
 Development verification now also requires Node 24.18.0 (included in mise.toml).
 Run `make setup` to install the locked helper dependencies without install scripts;
 `make all` includes the credential-free Node protocol/process tests. Native process

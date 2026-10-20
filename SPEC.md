@@ -2407,3 +2407,10 @@ account-wide auth/quota/policy failures. Redacted logs retain operation type/has
 provider, correlation IDs, delivery phase, response category, status/code and
 timing without query text or credentials. Delivery acknowledgement is not proof
 of outcome reconciliation. Restart recovery reads live tracker state.
+
+Development runner updates may refresh a pending candidate from the current
+checkout after building and preflighting it. Refresh must verify ownership and
+image identity, drain/stop the previous candidate before replacement, retain the
+rollback source and volumes until readiness succeeds, and persist the replacement
+image atomically before starting it. Interrupted refreshes must remain retryable.
+Stable update recovery retains its recorded candidate image.

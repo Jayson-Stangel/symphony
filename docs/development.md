@@ -117,7 +117,17 @@ The wrapper supplies `--development-runner`. This requires a nonempty namespace
 and uses the current development source without fetching `main`, changing global
 links or running host setup. It builds a revision-tagged namespaced candidate,
 preflights it, drains active work, retains the prior container, and resumes only
-after readiness succeeds. A stopped source is supported. A fresh project uses
+after readiness succeeds. On a retry, development mode rebuilds and preflights
+from the current checkout. If its image differs from the pending candidate, the
+updater verifies ownership, drains/stops that candidate, and replaces it while
+retaining the original rollback source and volumes. It commits the new image
+identity atomically before starting it, so an interrupted refresh can be retried.
+A failed build or preflight leaves the pending candidate unchanged; a failed new
+candidate keeps the rollback source available. No temporary workflow/model
+changes are needed to escape a stale development candidate. Stable update
+recovery continues to use its recorded image. `runner status` identifies
+restarting containers explicitly instead of reporting them as running.
+A stopped source is supported. A fresh project uses
 `run` instead. If the updater refuses, inspect the reported condition; do not
 delete metadata or force-replace active work. For a retained failed transition:
 
