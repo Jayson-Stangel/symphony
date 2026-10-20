@@ -74,11 +74,8 @@ managed projects.
 symphony update
 ```
 
-The updater only fast-forwards a clean `main` checkout from its configured upstream.
-Its fetch prunes stale tracking branches only for that upstream remote, resolving branch-name
-collisions while preserving local branches, tags, and other remotes' tracking refs. Custom fetch
-mappings cannot expand that pruning scope. A typical installation of this fork tracks
-`jayson/main`, not OpenAI's `origin`. When source changes, it
+The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
+installation of this fork tracks `jayson/main`, not OpenAI's `origin`. When source changes, it
 automatically rebuilds the pinned runtime; it also refreshes the global command and skill links
 without changing project credentials or workflows. You do not need to run `symphony setup` after
 a successful update.
@@ -152,7 +149,7 @@ portable Node/Git/agent base with Playwright and headless Chromium; add project-
 dependencies in `hooks.after_create` or publish your own compatible image and set
 `SYMPHONY_RUNNER_IMAGE`.
 
-Both agent images include a version-matched Playwright/Chromium installation and its
+The Codex image includes a version-matched Playwright/Chromium installation and its
 Linux dependencies. Use `playwright --version` or `playwright screenshot --browser chromium
 http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interactions, load
 `require('/opt/symphony/browser/node_modules/@playwright/test')` in Node.js. Browser binaries
@@ -320,14 +317,11 @@ help with the setup:
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-## Claude subscription workers
+### Codex-only runtime compatibility
 
-Codex remains the default. A qualified personal Claude profile adds one isolated
-Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
-It requires disabled-overage owner attestation, project-scoped credentials and
-model-free readiness checks. Both agents return correctable Linear read errors
-and pause on uncertain writes, with redacted diagnostics for reconciliation. See [setup, pauses and updater transitions](docs/claude.md)
-for the contract and its limits. Existing stable installations change only through
-reviewed promotion and the installed `symphony update` command.
-For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
-with separate configuration, Docker resource names and a separate dashboard port.
+This production candidate supports Codex only. `--agent codex` remains accepted for
+existing launcher scripts; other providers and workflow `claude` sections are rejected.
+The launcher retains namespaced storage, container ownership checks, immutable image
+verification, and the drain/backup/rollback update protocol. Existing workspaces,
+authentication volumes, and logs keep their identities. See
+[`docs/development.md`](docs/development.md) for the retained update contract.

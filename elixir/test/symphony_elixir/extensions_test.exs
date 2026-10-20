@@ -261,6 +261,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     state_payload = json_response(conn, 200)
 
     assert state_payload == %{
+             "agent" => nil,
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
              "running" => [
@@ -463,9 +464,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".runner-state-current"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-current"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-offline"
+    assert dashboard_css =~ ".status-badge-live"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
 
     favicon_conn = get(build_conn(), "/favicon.png")
@@ -513,7 +514,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil})
+    snapshot = static_snapshot()
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -531,8 +532,6 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
-    assert has_element?(view, "#runner-identity", "Agent: Claude Code")
-    assert has_element?(view, "#runner-identity", "Model: sonnet")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -543,15 +542,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
-    refute has_element?(view, ".status-badge-live")
-    assert has_element?(view, "#runner-identity .runner-state-offline", "Offline")
+    assert html =~ "Live"
+    assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Agent update"
+    assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert has_element?(view, "#runner-identity .runner-state-current[data-ready=true]", "Ready")
+    assert html =~ "status-badge-live"
+    assert html =~ "status-badge-offline"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -595,22 +595,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
-
-    :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: nil, model_source: "last_session"}))
-    end)
-
-    send(view.pid, :observability_updated)
-    assert has_element?(view, "#runner-identity", "Agent: Codex")
-    assert has_element?(view, "#runner-identity", "Not yet reported")
-
-    :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}))
-    end)
-
-    send(view.pid, :observability_updated)
-    assert has_element?(view, "#runner-identity", "Model: gpt-example")
-    assert has_element?(view, "#runner-identity", "last session")
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do

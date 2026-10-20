@@ -32,6 +32,8 @@ defmodule SymphonyElixir.TestSupport do
           )
 
         File.mkdir_p!(workflow_root)
+        previous_state_root = Application.fetch_env(:symphony_elixir, :agent_state_root)
+        Application.put_env(:symphony_elixir, :agent_state_root, Path.join(workflow_root, "runner-state"))
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
@@ -39,6 +41,11 @@ defmodule SymphonyElixir.TestSupport do
         stop_default_http_server()
 
         on_exit(fn ->
+          case previous_state_root do
+            {:ok, value} -> Application.put_env(:symphony_elixir, :agent_state_root, value)
+            :error -> Application.delete_env(:symphony_elixir, :agent_state_root)
+          end
+
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
@@ -48,19 +55,6 @@ defmodule SymphonyElixir.TestSupport do
         :ok
       end
     end
-  end
-
-  @doc "Give credential-free Claude fixtures a deterministic environment; never weaken the production gate for CI."
-  def isolate_inference_environment do
-    previous =
-      System.get_env()
-      |> Enum.filter(fn {key, _value} ->
-        Regex.match?(~r/^(ANTHROPIC_|CLAUDE_|AWS_|AZURE_|GOOGLE_|VERTEX_|BEDROCK_)/i, key)
-      end)
-
-    Enum.each(previous, fn {key, _value} -> System.delete_env(key) end)
-    ExUnit.Callbacks.on_exit(fn -> Enum.each(previous, fn {key, value} -> System.put_env(key, value) end) end)
-    :ok
   end
 
   def write_workflow_file!(path, overrides \\ []) do
