@@ -26,80 +26,12 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @spec agent_state_root() :: Path.t()
+  def agent_state_root, do: Application.get_env(:symphony_elixir, :agent_state_root, "/var/lib/symphony")
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     WorkflowStore.settings()
-  end
-
-  @doc "The CLI-selected provider is startup state, independent of workflow reloads."
-  @spec coding_agent() :: :codex | :claude
-  def coding_agent do
-    case Application.get_env(:symphony_elixir, :coding_agent, :codex) do
-      provider when provider in [:codex, :claude] -> provider
-      _ -> raise ArgumentError, "Unsupported coding agent"
-    end
-  end
-
-  @spec agent_state_root() :: Path.t()
-  def agent_state_root do
-    Application.get_env(:symphony_elixir, :agent_state_root, "/var/lib/symphony")
-  end
-
-  @spec claude_helper_path() :: Path.t()
-  def claude_helper_path, do: "/opt/symphony/claude/helper.mjs"
-
-  @spec claude_node_path() :: Path.t()
-  def claude_node_path, do: "/usr/local/bin/node"
-
-  @spec claude_cleanup_environment() :: [{String.t(), String.t() | nil}]
-  def claude_cleanup_environment do
-    Enum.map(reduced_claude_environment(System.get_env()), fn {key, value} -> {key, if(key == "SYMPHONY_GIT_TOKEN", do: nil, else: value)} end)
-  end
-
-  @spec claude_child_environment(map()) :: {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
-  def claude_child_environment(environment \\ System.get_env()) do
-    allowed = ~w(HOME CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_FAST_MODE)
-
-    conflict? =
-      Enum.any?(environment, fn {key, value} ->
-        is_binary(value) and value != "" and Regex.match?(~r/^(ANTHROPIC_|CLAUDE_|AWS_|AZURE_|GOOGLE_|VERTEX_|BEDROCK_)/i, key) and key not in allowed
-      end)
-
-    if conflict? do
-      {:error, :conflicting_inference_environment}
-    else
-      {:ok, reduced_claude_environment(environment)}
-    end
-  end
-
-  defp reduced_claude_environment(environment) do
-    # Port environments inherit by default. Explicitly remove every ambient key.
-    removed = Enum.map(environment, fn {key, _} -> {key, nil} end)
-
-    fixed = [
-      {"HOME", "/home/claude"},
-      {"CLAUDE_CONFIG_DIR", "/home/claude/.claude"},
-      {"CLAUDE_CODE_DISABLE_FAST_MODE", "1"},
-      {"DISABLE_AUTOUPDATER", "1"},
-      {"PATH", "/usr/local/bin:/usr/bin:/bin"},
-      {"LANG", "C.UTF-8"},
-      {"SYMPHONY_CONTAINERIZED", environment["SYMPHONY_CONTAINERIZED"]},
-      {"SYMPHONY_GIT_TOKEN", environment["SYMPHONY_GIT_TOKEN"]}
-    ]
-
-    Enum.into(fixed, Map.new(removed)) |> Enum.to_list()
-  end
-
-  @spec max_concurrent_agents() :: pos_integer()
-  def max_concurrent_agents do
-    config = settings!()
-    provider_concurrency_limit(config, config.agent.max_concurrent_agents)
-  end
-
-  @spec agent_stall_timeout_ms() :: non_neg_integer()
-  def agent_stall_timeout_ms do
-    config = settings!()
-    if coding_agent() == :claude, do: config.claude.stall_timeout_ms, else: config.codex.stall_timeout_ms
   end
 
   @spec settings!() :: Schema.t()
@@ -117,21 +49,14 @@ defmodule SymphonyElixir.Config do
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()
 
-    limit =
-      Map.get(
-        config.agent.max_concurrent_agents_by_state,
-        Schema.normalize_issue_state(state_name),
-        config.agent.max_concurrent_agents
-      )
-
-    provider_concurrency_limit(config, limit)
+    Map.get(
+      config.agent.max_concurrent_agents_by_state,
+      Schema.normalize_issue_state(state_name),
+      config.agent.max_concurrent_agents
+    )
   end
 
-  def max_concurrent_agents_for_state(_state_name), do: max_concurrent_agents()
-
-  defp provider_concurrency_limit(config, limit) do
-    if coding_agent() == :claude, do: min(limit, config.claude.max_concurrent_agents), else: limit
-  end
+  def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
@@ -194,10 +119,10 @@ defmodule SymphonyElixir.Config do
   @doc false
   @spec validate_settings(Schema.t()) :: :ok | {:error, term()}
   def validate_settings(settings) do
-    cond do
-      is_nil(settings.tracker.kind) -> {:error, :missing_tracker_kind}
-      coding_agent() == :claude and settings.worker.ssh_hosts != [] -> {:error, :claude_ssh_unsupported}
-      true -> Tracker.validate_config(settings.tracker)
+    if is_nil(settings.tracker.kind) do
+      {:error, :missing_tracker_kind}
+    else
+      Tracker.validate_config(settings.tracker)
     end
   end
 

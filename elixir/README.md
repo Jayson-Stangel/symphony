@@ -347,14 +347,6 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
-Both the web and terminal dashboards show the selected coding agent and model
-near the top, including while idle. Claude displays its configured model alias
-(currently `sonnet`). Codex displays the model returned by its most recent
-session startup, labelled “last session”; before the first report it shows
-“Not yet reported” rather than guessing from a command or account.
-The JSON state API includes `agent.model` and `agent.model_source` (`configured`
-or `last_session`). Reported Codex identity resets when the runner restarts.
-
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
@@ -455,22 +447,3 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
-
-## Selecting Claude
-
-`bin/symphony --agent codex|claude` selects one startup-owned coding provider;
-Codex is the default. Claude runs only in its qualified nonroot container image.
-Workflow reload cannot change providers. See [the Claude runner contract](../docs/claude.md)
-for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
-tracker-side-effect recovery and updater-owned provider/image transitions.
-The state API adds an `agent` object while retaining existing token fields.
-
-Development verification now also requires Node 24.18.0 (included in mise.toml).
-Run `make setup` to install the locked helper dependencies without install scripts;
-`make all` includes the credential-free Node protocol/process tests. Native process
-ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
-
-Linear tool calls share outcome handling across Codex and Claude. Read errors and
-local rejections return to the agent for correction; ambiguous writes retain a
-durable pause requiring reconciliation. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
-and [recovery](../docs/claude.md#pauses-and-recovery).

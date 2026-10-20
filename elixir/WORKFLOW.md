@@ -169,8 +169,7 @@ the commands and results in the workpad and publish the screenshots using
 `Evidence publication (required)`. Follow repository-specific media upload
 procedures as well when required. Stop any servers you started after testing.
 
-The standard Symphony container includes headless Chromium and Playwright for both
-Codex and Claude. No desktop browser or browser MCP tool is required: use the shell.
+The standard Symphony Codex container includes headless Chromium and Playwright. No desktop browser or browser MCP tool is required: use the shell.
 `playwright --version` reports the bundled version. For a quick screenshot, run
 `playwright screenshot --browser chromium http://127.0.0.1:3000 artifacts/page.png`
 after creating the output directory and starting your app on the appropriate port.
@@ -454,12 +453,3 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - <only include when something was confusing during execution>
 ````
-
-
-<!-- Optional startup-selected Claude profile: see ../docs/claude.md.
-Claude configuration lives in a `claude` front-matter mapping. Only `model`
-(sonnet), `max_concurrent_agents` (1), `max_agentic_turns` (1–100),
-`read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
-`stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
-are runtime-owned. Select using the isolated launcher's --agent claude; provider
-selection is fixed across workflow reloads. -->

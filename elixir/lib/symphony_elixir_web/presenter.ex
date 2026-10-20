@@ -13,6 +13,7 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         %{
           generated_at: generated_at,
+          agent: Map.get(snapshot, :agent),
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying),
@@ -24,7 +25,6 @@ defmodule SymphonyElixirWeb.Presenter do
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
-        |> maybe_agent(snapshot)
 
       :timeout ->
         %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
@@ -33,9 +33,6 @@ defmodule SymphonyElixirWeb.Presenter do
         %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
     end
   end
-
-  defp maybe_agent(payload, %{agent: agent}), do: Map.put(payload, :agent, agent)
-  defp maybe_agent(payload, _snapshot), do: payload
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do

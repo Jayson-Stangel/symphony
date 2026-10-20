@@ -1,39 +1,6 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
-  test "live terminal snapshot retains agent identity and unavailable token usage" do
-    previous = Application.get_env(:symphony_elixir, :coding_agent)
-
-    on_exit(fn ->
-      if previous do
-        Application.put_env(:symphony_elixir, :coding_agent, previous)
-      else
-        Application.delete_env(:symphony_elixir, :coding_agent)
-      end
-    end)
-
-    Application.put_env(:symphony_elixir, :coding_agent, :claude)
-    parent = self()
-    name = Module.concat(__MODULE__, :IdentityDashboard)
-    render_fun = fn content -> send(parent, {:identity_frame, content}) end
-    opts = [name: name, enabled: true, refresh_ms: 60_000, render_fun: render_fun]
-    pid = start_supervised!({StatusDashboard, opts})
-    send(pid, :refresh)
-    StatusDashboard.notify_update(name)
-    assert_receive {:identity_frame, content}, 1_000
-    assert content =~ "Agent: Claude Code"
-    assert content =~ "Model: sonnet"
-    assert content =~ "Tokens: unavailable"
-
-    snapshot = Orchestrator.snapshot()
-    agent = %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}
-    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: agent}}, 0.0)
-    assert rendered =~ "Agent: Codex"
-    assert rendered =~ "Model: gpt-example (last session)"
-    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
-    assert rendered =~ "Not yet reported"
-  end
-
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -97,7 +64,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
 
     :sys.replace_state(pid, fn _ -> state_with_issue end)
-    send(pid, {:worker_agent_session, issue_id, %{native: %{model: "gpt-example"}}})
 
     now = DateTime.utc_now()
 
@@ -122,8 +88,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     snapshot = GenServer.call(pid, :snapshot)
-    assert snapshot.agent.model == "gpt-example"
-    assert snapshot.agent.model_source == "last_session"
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
@@ -1628,7 +1592,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
 
-  test "status dashboard samples agent metadata and coalesces rapid updates" do
+  test "status dashboard coalesces rapid updates to one render per interval" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
     runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
@@ -1653,21 +1617,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                )
     end
 
-    previous_agent = Application.fetch_env(:symphony_elixir, :coding_agent)
-    Application.put_env(:symphony_elixir, :coding_agent, :claude)
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
-    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
-    {:ok, orchestrator} = Orchestrator.start_link(readiness_opts: [node_path: "/missing-native-check"])
-
-    on_exit(fn ->
-      if Process.alive?(orchestrator), do: GenServer.stop(orchestrator)
-
-      case previous_agent do
-        {:ok, value} -> Application.put_env(:symphony_elixir, :coding_agent, value)
-        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
-      end
-    end)
-
     {:ok, pid} =
       StatusDashboard.start_link(
         name: dashboard_name,
@@ -1686,10 +1635,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     StatusDashboard.notify_update(dashboard_name)
-    assert_receive {:render, first_render_ms, content}, 1_000
-    assert content =~ "Agent: Claude Code · blocked"
-    assert content =~ "Tokens: unavailable"
-    :sys.replace_state(orchestrator, &%{&1 | draining: true})
+    assert_receive {:render, first_render_ms, _content}, 200
 
     :sys.replace_state(pid, fn state ->
       %{state | last_snapshot_fingerprint: :force_next_change, last_rendered_content: nil}
@@ -1698,8 +1644,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     StatusDashboard.notify_update(dashboard_name)
     StatusDashboard.notify_update(dashboard_name)
 
-    assert_receive {:render, second_render_ms, content}, 1_000
-    assert content =~ "Agent: Claude Code · draining"
+    assert_receive {:render, second_render_ms, _content}, 200
     assert second_render_ms > first_render_ms
     refute_receive {:render, _third_render_ms, _content}, 60
   end

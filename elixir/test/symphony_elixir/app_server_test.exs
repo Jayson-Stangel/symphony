@@ -1,30 +1,6 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
-  test "session captures the model reported by thread startup" do
-    root = Path.join(System.tmp_dir!(), "symphony-model-#{System.unique_integer([:positive])}")
-    workspace = Path.join(root, "workspaces/issue")
-    File.mkdir_p!(workspace)
-    on_exit(fn -> File.rm_rf(root) end)
-    binary = Path.join(root, "fake-codex")
-
-    File.write!(binary, """
-    #!/bin/sh
-    while IFS= read -r line; do
-      case "$line" in
-        *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
-        *'"method":"thread/start"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"model-thread"},"model":"gpt-example"}}' ;;
-      esac
-    done
-    """)
-
-    File.chmod!(binary, 0o755)
-    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(root, "workspaces"), codex_command: binary)
-    assert {:ok, session} = AppServer.start_session(workspace)
-    assert session.model == "gpt-example"
-    AppServer.stop_session(session)
-  end
-
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

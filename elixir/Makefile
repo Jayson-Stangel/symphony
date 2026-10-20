@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e claude-setup claude-test
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
 
 MIX ?= mix
 
@@ -7,14 +7,6 @@ help:
 
 setup:
 	$(MIX) setup
-	$(MAKE) claude-setup
-
-claude-setup:
-	npm --prefix ../runner/claude ci --ignore-scripts --no-audit --no-fund
-
-claude-test:
-	npm --prefix ../runner/claude run check
-	npm --prefix ../runner/claude test
 
 deps:
 	$(MIX) deps.get
@@ -49,7 +41,6 @@ ci:
 	$(MAKE) build
 	$(MAKE) fmt-check
 	$(MAKE) lint
-	$(MAKE) claude-test
 	$(MAKE) coverage
 	$(MAKE) dialyzer
 
