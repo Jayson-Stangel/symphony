@@ -5,8 +5,6 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   alias SymphonyElixir.Linear.{Client, Operation}
 
-  @rejections [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
-
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
@@ -63,53 +61,32 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
     case normalize_linear_graphql_arguments(arguments) do
       {:ok, query, variables} ->
-        operation = Operation.describe(query)
-        response = linear_client.(query, variables, client_opts)
-        execution_response(response, operation)
+        execution_response(linear_client.(query, variables, client_opts))
 
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
-        |> execution("not_executed", "local_validation", Operation.describe(arguments))
+        |> execution("local_validation", %{})
     end
   end
 
-  defp execution_response({:ok, response}, operation) do
+  defp execution_response({:ok, response}) do
     result = graphql_response(response)
-    kind = Operation.response_kind(response)
-
-    certainty =
-      cond do
-        operation["operation"] == "query" -> "read_only"
-        kind == "request_error" -> "not_executed"
-        kind == "success" -> "confirmed"
-        true -> "uncertain"
-      end
-
-    metadata = Map.merge(operation, %{"http_status" => 200, "graphql_result" => kind})
-    execution(result, certainty, if(result["success"], do: "response", else: "graphql_error"), metadata)
+    metadata = %{"http_status" => 200, "graphql_codes" => Operation.error_codes(response)}
+    execution(result, if(result["success"], do: "response", else: "graphql_error"), metadata)
   end
 
-  defp execution_response({:error, reason}, operation) do
-    {certainty, category, details} = failure_certainty(reason, operation)
-
-    failure_response(tool_error_payload(reason))
-    |> execution(certainty, category, Map.merge(operation, details))
+  defp execution_response({:error, reason}) do
+    {category, details} = failure_details(reason)
+    failure_response(tool_error_payload(reason)) |> execution(category, details)
   end
 
-  defp failure_certainty(:missing_linear_api_token, _operation), do: {"not_executed", "missing_auth", %{}}
-  defp failure_certainty({:linear_api_request, :missing_linear_api_token}, operation), do: failure_certainty(:missing_linear_api_token, operation)
+  defp failure_details(:missing_linear_api_token), do: {"missing_auth", %{}}
+  defp failure_details({:linear_api_request, :missing_linear_api_token}), do: failure_details(:missing_linear_api_token)
+  defp failure_details({:linear_api_status, status}), do: {"http_error", %{"http_status" => status}}
+  defp failure_details(reason), do: {"transport_error", %{"transport_reason" => Operation.transport_reason(reason)}}
 
-  defp failure_certainty({:linear_api_status, status}, operation) do
-    certainty = if status in @rejections, do: "not_executed", else: uncertainty(operation)
-    {certainty, "http_error", %{"http_status" => status}}
-  end
-
-  defp failure_certainty(reason, operation), do: {uncertainty(operation), "transport_error", %{"transport_reason" => Operation.transport_reason(reason)}}
-  defp uncertainty(%{"operation" => "query"}), do: "read_only"
-  defp uncertainty(_operation), do: "uncertain"
-
-  defp execution(result, certainty, reason, metadata) do
-    Map.put(result, "execution", Map.merge(metadata, %{"certainty" => certainty, "reason" => reason}))
+  defp execution(result, reason, metadata) do
+    Map.put(result, "execution", Map.put(metadata, "reason", reason))
   end
 
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do

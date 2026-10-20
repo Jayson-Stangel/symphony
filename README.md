@@ -343,7 +343,8 @@ It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain
 unresolved failures to the affected issue. Tracker errors do not pause unrelated
-work. Established-session transport and delivery failures retry after confirmed
+work. Redacted diagnostics retain request fingerprints and correlation/status
+fields without an execution-certainty classifier or GraphQL parser dependency. Established-session transport and delivery failures retry after confirmed
 cleanup with backoff and tracker readback; explicit input/permission and cleanup
 stops retain their gates. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Existing stable installations change only through

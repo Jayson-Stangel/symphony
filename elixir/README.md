@@ -42,7 +42,10 @@ retries a mutation. Unconfirmed cleanup, explicit input/permission requirements 
 authentication/policy stops remain gated. Startup ownership/initialization failures
 remain fail-closed; retry recovery applies to established sessions. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
-See [tracker diagnostics](docs/logging.md).
+See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
+correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
+execution certainty. Existing issue-local legacy notices preserve old evidence
+without gating dispatch; no new intent files or automatic purge are introduced.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
