@@ -39,8 +39,9 @@ rejected requests. After confirmed session cleanup, lost delivery, malformed tur
 frames, unexpected EOF and helper timeouts retry the affected attempt with backoff.
 The next attempt reads tracker state before writing; Symphony never automatically
 retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
-authentication/policy stops remain gated. Startup ownership/initialization failures
-remain fail-closed; retry recovery applies to established sessions. Every initial/retry
+authentication/policy stops remain gated. Transient startup failures retry only after a
+matching helper cleanup acknowledgement. Explicit startup policy/identity failures
+and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 See [tracker diagnostics](docs/logging.md).
 
@@ -246,8 +247,11 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+  Reaching this per-attempt allowance closes the native session normally and schedules the existing
+  continuation check in the retained workspace; it does not block the issue. Both providers use this
+  behavior. Tracker state and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
@@ -256,6 +260,9 @@ Notes:
 - `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
   run. When the count reaches this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.
+  Generated and sample workflows leave both live circuit breakers disabled. Existing project
+  workflows keep any explicitly configured limits; remove them or set them to `0` to use ordinary
+  continuation behavior. Symphony does not rewrite existing project policy on update.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -522,6 +529,22 @@ used by the qualification lab. Node verifies the installed runtime. Elixir check
 protocol/policy compatibility and bounded version diagnostics without duplicating
 dependency pins; compatible upgrades preserve the same protocol contract.
 The state API adds an `agent` object while retaining existing token fields.
+Model-free Claude readiness runs in one supervised task at startup, on explicit
+refresh/control, and every 30 seconds after completion. Failed observations recover
+automatically after repair; they are not persisted as account pauses. Snapshots,
+drain and worker exits remain responsive during native checks.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress. GNU timeout bounds
+the external check group to 35 seconds, including after task/scheduler loss; an old
+OS check may briefly overlap restart until that deadline. Explicit runtime pauses,
+quota cooldowns, drain and cleanup safety remain enforced. Ambiguous unscoped
+legacy auth/policy pause files still require explicit recheck after repair.
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission still validates the attestation.
+
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck
