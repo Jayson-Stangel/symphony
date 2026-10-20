@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.ClaudeAdapterTest do
   use SymphonyElixir.TestSupport
-  alias SymphonyElixir.{AgentPause, Claude.Adapter}
+  alias SymphonyElixir.{AgentPause, Claude.Adapter, Linear.AgentTool}
 
   @helper Path.expand("../../../runner/claude/test/fixtures/port-probe.mjs", __DIR__)
 
@@ -52,6 +52,24 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  defmodule RecoverableLinearTool do
+    alias SymphonyElixir.Linear.AgentTool
+
+    @spec execute_agent_tool(String.t(), map(), keyword()) :: map()
+    def execute_agent_tool("linear_graphql", args, opts) do
+      settings = Keyword.fetch!(opts, :tracker_settings)
+      send(settings.owner, {:linear_recovery_call, args["query"]})
+
+      response =
+        case args["query"] do
+          "mutation { rejected }" -> %{"errors" => [%{"message" => "Unknown field rejected"}]}
+          "mutation { corrected }" -> %{"data" => %{"corrected" => %{"success" => true}}}
+        end
+
+      AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, response} end)
+    end
+  end
+
   setup do
     SymphonyElixir.TestSupport.isolate_inference_environment()
     root = Path.join(System.tmp_dir!(), "symphony-claude-adapter-#{System.unique_integer([:positive])}")
@@ -72,6 +90,26 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     opts = [node_path: System.find_executable("node"), helper_path: @helper, cleanup_path: Path.expand("../../../runner/claude/cleanup.mjs", __DIR__)]
     %{root: root, workspace: workspace, opts: opts, issue: %Issue{id: "one", identifier: "PROBE-1", title: "Probe"}}
+  end
+
+  test "Claude receives a mutation rejection and corrects it through the production helper", ctx do
+    binding = %{
+      adapter: RecoverableLinearTool,
+      tracker_settings: %{owner: self()},
+      tool_specs: AgentTool.tool_specs()
+    }
+
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :tool_binding, binding))
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "linear-recovery", ctx.issue, [])
+      assert_receive {:linear_recovery_call, "mutation { rejected }"}
+      assert_receive {:linear_recovery_call, "mutation { corrected }"}
+      assert :ready = AgentPause.current()
+      assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
+    after
+      Adapter.stop_session(session)
+    end
   end
 
   test "account changes cannot switch the listener's pinned native identity", ctx do

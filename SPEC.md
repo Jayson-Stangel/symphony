@@ -2382,9 +2382,13 @@ recheck; it must not clear consumed quota probes or unresolved tracker intents.
 
 Linear tool outcome safety applies to both Codex and Claude. Parsed query-only
 documents and locally rejected requests cannot produce writes; their failures
-remain correctable tool results. Mutations and unclassified documents persist
+remain correctable tool results. A valid errors-only GraphQL request rejection
+without data or execution paths, or explicit parse/schema-validation errors
+with absent/null data and no execution paths, must also remain correctable.
+Generic resolver input failures and null/partial execution results do not prove
+non-execution. No mutation is automatically replayed. Mutations and unclassified documents persist
 intent before execution. Ambiguous responses or interrupted delivery retain that
 intent and block redispatch until explicit reconciliation. Live in-flight calls
 are tracked separately from abandoned intents; process death or restart must fail
 closed. Redacted diagnostics retain operation type/hash, provider, correlation
-IDs, delivery phase, status/code and timing without query text or credentials.
+IDs, delivery phase, response category, status/code and timing without query text or credentials.

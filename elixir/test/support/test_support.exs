@@ -32,6 +32,8 @@ defmodule SymphonyElixir.TestSupport do
           )
 
         File.mkdir_p!(workflow_root)
+        previous_state_root = Application.fetch_env(:symphony_elixir, :agent_state_root)
+        Application.put_env(:symphony_elixir, :agent_state_root, Path.join(workflow_root, "agent-state"))
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
@@ -39,6 +41,11 @@ defmodule SymphonyElixir.TestSupport do
         stop_default_http_server()
 
         on_exit(fn ->
+          case previous_state_root do
+            {:ok, value} -> Application.put_env(:symphony_elixir, :agent_state_root, value)
+            :error -> Application.delete_env(:symphony_elixir, :agent_state_root)
+          end
+
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
