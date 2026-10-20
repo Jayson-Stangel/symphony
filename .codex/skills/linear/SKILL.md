@@ -339,11 +339,12 @@ query IssueFieldArgs {
 
 ### Attach generated evidence to the issue
 
-Apply this to every generated screenshot, recording, report, log, or other
-review artifact. Inspect the file for secrets/private data first and sanitize
-when needed. A local path or an upload on the PR alone is not delivered evidence.
-A verified sanitized replacement satisfies the gate for an unsafe original.
-Record the substitution without revealing removed data; never upload the unsafe original.
+Use this procedure when the workflow, target repository or ticket requires a
+Linear-hosted artifact, or when it is needed for review. Do not upload every
+temporary log by default. Other durable evidence links may satisfy the target's
+requirements; a local path is not delivered evidence when reviewers need the file.
+Inspect artifacts for secrets/private data and sanitize when needed. Record any
+substitution without revealing removed data; never upload an unsafe original.
 
 Do this in four steps:
 

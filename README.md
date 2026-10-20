@@ -10,13 +10,13 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
-The supplied workflow uses `Blocked` for work requiring external intervention and reserves
-`Human Review` for validated work ready for approval. Work stays `In Progress` while automated PR
-review is pending or findings are being resolved. Handoff requires completed automated review of
-the latest PR commit with no outstanding actionable findings; green CI alone is insufficient.
-New projects inherit this gate from the supplied workflow. Existing project workflows are
-preserved by `symphony init` and `symphony update`; adopt the automated PR review gate from
-[`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) in each existing project's delivery contract.
+The supplied workflow uses `Blocked` for work requiring external intervention and
+`Human Review` for validated work awaiting human assessment. Workers record available
+feedback and pending external reviews, then end their turn rather than poll while
+waiting. Required repository checks, reviews and human approval still govern merge.
+New projects inherit this policy; existing workflows are preserved by `symphony init`
+and `symphony update`. Adopt the review handoff from
+[`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) deliberately in existing project contracts.
 Configure `tracker.blocked_states` to keep
 blocked tracker issues visible in the web dashboard across service restarts; move them back to an
 active state after resolving the blocker. Existing workflows must add this configuration and their
@@ -159,12 +159,11 @@ http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interaction
 are shared through `PLAYWRIGHT_BROWSERS_PATH`; projects using a different Playwright version
 may need to set that variable to a writable workspace directory and install their own
 matching browser before running tests. The workflow template includes web app
-validation and evidence publication guidance. Workers must attach every generated
-review artifact to its Linear issue, link it in the workpad, and verify publication
-before handoff or completion. Local paths alone are insufficient because completed
-workspaces may be removed. Existing project workflows are preserved, so copy the
-evidence publication and app validation sections into them explicitly when adopting
-this capability.
+validation and acceptance-evidence guidance. Record results and durable proof links;
+publish artifacts needed to assess the change or explicitly required by the target
+repository or ticket. Do not require uploading every temporary log. Review artifacts
+must remain accessible after workspace cleanup and must not expose secrets. Existing
+workflows are preserved; adopt these sections deliberately when changing project policy.
 
 To verify just the browser layer without credentials or a running listener:
 
@@ -333,8 +332,8 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Claude subscription workers
 
-Codex remains the default. A qualified personal Claude profile adds one isolated
-Claude worker through pinned Claude Code/Agent SDK and native subscription login.
+Codex remains the default. A qualified personal Claude profile adds isolated
+Claude workers through pinned Claude Code/Agent SDK and native subscription login.
 Sonnet remains the default; current model IDs, family aliases and reasoning effort
 are configurable. Terminal and web dashboards show the configured Claude effort.
 The dashboard updates input tokens during Claude steps and confirms output tokens
@@ -343,7 +342,9 @@ It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain
 unresolved failures to the affected issue. Tracker errors do not pause unrelated
-work. Per-attempt turn allowances use the original scheduler continuation path for
+work. Redacted diagnostics retain request fingerprints and correlation/status
+fields without an execution-certainty classifier or GraphQL parser dependency.
+Per-attempt turn allowances use the original scheduler continuation path for
 both providers; new workflows do not impose live token/turn circuit breakers.
 Established-session transport and delivery failures retry after confirmed
 cleanup with backoff and tracker readback; startup transient failures retry after
@@ -357,3 +358,10 @@ For integration testing before promotion, use a [dedicated development workspace
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh
 stale pending candidates while retaining their rollback source.
+
+Codex and Claude share the configured global and per-state worker limits. Use
+`agent.max_concurrent_agents: 1` for serial work or a larger value for bounded
+parallel work. Explicit authentication/policy rechecks admit one recovery owner
+until success, then restore normal parallel capacity. The deprecated `claude.max_concurrent_agents` input is accepted
+but ignored; move any desired limit into `agent`. See the
+[Claude workflow settings](docs/claude.md#workflow-settings) for migration details.

@@ -2,7 +2,7 @@
 
 Symphony can run a local isolated worker through pinned Claude Code and the
 Claude Agent SDK. Codex remains the default. The initial Claude profile supports
-one worker, configurable Claude models (Sonnet by default), Docker-compatible
+bounded worker concurrency, configurable Claude models (Sonnet by default), Docker-compatible
 Linux isolation, and native Claude Pro/Max subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
 
 This profile is intended for an owner-operated installation. Permission to offer
@@ -58,12 +58,25 @@ by editing the workflow. Existing Codex settings retain their meaning.
 claude:
   model: sonnet
   effort: high # optional; omit or use null for the model default
-  max_concurrent_agents: 1
   max_agentic_turns: 50
   read_timeout_ms: 5000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 ```
+
+Both providers use `agent.max_concurrent_agents` (default 10) and
+`agent.max_concurrent_agents_by_state` through the same scheduler. Set the global
+value to 1 for serial execution, or 3 to allow three independent worker sessions;
+per-state limits can further restrict admission. Reloaded limits apply to new
+starts without terminating existing workers. Normal dispatch has no additional Claude cap. An explicit authentication/policy
+recheck admits one recovery owner until that turn succeeds; it then restores the
+configured parallel capacity. Quota cooldown expiry uses normal capacity.
+The old positive `claude.max_concurrent_agents` field is accepted for workflow
+compatibility but is deprecated and **ignored**. Move any desired cap to
+`agent.max_concurrent_agents`; for example, a legacy Claude value of 1 with an agent
+value of 3 now allows three workers. Native account/service limits can still
+reject requests; existing shared cooldown, retry, drain and owned cleanup apply.
+The state API exposes the effective global value as `agent.max_concurrent_agents`.
 
 `claude.model` accepts the family aliases `sonnet` (default), `opus`, `haiku`,
 and `fable`, or the current model IDs `claude-opus-5-5`, `claude-sonnet-5-5`,
@@ -94,7 +107,6 @@ providers. Reaching it closes that session normally; the existing scheduler
 continuation check revalidates active work and can start another attempt in the
 same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
 unknown keys, arbitrary commands, authentication overrides and raw SDK options.
-The initial worker cap is one even if general agent limits are higher.
 
 Root AGENTS.md and CLAUDE.md are combined without generating tracked files.
 Workers must read applicable directory instructions before editing. Canonical
@@ -188,12 +200,17 @@ writing. Existing `claude-tools` files remain legacy evidence: matching issues
 receive a recovery notice; other issues can run. Legacy `tool_outcome_uncertain`
 and worker `protocol_error` pause records no longer block project dispatch or
 mask later auth/quota/policy pauses. No automatic replay or rollback is inferred.
+This bounded issue-local reader remains compatibility for retained state volumes,
+not a dispatch gate. Retire it only through evidence-preserving cleanup after
+legacy volumes have been inventoried; ordinary attempts never delete legacy files,
+and there is no automatic expiry or purge. The existing explicit reconciliation
+control remains an operator action. No new intent records are written.
 
 `Tracker tool outcome` logs correlate issue and tool IDs with provider, document
-SHA-256, parsed operation type, phase, elapsed time, HTTP status, GraphQL response
-category (`request_error`, `execution_error`,
-`success` or `malformed`), allowlisted GraphQL codes (including `INVALID_INPUT`)
-and transport reason. `accepted` records successful delivery (Claude
+SHA-256, phase, elapsed time, HTTP status, response/delivery reason, allowlisted
+GraphQL codes (including `INVALID_INPUT`) and transport reason. The hash
+correlates requests without parsing GraphQL or inferring operation kind, execution
+certainty or whether an error preceded a write. `accepted` records successful delivery (Claude
 acknowledgement or a Codex RPC write); `delivery_failed` records a lost reply or
 acknowledgement. Neither phase asserts the external effect was reconciled. Query text, variables, error bodies and credentials are not
 included in these diagnostics. These fields help reconcile a write but do not

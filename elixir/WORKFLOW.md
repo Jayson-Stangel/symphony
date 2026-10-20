@@ -36,6 +36,9 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
+  # Shared by Codex and Claude; use 1 for serial execution.
+  # Deprecated claude.max_concurrent_agents is accepted but ignored.
+  # An explicit auth/policy recheck retains one recovery owner until success.
   max_concurrent_agents: 10
   max_turns: 20
 codex:
@@ -128,43 +131,21 @@ requires them. A missing tool matters only when required for that project's work
   the globally installed `symphony-land` skill, which includes the land loop.
   A repository may deliberately override it with `.codex/skills/symphony-land`.
 
-## Evidence publication (required)
+## Evidence for review
 
-Whenever you create review evidence (screenshots, recordings, reports, logs, or
-other validation artifacts), upload it to the current Linear issue and link it
-from the existing workpad. Local paths and PR-only uploads do not satisfy this
-requirement. Publish evidence as it is created, including evidence of failures;
-do not wait until handoff or rely on the workspace surviving completion.
-Evidence must come from the actual validation run for the stated revision.
-Inspect the generated artifact before citing it; a filename, placeholder image,
-or a test-success summary is not proof of the rendered result.
+Record the tested revision, commands, observed results and material limitations in
+the workpad. Link durable CI runs and PR evidence. Publish acceptance-relevant
+screenshots, recordings or other artifacts when needed to assess the change or
+when the target repository or ticket requires them. Temporary logs do not all need
+uploading. A local path is not delivered evidence if reviewers need the artifact.
 
-Use the `symphony-linear` file upload procedure: request a signed upload URL,
-upload the bytes with the returned headers, then attach the resulting asset URL
-to this issue with a descriptive title. Embed screenshots in the existing workpad
-for inline review. Record the tested revision, command/result, and viewport or
-other context alongside each artifact. Inspect artifacts for secrets or private
-data before uploading; publish a sanitized copy when needed. A verified sanitized
-replacement satisfies this requirement for its unsafe original. Record the
-substitution without revealing removed data; never upload the unsafe original.
-
-Require a successful upload HTTP status (`curl --fail-with-body` or equivalent);
-a successful tool call or a created attachment does not prove the bytes arrived.
-Retrieve the published asset through authorized Linear access and compare its
-byte count and SHA-256 with the intended local file (the sanitized copy when
-applicable). Worker `linear_graphql` reads return file URLs signed for five
-minutes: read the attached asset URL, download it with `curl --fail --location`,
-and repeat the read if the download URL expires. Store the canonical asset URL
-without its temporary signature in issue links, not the expiring download URL;
-do not expose credentials or introduce raw-token shell helpers. Record the
-verification result. An inaccessible, truncated, or mismatched asset is unpublished.
-Read back the issue attachments and workpad to verify each verified asset is linked
-to the correct issue. On retry or continuation, reuse verified attachments;
-publish any missing artifacts and identify fresh evidence when the candidate
-changes. Preserve local evidence until publication is verified. If uploading or
-linking fails after bounded supported recovery, record the failure and preserved
-paths in the workpad and use Blocked; do not claim evidence delivery or move to
-Human Review, Merging, or Done with unpublished evidence.
+Inspect artifacts for secrets/private data before publishing; sanitize or withhold
+unsafe originals and explain the evidence limit. Use the `symphony-linear` upload
+procedure when storing files in Linear, verify the upload succeeded, and read back
+the issue link. Do not claim evidence was delivered unless it is accessible.
+Follow any stricter target-repository or ticket publication requirements. Missing
+required acceptance evidence prevents handoff; an optional upload failure does
+not by itself make implementation blocked.
 
 ## App runtime validation (required)
 
@@ -172,7 +153,7 @@ For web application changes, start the app using the target repository's documen
 command, wait for it to be ready, and exercise the changed user flow in a browser.
 Verify the expected result and capture screenshots in the issue workspace. Record
 the commands and results in the workpad and publish the screenshots using
-`Evidence publication (required)`. Follow repository-specific media upload
+`Evidence for review`. Follow repository-specific media upload
 procedures as well when required. Stop any servers you started after testing.
 
 The standard Symphony container includes headless Chromium and Playwright for both
@@ -215,9 +196,9 @@ If launch fails, capture the actual command and error before treating it as bloc
 - `Backlog` -> out of scope for this workflow; do not modify.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
-- `In Progress` -> implementation, validation, or automated PR review underway; includes waiting for review results and resolving findings.
+- `In Progress` -> implementation and required validation underway; resolve available actionable feedback before handoff.
 - `Blocked` -> cannot proceed because of an external blocker; record the blocker and exact unblock action in the workpad. Do not dispatch until a human moves it to `Todo`, `In Progress`, or `Rework`.
-- `Human Review` -> PR is attached, validated, and automated review has completed for the latest commit with all findings resolved; waiting on human approval.
+- `Human Review` -> validated PR is attached and ready for human assessment. Record any pending external review; end the worker turn while waiting.
 - `Merging` -> approved by human; execute the `symphony-land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.
 - `Done` -> terminal state; no further action required.
@@ -232,7 +213,7 @@ If launch fails, capture the actual command and error before treating it as bloc
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `In Progress` -> continue execution flow from current scratchpad comment.
    - `Blocked` -> stop; wait for the blocker to be resolved and the issue to return to an active state.
-   - `Human Review` -> wait and poll for decision/review updates.
+   - `Human Review` -> end the turn; do not poll or occupy a worker while awaiting review.
    - `Merging` -> on entry, open and follow `symphony-land`; do not call `gh pr merge` directly.
    - `Rework` -> run rework flow.
    - `Done` -> do nothing and shut down.
@@ -314,21 +295,24 @@ When a ticket has an attached PR, run this protocol before moving to `Human Revi
    - explicit, justified pushback reply is posted on that thread.
 4. Update the workpad plan/checklist to include each feedback item and its resolution status.
 5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments, then satisfy the automated review gate below. An empty feedback sweep alone does not mean review has finished.
+6. Recheck the current head and available feedback after fixes. Record which reviews completed and which remain pending; an empty comment list does not establish completed review.
 
-## Automated PR review gate (required)
+## Review handoff
 
-Keep the issue `In Progress` while automated review is pending or findings are being addressed. If executing in `Rework`, retain that active state until this gate passes. No separate review status is required.
+Follow the target repository's required checks and review obligations, including
+its AGENTS.md and ticket validation, not only GitHub branch-protection settings. Address
+available actionable feedback through the sweep above. Do not impose a separate
+requirement that every installed bot complete a review unless the repository or
+ticket explicitly requires it. Record the reviewed head and pending external
+reviews accurately, including each required reviewer or process and the source
+of that requirement in the existing workpad; handoff is not approval or permission
+to merge.
 
-1. After creating the PR and after every push, identify the current PR head SHA and the repository's configured automated reviewers. Inspect their review runs, check results, review summaries, and PR comments; automated review may report through comments rather than a required CI check.
-2. Wait for an explicit completed review result from every configured automated reviewer for that head SHA. A clean review or an explicit no-findings/all-good result qualifies. A completed review containing findings starts the feedback-resolution loop; it does not authorize handoff.
-   - No comments yet, green unrelated checks, a reaction/acknowledgment, or a result for an older commit does not establish completed review of the current head.
-   - Pending, queued, failed, cancelled, skipped, or missing review results do not pass this gate. Poll while review is running; use the repository's documented trigger or rerun procedure if review did not start or failed. Do not treat a non-blocking review job as optional.
-3. Address every actionable finding through the PR feedback sweep protocol. Record the review source, reviewed SHA, findings, and their resolutions in the workpad. Acknowledging a comment or marking a thread resolved alone does not resolve a finding; provide the fix and validation evidence, or an explicit, justified pushback reply explaining why no change is needed.
-4. If resolving findings changes the branch, push the validated changes and wait for completed automated review of the new head. Request a fresh review through the documented procedure when pushes do not trigger it automatically. Repeat until review is complete and no actionable findings remain.
-5. Immediately before moving to `Human Review`, re-fetch the PR head and feedback. Confirm the completed review evidence still matches that SHA, all findings are resolved, and checks pass. If the head changed or new findings arrived, repeat the gate. Record the final reviewed SHA and review evidence in the workpad.
-
-Normal review latency is ongoing work, not an external blocker. If review cannot complete because required access or the review service is unavailable after applicable recovery attempts, follow the blocked-access escape hatch; never substitute `Human Review` for missing review evidence.
+After implementation, required validation and available feedback are complete,
+move to `Human Review` and end the turn. The existing tracker flow resumes work
+when the operator moves the issue to `Rework` or approves `Merging`. Do not add a
+review watcher, keep a model session polling, or mark ordinary review latency as
+an external blocker. Required reviews still prevent merge until satisfied.
 
 ## Blocked-access escape hatch (required behavior)
 
@@ -376,28 +360,30 @@ Use this only when completion is blocked by missing required tools or missing au
 11. Before moving to `Human Review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
-    - Satisfy the automated PR review gate for the latest PR head; remain in the active state while waiting for review or resolving findings.
-    - Confirm PR checks are passing (green) after the latest changes.
+    - Follow Review handoff for the current head; record completed and pending external reviews.
+    - Confirm required PR checks are passing after the latest changes; record pending optional checks/reviews.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until automated review has completed for the latest head, no outstanding actionable findings remain, and checks are fully passing.
+    - Resolve available actionable findings and pass required checks; do not hold a worker for optional bot latency.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Human Review`.
+12. Only then move issue to `Human Review` and end the turn.
     - If required work cannot be completed because of an external blocker, use `Blocked` with the blocker brief and explicit unblock actions; do not use `Human Review`.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
-    - Satisfy the automated PR review gate for the latest PR head, including a fresh review after feedback-driven pushes.
-    - Then move to `Human Review`.
+    - Recheck the current head and available feedback after fixes, and record any pending external review.
+    - Then move to `Human Review` and end the turn.
 
 ## Step 3: Human Review and merge handling
 
-1. When the issue is in `Human Review`, do not code or change ticket content.
-2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `symphony-land`, then run it in a loop until the PR is merged. Do not call `gh pr merge` directly.
-   - Keep review polling in the current turn; report waiting status as progress and continue watching. A progress message does not end the turn or consume a continuation turn.
-6. After merge is complete, move the issue to `Done`.
+1. In `Human Review`, end the turn without polling, coding or changing ticket content.
+2. The operator uses the existing tracker flow to request `Rework` or approve `Merging`.
+3. On `Rework`, inspect current feedback and follow the rework flow.
+4. On `Merging`, open and follow `symphony-land`, preserving all required checks and
+   human approval boundaries. Do not call `gh pr merge` directly. Handoff or pending
+   bot review is not merge approval. Verify each pending required review from the
+   workpad against the current head; if required external review or CI is still
+   pending, record it, return to `Human Review` and end the turn.
+5. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
@@ -415,11 +401,11 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
-- Every evidence artifact or its sanitized replacement is attached to this Linear issue, linked in the workpad, and verified by asset retrieval and read-back.
+- Acceptance-relevant evidence is recorded or durably linked; artifacts required for review are accessible and safe.
 - Validation/tests are green for the latest commit.
 - PR feedback sweep is complete and no actionable comments remain.
-- Every configured automated reviewer has completed review of the latest PR head, all actionable findings are resolved, and the workpad records the reviewed SHA and review evidence.
-- PR checks are green, branch is pushed, and PR is linked on the issue.
+- The current head, completed reviews, resolved feedback and pending external reviews are accurately recorded.
+- Required PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
 - For web app changes, runtime validation requirements from `App runtime validation (required)` are complete.
 
@@ -439,7 +425,7 @@ Use this only when completion is blocked by missing required tools or missing au
   current issue.
 - Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
 - Use `Blocked` for external blockers; never use `Human Review` to request missing access or tools.
-- In `Human Review`, do not make changes; wait and poll.
+- In `Human Review`, end the turn; do not keep a model session waiting or polling.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
 - If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.

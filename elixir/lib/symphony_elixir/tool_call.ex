@@ -17,11 +17,11 @@ defmodule SymphonyElixir.ToolCall do
 
   defp context(tool, arguments, opts) do
     linear = tool == "linear_graphql"
-    operation = if linear, do: Operation.describe(arguments), else: %{"operation" => "unknown"}
+    fingerprint = if linear, do: Operation.describe(arguments), else: %{}
     provider = if Keyword.fetch!(opts, :provider) == :claude, do: "claude", else: "codex"
 
     metadata =
-      Map.merge(operation, %{
+      Map.merge(fingerprint, %{
         "provider" => provider,
         "started_at" => DateTime.to_iso8601(DateTime.utc_now()),
         "issue_identifier" => Keyword.get(opts, :issue_identifier),
@@ -73,29 +73,17 @@ defmodule SymphonyElixir.ToolCall do
     %{"success" => false, "output" => "Tracker tool failed before a usable response was received. Check the request and read back the external state before retrying."}
   end
 
-  defp result_details(%{"execution" => execution, "output" => output}) when is_map(execution) and is_binary(output) do
+  defp result_details(%{"execution" => execution}) when is_map(execution) do
     details = if execution["reason"] in @reasons, do: %{"reason" => execution["reason"]}, else: %{}
     status = execution["http_status"]
     details = if is_integer(status) and status in 100..599, do: Map.put(details, "http_status", status), else: details
-    details = Map.put(details, "graphql_codes", graphql_codes(output))
-    kind = execution["graphql_result"]
-    details = if kind in ~w(request_error execution_error success malformed), do: Map.put(details, "graphql_result", kind), else: details
+    details = Map.put(details, "graphql_codes", Operation.error_codes(execution["graphql_codes"]))
     transport = execution["transport_reason"]
     if transport in ~w(timeout closed econnrefused econnreset nxdomain enetunreach ehostunreach other), do: Map.put(details, "transport_reason", transport), else: details
   end
 
   defp result_details(:exception), do: %{"reason" => "exception"}
   defp result_details(_result), do: %{}
-
-  defp graphql_codes(output) do
-    case Jason.decode(output) do
-      {:ok, response} ->
-        Operation.error_codes(response)
-
-      _ ->
-        []
-    end
-  end
 
   @spec accept(map()) :: :ok
   def accept(context) do
