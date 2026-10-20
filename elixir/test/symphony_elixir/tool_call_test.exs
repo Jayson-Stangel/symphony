@@ -58,210 +58,95 @@ defmodule SymphonyElixir.ToolCallTest do
     assert Operation.transport_reason("secret-canary") == "other"
   end
 
-  test "both providers return read failures and local rejections without uncertain-write state", ctx do
-    failures = [
-      {:ok, %{"data" => nil, "errors" => [%{"extensions" => %{"code" => "INPUT_ERROR"}}]}},
+  test "both providers return all tracker outcomes and permit a reconciliation read", ctx do
+    responses = [
+      {:ok, %{"data" => nil, "errors" => [%{"message" => "secret-canary", "extensions" => %{"code" => "INVALID_INPUT"}}]}},
+      {:ok, %{"data" => %{"firstWrite" => %{"success" => true}}, "errors" => [%{"message" => "second failed"}]}},
+      {:ok, %{"errors" => [%{"message" => "unknown field"}]}},
+      {:ok, %{"errors" => [nil]}},
+      {:error, {:linear_api_request, :missing_linear_api_token}},
+      {:error, {:linear_api_status, 400}},
       {:error, {:linear_api_status, 503}},
-      {:error, {:linear_api_request, :timeout}}
+      {:error, {:linear_api_request, %{reason: :timeout, secret: "secret-canary"}}}
     ]
 
-    for provider <- [:codex, :claude], response <- failures do
-      assert {:ok, %{"success" => false}, context} = call(@query, response, provider)
-      assert :ok = ToolCall.accept(context)
-      assert :ready = AgentPause.current()
-    end
-
-    for arguments <- [%{}, %{"query" => @mutation, "variables" => false}, %{"query" => @mutation, "variables" => []}] do
-      assert {:ok, %{"execution" => %{"certainty" => "not_executed"}}, context} =
-               run(arguments, fn ->
-                 AgentTool.execute("linear_graphql", arguments, linear_client: fn _, _, _ -> flunk("local rejection reached network") end)
-               end)
-
-      assert :ok = ToolCall.accept(context)
-    end
-
-    reasons = [
-      :missing_linear_api_token,
-      {:linear_api_request, :missing_linear_api_token},
-      {:linear_api_status, 400},
-      {:linear_api_status, 422},
-      {:linear_api_status, 429}
-    ]
-
-    for reason <- reasons do
-      assert {:ok, _, context} = call(@mutation, {:error, reason})
-      assert :ok = ToolCall.accept(context)
-    end
-
-    refute File.exists?(Path.join(ctx.root, "claude-pause.json"))
-    assert {:ok, _, context} = run(%{"query" => @query}, fn -> raise "secret-canary" end)
-    assert :ok = ToolCall.accept(context)
-  end
-
-  test "both providers can correct request errors without leaving a restart blocker", ctx do
-    errors = [
-      %{"errors" => [%{"message" => "secret-canary: variable coercion failed"}]},
-      %{"errors" => [%{"message" => "validation failed", "extensions" => %{"code" => "GRAPHQL_VALIDATION_FAILED"}}], "data" => nil},
-      %{"errors" => [%{"message" => "parse failed", "extensions" => %{"code" => "GRAPHQL_PARSE_FAILED"}}]}
-    ]
-
-    for provider <- [:codex, :claude], response <- errors do
+    for provider <- [:codex, :claude], response <- responses do
       log =
         capture_log(fn ->
-          assert {:ok, %{"success" => false, "execution" => %{"certainty" => "not_executed"}}, rejected} = call(@mutation, {:ok, response}, provider)
-          refute rejected.durable
-          assert Path.wildcard(Path.join(ctx.root, "claude-tools/*.json")) == []
+          assert {:ok, %{"success" => false, "output" => output}, context} = call(@mutation, response, provider)
+          assert is_binary(output)
+          assert :ok = ToolCall.accept(context)
+          assert {:ok, %{"success" => true}, read} = call(@query, {:ok, %{"data" => %{}}}, provider)
+          assert :ok = ToolCall.accept(read)
           assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
-          assert :ok = ToolCall.accept(rejected)
-          assert {:ok, %{"success" => true}, corrected} = call(@mutation, {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}, provider)
-          assert :ok = ToolCall.accept(corrected)
+        end)
+
+      assert log =~ "document_sha256"
+      refute log =~ "secret-canary"
+    end
+
+    refute File.exists?(ctx.root)
+  end
+
+  test "original errors reach the agent while diagnostics omit response bodies" do
+    response = %{"data" => %{"issueUpdate" => nil}, "errors" => [%{"message" => "secret-canary: target invalid"}]}
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{"output" => output}, _} = call(@mutation, {:ok, response})
+        assert output =~ "secret-canary: target invalid"
+      end)
+
+    refute log =~ "secret-canary"
+  end
+
+  test "exceptions, malformed envelopes and oversized results become bounded actionable errors", ctx do
+    for provider <- [:codex, :claude],
+        execute <- [
+          fn -> raise "secret-canary" end,
+          fn -> throw(:secret_canary) end,
+          fn -> nil end,
+          fn -> %{"success" => "invalid", "output" => "bad"} end,
+          fn -> %{"success" => true, "output" => String.duplicate("x", 524_289)} end
+        ] do
+      log =
+        capture_log(fn ->
+          assert {:ok, %{"success" => false, "output" => output}, context} = run(%{"query" => @mutation}, execute, provider)
+          assert byte_size(output) <= 524_288
+          assert is_binary(output)
+          assert {:error, :tracker_delivery_failed, _} = ToolCall.fail(context, "ack_missing")
+          assert :ready = AgentPause.current()
         end)
 
       refute log =~ "secret-canary"
-      assert log =~ ~s("graphql_result":"request_error")
     end
 
-    assert {:ok, _, rejected} = call(@mutation, {:ok, hd(errors)})
-    assert {:error, :protocol_error, _} = ToolCall.fail(rejected, "ack_missing")
-    assert Path.wildcard(Path.join(ctx.root, "claude-tools/*.json")) == []
+    refute File.exists?(ctx.root)
   end
 
-  test "request-error detection never clears partial execution or malformed errors", ctx do
-    validation = %{"message" => "secret-canary", "extensions" => %{"code" => "GRAPHQL_VALIDATION_FAILED"}}
-
-    for response <- [
-          %{"data" => nil, "errors" => [%{"message" => "secret-canary", "extensions" => %{"code" => "INVALID_INPUT"}, "path" => ["issueUpdate"]}]},
-          %{"data" => %{"firstWrite" => %{"success" => true}}, "errors" => [validation]},
-          %{"data" => nil, "errors" => [validation, %{"message" => "other failure"}]},
-          %{"errors" => [Map.put(validation, "path", ["issueUpdate"])]},
-          %{"errors" => [Map.put(validation, "path", nil)]},
-          %{"errors" => [nil]},
-          %{"errors" => [%{"message" => 123}]},
-          %{"errors" => []},
-          %{"errors" => "malformed"},
-          %{"data" => false, "errors" => [validation]}
-        ] do
-      File.rm_rf!(ctx.root)
-      assert {:error, :tool_outcome_uncertain, _} = call(@mutation, {:ok, response})
-      assert {:paused, _} = Task.async(fn -> AgentPause.current() end) |> Task.await()
-      assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(AgentPause.codex_profile())
+  test "escaped and invalid text returns a deliverable recovery response" do
+    for output <- [String.duplicate("\"", 524_288), String.duplicate(<<0>>, 100_000), <<255>>] do
+      assert {:ok, result, _context} = run(%{}, fn -> %{"success" => true, "output" => output} end, :claude)
+      assert result["success"] == false
+      assert result["output"] =~ "read back"
+      frame = %{v: 1, type: "tool_result", session_id: "session", request_id: "request", tool_id: "tool", result: Map.take(result, ["success", "output"])}
+      assert byte_size(Jason.encode!(frame)) < 1_048_576
+      assert :ready = AgentPause.current()
     end
   end
 
-  test "both providers retain ambiguous writes with safe diagnostics", ctx do
-    for provider <- [:codex, :claude],
-        response <- [
-          {:ok, %{"data" => nil, "errors" => [%{"message" => "secret-canary", "extensions" => %{"code" => "INPUT_ERROR"}}]}},
-          {:ok, %{"data" => %{}, "errors" => "malformed"}},
-          {:ok, %{"data" => nil}},
-          {:error, {:linear_api_status, 503}},
-          {:error, {:linear_api_request, %{reason: :timeout, secret: "secret-canary"}}}
-        ] do
-      File.rm_rf!(ctx.root)
-      log = capture_log(fn -> assert {:error, :tool_outcome_uncertain, _} = call(@mutation, response, provider) end)
-      assert log =~ "uncertain"
-      assert log =~ "document_sha256"
-      refute log =~ "secret-canary"
-      assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = Task.async(fn -> AgentPause.current() end) |> Task.await()
-      marker = File.read!(Path.join(ctx.root, "claude-tools/call.json"))
-      refute marker =~ "secret-canary"
-      assert marker =~ "uncertain"
-      assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(AgentPause.codex_profile())
-      assert {:error, :tool_outcome_uncertain, _} = call(@query, {:ok, %{"data" => %{}}})
-    end
-
-    File.rm_rf!(ctx.root)
-    assert {:error, :tool_outcome_uncertain, _} = run(%{"query" => @mutation}, fn -> throw(:lost) end)
-    File.rm_rf!(ctx.root)
-    assert {:ok, _, context} = call(@mutation, {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}})
-    assert :ready = AgentPause.current()
-    assert {:error, :tool_outcome_uncertain, _} = ToolCall.fail(context, "ack_missing")
-    assert File.read!(Path.join(ctx.root, "claude-tools/call.json")) =~ "ack_missing"
-  end
-
-  test "active writes coexist, but owner death exposes the durable blocker", ctx do
-    parent = self()
-
-    pid =
-      spawn(fn ->
-        send(parent, {:write_waiting, call(@mutation, {:ok, %{"data" => %{}}})})
-
-        receive do
-          :stop -> :ok
-        end
-      end)
-
-    monitor = Process.monitor(pid)
-    assert_receive {:write_waiting, {:ok, _, context}}
-    assert :ready = AgentPause.current()
-    assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(AgentPause.codex_profile())
-    assert {:ok, _, read_context} = call(@query, {:ok, %{"data" => %{}}})
-    assert :ok = ToolCall.accept(read_context)
-    send(pid, :stop)
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}
-    assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = AgentPause.current()
-    assert :ok = AgentPause.annotate_tool(context.id, %{"phase" => "owner_lost"})
-    assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile(), confirm_tools_reconciled: true)
-    assert :ready = AgentPause.current()
-    assert :ok = AgentPause.begin_tool(AgentPause.codex_profile(), "issue", "legacy", "linear_graphql")
-    assert {:paused, _} = AgentPause.current()
-    assert File.regular?(Path.join(ctx.root, "claude-tools/legacy.json"))
-  end
-
-  test "reply limits, protocol failures, legacy envelopes and filesystem errors fail safely", ctx do
-    huge = String.duplicate("x", 524_289)
-    assert {:ok, %{"success" => false}, read} = run(%{"query" => @query}, fn -> %{"success" => true, "output" => huge} end)
-    assert {:error, :protocol_error, _} = ToolCall.fail(read, "secret-canary")
-    assert {:error, :policy_blocked, _} = call(@query, {:ok, %{"data" => %{}}})
-    assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile())
-    assert :ok = AgentPause.begin_turn(AgentPause.codex_profile())
-    assert {:ok, _, context} = call(@query, {:ok, %{"data" => %{}}})
-    assert :ok = ToolCall.accept(context)
-    assert :ok = AgentPause.complete_probe(AgentPause.codex_profile())
-    assert {:error, :tool_outcome_uncertain, _} = run(%{"query" => @mutation}, fn -> %{"success" => true, "output" => huge} end)
-    File.rm_rf!(ctx.root)
-
-    for {args, result} <- [
-          {%{"method" => "GET"}, %{"success" => false, "output" => "read error"}},
-          {%{}, %{"success" => false, "output" => ~s({"status":422})}},
-          {%{}, %{"success" => false, "output" => ~s({"error":{"status":400}})}}
-        ] do
-      assert {:ok, _, context} = run(args, fn -> result end, :codex, "legacy")
+  test "read, local and legacy tool failures remain deliverable" do
+    for {arguments, tool} <- [{%{"query" => @query}, "linear_graphql"}, {%{}, "linear_graphql"}, {%{"method" => "PATCH"}, "legacy"}] do
+      execute = fn -> %{"success" => false, "output" => "original failure"} end
+      assert {:ok, %{"success" => false, "output" => output}, context} = run(arguments, execute, :codex, tool)
+      assert output =~ "original failure"
       assert :ok = ToolCall.accept(context)
     end
 
-    for result <- [%{"success" => false, "output" => "unrecognized"}, %{"success" => false, "output" => ~s({"status":503})}, %{"success" => true}, nil] do
-      assert {:error, :tool_outcome_uncertain, _} = run(%{}, fn -> result end, :codex, "legacy")
-      File.rm_rf!(ctx.root)
-    end
-
-    assert {:ok, _, context} = call(@mutation, {:ok, %{"data" => %{}}})
-    assert :ok = AgentPause.finish_tool(context.id)
-    assert {:error, :enoent} = ToolCall.accept(context)
-    File.rm_rf!(ctx.root)
-    File.mkdir_p!(ctx.root)
-    File.write!(Path.join(ctx.root, "claude-tools"), "blocked")
-    assert {:error, :policy_blocked, _} = run(%{"query" => @mutation}, fn -> flunk("unsafe state dispatched") end)
-    File.rm_rf!(ctx.root)
-    File.mkdir_p!(ctx.root)
-    File.chmod!(ctx.root, 0o500)
-
-    try do
-      assert {:error, :policy_blocked, _} = run(%{"query" => @mutation}, fn -> flunk("intent not persisted") end)
-    after
-      File.chmod!(ctx.root, 0o700)
-    end
-
-    File.rm_rf!(ctx.root)
-
-    assert {:error, :tool_outcome_uncertain, _} =
-             run(%{"query" => @mutation}, fn ->
-               AgentPause.finish_tool("call")
-               AgentTool.execute("linear_graphql", %{"query" => @query}, linear_client: fn _, _, _ -> {:ok, %{"data" => %{}}} end)
-             end)
-
-    assert {:error, _} = AgentPause.annotate_tool("missing", %{})
-    assert {:error, :invalid_tool_id} = AgentPause.annotate_tool("../escape", %{})
+    assert {:ok, %{"success" => true}, context} = call(@mutation, {:ok, %{"data" => %{}}})
+    assert :ok = ToolCall.accept(context)
+    assert {:error, :tracker_delivery_failed, _} = ToolCall.fail(context, "secret-canary")
+    assert :ready = AgentPause.current()
   end
 
   defp call(query, response, provider \\ :codex) do
@@ -269,7 +154,7 @@ defmodule SymphonyElixir.ToolCallTest do
     run(arguments, fn -> AgentTool.execute("linear_graphql", arguments, linear_client: fn _, _, _ -> response end) end, provider)
   end
 
-  defp run(arguments, execute, provider \\ :codex, tool \\ "linear_graphql") do
+  defp run(arguments, execute, provider, tool \\ "linear_graphql") do
     ToolCall.run(execute, tool, arguments, issue_id: "issue", tool_id: "call", provider: provider, profile: AgentPause.codex_profile())
   end
 end

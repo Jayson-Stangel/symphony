@@ -24,6 +24,12 @@ class Probe {
         const corrected = await helper.callTool('linear_graphql', { query: 'mutation { corrected }' });
         if (!corrected.success) throw new Error('correction failed');
       }
+      if (text === 'linear-uncertain-recovery') {
+        const failed = await helper.callTool('linear_graphql', { query: 'mutation { uncertain }' });
+        if (failed.success || JSON.parse(failed.output).errors[0].message !== 'partial write') throw new Error('error was withheld');
+        const read = await helper.callTool('linear_graphql', { query: 'query { issue(id: "one") { id title } }' });
+        if (!read.success || JSON.parse(read.output).data.issue.title !== 'x') throw new Error('reconciliation read blocked');
+      }
       if (text === 'tool') await helper.callTool('probe_tool', { query: 'query' });
       this.push({ type: 'result', subtype: 'success', is_error: false, uuid: randomUUID(),
         session_id: 'native-probe', user_message_uuid: input.uuid,

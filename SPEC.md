@@ -2368,27 +2368,32 @@ Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authoritative quota/auth/policy
 failures persist project pauses. Known quota resets permit one durable probe;
 unknown resets require explicit recheck. A probe is consumed durably before model
-input; failure or restart cannot automatically replay it. External tracker calls persist intent
-before execution and clear it only on helper acknowledgement. Unknown outcomes
-require operator reconciliation rather than automatic replay. Drain is durable,
-account identity is pinned, and unconfirmed process cleanup blocks readiness
-until updater-owned container recovery. Public state adds provider/readiness/
-pause fields without removing legacy token fields. See docs/claude.md for the
-closed configuration, isolation assumptions and qualified transition contract.
+input; failure or restart cannot automatically replay it. Tracker errors and
+worker protocol/delivery failures are issue-scoped; the agent owns tracker
+reconciliation. Drain is durable, account identity is pinned, and unconfirmed
+process cleanup blocks readiness until updater-owned container recovery. Public
+state adds provider/readiness/pause fields without removing legacy token fields.
+See docs/claude.md for the closed configuration, isolation assumptions and
+qualified transition contract.
 
 Expected scheduler cancellation when an issue leaves active states must not
 create a helper protocol failure. Confirmed cleanup can end a non-quota operator
-recheck; it must not clear consumed quota probes or unresolved tracker intents.
+recheck; it must not clear consumed quota probes.
 
-Linear tool outcome safety applies to both Codex and Claude. Parsed query-only
-documents and locally rejected requests cannot produce writes; their failures
-remain correctable tool results. A valid errors-only GraphQL request rejection
-without data or execution paths, or explicit parse/schema-validation errors
-with absent/null data and no execution paths, must also remain correctable.
-Generic resolver input failures and null/partial execution results do not prove
-non-execution. No mutation is automatically replayed. Mutations and unclassified documents persist
-intent before execution. Ambiguous responses or interrupted delivery retain that
-intent and block redispatch until explicit reconciliation. Live in-flight calls
-are tracked separately from abandoned intents; process death or restart must fail
-closed. Redacted diagnostics retain operation type/hash, provider, correlation
-IDs, delivery phase, response category, status/code and timing without query text or credentials.
+Tracker recovery applies to both Codex and Claude and follows the original Codex
+model: deliver errors and partial results to the agent rather than withholding
+uncertain outcomes. Normalize raised, malformed or oversized results into bounded
+tool failures. No mutation is automatically replayed. Every initial/retry prompt
+instructs the agent to inspect live target state before retrying writes, reconcile
+partial mutations target by target, and avoid duplicate creates. It may continue
+safe independent work while an outcome is unresolved, blocking only its issue
+when remaining required work depends on that outcome. Custom workflow prompts
+receive the same runtime recovery guidance.
+
+New tracker calls do not create global intent gates. Existing unresolved-call
+records remain recovery evidence in the matching issue's prompt. Legacy tracker
+uncertainty and worker protocol pauses must not block other issues or mask later
+account-wide auth/quota/policy failures. Redacted logs retain operation type/hash,
+provider, correlation IDs, delivery phase, response category, status/code and
+timing without query text or credentials. Delivery acknowledgement is not proof
+of outcome reconciliation. Restart recovery reads live tracker state.

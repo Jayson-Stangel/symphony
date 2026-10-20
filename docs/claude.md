@@ -89,47 +89,44 @@ allowed after that time; absent/unknown reset times require explicit operator
 recheck. That probe is consumed on disk before sending model input. A failed or
 interrupted probe remains blocked as `probe_inflight`, including after restart;
 inspect the failure and explicitly recheck before another attempt. Native
-authentication, policy and protocol failures pause the project
-instead of consuming issue retries indefinitely. An unresolved tracker call
-retains a durable intent marker so a crash cannot silently replay a side effect.
-Reconcile the external result before clearing that marker with the explicit API
-confirmation below.
+authentication, quota and shared policy failures pause the project. Worker
+protocol and tracker delivery failures block only the affected issue.
 
-Definite tracker client rejections, including a Linear HTTP 400 for an invalid
-GraphQL document, are returned to the agent so it can correct the request. Linear
-reads (classified from the parsed GraphQL document) and local validation/auth
-rejections cannot change Linear and do not create uncertain-write pauses. Read
-errors, including HTTP 200 GraphQL errors, are returned for correction. Both
-providers also receive definite mutation request rejections: a valid errors-only
-GraphQL response with no data or execution path, or explicit parse/schema-validation
-errors with absent/null data and no execution path. The agent can correct the
-request; Symphony never automatically replays it. Null/partial data with generic
-input errors (including Linear's `INVALID_INPUT`) remains uncertain because a
-resolver may already have executed. Error messages and HTTP 200 alone do not
-establish whether a write occurred.
+Both providers follow the original Codex tool recovery model: tracker responses,
+including GraphQL errors, partial results and transport failures, return to the
+agent. Error bodies are preserved for correction. The shared handler normalizes
+malformed/raised results and oversized responses into bounded actionable tool
+failures; outcome classification does not control dispatch or hide errors.
+Symphony disables automatic HTTP retries for Linear requests.
 
-Both Codex and Claude persist an intent before a mutation or unclassified request.
-Write transport failures, server errors, partial GraphQL results and lost delivery
-remain paused for reconciliation. Symphony disables automatic HTTP retries for
-Linear requests. A live worker's in-flight call does not block other workers;
-worker death or restart exposes its unresolved intent as a blocker. Codex uses a
-logical tool-state namespace, which is not an account identity or auth attestation.
-Existing `claude-tools` and `claude-pause.json` state paths remain compatible and
-now protect both providers.
+Every initial/retry prompt includes recovery instructions, including with a
+custom workflow. The agent reads current issue/workpad and target state, checks
+whether a failed write already took effect, corrects rejected requests using the
+schema, and reconciles partial mutations target by target before retrying. If
+readback remains inconclusive, it avoids the unresolved write and dependent
+writes, keeps evidence, and continues safe independent implementation/testing.
+It blocks only its issue when remaining required work depends on that outcome.
+
+New tool calls use redacted logs rather than durable dispatch-gating intents.
+After a crash or restart, the next attempt reconciles live tracker state before
+writing. Existing `claude-tools` files remain legacy evidence: matching issues
+receive a recovery notice; other issues can run. Legacy `tool_outcome_uncertain`
+and worker `protocol_error` pause records no longer block project dispatch or
+mask later auth/quota/policy pauses. No automatic replay or rollback is inferred.
 
 `Tracker tool outcome` logs correlate issue and tool IDs with provider, document
 SHA-256, parsed operation type, phase, elapsed time, HTTP status, GraphQL response
 category (`request_error`, `execution_error`,
 `success` or `malformed`), allowlisted GraphQL codes (including `INVALID_INPUT`)
-and transport reason. Outstanding intent files retain the latest
-phase, including `started`, `response_received` or `uncertain`; `accepted` records
-successful delivery (Claude acknowledgement or a Codex RPC write). Query text, variables, error bodies and credentials are not
+and transport reason. `accepted` records successful delivery (Claude
+acknowledgement or a Codex RPC write); `delivery_failed` records a lost reply or
+acknowledgement. Neither phase asserts the external effect was reconciled. Query text, variables, error bodies and credentials are not
 included in these diagnostics. These fields help reconcile a write but do not
 prove whether an unconfirmed external effect occurred.
 
 An intentional scheduler stop when an issue leaves active states is cancellation,
 not a helper protocol failure. Confirmed cleanup can finish a non-quota operator
-recheck; quota probes and unresolved tracker intents remain blocked until reconciled.
+recheck; consumed quota probes remain blocked until explicitly rechecked.
 
 ```sh
 symphony runner drain
@@ -138,14 +135,10 @@ symphony runner resume
 ```
 
 These operations do not perform model probes. They expose at most the next normal
-work attempt. To reconcile uncertain tracker effects, use the local control API
-only after checking the actual issue/comment/PR outcome:
-
-```sh
-curl --fail -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
-  -d '{"confirm_tools_reconciled":true}' \
-  http://127.0.0.1:4010/api/v1/agent/recheck
-```
+work attempt. Tracker errors do not require runner recheck or operator clearance.
+The legacy `confirm_tools_reconciled` control API option remains available to
+remove old intent evidence after external verification; ordinary runner rechecks
+preserve that evidence and do not require the option.
 
 The control API requires an explicit header; keep its published port on loopback.
 Drain persists through restarts. Existing workers can finish, but new work is

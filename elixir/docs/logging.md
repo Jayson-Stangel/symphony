@@ -48,12 +48,14 @@ The JSON diagnostics record provider, operation type, document SHA-256, phase,
 elapsed time, HTTP status, GraphQL response category and allowlisted GraphQL/transport codes.
 `graphql_result=request_error` identifies a definite pre-execution rejection;
 `execution_error` can include partial writes or null bubbling. `INVALID_INPUT`
-is retained as a diagnostic code, not treated as proof of non-execution. Outstanding
-intent markers retain the latest phase across restarts. No raw query, variables,
-response body, exception text or credential is stored in these diagnostics.
+is retained as a diagnostic code, not treated as proof of non-execution. These
+categories are diagnostic only: no tracker outcome suppresses delivery to the
+agent or pauses project dispatch. No raw query, variables, response body,
+exception text or credential is stored in these diagnostics.
 
-A read error is correctable and does not mean an uncertain write. For a mutation
-or unclassified request, `uncertain` requires checking the external outcome before
-explicit reconciliation. A `started` marker left by a dead worker means execution
-may have begun; a `response_received` marker may mean delivery was interrupted.
-Do not automatically clear either marker based solely on its phase.
+`accepted` means the response was delivered, not that the external effect was
+reconciled. `delivery_failed` means a reply or acknowledgement was lost and the
+affected issue needs recovery. The agent owns readback and correction; HTTP 200
+or a failed response alone cannot establish whether a write occurred. Legacy
+intent files remain issue-local recovery evidence; their phase alone does not
+prove execution or rollback. New calls do not create dispatch-gating markers.

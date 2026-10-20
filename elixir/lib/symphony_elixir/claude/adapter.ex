@@ -184,13 +184,8 @@ defmodule SymphonyElixir.Claude.Adapter do
           profile: session.identity["profile"]
         )
 
-      case result do
-        {:ok, result, context} ->
-          deliver_tool_result(session, request, event_id, issue, callback, until, pending, tool, result, context)
-
-        error ->
-          tool_pause(session, error)
-      end
+      {:ok, result, context} = result
+      deliver_tool_result(session, request, event_id, issue, callback, until, pending, tool, result, context)
     else
       pause(session, "protocol_error", %{})
     end
@@ -200,7 +195,7 @@ defmodule SymphonyElixir.Claude.Adapter do
     if Map.has_key?(pending, tool) and ToolCall.accept(pending[tool]) == :ok do
       await_turn(session, request, event_id, issue, callback, until, Map.delete(pending, tool))
     else
-      pause(session, "tool_outcome_uncertain", %{})
+      pause(session, "protocol_error", %{})
     end
   end
 
@@ -238,8 +233,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp pending_failure(session, pending) do
     Enum.each(pending, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
-    kind = if Enum.any?(pending, fn {_id, context} -> context.durable end), do: "tool_outcome_uncertain", else: "protocol_error"
-    pause(session, kind, %{})
+    pause(session, "protocol_error", %{})
   end
 
   defp valid_tool_call?(session, seen, tool, name, args) do
@@ -250,12 +244,9 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp tool_pause(session, {:error, kind, _context}), do: pause(session, to_string(kind), %{})
 
-  defp send_tool_result(session, request, tool, %{"success" => success, "output" => output})
-       when is_boolean(success) and is_binary(output) and byte_size(output) <= 524_288 do
+  defp send_tool_result(session, request, tool, %{"success" => success, "output" => output}) do
     write(session.port, %{v: 1, type: "tool_result", session_id: session.id, request_id: request, tool_id: tool, result: %{success: success, output: output}})
   end
-
-  defp send_tool_result(_session, _request, _tool, _result), do: {:error, :uncertain}
 
   @impl true
   def stop_session(session) do
@@ -334,8 +325,13 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp pause(session, kind, details) do
     details = Map.put(details, "profile", session.identity["profile"])
-    AgentPause.record(kind, details)
-    {:error, {:agent_pause, @codes[kind] || :policy_blocked, details}}
+
+    if kind in ["protocol_error", "tool_outcome_uncertain", "tracker_delivery_failed"] do
+      {:error, {:agent_blocked, kind}}
+    else
+      AgentPause.record(kind, details)
+      {:error, {:agent_pause, @codes[kind] || :policy_blocked, details}}
+    end
   end
 
   defp paused_start(code) do
