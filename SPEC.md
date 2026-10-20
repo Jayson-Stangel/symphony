@@ -2457,9 +2457,12 @@ receive the same runtime recovery guidance.
 New tracker calls do not create global intent gates. Existing unresolved-call
 records remain recovery evidence in the matching issue's prompt. Legacy tracker
 uncertainty and worker protocol pauses must not block other issues or mask later
-account-wide auth/quota/policy failures. Redacted logs retain operation type/hash,
-provider, correlation IDs, delivery phase, response category, status/code and
-timing without query text or credentials. Delivery acknowledgement is not proof
+account-wide auth/quota/policy failures. Redacted logs retain document hashes,
+provider, correlation IDs, delivery phase, response/delivery reason, status/code
+and timing without query text or credentials. Execution certainty, GraphQL
+operation kind and request-versus-execution error categories are not inferred. The bounded issue-local legacy notice remains compatibility for existing
+volumes until evidence-preserving retirement; no new intent writer or automatic
+evidence deletion is introduced. Delivery acknowledgement is not proof
 of outcome reconciliation. Restart recovery reads live tracker state.
 
 Development runner updates may refresh a pending candidate from the current
