@@ -94,6 +94,88 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     %{root: root, workspace: workspace, opts: opts, issue: %Issue{id: "one", identifier: "PROBE-1", title: "Probe"}}
   end
 
+  test "three independent helper sessions isolate callbacks, workspaces, failure and cleanup", ctx do
+    parent = self()
+
+    workers =
+      for n <- 1..3 do
+        Task.async(fn ->
+          workspace = Path.join([ctx.root, "workspaces", "parallel-#{n}"])
+          File.mkdir_p!(workspace)
+          issue = %{ctx.issue | id: "parallel-#{n}", identifier: "PAR-#{n}"}
+
+          binding = %{
+            adapter: BoundTool,
+            tracker_settings: %{owner: parent, tag: n},
+            tool_specs: [
+              %{
+                "name" => "probe_tool",
+                "description" => "probe",
+                "inputSchema" => %{"type" => "object", "properties" => %{"query" => %{"type" => "string"}}, "required" => ["query"], "additionalProperties" => false}
+              }
+            ]
+          }
+
+          assert {:ok, session} = Adapter.start_session(workspace, Keyword.put(ctx.opts, :tool_binding, binding))
+          send(parent, {:parallel_started, n, session})
+
+          try do
+            for _ <- 1..2 do
+              receive do
+                {:turn, prompt} ->
+                  on_message = fn event -> send(parent, {:parallel_event, n, event}) end
+                  result = Adapter.run_turn(session, prompt, issue, on_message: on_message)
+                  send(parent, {:parallel_result, n, result})
+
+                :finish ->
+                  :ok
+              end
+            end
+          after
+            assert :ok = Adapter.stop_session(session)
+            send(parent, {:parallel_stopped, n})
+          end
+        end)
+      end
+
+    sessions =
+      for _ <- 1..3 do
+        assert_receive {:parallel_started, n, session}, 3_000
+        {n, session}
+      end
+      |> Map.new()
+
+    assert sessions |> Map.values() |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 3
+    assert sessions |> Map.values() |> Enum.map(& &1.port) |> Enum.uniq() |> length() == 3
+    assert sessions |> Map.values() |> Enum.map(& &1.workspace) |> Enum.uniq() |> length() == 3
+    assert {:error, :wrong_session_owner} = Adapter.run_turn(sessions[2], "wrong-owner", ctx.issue, [])
+    Enum.each(Enum.with_index(workers, 1), fn {worker, n} -> send(worker.pid, {:turn, if(n == 1, do: "malformed", else: "tool")}) end)
+    assert_receive {:parallel_result, 1, {:error, {:agent_blocked, "protocol_error"}}}, 3_000
+
+    for n <- [2, 3] do
+      assert_receive {:bound_tool_executed, ^n, %{"query" => "query"}, %{id: id}}, 3_000
+      assert id == "parallel-#{n}"
+      assert_receive {:parallel_result, ^n, {:ok, %{session_id: id}}}, 3_000
+      assert String.starts_with?(id, "claude:#{sessions[n].id}:")
+      assert_receive {:parallel_event, ^n, %{event: :session_started, session_id: ^id}}
+    end
+
+    send(hd(workers).pid, :finish)
+    Task.await(hd(workers), 5_000)
+    assert_receive {:parallel_stopped, 1}
+    assert Port.info(sessions[1].port) == nil
+
+    for {worker, n} <- Enum.with_index(tl(workers), 2) do
+      assert Port.info(sessions[n].port) != nil
+      send(worker.pid, {:turn, "second"})
+      assert_receive {:parallel_result, ^n, {:ok, _}}, 3_000
+      Task.await(worker, 5_000)
+      assert_receive {:parallel_stopped, ^n}
+    end
+
+    assert :ready = AgentPause.current()
+  end
+
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
     contents = File.read!(Workflow.workflow_file_path())
     File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))

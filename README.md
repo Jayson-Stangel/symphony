@@ -352,3 +352,9 @@ For integration testing before promotion, use a [dedicated development workspace
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh
 stale pending candidates while retaining their rollback source.
+
+Codex and Claude share the configured global and per-state worker limits. Use
+`agent.max_concurrent_agents: 1` for serial work or a larger value for bounded
+parallel work. The deprecated `claude.max_concurrent_agents` input is accepted
+but ignored; move any desired limit into `agent`. See the
+[Claude workflow settings](docs/claude.md#workflow-settings) for migration details.

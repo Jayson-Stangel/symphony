@@ -1766,6 +1766,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        agent: %{
          provider: Config.coding_agent(),
+         max_concurrent_agents: state.max_concurrent_agents,
          model: configured_model || state.agent_model,
          effort: configured_effort,
          model_source: if(configured_model, do: "configured", else: "last_session"),
