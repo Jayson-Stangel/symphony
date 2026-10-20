@@ -1067,21 +1067,23 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    requested_at = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
+    assert is_map(Orchestrator.snapshot(orchestrator_name, 5_000))
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_due_in_range(due_at_ms, 500, 1_100, requested_at)
   end
 
-  test "max-turn worker exit blocks instead of scheduling continuation retry" do
-    issue_id = "issue-max-turn-block"
+  test "normal attempt allowance schedules continuation then releases work moved to Human Review" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
+    issue_id = "issue-attempt-continuation"
     ref = make_ref()
-    orchestrator_name = Module.concat(__MODULE__, :MaxTurnBlockOrchestrator)
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationReleaseOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
@@ -1108,19 +1110,22 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
-    send(pid, {:DOWN, ref, :process, self(), {:max_turns_reached, %{max_turns: 12}}})
-    Process.sleep(50)
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    assert is_map(Orchestrator.snapshot(orchestrator_name, 5_000))
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute Map.has_key?(state.blocked, issue_id)
+    assert %{attempt: 1, workspace_path: "/workspaces/MT-561", retry_token: token} = state.retry_attempts[issue_id]
     assert MapSet.member?(state.claimed, issue_id)
 
-    assert %{
-             identifier: "MT-561",
-             workspace_path: "/workspaces/MT-561",
-             error: "agent.max_turns reached with issue still active after 12 turns"
-           } = state.blocked[issue_id]
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{running_entry.issue | state: "Human Review"}])
+    send(pid, {:retry_issue, issue_id, token})
+    assert is_map(Orchestrator.snapshot(orchestrator_name, 5_000))
+    state = :sys.get_state(pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
   end
 
   test "tracker delivery and protocol failures retry only their issue" do
@@ -1176,6 +1181,7 @@ defmodule SymphonyElixir.CoreTest do
       end)
 
       try do
+        requested_at = System.monotonic_time(:millisecond)
         send(pid, {:DOWN, ref_a, :process, self(), reason})
         assert is_map(Orchestrator.snapshot(name, 5_000))
         state = :sys.get_state(pid)
@@ -1187,7 +1193,7 @@ defmodule SymphonyElixir.CoreTest do
           refute Map.has_key?(state.blocked, "a")
           assert %{attempt: 1, error: error, retry_token: token, due_at_ms: due_at} = state.retry_attempts["a"]
           assert error =~ "agent exited:"
-          assert_due_in_range(due_at, 9_500, 10_500)
+          assert_due_in_range(due_at, 9_500, 10_500, requested_at)
           assert {:ok, %{draining: true}} = GenServer.call(pid, {:agent_control, :drain, false})
           send(pid, {:retry_issue, "a", token})
           assert is_map(Orchestrator.snapshot(name, 5_000))
@@ -1242,14 +1248,15 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    requested_at = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
+    assert is_map(Orchestrator.snapshot(orchestrator_name, 5_000))
     state = :sys.get_state(pid)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_in_range(due_at_ms, 39_500, 40_500, requested_at)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -1281,14 +1288,15 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    requested_at = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
+    assert is_map(Orchestrator.snapshot(orchestrator_name, 5_000))
     state = :sys.get_state(pid)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_due_in_range(due_at_ms, 9_000, 10_500, requested_at)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1408,11 +1416,11 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp assert_due_in_range(due_at_ms, min_delay_ms, max_delay_ms, requested_at) do
+    # Bound scheduling between the request and its synchronous observation.
+    # Time spent descheduled after the handler must not shorten the expected delay.
+    assert due_at_ms >= requested_at + min_delay_ms
+    assert due_at_ms <= System.monotonic_time(:millisecond) + max_delay_ms
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
@@ -2160,15 +2168,8 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert {:max_turns_reached,
-              %{
-                issue_id: "issue-max-turns",
-                identifier: "MT-248",
-                max_turns: 2,
-                workspace: max_turn_workspace
-              }} = catch_exit(AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher))
-
-      assert String.ends_with?(max_turn_workspace, "/workspaces/MT-248")
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert File.regular?(Path.join([workspace_root, "MT-248", "README.md"]))
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1

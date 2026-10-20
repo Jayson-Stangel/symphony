@@ -89,8 +89,10 @@ The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
 model support and account policies may cap the effective level. The web UI
 shows status; edit `WORKFLOW.md` to change the setting.
 
-`agent.max_turns` still bounds Symphony continuation turns, while
-`claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
+`agent.max_turns` bounds continuation turns within one worker attempt for both
+providers. Reaching it closes that session normally; the existing scheduler
+continuation check revalidates active work and can start another attempt in the
+same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
 unknown keys, arbitrary commands, authentication overrides and raw SDK options.
 The initial worker cap is one even if general agent limits are higher.
 
@@ -131,7 +133,7 @@ recovery. Paid-overage signals remain policy blockers. Established-session proto
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and
-turn-limit stops remain blocked. Startup ownership/initialization failures remain
+native turn-limit stops remain blocked. Startup ownership/initialization failures remain
 fail-closed; this retry recovery applies to established sessions. Explicit drains
 remain durable and prevent queued retries from dispatching.
 

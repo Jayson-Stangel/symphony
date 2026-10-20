@@ -460,7 +460,9 @@ Fields:
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
 - `max_turns` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session.
+  - Limits the number of coding-agent turns within one worker session, for both providers.
+  - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
+    continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
@@ -662,8 +664,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
-- `codex.live_max_total_tokens`: integer, default implementation-defined
-- `codex.live_max_turns`: integer, default implementation-defined
+- `codex.live_max_total_tokens`: integer, default `0` (disabled)
+- `codex.live_max_turns`: integer, default `0` (disabled)
 
 ## 7. Orchestration State Machine
 
@@ -2391,7 +2393,7 @@ confirmed session cleanup, established-session protocol errors, unexpected EOF,
 helper timeouts and tracker delivery failures retry the attempt with scheduler
 backoff in its retained workspace. The runner MUST NOT replay tracker mutations.
 The next prompt requires live target readback before uncertain writes are retried.
-Explicit input/permission requirements and turn-limit stops remain blocked;
+Explicit input/permission requirements and native turn-limit stops remain blocked;
 startup ownership/initialization failures remain fail-closed.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
