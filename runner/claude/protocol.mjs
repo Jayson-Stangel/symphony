@@ -9,7 +9,8 @@ export const toolSpec = z.object({ name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]
 // Keep aligned with Config.Schema.Claude; see docs/claude.md.
 const models = ['sonnet', 'opus', 'haiku', 'fable',
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'];
-const settings = z.object({ model: z.enum(models), max_agentic_turns: z.number().int().positive().max(100),
+const settings = z.object({ model: z.enum(models), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
+  max_agentic_turns: z.number().int().positive().max(100),
   turn_timeout_ms: z.number().int().positive().max(3_600_000) }).strict();
 
 export const commandSchema = z.discriminatedUnion('type', [

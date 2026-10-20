@@ -92,6 +92,28 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     %{root: root, workspace: workspace, opts: opts, issue: %Issue{id: "one", identifier: "PROBE-1", title: "Probe"}}
   end
 
+  test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
+    contents = File.read!(Workflow.workflow_file_path())
+    File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))
+    WorkflowStore.force_reload()
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: low\n", global: false))
+      WorkflowStore.force_reload()
+      assert {:ok, _} = Adapter.run_turn(session, "effort:xhigh", ctx.issue, [])
+      assert {:ok, next_session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+      try do
+        assert {:ok, _} = Adapter.run_turn(next_session, "effort:low", ctx.issue, [])
+      after
+        Adapter.stop_session(next_session)
+      end
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "Claude receives a mutation rejection and corrects it through the production helper", ctx do
     binding = %{
       adapter: RecoverableLinearTool,

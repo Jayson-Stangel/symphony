@@ -354,7 +354,8 @@ The observability UI now runs on a minimal Phoenix stack:
 
 Both the web and terminal dashboards show the selected coding agent and model
 near the top, including while idle. Claude displays its configured model alias
-(currently `sonnet`). Codex displays the model returned by its most recent
+or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.
+Codex displays the model returned by its most recent
 session startup, labelled “last session”; before the first report it shows
 “Not yet reported” rather than guessing from a command or account.
 The JSON state API includes `agent.model` and `agent.model_source` (`configured`
@@ -466,7 +467,10 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 `bin/symphony --agent codex|claude` selects one startup-owned coding provider;
 Codex is the default. Claude runs only in its qualified nonroot container image.
 Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
-accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. See [the Claude runner contract](../docs/claude.md)
+accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
+`claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
+omit it for the model default. Both dashboards show the configured reasoning
+level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.

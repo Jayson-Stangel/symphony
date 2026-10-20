@@ -2362,6 +2362,9 @@ stdio protocol; OTP retains workspace, continuation, tracker binding and
 scheduling authority. Selection survives workflow reload. One worker is supported,
 with Sonnet as the default. Workflow and helper validation accept the current
 Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
+Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
+omission preserves the model default. Terminal and web dashboards expose the
+configured effort, also available as `agent.effort` in the state API.
 Native subscription authentication and a dated account-bound disabled-overages attestation gate dispatch without model probes.
 No API-key inference fallback is configured.
 

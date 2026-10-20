@@ -21,7 +21,7 @@ class FakeQuery {
   interrupt() { this.interrupted = true; return Promise.resolve(); }
 }
 
-async function fixture(t, model = 'sonnet') {
+async function fixture(t, model = 'sonnet', effort) {
   const messages = [];
   let query;
   const helper = new Helper({ identity: { profile: 'test' }, env: {}, binary: '/test/native',
@@ -29,7 +29,7 @@ async function fixture(t, model = 'sonnet') {
     makeQuery: params => { query = new FakeQuery(params); return query; } });
   t.after(() => helper.stop('test_cleanup'));
   await helper.command({ type: 'start', session_id: 'session', request_id: 'start', workspace: process.cwd(),
-    config: { model, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
+    config: { model, effort, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
   query.push({ type: 'system', subtype: 'init', session_id: 'native-one' });
   await tick();
   const input = query.params.prompt[Symbol.asyncIterator]();
@@ -53,6 +53,14 @@ test('an explicit Opus model reaches the SDK unchanged', async t => {
   result(ctx.query, input);
   await tick();
   assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, 'completed');
+});
+
+test('configured effort reaches the SDK while omitted effort preserves its default', async t => {
+  for (const effort of [undefined, null, 'low', 'medium', 'high', 'xhigh', 'max']) {
+    const ctx = await fixture(t, 'claude-opus-5-5', effort);
+    if (effort) assert.equal(ctx.query.params.options.effort, effort);
+    else assert.ok(!Object.hasOwn(ctx.query.params.options, 'effort'));
+  }
 });
 
 test('one conversation retains native context and emits one outcome per input', async t => {

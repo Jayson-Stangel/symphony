@@ -1698,6 +1698,7 @@ defmodule SymphonyElixir.Orchestrator do
        agent: %{
          provider: Config.coding_agent(),
          model: if(Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: state.agent_model),
+         effort: if(Config.coding_agent() == :claude, do: Config.settings!().claude.effort),
          model_source: if(Config.coding_agent() == :claude, do: "configured", else: "last_session"),
          readiness: state.readiness,
          draining: state.draining,

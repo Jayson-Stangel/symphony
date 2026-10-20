@@ -259,12 +259,21 @@ defmodule SymphonyElixir.Config.Schema do
     import Ecto.Changeset
 
     @primary_key false
-    @fields [:model, :max_concurrent_agents, :max_agentic_turns, :read_timeout_ms, :turn_timeout_ms, :stall_timeout_ms]
+    @fields [
+      :model,
+      :effort,
+      :max_concurrent_agents,
+      :max_agentic_turns,
+      :read_timeout_ms,
+      :turn_timeout_ms,
+      :stall_timeout_ms
+    ]
     # Keep aligned with runner/claude/protocol.mjs; see docs/claude.md.
     @models ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1)
 
     embedded_schema do
       field(:model, :string, default: "sonnet")
+      field(:effort, :string)
       field(:max_concurrent_agents, :integer, default: 1)
       field(:max_agentic_turns, :integer, default: 50)
       field(:read_timeout_ms, :integer, default: 5_000)
@@ -278,6 +287,7 @@ defmodule SymphonyElixir.Config.Schema do
         schema
         |> cast(attrs, @fields, empty_values: [])
         |> validate_inclusion(:model, @models)
+        |> validate_inclusion(:effort, ~w(low medium high xhigh max))
         |> validate_number(:max_concurrent_agents, greater_than: 0, less_than_or_equal_to: 1)
         |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
         |> validate_number(:read_timeout_ms, greater_than: 0, less_than_or_equal_to: 60_000)

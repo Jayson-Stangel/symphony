@@ -4,7 +4,8 @@ import { serve } from '../../helper.mjs';
 
 let helper;
 class Probe {
-  constructor({ prompt }) {
+  constructor({ prompt, options }) {
+    this.options = options;
     this.queue = [];
     this.done = false;
     void this.inputs(prompt).catch(() => this.close());
@@ -13,6 +14,7 @@ class Probe {
     for await (const input of prompt) {
       this.push({ type: 'system', subtype: 'init', session_id: 'native-probe' });
       const text = input.message.content;
+      if (text.startsWith('effort:') && this.options.effort !== text.slice(7)) throw new Error('effort_mismatch');
       if (text === 'silence') continue;
       if (text === 'malformed') { process.stdout.write('not JSON\n'); continue; }
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }

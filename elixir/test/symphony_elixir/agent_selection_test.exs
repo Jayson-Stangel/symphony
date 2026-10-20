@@ -62,6 +62,32 @@ defmodule SymphonyElixir.AgentSelectionTest do
     end
   end
 
+  test "Claude effort is optional, accepts SDK levels and rejects invalid settings" do
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert defaults.claude.effort == nil
+
+    for effort <- [nil, "low", "medium", "high", "xhigh", "max"] do
+      assert {:ok, config} = Schema.parse(%{"claude" => %{"effort" => effort}})
+      assert config.claude.effort == effort
+    end
+
+    for effort <- ["", "auto", "ultracode", "High", "ultra", 42, %{}] do
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"claude" => %{"effort" => effort}})
+      assert message =~ "claude.effort"
+    end
+  end
+
+  test "Claude effort follows workflow reload and retains the last valid value" do
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+
+    for {value, expected} <- [{"high", "high"}, {"low", "low"}, {"invalid", "low"}, {"null", nil}] do
+      File.write!(Workflow.workflow_file_path(), "---\ntracker:\n  kind: memory\nclaude:\n  effort: #{value}\n---\nPrompt\n")
+      WorkflowStore.force_reload()
+      assert Config.settings!().claude.effort == expected
+      assert Orchestrator.snapshot().agent.effort == expected
+    end
+  end
+
   test "Claude schema rejects raw authentication and options instead of ignoring them" do
     assert {:ok, config} = Schema.parse(%{"claude" => %{"model" => "sonnet", "max_concurrent_agents" => 1}})
     assert config.claude.max_concurrent_agents == 1

@@ -324,7 +324,8 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 Codex remains the default. A qualified personal Claude profile adds one isolated
 Claude worker through pinned Claude Code/Agent SDK and native subscription login.
-Sonnet remains the default; current model IDs and family aliases are configurable.
+Sonnet remains the default; current model IDs, family aliases and reasoning effort
+are configurable. Terminal and web dashboards show the configured Claude effort.
 It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents return correctable Linear read errors
 and definite GraphQL request rejections, letting the agent correct them. They pause

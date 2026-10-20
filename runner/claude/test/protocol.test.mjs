@@ -27,6 +27,18 @@ test('start accepts current Claude model IDs and family aliases without rewritin
   }
 });
 
+test('effort accepts SDK levels and leaves omitted effort unset', () => {
+  const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
+    config: { model: 'claude-opus-5-5', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  assert.ok(!Object.hasOwn(parseCommand(JSON.stringify(start)).config, 'effort'));
+  for (const effort of [null, 'low', 'medium', 'high', 'xhigh', 'max']) {
+    assert.equal(parseCommand(JSON.stringify({ ...start, config: { ...start.config, effort } })).config.effort, effort);
+  }
+  for (const effort of ['', 'auto', 'ultracode', 'High', 'ultra', 42, {}]) {
+    assert.throws(() => parseCommand(JSON.stringify({ ...start, config: { ...start.config, effort } })));
+  }
+});
+
 test('only authoritative quota buckets establish a reset time; prose does not', () => {
   assert.equal(classifyEvent({ type: 'assistant', message: 'quota exceeded' }), null);
   assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {

@@ -57,6 +57,7 @@ by editing the workflow. Existing Codex settings retain their meaning.
 ```yaml
 claude:
   model: sonnet
+  effort: high # optional; omit or use null for the model default
   max_concurrent_agents: 1
   max_agentic_turns: 50
   read_timeout_ms: 5000
@@ -76,6 +77,17 @@ allowance still determine whether a selected model can run. Model validation
 is not live qualification: the original live pilot exercised Sonnet only.
 Unknown IDs, special modes such as `opusplan`, and provider-specific IDs remain
 rejected by both workflow and runner validation.
+
+`claude.effort` controls reasoning depth through the SDK's `effort` option.
+Accepted levels are `low`, `medium`, `high`, `xhigh`, and `max`, as documented in
+[Claude Code effort levels](https://code.claude.com/docs/en/model-config#adjust-effort-level).
+Omit it or set it to `null` to preserve the native model default. Symphony does
+not turn thinking off or set a fixed token budget. Workflow reload applies the
+new setting to new sessions; an existing session keeps its original effort.
+The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
+(`agent.effort`, null for model default). The displays label it as configured:
+model support and account policies may cap the effective level. The web UI
+shows status; edit `WORKFLOW.md` to change the setting.
 
 `agent.max_turns` still bounds Symphony continuation turns, while
 `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
