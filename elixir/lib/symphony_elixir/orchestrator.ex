@@ -479,12 +479,10 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp refresh_agent_readiness(%{readiness: %{code: "cleanup_restart_required"}} = state), do: state
-
   defp refresh_agent_readiness(%{readiness_task: %Task{}} = state), do: state
 
   defp refresh_agent_readiness(state) do
-    if Config.coding_agent() == :claude do
+    if Config.coding_agent() == :claude and state.readiness[:code] != "cleanup_restart_required" do
       cancel_readiness_timer(state)
       opts = state.readiness_opts
       task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> AgentReadiness.check(opts) end)
@@ -499,10 +497,10 @@ defmodule SymphonyElixir.Orchestrator do
     control_pending = not is_nil(state.readiness_control)
 
     readiness =
-      if state.readiness[:code] == "cleanup_restart_required" do
-        state.readiness
-      else
-        pin_readiness(readiness, state.expected_profile)
+      cond do
+        Config.coding_agent() == :codex -> AgentReadiness.check()
+        state.readiness[:code] == "cleanup_restart_required" -> state.readiness
+        true -> pin_readiness(readiness, state.expected_profile)
       end
 
     token = make_ref()
@@ -1922,19 +1920,21 @@ defmodule SymphonyElixir.Orchestrator do
   defp request_agent_resume(%{running: running} = state, _action, _reconcile, _from) when map_size(running) != 0,
     do: {:reply, {:error, :workers_active}, state}
 
-  defp request_agent_resume(%{readiness: %{code: "cleanup_restart_required"}} = state, _action, _reconcile, _from),
-    do: {:reply, {:error, :agent_not_ready}, state}
-
   defp request_agent_resume(%{readiness_control: control} = state, _action, _reconcile, _from) when not is_nil(control),
     do: {:reply, {:error, :readiness_check_in_progress}, state}
 
   defp request_agent_resume(state, action, reconcile, from) do
-    if Config.coding_agent() == :claude do
-      readiness = %{ready: false, provider: "claude", code: "checking"}
-      state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
-      {:noreply, refresh_agent_readiness(state)}
-    else
-      resume_agent(state, action, reconcile)
+    cond do
+      Config.coding_agent() == :codex ->
+        resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
+
+      state.readiness[:code] == "cleanup_restart_required" ->
+        {:reply, {:error, :agent_not_ready}, state}
+
+      true ->
+        readiness = %{ready: false, provider: "claude", code: "checking"}
+        state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
+        {:noreply, refresh_agent_readiness(state)}
     end
   end
 

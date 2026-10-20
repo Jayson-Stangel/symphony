@@ -325,6 +325,18 @@ defmodule SymphonyElixir.Claude.Adapter do
     close_port(session.port)
     Process.delete({__MODULE__, session.id, :tools})
     result
+  catch
+    _, _ ->
+      close_port(Map.get(session, :port))
+
+      profile =
+        case session do
+          %{identity: %{"profile" => profile}} when is_binary(profile) -> profile
+          _ -> nil
+        end
+
+      record_unconfirmed_cleanup(profile)
+      {:error, :cleanup_unconfirmed}
   end
 
   defp stop_owned_session(session) do

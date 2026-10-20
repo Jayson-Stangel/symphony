@@ -133,7 +133,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp finish_attempt(session, outcome, cleanup) do
     provider = Map.get(%{ClaudeAdapter => :claude, SymphonyElixir.CodingAgent.Codex => :codex}, session.adapter, :custom)
-    if provider == :claude, do: ClaudeAdapter.record_unconfirmed_cleanup(session.native.identity["profile"])
     causes = %{provider: provider, primary: outcome_cause(outcome), cleanup: cleanup_cause(cleanup)}
     {:error, {:agent_replacement_required, causes}}
   end
@@ -143,7 +142,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp outcome_cause({:returned, {:error, {:agent_pause, kind, _}}}), do: {:agent_pause, native_cause(kind)}
   defp outcome_cause({:returned, {:error, reason}}) when is_atom(reason), do: reason
   defp outcome_cause({:returned, {:error, reason}}) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
-  defp outcome_cause({:raised, kind, %{__struct__: exception}, _stack}), do: {kind, exception}
+  defp outcome_cause({:raised, kind, %{__struct__: exception}, _stack}) when is_atom(exception), do: {kind, exception}
   defp outcome_cause({:raised, kind, _reason, _stack}), do: kind
   defp outcome_cause(_outcome), do: :unknown
 

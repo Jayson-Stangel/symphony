@@ -552,6 +552,16 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   end
 
   test "unwritable cleanup marker keeps replacement required through healthy observations and controls", ctx do
+    previous_provider = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+
+    on_exit(fn ->
+      case previous_provider do
+        {:ok, value} -> Application.put_env(:symphony_elixir, :coding_agent, value)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     Port.close(session.port)
     unwritable = Path.join(ctx.root, "not-a-directory")
@@ -579,6 +589,31 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert {:reply, {:error, :agent_not_ready}, ^state} =
                Orchestrator.handle_call({:agent_control, action, false}, {self(), make_ref()}, state)
     end
+  end
+
+  test "missing captured identity cannot mask cleanup failure or prevent its marker", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    Port.close(session.port)
+    session = Map.delete(%{session | owned_native: [%{"pid" => 999_999, "start" => "0"}]}, :identity)
+    assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(%{adapter: Adapter, native: session})
+    assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+  end
+
+  test "selected Codex resumes despite retained Claude cleanup state", ctx do
+    assert :codex = Config.coding_agent()
+    assert :ok = Adapter.record_unconfirmed_cleanup(String.duplicate("a", 64))
+    pause_path = Path.join(ctx.root, "state/claude-pause.json")
+    pause = File.read!(pause_path)
+    retained = %{ready: false, provider: "claude", code: "cleanup_restart_required"}
+    state = %Orchestrator.State{running: %{}, readiness: retained, draining: true}
+
+    assert {:reply, {:ok, %{draining: false, admission: %{ready: true, provider: "codex"}}}, state} =
+             Orchestrator.handle_call({:agent_control, :resume, false}, {self(), make_ref()}, state)
+
+    assert state.readiness.provider == "codex"
+    Process.cancel_timer(state.tick_timer_ref)
+    assert File.read!(pause_path) == pause
+    assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
   end
 
   test "Codex replacement outcome does not alter Claude readiness", ctx do

@@ -21,6 +21,7 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
       owner = Agent.get(pid, & &1)
       send(owner, {:probe_turn, pid, prompt})
       if Process.get(:probe_raise), do: raise("probe raised")
+      if payload = Process.get(:probe_throw), do: throw(payload)
       Process.get(:probe_turn_result, {:ok, %{session_id: "probe-session"}})
     end
 
@@ -144,6 +145,14 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
     assert {:agent_replacement_required, %{primary: {:agent_blocked, :unknown}, cleanup: :cleanup_unconfirmed}} =
+             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+  end
+
+  test "thrown arbitrary struct-like map is not exposed by cleanup diagnostics", ctx do
+    Process.put(:probe_throw, %{__struct__: String.duplicate("secret", 1_000)})
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+    assert {:agent_replacement_required, %{primary: :throw, cleanup: :cleanup_unconfirmed}} =
              catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
   end
 
