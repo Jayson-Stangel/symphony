@@ -62,6 +62,40 @@ defmodule SymphonyElixir.AgentSelectionTest do
     end
   end
 
+  test "Codex model and reasoning effort are optional native settings" do
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert defaults.codex.model == nil
+    assert defaults.codex.reasoning_effort == nil
+
+    for effort <- ~w(none minimal low medium high xhigh max ultra future-effort) do
+      assert {:ok, config} = Schema.parse(%{"codex" => %{"model" => "custom-model", "reasoning_effort" => effort}})
+      assert config.codex.model == "custom-model"
+      assert config.codex.reasoning_effort == effort
+    end
+
+    for field <- ["model", "reasoning_effort"], value <- ["", "  ", %{}, String.duplicate("a", 257)] do
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"codex" => %{field => value}})
+      assert message =~ "codex.#{field}"
+    end
+  end
+
+  test "Codex model and reasoning effort reload together and retain last good settings" do
+    for {model, effort, expected_model, expected_effort} <- [
+          {"gpt-example", "high", "gpt-example", "high"},
+          {"gpt-other", "xhigh", "gpt-other", "xhigh"},
+          {"", "low", "gpt-other", "xhigh"},
+          {nil, nil, nil, nil}
+        ] do
+      write_workflow_file!(Workflow.workflow_file_path(), codex_model: model, codex_reasoning_effort: effort)
+      assert Config.settings!().codex.model == expected_model
+      assert Config.settings!().codex.reasoning_effort == expected_effort
+      snapshot = Orchestrator.snapshot()
+      assert snapshot.agent.model == expected_model
+      assert snapshot.agent.effort == expected_effort
+      assert snapshot.agent.model_source == if(expected_model, do: "configured", else: "last_session")
+    end
+  end
+
   test "Claude effort is optional, accepts SDK levels and rejects invalid settings" do
     assert {:ok, defaults} = Schema.parse(%{})
     assert defaults.claude.effort == nil

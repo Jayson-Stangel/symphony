@@ -316,6 +316,12 @@ help with the setup:
 
 ---
 
+## Model and reasoning configuration
+
+Codex workflows also accept optional `codex.model` and `codex.reasoning_effort`
+for new sessions. Both dashboards show configured reasoning levels. Omitted
+values preserve native runner defaults; see [workflow configuration](elixir/README.md).
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).

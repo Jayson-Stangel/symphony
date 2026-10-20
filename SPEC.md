@@ -486,6 +486,12 @@ fields locally if they want stricter startup checks.
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process MUST speak a compatible app-server protocol over stdio.
+- `model` (optional nonblank string)
+  - Sent as `thread/start.model`; omitted/null preserves native runner configuration.
+- `reasoning_effort` (optional nonblank string)
+  - Sent as `thread/start.config.model_reasoning_effort` for the new session.
+  - Omitted/null preserves native runner configuration. Codex validates model/effort support.
+  - Workflow reload changes new sessions; an existing thread retains its original settings.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default: implementation-defined.
 - `thread_sandbox` (Codex `SandboxMode` value)

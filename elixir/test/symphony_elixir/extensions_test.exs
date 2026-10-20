@@ -607,16 +607,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     send(view.pid, :observability_updated)
     assert has_element?(view, "#runner-identity", "Agent: Codex")
-    refute has_element?(view, ".runner-effort")
+    assert has_element?(view, ".runner-effort", "Runner default")
     assert has_element?(view, "#runner-identity", "Not yet reported")
 
     :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}))
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", effort: "xhigh", model_source: "last_session"}))
     end)
 
     send(view.pid, :observability_updated)
     assert has_element?(view, "#runner-identity", "Model: gpt-example")
     assert has_element?(view, "#runner-identity", "last session")
+    assert has_element?(view, ".runner-effort", "xhigh")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == "xhigh"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do

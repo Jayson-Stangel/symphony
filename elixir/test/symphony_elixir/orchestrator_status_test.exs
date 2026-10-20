@@ -34,7 +34,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: agent}}, 0.0)
     assert rendered =~ "Agent: Codex"
     assert rendered =~ "Model: gpt-example (last session)"
-    refute rendered =~ "Reasoning:"
+    assert rendered =~ "Reasoning: Runner default (configured)"
+    configured = %{snapshot | agent: %{agent | effort: "ultra"}}
+    assert StatusDashboard.format_snapshot_content_for_test({:ok, configured}, 0.0) =~ "Reasoning: ultra (configured)"
     rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
     assert rendered =~ "Not yet reported"
   end

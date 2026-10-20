@@ -1693,13 +1693,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    configured_model =
+      if Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: Config.settings!().codex.model
+
+    configured_effort =
+      if Config.coding_agent() == :claude do
+        Config.settings!().claude.effort
+      else
+        Config.settings!().codex.reasoning_effort
+      end
+
     {:reply,
      %{
        agent: %{
          provider: Config.coding_agent(),
-         model: if(Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: state.agent_model),
-         effort: if(Config.coding_agent() == :claude, do: Config.settings!().claude.effort),
-         model_source: if(Config.coding_agent() == :claude, do: "configured", else: "last_session"),
+         model: configured_model || state.agent_model,
+         effort: configured_effort,
+         model_source: if(configured_model, do: "configured", else: "last_session"),
          readiness: state.readiness,
          draining: state.draining,
          pause: public_agent_pause(),

@@ -199,6 +199,8 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:model, :string)
+      field(:reasoning_effort, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -226,6 +228,8 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :model,
+          :reasoning_effort,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -238,6 +242,10 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_required([:command])
+      |> validate_length(:model, min: 1, max: 256)
+      |> validate_format(:model, ~r/\S/)
+      |> validate_length(:reasoning_effort, min: 1, max: 64)
+      |> validate_format(:reasoning_effort, ~r/\S/)
       |> validate_change(:command, fn :command, command ->
         if command != "" and String.trim(command) == "" do
           [command: "can't be blank"]

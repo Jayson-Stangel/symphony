@@ -195,6 +195,26 @@ Notes:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
+- Optional `codex.model` and `codex.reasoning_effort` select a model and reasoning
+  level for new sessions. For example:
+
+  ```yaml
+  codex:
+    command: codex app-server
+    model: gpt-5.5
+    reasoning_effort: xhigh
+  ```
+
+  Explicit fields override native command/config defaults for the new thread.
+  Omit them or use `null` to preserve the runner's defaults and existing command
+  flags. Model IDs and effort names are nonblank strings, validated for support
+  by the installed Codex app-server and account; available effort levels vary
+  by model and client (for example `low`, `medium`, `high`, `xhigh`, `max`, `ultra`).
+  Symphony sends `model` and `config.model_reasoning_effort` on `thread/start`.
+  [Codex configuration reference](https://developers.openai.com/codex/config-reference)
+  and [app-server protocol](https://developers.openai.com/codex/app-server) define
+  the native contract. Reload applies changes to new sessions; existing threads
+  retain their selected model and reasoning effort.
 - `codex.turn_timeout_ms` is the maximum silence interval while a turn is streaming. Each
   app-server update resets it; it is not a total turn runtime cap.
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
@@ -355,11 +375,13 @@ The observability UI now runs on a minimal Phoenix stack:
 Both the web and terminal dashboards show the selected coding agent and model
 near the top, including while idle. Claude displays its configured model alias
 or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.
-Codex displays the model returned by its most recent
-session startup, labelled “last session”; before the first report it shows
-“Not yet reported” rather than guessing from a command or account.
-The JSON state API includes `agent.model` and `agent.model_source` (`configured`
-or `last_session`). Reported Codex identity resets when the runner restarts.
+Codex displays `codex.model` when explicitly configured; otherwise it displays
+the model returned by its most recent session startup, labelled “last session”.
+Before either is available it shows “Not yet reported”. Codex reasoning shows
+`codex.reasoning_effort` or “Runner default”; Symphony does not guess values from
+command flags or native account configuration.
+The JSON state API includes `agent.model`, `agent.model_source` (`configured`
+or `last_session`), and configured `agent.effort` (null for native defaults). Reported Codex identity resets when the runner restarts.
 
 ## Project Layout
 

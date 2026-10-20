@@ -360,10 +360,10 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_agent_status(_snapshot), do: []
 
-  defp format_agent_effort(%{provider: provider} = agent) when provider in [:claude, "claude"],
-    do: ["│ Reasoning: #{agent[:effort] || "Model default"} (configured)"]
-
-  defp format_agent_effort(_agent), do: []
+  defp format_agent_effort(%{provider: provider} = agent) do
+    default = if provider in [:claude, "claude"], do: "Model default", else: "Runner default"
+    ["│ Reasoning: #{agent[:effort] || default} (configured)"]
+  end
 
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do
