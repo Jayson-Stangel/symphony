@@ -54,7 +54,7 @@ export function nativeIdentity(binary, env) {
   if (version.status !== 0 || version.stdout?.trim() !== `${runtime.cli} (Claude Code)`) throw new RuntimeError('runtime_version_mismatch');
   const sdkVersion = JSON.parse(readFileSync(join(dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), 'package.json'), 'utf8')).version;
   if (sdkVersion !== runtime.sdk) throw new RuntimeError('sdk_version_mismatch');
-  const auth = spawnSync(binary, ['auth', 'status', '--json'], { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024 });
+  const auth = spawnSync(binary, ['--setting-sources', '', 'auth', 'status', '--json'], { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024 });
   let status;
   try { status = JSON.parse(auth.stdout); } catch { throw new RuntimeError('unknown_auth_status'); }
   const profile = profileFromStatus(status);
@@ -62,16 +62,14 @@ export function nativeIdentity(binary, env) {
   return { profile, category: 'subscription', sdk: runtime.sdk, cli: runtime.cli, policy: runtime.policy };
 }
 
-export function checkSettings(workspace) {
-  // Fail rather than removing organizational policy or silently loading native
-  // settings that the qualified subscription-only configuration does not support.
+export function checkSettings() {
+  // User/project/local settings are excluded by query and native auth flags.
+  // Preserve organizational policy and unqualified installed-plugin limits.
   const paths = [
-    `${nativeConfig}/settings.json`, `${nativeConfig}/settings.local.json`,
     `${nativeConfig}/managed-settings.json`, `${nativeConfig}/remote-settings.json`,
     `${nativeConfig}/plugins/installed_plugins.json`, '/etc/claude-code/managed-settings.json',
     '/etc/claude-code/managed-mcp.json',
   ];
-  if (workspace) paths.push(`${workspace}/.claude/settings.json`, `${workspace}/.claude/settings.local.json`, `${workspace}/.mcp.json`);
   if (paths.some(path => existsSync(path))) throw new RuntimeError('unqualified_native_settings');
 }
 
@@ -100,7 +98,7 @@ export function validateContainer() {
 export function readiness({ workspace, requireAttestation = true } = {}) {
   validateContainer();
   const env = approvedEnvironment(process.env);
-  checkSettings(workspace);
+  checkSettings();
   const binary = nativeExecutable();
   const identity = nativeIdentity(binary, env);
   if (requireAttestation) {
