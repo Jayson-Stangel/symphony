@@ -4,6 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
+  alias SymphonyElixir.Claude.Adapter, as: ClaudeAdapter
   alias SymphonyElixir.{CodingAgent, Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
@@ -29,6 +30,9 @@ defmodule SymphonyElixir.AgentRunner do
         :ok
 
       {:error, {:agent_pause, _kind, _details} = reason} ->
+        exit(reason)
+
+      {:error, {:agent_replacement_required, _causes} = reason} ->
         exit(reason)
 
       {:error, {:agent_blocked, _kind} = reason} ->
@@ -90,7 +94,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_codex_turns(workspace, issue, recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
@@ -103,18 +107,52 @@ defmodule SymphonyElixir.AgentRunner do
       end
 
     with {:ok, session} <- CodingAgent.start_session(workspace, session_opts) do
-      if is_pid(codex_update_recipient), do: send(codex_update_recipient, {:worker_agent_session, issue.id, session})
+      if is_pid(recipient), do: send(recipient, {:worker_agent_session, issue.id, session})
 
-      try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
-      after
-        case CodingAgent.stop_session(session) do
-          :ok -> :ok
-          {:error, _reason} -> exit({:agent_pause, :policy_blocked, %{}})
+      outcome =
+        try do
+          result = do_run_codex_turns(session, workspace, issue, recipient, opts, issue_state_fetcher, 1, max_turns)
+          {:returned, result}
+        catch
+          kind, reason -> {:raised, kind, reason, __STACKTRACE__}
         end
-      end
+
+      cleanup =
+        try do
+          CodingAgent.stop_session(session)
+        catch
+          _, _ -> {:error, :cleanup_failed}
+        end
+
+      finish_attempt(session, outcome, cleanup)
     end
   end
+
+  defp finish_attempt(_session, {:returned, result}, :ok), do: result
+  defp finish_attempt(_session, {:raised, kind, reason, stack}, :ok), do: :erlang.raise(kind, reason, stack)
+
+  defp finish_attempt(session, outcome, cleanup) do
+    provider = Map.get(%{ClaudeAdapter => :claude, SymphonyElixir.CodingAgent.Codex => :codex}, session.adapter, :custom)
+    if provider == :claude, do: ClaudeAdapter.record_unconfirmed_cleanup(session.native.identity["profile"])
+    causes = %{provider: provider, primary: outcome_cause(outcome), cleanup: cleanup_cause(cleanup)}
+    {:error, {:agent_replacement_required, causes}}
+  end
+
+  defp outcome_cause({:returned, :ok}), do: :completed
+  defp outcome_cause({:returned, {:error, {:agent_blocked, kind}}}), do: {:agent_blocked, native_cause(kind)}
+  defp outcome_cause({:returned, {:error, {:agent_pause, kind, _}}}), do: {:agent_pause, native_cause(kind)}
+  defp outcome_cause({:returned, {:error, reason}}) when is_atom(reason), do: reason
+  defp outcome_cause({:returned, {:error, reason}}) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp outcome_cause({:raised, kind, %{__struct__: exception}, _stack}), do: {kind, exception}
+  defp outcome_cause({:raised, kind, _reason, _stack}), do: kind
+  defp outcome_cause(_outcome), do: :unknown
+
+  defp native_cause(kind) do
+    Enum.find([:auth_required, :quota_exhausted, :policy_blocked, :protocol_error, :tool_outcome_uncertain, :tracker_delivery_failed], :unknown, &(kind == &1 or kind == Atom.to_string(&1)))
+  end
+
+  defp cleanup_cause({:error, :cleanup_unconfirmed}), do: :cleanup_unconfirmed
+  defp cleanup_cause(_cleanup), do: :cleanup_failed
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)

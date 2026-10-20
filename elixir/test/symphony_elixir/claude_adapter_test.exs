@@ -509,6 +509,130 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  @tag timeout: 20_000
+  test "fallback cleanup kills its hung helper group within ten seconds", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    Port.close(session.port)
+    cleanup = Path.join(ctx.root, "hung-cleanup.mjs")
+    sentinel = Path.join(ctx.root, "cleanup-child-leak")
+
+    File.write!(cleanup, """
+    import {spawn} from 'node:child_process';
+    spawn('/bin/sh', ['-c', 'sleep 11; printf leaked > "$1"', 'probe', #{Jason.encode!(sentinel)}], {stdio: 'ignore'});
+    setInterval(() => {}, 1000);
+    """)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :cleanup_unconfirmed} =
+             Adapter.stop_session(%{session | cleanup: cleanup, owned_native: [%{"pid" => 999_999, "start" => "0"}]})
+
+    assert System.monotonic_time(:millisecond) - started < 13_000
+    Process.sleep(1_500)
+    refute File.exists?(sentinel)
+    assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+  end
+
+  test "captured owner loss cleanup failure retains a specific diagnostic and prevents retry", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    Port.close(session.port)
+    session = %{session | node: "/missing-node", owned_native: [%{"pid" => 999_999, "start" => "0"}]}
+    ref = make_ref()
+    entry = cleanup_running_entry(ctx.issue, ref, session)
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+    assert state.running == %{}
+    assert state.retry_attempts == %{}
+    assert state.blocked[ctx.issue.id].error =~ "runtime replacement required"
+    assert state.blocked[ctx.issue.id].error =~ "worker_owner_lost"
+    assert MapSet.member?(state.claimed, ctx.issue.id)
+    assert state.readiness.code == "cleanup_restart_required"
+    assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+  end
+
+  test "unwritable cleanup marker keeps replacement required through healthy observations and controls", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    Port.close(session.port)
+    unwritable = Path.join(ctx.root, "not-a-directory")
+    File.write!(unwritable, "occupied")
+    Application.put_env(:symphony_elixir, :agent_state_root, unwritable)
+    ref = make_ref()
+    # Invalid captured cleanup shape raises before the normal fallback marker write.
+    native = %{session | identity: false, owned_native: [%{"pid" => 999_999, "start" => "0"}]}
+    native = Map.delete(native, :cleanup)
+    entry = cleanup_running_entry(ctx.issue, ref, native)
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :shutdown}, state)
+    assert state.readiness.code == "cleanup_restart_required"
+    assert state.retry_attempts == %{}
+    task_ref = make_ref()
+    task = %Task{ref: task_ref, owner: self(), pid: self(), mfa: {__MODULE__, :test, []}}
+    state = %{state | readiness_task: task}
+    healthy = %{ready: true, provider: "claude", profile: String.duplicate("a", 64)}
+    assert {:noreply, state} = Orchestrator.handle_info({task_ref, healthy}, state)
+    assert state.readiness.code == "cleanup_restart_required"
+    Process.cancel_timer(elem(state.readiness_timer, 0))
+
+    for action <- [:resume, :recheck] do
+      assert {:reply, {:error, :agent_not_ready}, ^state} =
+               Orchestrator.handle_call({:agent_control, action, false}, {self(), make_ref()}, state)
+    end
+  end
+
+  test "Codex replacement outcome does not alter Claude readiness", ctx do
+    ref = make_ref()
+    entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    readiness = %{ready: true, provider: "codex", profile: AgentPause.codex_profile()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, readiness: readiness, codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    causes = %{provider: :codex, primary: {:error, RuntimeError}, cleanup: :cleanup_failed}
+    reason = {:agent_replacement_required, causes}
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
+    assert state.readiness == readiness
+    assert state.blocked[ctx.issue.id].error =~ "provider: :codex"
+    refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+  end
+
+  @tag timeout: 15_000
+  test "abnormal owner and helper death cleans captured native descendants before retry", ctx do
+    if File.dir?("/proc/self") do
+      sentinel = Path.join(ctx.root, "delayed-write")
+      helper = Path.join(ctx.root, "background.mjs")
+      probe = Path.expand("../../../runner/claude/test/fixtures/background-probe.mjs", __DIR__)
+      File.write!(helper, "process.argv[2] = #{Jason.encode!(sentinel)}; await import(#{Jason.encode!("file://" <> probe)});\n")
+      parent = self()
+
+      {owner, ref} =
+        spawn_monitor(fn ->
+          {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+          send(parent, {:owned_session, session})
+          receive do: (:finish -> :ok)
+        end)
+
+      assert_receive {:owned_session, session}, 2_000
+      assert length(session.owned_native) == 1
+      assert {_output, 0} = System.cmd("kill", ["-KILL", to_string(session.helper_identity.pid)])
+      Process.exit(owner, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^owner, :killed} = down, 1_000
+      entry = cleanup_running_entry(ctx.issue, ref, session)
+      state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+
+      assert {:noreply, state} = Orchestrator.handle_info(down, state)
+      assert state.running == %{}
+      assert state.retry_attempts[ctx.issue.id].attempt == 1
+      assert state.blocked == %{}
+      Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+      Process.sleep(4_200)
+      refute File.exists?(sentinel)
+      refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+    end
+  end
+
+  defp cleanup_running_entry(issue, ref, session) do
+    %{pid: session.owner, ref: ref, identifier: issue.identifier, issue: issue, started_at: DateTime.utc_now(), agent_session: %{adapter: Adapter, native: session}}
+  end
+
   test "unconfirmed process cleanup requires updater recovery before readiness", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     Port.close(session.port)

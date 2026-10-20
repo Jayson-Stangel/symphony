@@ -43,6 +43,12 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+The existing attempt task owns normal cleanup once. Successful cleanup preserves
+the original result or exception; failed cleanup reports separate categorical
+primary/cleanup causes and the captured provider. Claude fallback cleanup has a
+10-second GNU timeout; captured worker-owner loss reuses generation-checked cleanup
+before retry. Actual cleanup failure remains `cleanup_restart_required` through
+healthy observations and resume/recheck, requiring controlled runtime replacement.
 See [tracker diagnostics](docs/logging.md).
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),

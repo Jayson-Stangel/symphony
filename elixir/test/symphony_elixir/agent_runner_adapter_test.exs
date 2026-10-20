@@ -34,6 +34,7 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
         Agent.stop(pid)
       end
 
+      if Process.get(:probe_cleanup_raise), do: raise("cleanup raised with sensitive text")
       Process.get(:probe_cleanup_result, :ok)
     end
   end
@@ -107,12 +108,43 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
   end
 
-  test "unconfirmed cleanup overrides recoverable failure with policy stop", ctx do
+  test "unconfirmed cleanup preserves recoverable failure separately and runs after hook", ctx do
     Process.put(:probe_turn_result, {:error, {:agent_blocked, "protocol_error"}})
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
-    assert {:agent_pause, :policy_blocked, %{}} = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+
+    assert {:agent_replacement_required, %{primary: {:agent_blocked, :protocol_error}, cleanup: :cleanup_unconfirmed}} =
+             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+
     assert_received {:probe_started, pid}
     assert_received {:probe_stopped, ^pid}
+    refute_received {:probe_stopped, _}
+    assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
+  end
+
+  test "cleanup failure records a successful primary outcome without pretending completion", ctx do
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+    assert {:agent_replacement_required, %{primary: :completed, cleanup: :cleanup_unconfirmed}} =
+             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, issue_state_fetcher: fn _ -> {:ok, []} end))
+  end
+
+  test "raised primary and cleanup exceptions retain separate bounded causes", ctx do
+    Process.put(:probe_raise, true)
+    Process.put(:probe_cleanup_raise, true)
+
+    assert {:agent_replacement_required, %{primary: {:error, RuntimeError}, cleanup: :cleanup_failed}} =
+             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+
+    assert_received {:probe_stopped, _}
+    refute_received {:probe_stopped, _}
+  end
+
+  test "unknown arbitrary native error payload is not exposed by cleanup diagnostics", ctx do
+    Process.put(:probe_turn_result, {:error, {:agent_blocked, String.duplicate("sensitive", 1_000)}})
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+    assert {:agent_replacement_required, %{primary: {:agent_blocked, :unknown}, cleanup: :cleanup_unconfirmed}} =
+             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
   end
 
   test "startup failure still runs after hook without inventing cleanup", ctx do

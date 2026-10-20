@@ -296,6 +296,23 @@ with the current user input. Plain assistant prose, partial EOF and malformed
 frames never establish successful completion or quota resets. Captured process
 generations constrain cleanup to the helper's owned native group.
 
+The existing attempt task owns normal session cleanup. Cleanup success preserves
+its exact primary result or exception; failure reports bounded primary and cleanup
+causes separately with an explicit replacement requirement. When a captured worker
+is killed or shut down without its cleanup, the scheduler reuses generation-safe
+cleanup before retry/release. The fallback command and its own children are bounded
+by a 10-second GNU timeout. A timeout does not prove detached native-group cleanup;
+uncertainty retains the existing marker and `cleanup_restart_required` admission.
+Fresh observations and resume/recheck cannot clear that actual ownership failure.
+
+Marker persistence is best effort if the state filesystem is unavailable; the
+running scheduler still refuses admission until controlled runtime replacement.
+Restart durability cannot be promised when that filesystem cannot persist evidence;
+replace the container rather than restart only its scheduler in that condition.
+Helper death before native ownership publication remains a limitation requiring
+replacement, not permission to rediscover or broadly kill unknown processes. No
+new supervision service, native guardian or ownership protocol is introduced.
+
 Token usage appears as Claude reports assistant steps, including cached input.
 Repeated tool blocks sharing a message ID count once. Step-level output counts
 are SDK placeholders, so output stays at its last confirmed value until the turn

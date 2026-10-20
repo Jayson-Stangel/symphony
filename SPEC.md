@@ -2420,7 +2420,19 @@ owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanu
 stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
 crashes before ownership handoff cannot retry without cleanup proof.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
-process cleanup blocks readiness until updater-owned container recovery. Public
+process cleanup blocks readiness until updater-owned container recovery. The
+existing attempt task owns normal cleanup once. Confirmed cleanup preserves the
+exact primary outcome/exception; failure MUST retain separate bounded categorical
+primary and cleanup causes and expose a replacement-required outcome scoped to its
+captured provider. Killed/shutdown workers with captured native ownership use the
+existing generation-safe fallback before retry/release. That fallback command and
+its own process group have a ten-second deadline; timeout does not establish that
+any detached native group was cleaned. Actual Claude cleanup failure retains
+`cleanup_restart_required` through healthy observations and resume/recheck. Existing
+marker persistence remains best effort under filesystem failure; current admission
+stays blocked, but durable recovery requires controlled container replacement when
+evidence cannot be persisted. The pre-publication native ownership gap remains
+fail-closed and is not repaired by a new process service or protocol here. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
