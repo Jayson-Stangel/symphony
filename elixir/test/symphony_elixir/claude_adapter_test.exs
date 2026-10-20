@@ -464,6 +464,70 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ok = Adapter.stop_session(session)
   end
 
+  test "helper progress reaches the reducer and both dashboards without provider contents", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    owner = self()
+    name = Module.concat(__MODULE__, :ProgressDelivery)
+    server = start_supervised!({Orchestrator, name: name})
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "progress", ctx.issue, on_message: &send(owner, {:progress_probe, &1}))
+      entry = %{session_id: nil, issue: ctx.issue, started_at: DateTime.utc_now()}
+      state = %Orchestrator.State{running: %{ctx.issue.id => entry}, codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+
+      for expected <- [
+            "Waiting for agent activity",
+            "Requested command",
+            "Waiting for command",
+            "Waiting for retry",
+            "Compacting context",
+            "Waiting for agent activity",
+            "Requested file or web read",
+            "Requested file edit",
+            "Requested search",
+            "Requested tool",
+            "Agent response received"
+          ] do
+        assert_receive {:progress_probe, %{event: :agent_progress} = update}
+        assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, ctx.issue.id, update}, state)
+        message = state.running[ctx.issue.id].last_codex_message
+        assert SymphonyElixir.StatusDashboard.humanize_codex_message(message) == expected
+        # The web presenter uses this same formatter for last_message/recent events.
+        assert update.payload == expected
+        refute inspect(update) =~ "SECRET"
+        entry = Map.put(state.running[ctx.issue.id], :identifier, ctx.issue.identifier)
+        state = %{state | running: %{ctx.issue.id => entry}}
+        :sys.replace_state(server, fn _ -> state end)
+        payload = SymphonyElixirWeb.Presenter.state_payload(name, 1_000)
+        assert hd(payload.running).last_message == expected
+      end
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "missing and untrusted progress details have a safe fallback", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    owner = self()
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "progress-fallback", ctx.issue, on_message: &send(owner, {:fallback_probe, &1}))
+
+      for expected <- ["Waiting for agent activity", "Waiting for agent activity", "Waiting for tool"] do
+        assert_receive {:fallback_probe, %{event: :agent_progress, payload: ^expected, productive: false} = update}
+        refute inspect(update) =~ "SECRET"
+      end
+
+      for missing <- [nil, "", %{"raw" => "SECRET"}] do
+        assert SymphonyElixir.StatusDashboard.humanize_codex_message(%{event: :agent_progress, message: missing}) == "Waiting for agent activity"
+      end
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "actual provider tool contracts initialize the production MCP bridge", ctx do
     adapters = [
       SymphonyElixir.GitHub.Adapter,

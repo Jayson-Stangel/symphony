@@ -8,6 +8,7 @@ import { readiness, RuntimeError, runtime } from './runtime.mjs';
 import { trackerServer } from './tools.mjs';
 import { processIdentity, signalOwnedGroup, ownedGroupAlive } from './processes.mjs';
 import { skillPlugin } from './skills.mjs';
+import { progressDetails } from './progress.mjs';
 
 const ranks = { transient_error: 1, protocol_error: 2, permission_blocked: 3, quota_exhausted: 4, auth_required: 5, policy_blocked: 6 };
 
@@ -51,7 +52,7 @@ export class Helper {
     if (this.state !== 'ready' || this.active || this.usedRequests.has(command.request_id)) throw new RuntimeError('invalid_turn_state');
     if (this.usedRequests.size >= 128) throw new RuntimeError('attempt_turn_limit');
     this.usedRequests.add(command.request_id);
-    this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set() };
+    this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set(), progressEvents: new Set() };
     this.pendingInput.push({ type: 'user', session_id: '', uuid: this.active.uuid, parent_tool_use_id: null,
       message: { role: 'user', content: command.prompt } });
     this.wake?.();
@@ -154,7 +155,17 @@ export class Helper {
             }
           }
         }
-        this.emit('progress', this.active.id, { activity: event.type === 'tool_progress' ? 'tool' : 'agent' });
+        const details = progressDetails(event);
+        if (!details) continue;
+        const seen = this.active.progressEvents;
+        // Tool heartbeats can carry fresh UUIDs forever. Only a new assistant
+        // block establishes advancement; cap retained IDs for the bounded turn.
+        const productive = ['response', 'tool_started'].includes(details.status) && !event.error &&
+          event.session_id === this.nativeSession &&
+          (!event.user_message_uuid || event.user_message_uuid === this.active.uuid) &&
+          typeof event.uuid === 'string' && !seen.has(event.uuid) && seen.size < 4096;
+        if (productive) seen.add(event.uuid);
+        this.emit('progress', this.active.id, { ...details, productive });
       }
     }
     if (this.state !== 'stopped') {

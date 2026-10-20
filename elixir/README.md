@@ -520,3 +520,9 @@ Claude reports input tokens during assistant steps, including cached input;
 output tokens update at turn completion. Cumulative result totals reconcile
 live counts without counting earlier turns twice. The dashboard shows
 `unavailable` until usage is reported. See [the Claude runtime contract](../docs/claude.md#runtime-contract).
+
+Claude progress displays fixed, privacy-preserving activity descriptions in both
+dashboards, with a waiting fallback when details are missing. Liveness timestamps
+can update without resetting stall detection; only new assistant content or
+session startup advances Claude's activity clock. See
+[progress and stall detection](../docs/claude.md#progress-and-stall-detection).

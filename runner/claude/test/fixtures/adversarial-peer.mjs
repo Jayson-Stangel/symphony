@@ -28,6 +28,14 @@ for await (const line of createInterface({ input: process.stdin })) {
       send({ ...base, type: 'tool_call', tool_id: 'one', name: type === 'unbound-tool' ? 'not_bound' : 'probe_tool', arguments: { query: type, method: type === 'tool-read-error' ? 'GET' : 'PATCH' } });
       continue;
     }
+    if (type === 'progress-fallback') {
+      for (const details of [{}, { status: 'unknown', payload: 'SECRET', productive: true },
+        { status: 'tool_running', tool: 'SECRET', productive: true }]) {
+        send({ ...base, type: 'progress', activity: 'agent', ...details });
+      }
+      send({ ...base, type: 'turn_result', outcome: 'completed' });
+      continue;
+    }
     send({ ...base, type: 'turn_result', outcome: type });
   } else if (c.type === 'tool_result') {
     if (['tool-definite-error', 'tool-read-error', 'tool-linear-definite-error', 'tool-linear-server-error', 'tool-linear-partial-error', 'tool-linear-read-error', 'tool-linear-read-timeout', 'tool-linear-local-error'].includes(activePrompt)) send({ ...active, type: 'tool_result_accepted', tool_id: 'one' });

@@ -205,3 +205,33 @@ test('zeroed or missing result usage preserves live counts into the next turn', 
   assert.deepEqual(ctx.messages.filter(value => value.type === 'usage').at(-1).totals,
     { input_tokens: 80, output_tokens: 0, total_tokens: 80 });
 });
+
+test('progress is categorical and only new assistant blocks advance activity', async t => {
+  const ctx = await fixture(t);
+  await turn(ctx);
+  const secret = 'secret prompt reasoning credential argument provider payload';
+  const assistant = { type: 'assistant', session_id: 'native-one', uuid: 'block-one', message: { content: [
+    { type: 'tool_use', name: 'Bash', input: { command: secret } },
+    { type: 'thinking', thinking: secret }, { type: 'text', text: secret },
+  ] } };
+  for (const event of [assistant, assistant,
+    { ...assistant, uuid: 'stale-block', user_message_uuid: 'prior-turn' },
+    { type: 'tool_progress', uuid: 'heartbeat-one', tool_name: 'Bash', heartbeat: true },
+    { type: 'tool_progress', uuid: 'heartbeat-two', tool_name: secret, elapsed_time_seconds: 60 },
+    { type: 'system', subtype: 'api_retry', error: secret, attempt: 2 },
+    { type: 'system', subtype: 'status', status: 'compacting', compact_error: secret },
+    { type: 'system', subtype: 'status', status: null },
+    { type: 'assistant', message: {} },
+    { type: 'assistant', session_id: 'native-one', uuid: 'block-two', message: { content: [{ type: 'text', text: secret }] } },
+  ]) ctx.query.push(event);
+  await tick();
+  const progress = ctx.messages.filter(value => value.type === 'progress');
+  assert.deepEqual(progress.map(({ status, productive, tool }) => [status, productive, tool]), [
+    ['tool_started', true, 'command'], ['tool_started', false, 'command'], ['tool_started', false, 'command'],
+    ['tool_running', false, 'command'], ['tool_running', false, 'tool'],
+    ['retrying', false, undefined], ['compacting', false, undefined],
+    ['waiting', false, undefined], ['waiting', false, undefined], ['response', true, undefined],
+  ]);
+  assert.ok(!JSON.stringify(progress).includes(secret));
+  assert.ok(!JSON.stringify(progress).includes('tool_use'));
+});

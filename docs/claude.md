@@ -248,3 +248,20 @@ Qualification uses offline OTP/Node/shell tests and bounded owner-approved live
 checks. Multi-hour credential refresh, every quota bucket, and commercial
 third-party distribution require additional evidence; a short pilot does not
 establish them.
+
+### Progress and stall detection
+
+Claude progress uses fixed descriptions derived from SDK event types: a response
+received, a requested tool, waiting for a tool, retrying, or compacting context.
+Known built-in tools map to broad command/read/edit/search categories; custom
+tools and missing details use generic tool or waiting descriptions. Prompts,
+reasoning, tool arguments, credentials, custom tool names and raw SDK payloads
+are never used as progress text. Both dashboards use the same summary.
+
+The last-event timestamp records liveness. Claude's stall clock advances only
+for session startup or a new assistant content block (including tool requests),
+with repeated block UUIDs ignored within each turn. Tool heartbeats, elapsed-time
+updates, status notifications, retries and usage notifications do not reset that
+clock. A long-running tool can therefore hit the configured stall timeout even
+while it reports heartbeats; choose the timeout to allow expected tool durations.
+Codex activity accounting is unchanged.

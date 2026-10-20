@@ -1137,6 +1137,9 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp humanize_codex_event(:agent_progress, message, _payload) when is_binary(message) and message != "", do: message
+  defp humanize_codex_event(:agent_progress, _message, _payload), do: "Waiting for agent activity"
+
   defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
 
   defp humanize_codex_event(:approval_auto_approved, message, payload) do
