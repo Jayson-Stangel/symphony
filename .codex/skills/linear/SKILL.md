@@ -13,6 +13,9 @@ Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
 
 Use the `linear_graphql` client tool exposed by Symphony's app-server session.
 It reuses Symphony's configured Linear auth for the session.
+Worker calls request signed file-storage URLs valid for five minutes. No extra
+tool argument or API key is needed. Keep those temporary download URLs out of
+durable comments; use the canonical asset URL for issue links and embeds.
 
 Tool input:
 
@@ -334,16 +337,43 @@ query IssueFieldArgs {
 }
 ```
 
-### Upload a video to a comment
+### Attach generated evidence to the issue
 
-Do this in three steps:
+Apply this to every generated screenshot, recording, report, log, or other
+review artifact. Inspect the file for secrets/private data first and sanitize
+when needed. A local path or an upload on the PR alone is not delivered evidence.
+A verified sanitized replacement satisfies the gate for an unsafe original.
+Record the substitution without revealing removed data; never upload the unsafe original.
+
+Do this in four steps:
 
 1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
    any required upload headers.
-2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
-   headers returned by `fileUpload`.
-3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in the comment body.
+2. Upload the local file bytes to `uploadUrl` with `curl --fail-with-body -X PUT`
+   (or an equivalent client that rejects HTTP errors), the exact returned headers,
+   and the actual file bytes. Require a successful HTTP response before linking it.
+3. Call `attachmentLinkURL` with the current issue ID, resulting `assetUrl`, and
+   a descriptive title (see the URL attachment example above). Update the
+   existing workpad with the asset link and its tested revision, command/result,
+   and viewport or other context. Embed screenshots with `![description](assetUrl)`.
+4. Read the issue's attachment URL through `linear_graphql` to obtain a fresh
+   signed download URL, then fetch its bytes with `curl --fail --location` into
+   a local verification file. The signature supplies temporary download access;
+   never use the PUT upload URL for this GET. If it expires, repeat the read for
+   a fresh URL. Verify the retrieved file's byte
+   count and SHA-256 against the intended local file or sanitized replacement;
+   attachment metadata alone cannot establish a successful upload. Read back the
+   issue attachments and workpad, verify the asset links target this issue, and
+   record the byte verification result. Preserve the local file until verified; on continuation reuse
+   verified attachments and publish missing files. If upload or linking fails,
+   record the error and preserved path and follow the workflow's blocked-access
+   policy instead of claiming publication or handing off with missing evidence.
+
+Use the returned asset URL for permanent links, never the temporary signed
+upload or download URL. Strip only the temporary `signature` query parameter
+from a returned signed asset URL when storing its canonical issue link; do not
+strip it from the URL used to download. Keep signed URLs and upload headers out
+of comments and logs.
 
 Useful mutations:
 

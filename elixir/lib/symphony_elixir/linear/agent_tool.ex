@@ -10,6 +10,8 @@ defmodule SymphonyElixir.Linear.AgentTool do
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
+  File-storage URLs returned in the response are signed for five minutes so artifacts
+  can be downloaded and verified without exposing the Linear API key.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -57,7 +59,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp execute_linear_graphql(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
-    client_opts = Keyword.take(opts, [:tracker_settings])
+    client_opts = opts |> Keyword.take([:tracker_settings]) |> Keyword.put(:sign_file_urls, true)
 
     case normalize_linear_graphql_arguments(arguments) do
       {:ok, query, variables} ->

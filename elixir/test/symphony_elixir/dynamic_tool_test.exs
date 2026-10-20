@@ -68,7 +68,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:bound_linear_client_called, "query Viewer { viewer { id } }", %{}, [tracker_settings: tracker_settings]}
+    assert_received {:bound_linear_client_called, "query Viewer { viewer { id } }", %{}, [sign_file_urls: true, tracker_settings: tracker_settings]}
 
     assert tracker_settings.api_key == "session-token"
     assert tracker_settings.project_slug == "session-project"
@@ -91,7 +91,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{"includeTeams" => false}, []}
+    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{"includeTeams" => false}, [sign_file_urls: true]}
 
     assert response["success"] == true
     assert Jason.decode!(response["output"]) == %{"data" => %{"viewer" => %{"id" => "usr_123"}}}
@@ -111,7 +111,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, []}
+    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, [sign_file_urls: true]}
     assert response["success"] == true
   end
 
@@ -128,7 +128,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, []}
+    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, [sign_file_urls: true]}
     assert response["success"] == true
   end
 
@@ -150,7 +150,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:linear_client_called, forwarded_query, %{}, []}
+    assert_received {:linear_client_called, forwarded_query, %{}, [sign_file_urls: true]}
     assert forwarded_query == String.trim(query)
     assert response["success"] == false
   end
