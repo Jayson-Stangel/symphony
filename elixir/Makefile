@@ -3,11 +3,10 @@
 MIX ?= mix
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, claude-setup, claude-test, ci"
 
 setup:
 	$(MIX) setup
-	$(MAKE) claude-setup
 
 claude-setup:
 	npm --prefix ../runner/claude ci --ignore-scripts --no-audit --no-fund
@@ -49,6 +48,7 @@ ci:
 	$(MAKE) build
 	$(MAKE) fmt-check
 	$(MAKE) lint
+	$(MAKE) claude-setup
 	$(MAKE) claude-test
 	$(MAKE) coverage
 	$(MAKE) dialyzer

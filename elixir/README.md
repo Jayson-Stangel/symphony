@@ -504,8 +504,10 @@ preserving the rollback container until the replacement passes readiness. See
 [development updates](../docs/development.md#refresh-the-development-build).
 
 Development verification now also requires Node 24.18.0 (included in mise.toml).
-Run `make setup` to install the locked helper dependencies without install scripts;
-`make all` includes the credential-free Node protocol/process tests. Native process
+`make setup` installs only the Elixir dependencies. For Claude development, run
+`make claude-setup` to install the locked helper dependencies without install scripts.
+`make all` installs those optional dependencies explicitly and runs the full quality
+gate, including credential-free Node protocol/process tests. Native process
 ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
 
 Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
@@ -527,3 +529,18 @@ dashboards, with a waiting fallback when details are missing. Liveness timestamp
 can update without resetting stall detection; only new assistant content or
 session startup advances Claude's activity clock. See
 [progress and stall detection](../docs/claude.md#progress-and-stall-detection).
+
+Credential-free Linux packaging verification runs in CI using the production Claude
+image and entrypoint. To repeat it locally with Docker:
+
+```bash
+docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
+bash runner/claude/smoke.sh symphony-claude-smoke
+```
+
+The smoke uses a disposable nonroot container, empty memory tracker and disabled
+network. It checks HTTP state with the expected missing-auth gate, Linux owned
+subprocess cleanup, and TERM shutdown without a forced kill. The current CLI
+returns exit 1 for supervisor shutdown; the smoke accepts that convention or exit 0.
+It mounts no host credentials and makes no model requests. This proves packaging and process behavior; authenticated native
+sessions and updater transition/rollback acceptance require separate evidence.
