@@ -21,7 +21,7 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
       owner = Agent.get(pid, & &1)
       send(owner, {:probe_turn, pid, prompt})
       if Process.get(:probe_raise), do: raise("probe raised")
-      {:ok, %{session_id: "probe-session"}}
+      Process.get(:probe_turn_result, {:ok, %{session_id: "probe-session"}})
     end
 
     @impl true
@@ -34,7 +34,7 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
         Agent.stop(pid)
       end
 
-      :ok
+      Process.get(:probe_cleanup_result, :ok)
     end
   end
 
@@ -91,6 +91,28 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     assert_received {:probe_started, pid}
     assert_received {:probe_stopped, ^pid}
     refute_received {:probe_started, _}
+  end
+
+  test "recoverable delivery failure exits only after cleanup and retains readback context", ctx do
+    reason = {:agent_blocked, "tracker_delivery_failed"}
+    Process.put(:probe_turn_result, {:error, reason})
+    assert ^reason = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    assert_received {:probe_started, pid}
+    assert_received {:probe_turn, ^pid, prompt}
+    assert prompt =~ "read the target before retrying"
+    assert prompt =~ "If the intended\nchange already exists, continue without duplicating it"
+    assert_received {:probe_stopped, ^pid}
+    refute Process.alive?(pid)
+    refute_received {:probe_turn, _, _}
+    assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
+  end
+
+  test "unconfirmed cleanup overrides recoverable failure with policy stop", ctx do
+    Process.put(:probe_turn_result, {:error, {:agent_blocked, "protocol_error"}})
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+    assert {:agent_pause, :policy_blocked, %{}} = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    assert_received {:probe_started, pid}
+    assert_received {:probe_stopped, ^pid}
   end
 
   test "startup failure still runs after hook without inventing cleanup", ctx do

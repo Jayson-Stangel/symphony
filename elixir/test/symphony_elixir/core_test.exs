@@ -1123,17 +1123,29 @@ defmodule SymphonyElixir.CoreTest do
            } = state.blocked[issue_id]
   end
 
-  test "tracker delivery and legacy uncertainty failures contain only their issue" do
+  test "tracker delivery and protocol failures retry only their issue" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
 
     reasons = [
       {:agent_blocked, :tracker_delivery_failed},
+      {:agent_blocked, "protocol_error"},
+      {:agent_blocked, "tracker_delivery_failed"},
+      {:agent_blocked, "tool_outcome_uncertain"},
       {:agent_pause, :tool_outcome_uncertain, %{}},
       {:agent_pause, :protocol_error, %{}}
     ]
 
-    for reason <- reasons do
+    cases =
+      Enum.map(reasons, &{&1, nil, false}) ++
+        [
+          {{:agent_blocked, "protocol_error"}, :turn_input_required, true},
+          {{:agent_blocked, "tracker_delivery_failed"}, :approval_required, true},
+          {{:agent_blocked, "permission_blocked"}, nil, true},
+          {{:agent_blocked, "agent_turn_limit"}, nil, true}
+        ]
+
+    for {reason, last_event, blocked?} <- cases do
       name = Module.concat(__MODULE__, :TrackerRecoveryOrchestrator)
       {:ok, pid} = Orchestrator.start_link(name: name)
       ref_a = make_ref()
@@ -1159,13 +1171,32 @@ defmodule SymphonyElixir.CoreTest do
         }
       end
 
-      :sys.replace_state(pid, fn state -> %{state | running: %{"a" => entry.(issue_a, ref_a), "b" => entry.(issue_b, ref_b)}, claimed: MapSet.new(["a", "b"])} end)
+      :sys.replace_state(pid, fn state ->
+        %{state | running: %{"a" => Map.put(entry.(issue_a, ref_a), :last_codex_event, last_event), "b" => entry.(issue_b, ref_b)}, claimed: MapSet.new(["a", "b"])}
+      end)
 
       try do
         send(pid, {:DOWN, ref_a, :process, self(), reason})
         assert is_map(Orchestrator.snapshot(name, 5_000))
         state = :sys.get_state(pid)
-        assert Map.has_key?(state.blocked, "a")
+
+        if blocked? do
+          assert Map.has_key?(state.blocked, "a")
+          refute Map.has_key?(state.retry_attempts, "a")
+        else
+          refute Map.has_key?(state.blocked, "a")
+          assert %{attempt: 1, error: error, retry_token: token, due_at_ms: due_at} = state.retry_attempts["a"]
+          assert error =~ "agent exited:"
+          assert_due_in_range(due_at, 9_500, 10_500)
+          assert {:ok, %{draining: true}} = GenServer.call(pid, {:agent_control, :drain, false})
+          send(pid, {:retry_issue, "a", token})
+          assert is_map(Orchestrator.snapshot(name, 5_000))
+          drained = :sys.get_state(pid)
+          refute Map.has_key?(drained.running, "a")
+          refute Map.has_key?(drained.retry_attempts, "a")
+        end
+
+        assert MapSet.member?(state.claimed, "a")
         refute Map.has_key?(state.blocked, "b")
         assert Map.has_key?(state.running, "b")
         assert :ready = SymphonyElixir.AgentPause.current()
@@ -1174,6 +1205,7 @@ defmodule SymphonyElixir.CoreTest do
         send(pid, {:DOWN, ref_b, :process, self(), :normal})
         assert is_map(Orchestrator.snapshot(name, 5_000))
         assert MapSet.member?(:sys.get_state(pid).completed, "b")
+        unless blocked?, do: assert({:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :resume, false}))
       after
         GenServer.stop(pid)
       end

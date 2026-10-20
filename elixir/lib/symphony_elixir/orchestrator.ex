@@ -296,9 +296,11 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
-  defp handle_agent_down({:agent_pause, kind, _details}, state, issue_id, running_entry, _session_id)
+  # AgentRunner confirms session cleanup before reporting these turn failures.
+  # Retry the attempt, never the tracker mutation; the next prompt requires readback.
+  defp handle_agent_down({:agent_pause, kind, _details} = reason, state, issue_id, running_entry, session_id)
        when kind in [:tool_outcome_uncertain, :protocol_error, "tool_outcome_uncertain", "protocol_error"] do
-    block_issue_from_entry(state, issue_id, running_entry, "coding agent requires issue recovery: #{kind}")
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
   end
 
   defp handle_agent_down({:agent_pause, kind, details} = reason, state, issue_id, running_entry, session_id)
@@ -312,11 +314,20 @@ defmodule SymphonyElixir.Orchestrator do
     release_issue_claim(state, issue_id)
   end
 
+  defp handle_agent_down({:agent_blocked, kind} = reason, state, issue_id, running_entry, session_id)
+       when kind in [:tool_outcome_uncertain, :protocol_error, :tracker_delivery_failed, "tool_outcome_uncertain", "protocol_error", "tracker_delivery_failed"] do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
+
   defp handle_agent_down({:agent_blocked, kind}, state, issue_id, running_entry, _session_id) do
     block_issue_from_entry(state, issue_id, running_entry, "coding agent blocked on this issue: #{kind}")
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
+
+  defp retry_unless_input_required(state, issue_id, running_entry, session_id, reason) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, reason)
     else
