@@ -84,12 +84,12 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
   end
 
-  test "max-turn exit returns control after cleanup without replacing the native session", ctx do
-    assert {:max_turns_reached, %{max_turns: 1}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, max_turns: 1, issue_state_fetcher: fn _ -> {:ok, [ctx.issue]} end))
+  test "attempt allowance returns normally after cleanup without replacing the native session", ctx do
+    assert :ok = AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, max_turns: 1, issue_state_fetcher: fn _ -> {:ok, [ctx.issue]} end)
 
     assert_received {:probe_started, pid}
     assert_received {:probe_stopped, ^pid}
+    refute Process.alive?(pid)
     refute_received {:probe_started, _}
   end
 

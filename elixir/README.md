@@ -246,8 +246,11 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+  Reaching this per-attempt allowance closes the native session normally and schedules the existing
+  continuation check in the retained workspace; it does not block the issue. Both providers use this
+  behavior. Tracker state and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
@@ -256,6 +259,9 @@ Notes:
 - `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
   run. When the count reaches this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.
+  Generated and sample workflows leave both live circuit breakers disabled. Existing project
+  workflows keep any explicitly configured limits; remove them or set them to `0` to use ordinary
+  continuation behavior. Symphony does not rewrite existing project policy on update.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
