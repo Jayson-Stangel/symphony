@@ -471,9 +471,13 @@ defmodule SymphonyElixir.AgentReadinessTest do
   end
 
   defp trace_polls(pid) do
+    Code.ensure_loaded!(SymphonyElixir.Tracker.Memory)
     :erlang.trace_pattern({SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, 1}, true, [:local])
     :erlang.trace(pid, true, [:call, {:tracer, self()}])
-    on_exit(fn -> :erlang.trace_pattern({SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, 1}, false, [:local]) end)
+
+    on_exit(fn ->
+      :erlang.trace_pattern({SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, 1}, false, [:local])
+    end)
   end
 
   defp assert_no_polls(pid) do
