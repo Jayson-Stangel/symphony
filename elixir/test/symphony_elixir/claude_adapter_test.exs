@@ -218,7 +218,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "Linux startup rejection confirms real native process cleanup before retry result", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/startup-failure-probe.mjs", __DIR__)
 
-    for mode <- ["initialization", "stream"] do
+    for mode <- ["initialization", "stream", "eof"] do
       File.write!(Path.join(ctx.workspace, "startup-fail-mode"), mode)
       assert {:error, {:claude_startup_failed, "protocol_error"}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
       owned = ctx.workspace |> Path.join("startup-owned.json") |> File.read!() |> Jason.decode!()

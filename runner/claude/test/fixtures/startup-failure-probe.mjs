@@ -10,11 +10,12 @@ class StartupFailure {
     writeFileSync('startup-owned.json', JSON.stringify(processIdentity(child.pid)));
   }
   initializationResult() {
-    return readFileSync('startup-fail-mode', 'utf8') === 'stream'
+    return ['stream', 'eof'].includes(readFileSync('startup-fail-mode', 'utf8'))
       ? new Promise(() => {}) : Promise.reject(new Error('fixture initialization failure'));
   }
   [Symbol.asyncIterator]() { return this; }
   next() {
+    if (readFileSync('startup-fail-mode', 'utf8') === 'eof') return Promise.resolve({ done: true });
     return readFileSync('startup-fail-mode', 'utf8') === 'stream'
       ? Promise.reject(new Error('fixture startup stream failure')) : new Promise(() => {});
   }

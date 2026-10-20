@@ -171,7 +171,7 @@ export class Helper {
     }
     if (this.state !== 'stopped') {
       if (this.active) this.finish({ outcome: 'protocol_error' });
-      await this.stop('native_eof');
+      await this.stop(this.state === 'starting' ? this.startRequest : 'native_eof');
     }
   }
 
