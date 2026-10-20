@@ -333,10 +333,11 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Claude subscription workers
 
-Codex remains the default. A qualified personal Claude profile adds one isolated
-Claude worker through pinned Claude Code/Agent SDK and native subscription login.
+Codex remains the default. A qualified personal Claude profile adds isolated
+Claude workers through pinned Claude Code/Agent SDK and native subscription login.
 Sonnet remains the default; nonblank model identifiers pass unchanged to the
-native runtime, which validates support. Reasoning effort is configurable. Terminal and web dashboards show the configured Claude effort.
+native runtime, which validates support. Reasoning effort is configurable.
+Terminal and web dashboards show the configured Claude effort.
 The dashboard updates input tokens during Claude steps and confirms output tokens
 at turn completion; session totals include cached input and avoid duplicate tool blocks.
 It requires disabled-overage owner attestation, project-scoped credentials and
@@ -355,3 +356,10 @@ For integration testing before promotion, use a [dedicated development workspace
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh
 stale pending candidates while retaining their rollback source.
+
+Codex and Claude share the configured global and per-state worker limits. Use
+`agent.max_concurrent_agents: 1` for serial work or a larger value for bounded
+parallel work. Explicit authentication/policy rechecks admit one recovery owner
+until success, then restore normal parallel capacity. The deprecated `claude.max_concurrent_agents` input is accepted
+but ignored; move any desired limit into `agent`. See the
+[Claude workflow settings](docs/claude.md#workflow-settings) for migration details.

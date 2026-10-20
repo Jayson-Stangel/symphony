@@ -121,3 +121,39 @@ test('native initialization discovers canonical links and the local override tog
     assert.match(commands.find(command => command.name === 'symphony:symphony-land').description, /Local override discovery proof/);
   } finally { session.close(); release(); }
 });
+
+test('three native no-model sessions retain independent skill overlays after one closes', {
+  skip: process.platform !== 'linux' || !existsSync('/opt/symphony/claude/plugin/skills'), timeout: 30_000,
+}, async t => {
+  const peers = [];
+  t.after(() => { for (const peer of peers) { peer.session.close(); peer.release(); peer.plugin.cleanup(); } });
+  for (let n = 0; n < 3; n++) {
+    const { workspace, local } = fixture(t);
+    writeFileSync(join(local, 'SKILL.md'), `---\nname: symphony-land\ndescription: Independent override ${n}\n---\nLocal procedure ${n}.\n`);
+    const plugin = skillPlugin(workspace, { 'symphony-land': local });
+    let release;
+    const idle = new Promise(resolve => { release = resolve; });
+    async function* input() { await idle; }
+    const session = query({ prompt: input(), options: {
+      cwd: workspace, env: { HOME: '/home/claude', CLAUDE_CONFIG_DIR: '/home/claude/.claude',
+        PATH: '/usr/local/bin:/usr/bin:/bin', DISABLE_AUTOUPDATER: '1' },
+      pathToClaudeCodeExecutable: nativeExecutable(), settingSources: [],
+      plugins: [{ type: 'local', path: plugin.path }], skills: 'all',
+      strictMcpConfig: true, mcpServers: {}, persistSession: false,
+      permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, stderr: () => {},
+    } });
+    peers.push({ session, release, plugin });
+  }
+  await Promise.all(peers.map(peer => peer.session.initializationResult()));
+  assert.equal(new Set(peers.map(peer => peer.plugin.path)).size, 3);
+  for (const [n, peer] of peers.entries()) {
+    const commands = await peer.session.supportedCommands();
+    assert.match(commands.find(command => command.name === 'symphony:symphony-land').description, new RegExp(`Independent override ${n}`));
+  }
+  peers[0].session.close(); peers[0].release(); peers[0].plugin.cleanup();
+  for (const [n, peer] of peers.entries()) if (n > 0) {
+    const commands = await peer.session.supportedCommands();
+    assert.match(commands.find(command => command.name === 'symphony:symphony-land').description, new RegExp(`Independent override ${n}`));
+    assert.equal(existsSync(peer.plugin.path), true);
+  }
+});

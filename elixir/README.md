@@ -522,7 +522,7 @@ support rather than a second model allowlist. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
-for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
+for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 SDK/CLI pins have one owner in `runner/claude/package.json` and its lock, also
 used by the qualification lab. Node verifies the installed runtime. Elixir checks
@@ -598,3 +598,13 @@ subprocess cleanup, and TERM shutdown without a forced kill. The current CLI
 returns exit 1 for supervisor shutdown; the smoke accepts that convention or exit 0.
 It mounts no host credentials and makes no model requests. This proves packaging and process behavior; authenticated native
 sessions and updater transition/rollback acceptance require separate evidence.
+
+Both coding providers use the existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
+one-worker ceiling for normal dispatch. Explicit authentication/policy rechecks
+retain one recovery owner until success, then resume configured parallel work.
+Legacy positive `claude.max_concurrent_agents` values remain
+accepted but are ignored; migrate the desired limit into the `agent` section.
+Changing limits affects new dispatch; existing sessions keep their ownership and
+may temporarily exceed a reduced limit until they finish. The state API reports
+the effective global setting as `agent.max_concurrent_agents`.

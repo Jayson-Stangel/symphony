@@ -26,12 +26,12 @@ defmodule SymphonyElixir.AgentSelectionTest do
     assert Config.max_concurrent_agents_for_state("Todo") == 4
 
     Application.put_env(:symphony_elixir, :coding_agent, :claude)
-    assert Config.max_concurrent_agents() == 1
-    assert Config.max_concurrent_agents_for_state("Todo") == 1
-    assert Config.max_concurrent_agents_for_state(nil) == 1
+    assert Config.max_concurrent_agents() == 7
+    assert Config.max_concurrent_agents_for_state("Todo") == 4
+    assert Config.max_concurrent_agents_for_state(nil) == 7
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: 3)
     assert Config.coding_agent() == :claude
-    assert Config.max_concurrent_agents() == 1
+    assert Config.max_concurrent_agents() == 3
     assert Config.agent_stall_timeout_ms() == 300_000
     assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _, _}} = CodingAgent.start_session("/unused")
   end
@@ -125,12 +125,39 @@ defmodule SymphonyElixir.AgentSelectionTest do
   test "Claude schema rejects raw authentication and options instead of ignoring them" do
     assert {:ok, config} = Schema.parse(%{"claude" => %{"model" => "sonnet", "max_concurrent_agents" => 1}})
     assert config.claude.max_concurrent_agents == 1
+    assert {:ok, config} = Schema.parse(%{"claude" => %{"max_concurrent_agents" => 9}})
+    assert config.claude.max_concurrent_agents == 9
     assert config.codex.live_max_total_tokens == 0
 
     for settings <- [%{"api_key" => "secret-canary"}, %{"command" => "injected"}, %{"max_concurrent_agents" => 0}, %{"model" => ""}] do
       assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"claude" => settings})
       assert message =~ "claude."
       refute message =~ "secret-canary"
+    end
+  end
+
+  test "both providers use shared concurrency settings and ignore deprecated Claude cap" do
+    for provider <- [:codex, :claude], limit <- [1, 3] do
+      Application.put_env(:symphony_elixir, :coding_agent, provider)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        max_concurrent_agents: limit,
+        max_concurrent_agents_by_state: %{"In Progress" => 2}
+      )
+
+      contents = File.read!(Workflow.workflow_file_path())
+      File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  max_concurrent_agents: 1\n", global: false))
+      assert :ok = WorkflowStore.force_reload()
+      assert Config.max_concurrent_agents() == limit
+      assert Config.max_concurrent_agents_for_state("in progress") == 2
+      assert Config.max_concurrent_agents_for_state("Todo") == limit
+      assert Config.settings!().claude.max_concurrent_agents == 1
+    end
+
+    for invalid <- [0, -1, "invalid"] do
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"agent" => %{"max_concurrent_agents" => invalid}})
+      assert message =~ "agent.max_concurrent_agents"
     end
   end
 

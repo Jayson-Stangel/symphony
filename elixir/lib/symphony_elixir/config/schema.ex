@@ -283,7 +283,8 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:model, :string, default: "sonnet")
       field(:effort, :string)
-      field(:max_concurrent_agents, :integer, default: 1)
+      # Deprecated input for existing workflows; agent settings own concurrency.
+      field(:max_concurrent_agents, :integer)
       field(:max_agentic_turns, :integer, default: 50)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
@@ -298,7 +299,7 @@ defmodule SymphonyElixir.Config.Schema do
         |> validate_length(:model, min: 1, max: 256)
         |> validate_format(:model, ~r/\S/)
         |> validate_inclusion(:effort, ~w(low medium high xhigh max))
-        |> validate_number(:max_concurrent_agents, greater_than: 0, less_than_or_equal_to: 1)
+        |> validate_number(:max_concurrent_agents, greater_than: 0)
         |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
         |> validate_number(:read_timeout_ms, greater_than: 0, less_than_or_equal_to: 60_000)
         |> validate_number(:turn_timeout_ms, greater_than: 0, less_than_or_equal_to: 3_600_000)

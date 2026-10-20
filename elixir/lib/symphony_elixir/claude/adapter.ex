@@ -144,6 +144,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     expected_profile = session.identity["profile"]
 
     case AgentPause.current() do
+      {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^expected_profile}} ->
+        {:error, :claude_turn_not_admitted}
+
       {:paused, value} ->
         pause(session, value["kind"], Map.take(value, ["resets_at"]))
 
@@ -153,6 +156,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       _ ->
         case AgentPause.begin_turn(expected_profile) do
           :ok -> do_run_turn(session, prompt, issue, opts)
+          {:error, :probe_not_available} -> {:error, :claude_turn_not_admitted}
           _ -> pause(session, "policy_blocked", %{})
         end
     end

@@ -2372,13 +2372,14 @@ The Elixir implementation can select one coding provider at startup. Codex is
 the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
-scheduling authority. Selection survives workflow reload. One worker is supported,
-with Sonnet as the default. Workflow and helper validation accept nonblank model
-identifiers up to 256 characters unchanged. Native runtime support validation owns
-the model catalog; wrapper model allowlists MUST NOT duplicate it. SDK/CLI pins
-are owned by the production npm manifest/lock and reused by qualification. Node
-checks installed dependencies against those pins. Elixir checks protocol/policy
-version 1 and bounded diagnostic version strings, rather than dependency literals.
+scheduling authority. Selection survives workflow reload. Both providers use the
+configured global and per-state concurrency limits, with Sonnet as Claude default.
+Workflow and helper validation accept nonblank model identifiers up to 256
+characters unchanged. Native runtime support validation owns the model catalog;
+wrapper model allowlists MUST NOT duplicate it. SDK/CLI pins are owned by the
+production npm manifest/lock and reused by qualification. Node checks installed
+dependencies against those pins. Elixir checks protocol/policy version 1 and
+bounded diagnostic version strings, rather than dependency literals.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.
@@ -2467,3 +2468,16 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+
+### Shared provider concurrency
+
+Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
+additional Claude worker ceiling for normal dispatch. Explicit authentication/policy
+rechecks retain one existing recovery owner until success; non-owners retry without
+changing that pause. Quota cooldown expiry restores normal configured capacity.
+The deprecated positive
+`claude.max_concurrent_agents` input is accepted for existing workflow compatibility
+but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.
+Reloaded limits govern new starts without terminating existing sessions. The state
+API reports the effective global setting as `agent.max_concurrent_agents`.

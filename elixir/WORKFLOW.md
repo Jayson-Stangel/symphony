@@ -39,6 +39,9 @@ hooks:
 # claude.model defaults to sonnet; any nonblank identifier up to 256 characters
 # passes unchanged to the native runtime, which owns model support validation.
 agent:
+  # Shared by Codex and Claude; use 1 for serial execution.
+  # Deprecated claude.max_concurrent_agents is accepted but ignored.
+  # An explicit auth/policy recheck retains one recovery owner until success.
   max_concurrent_agents: 10
   max_turns: 20
 codex:
