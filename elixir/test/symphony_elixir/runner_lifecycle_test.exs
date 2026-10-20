@@ -295,6 +295,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "rollback restores a provider-labelled image with the pre-admission state API", ctx do
+    ready_curl!(ctx)
+    File.chmod!(Path.join(ctx.root, "curl"), 0o755)
     env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
