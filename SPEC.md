@@ -641,6 +641,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.terminal_states`: list of provider-native state names, adapter-defined default
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `workspace.clone_url`: optional local clone-only bootstrap; mutually exclusive with
+  `hooks.after_create` and SSH workers. Clone into a unique owned unpublished stage
+  below `.symphony/clones`, then atomically rename success into the workspace. Reuse
+  existing destinations. Interrupted or timed-out unpublished stages are retained
+  and do not block a fresh attempt; arbitrary setup hooks are never inferred or replayed.
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null

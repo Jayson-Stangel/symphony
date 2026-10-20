@@ -258,6 +258,11 @@ remote can be cloned into a Symphony workspace.
 
 #### Configure credentials
 
+New clone-only workflows use `workspace.clone_url` so an interrupted unpublished
+clone can retry safely. Existing edited workspaces are preserved. Existing custom
+`after_create` workflows keep their manual interruption recovery; see the
+[workspace recovery details](elixir/README.md).
+
 Initialization stores a private, owner-only credential template outside the repository at
 `~/.config/symphony/projects/<repository>.env`. Add:
 

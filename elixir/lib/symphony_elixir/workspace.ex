@@ -88,6 +88,9 @@ defmodule SymphonyElixir.Workspace do
       File.dir?(workspace) ->
         {:ok, workspace, false}
 
+      Config.settings!().workspace.clone_url != nil ->
+        clone_workspace(workspace)
+
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
         create_workspace(workspace)
@@ -127,6 +130,65 @@ defmodule SymphonyElixir.Workspace do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp clone_workspace(workspace) do
+    # Each attempt owns only its unique unpublished stage. Interrupted attempts
+    # are never reused or removed by another attempt.
+    stage = Path.join([Path.dirname(workspace), ".symphony", "clones", Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)])
+
+    with :ok <- validate_workspace_path(stage, nil),
+         :ok <- File.mkdir_p(Path.dirname(stage)),
+         :ok <- File.mkdir(stage) do
+      result =
+        with :ok <- run_clone(stage, workspace),
+             :ok <- validate_workspace_path(workspace, nil),
+             :ok <- validate_workspace_path(stage, nil) do
+          publish_clone(stage, workspace)
+        end
+
+      # A timed out native command may still be exiting. Preserve its unique
+      # unpublished stage, just as on owner interruption; no retry reuses it.
+      cleanup_clone_stage(stage, result)
+      result
+    end
+  end
+
+  defp cleanup_clone_stage(_stage, {:error, {:workspace_clone_timeout, _, _}}), do: :ok
+
+  defp cleanup_clone_stage(stage, _result) do
+    if validate_workspace_path(stage, nil) == :ok, do: File.rm_rf(stage)
+  end
+
+  defp run_clone(stage, workspace) do
+    url = Config.settings!().workspace.clone_url
+    timeout_ms = Config.settings!().hooks.timeout_ms
+    task = Task.async(fn -> System.cmd("git", ["clone", "--depth", "1", "--", url, stage], stderr_to_stdout: true) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {_output, status}} -> {:error, {:workspace_clone_failed, workspace, status}}
+      _ -> {:error, {:workspace_clone_timeout, workspace, timeout_ms}}
+    end
+  end
+
+  defp publish_clone(stage, workspace) do
+    cond do
+      File.exists?(bootstrap_marker(workspace)) ->
+        {:error, {:workspace_bootstrap_interrupted, workspace}}
+
+      File.dir?(workspace) ->
+        {:ok, workspace, false}
+
+      File.exists?(workspace) ->
+        {:error, {:workspace_clone_destination_exists, workspace}}
+
+      true ->
+        case File.rename(stage, workspace) do
+          :ok -> {:ok, workspace, false}
+          {:error, reason} -> {:error, {:workspace_clone_publish_failed, workspace, reason}}
+        end
     end
   end
 

@@ -21,6 +21,12 @@ polling:
   interval_ms: 5000
 workspace:
   root: ~/code/symphony-workspaces
+  # Opt in to ordinary local clone-only bootstrap with:
+  # clone_url: https://github.com/openai/symphony
+  # Remove hooks.after_create below when enabling clone_url; they cannot coexist.
+  # clone_url does not support worker.ssh_hosts. Custom setup keeps the hook below.
+  # Clones publish atomically; interrupted unpublished stages permit fresh retries.
+  # See README.md for retained staging directories and arbitrary-hook recovery.
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .

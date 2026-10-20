@@ -61,6 +61,21 @@ and repair that checkout before removing the marker, or remove the partial
 checkout and marker to allow a fresh bootstrap. Arbitrary setup hooks are not
 automatically replayed against partial contents. Normal hook failures still
 remove new partial workspaces so a later attempt can retry.
+For local clone-only setup, prefer `workspace.clone_url: "https://github.com/owner/repo.git"`
+without `hooks.after_create`. Git clones into an exclusively owned random directory
+under `workspace.root/.symphony/clones`, then renames the completed checkout into
+place. Existing workspaces are reused, including edits. An interrupted unpublished
+clone does not block a fresh attempt. Its stage is retained rather than replayed or
+deleted; inspect and remove abandoned stages only when no bootstrap process is
+using them. Normal clone failures remove their own stage; timed-out clones retain
+it because a native child may still be exiting. Errors omit the URL and Git output
+to avoid exposing credentials. Git credentials should use the existing credential
+helper rather than embedded URL secrets. `hooks.timeout_ms` bounds waiting for Git.
+This option supports local workers only and cannot be combined with `after_create`;
+SSH and arbitrary setup hooks continue using their existing lifecycle. Existing
+workflows are not automatically migrated. Publication assumes one listener owns
+each workspace root, as with existing workspace creation.
+
 `.symphony` is reserved for local workspace metadata; an issue with that exact
 identifier receives a hashed workspace key. SSH deployments retain their existing
 startup and claimed-issue cleanup behavior without polling all terminal history.
