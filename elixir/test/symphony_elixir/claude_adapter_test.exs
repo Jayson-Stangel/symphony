@@ -64,6 +64,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         case args["query"] do
           "mutation { rejected }" -> %{"errors" => [%{"message" => "Unknown field rejected"}]}
           "mutation { corrected }" -> %{"data" => %{"corrected" => %{"success" => true}}}
+          "mutation { uncertain }" -> %{"data" => %{"issueUpdate" => nil}, "errors" => [%{"message" => "partial write"}]}
+          ~s|query { issue(id: "one") { id title } }| -> %{"data" => %{"issue" => %{"id" => "one", "title" => "x"}}}
         end
 
       AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, response} end)
@@ -107,6 +109,20 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert_receive {:linear_recovery_call, "mutation { corrected }"}
       assert :ready = AgentPause.current()
       assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "Claude receives an uncertain mutation error and reconciles in the same session", ctx do
+    binding = %{adapter: RecoverableLinearTool, tracker_settings: %{owner: self()}, tool_specs: AgentTool.tool_specs()}
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :tool_binding, binding))
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "linear-uncertain-recovery", ctx.issue, [])
+      assert_receive {:linear_recovery_call, "mutation { uncertain }"}
+      assert_receive {:linear_recovery_call, ~s|query { issue(id: "one") { id title } }|}
+      assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
     end
@@ -158,14 +174,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
       try do
-        assert {:error, {:agent_pause, _, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        assert {:error, {:agent_blocked, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        assert :ready = AgentPause.current()
       after
         Adapter.stop_session(session)
       end
     end
   end
 
-  test "lost tracker replies and missing acknowledgements retain uncertain intents", ctx do
+  test "missing tool acknowledgements block only the affected issue", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
 
@@ -209,12 +226,21 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       try do
         result = Adapter.run_turn(binding, prompt, ctx.issue, [])
 
-        if prompt in ["tool-definite-error", "tool-read-error", "tool-linear-definite-error", "tool-linear-read-error", "tool-linear-read-timeout", "tool-linear-local-error"] do
+        if prompt in [
+             "tool-definite-error",
+             "tool-read-error",
+             "tool-linear-definite-error",
+             "tool-linear-server-error",
+             "tool-linear-partial-error",
+             "tool-linear-read-error",
+             "tool-linear-read-timeout",
+             "tool-linear-local-error"
+           ] do
           assert {:ok, _} = result
           assert :ready = AgentPause.current()
         else
-          assert {:error, {:agent_pause, :tool_outcome_uncertain, _}} = result
-          assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = AgentPause.current()
+          assert {:error, {:agent_blocked, _}} = result
+          assert :ready = AgentPause.current()
         end
       after
         Adapter.stop_session(session)
@@ -238,12 +264,12 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     assert :ok = Adapter.interrupt(session, :operator)
-    assert {:error, {:agent_pause, :protocol_error, _}} = Adapter.run_turn(session, "closed", ctx.issue, [])
+    assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, "closed", ctx.issue, [])
     assert :ok = Adapter.stop_session(session)
   end
 
   test "scheduler handoff cancels a real waiting Port without recording a protocol failure", ctx do
-    assert :ok = AgentPause.record(:protocol_error, %{profile: String.duplicate("a", 64)})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: String.duplicate("a", 64)})
     assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
     parent = self()
 
@@ -304,7 +330,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
   test "orchestrator Human Review reconciliation keeps the next issue dispatchable", ctx do
     profile = String.duplicate("a", 64)
-    assert :ok = AgentPause.record(:protocol_error, %{profile: profile})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: profile})
     assert :ok = AgentPause.explicit_recheck(profile)
     parent = self()
 
@@ -457,7 +483,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "existing tracker binding executes only through Elixir and clears durable intent after ack", ctx do
+  test "existing tracker binding executes only through Elixir and acknowledges delivery", ctx do
     binding = %{
       adapter: BoundTool,
       tracker_settings: %{owner: self(), tag: "original"},
@@ -508,7 +534,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
       try do
-        assert {:error, {:agent_pause, _, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        assert {:error, {:agent_blocked, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        assert :ready = AgentPause.current()
       after
         Adapter.stop_session(session)
       end
@@ -529,7 +556,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     session = %{session | config: %{session.config | turn_timeout_ms: 30, read_timeout_ms: 10}}
 
     try do
-      assert {:error, {:agent_pause, :protocol_error, _}} = Adapter.run_turn(session, "silence", ctx.issue, [])
+      assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, "silence", ctx.issue, [])
     after
       Adapter.stop_session(session)
     end

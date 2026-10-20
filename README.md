@@ -325,9 +325,10 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 Codex remains the default. A qualified personal Claude profile adds one isolated
 Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
 It requires disabled-overage owner attestation, project-scoped credentials and
-model-free readiness checks. Both agents return correctable Linear read errors
-and definite GraphQL request rejections, letting the agent correct them. They pause
-on uncertain writes, with redacted diagnostics for reconciliation. See [setup, pauses and updater transitions](docs/claude.md)
+model-free readiness checks. Both agents receive tracker errors and own recovery:
+read back uncertain writes before retrying, correct rejected requests, and contain
+unresolved failures to the affected issue. Tracker errors do not pause unrelated
+work. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)

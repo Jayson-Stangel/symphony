@@ -33,10 +33,12 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
-Codex and Claude share Linear outcome classification. Definite pre-execution
-GraphQL request rejections return to the agent for correction; partial writes,
-resolver failures and lost write responses pause for reconciliation. Symphony
-never automatically retries a mutation. See [tracker diagnostics](docs/logging.md).
+Codex and Claude return tracker errors to the agent, following the original Codex
+recovery flow. The agent reads back uncertain writes before retrying and corrects
+rejected requests. Lost delivery blocks only the affected issue; unrelated work
+continues. Symphony never automatically retries a mutation. Every initial/retry
+prompt includes tracker recovery instructions, including for custom workflows.
+See [tracker diagnostics](docs/logging.md).
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -475,7 +477,8 @@ Run `make setup` to install the locked helper dependencies without install scrip
 `make all` includes the credential-free Node protocol/process tests. Native process
 ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
 
-Linear tool calls share outcome handling across Codex and Claude. Read errors and
-local rejections return to the agent for correction; ambiguous writes retain a
-durable pause requiring reconciliation. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
+The agent owns outcome reconciliation. Legacy unresolved-call files remain evidence
+for the matching issue's recovery prompt, without blocking dispatch. Auth, quota
+and shared policy failures still pause the runner. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).

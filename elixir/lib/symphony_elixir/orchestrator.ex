@@ -289,13 +289,18 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
+  defp handle_agent_down({:agent_pause, kind, _details}, state, issue_id, running_entry, _session_id)
+       when kind in [:tool_outcome_uncertain, :protocol_error, "tool_outcome_uncertain", "protocol_error"] do
+    block_issue_from_entry(state, issue_id, running_entry, "coding agent requires issue recovery: #{kind}")
+  end
+
   defp handle_agent_down({:agent_pause, kind, details}, state, issue_id, _running_entry, _session_id) do
     SymphonyElixir.AgentPause.record(kind, details)
     release_issue_claim(state, issue_id)
   end
 
   defp handle_agent_down({:agent_blocked, kind}, state, issue_id, running_entry, _session_id) do
-    block_issue_from_entry(state, issue_id, running_entry, "coding agent requires operator input: #{kind}")
+    block_issue_from_entry(state, issue_id, running_entry, "coding agent blocked on this issue: #{kind}")
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
