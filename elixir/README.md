@@ -513,3 +513,10 @@ The agent owns outcome reconciliation. Legacy unresolved-call files remain evide
 for the matching issue's recovery prompt, without blocking dispatch. Auth, quota
 and shared policy failures still pause the runner. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
+
+## Claude token observability
+
+Claude reports input tokens during assistant steps, including cached input;
+output tokens update at turn completion. Cumulative result totals reconcile
+live counts without counting earlier turns twice. The dashboard shows
+`unavailable` until usage is reported. See [the Claude runtime contract](../docs/claude.md#runtime-contract).

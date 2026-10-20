@@ -332,6 +332,8 @@ Codex remains the default. A qualified personal Claude profile adds one isolated
 Claude worker through pinned Claude Code/Agent SDK and native subscription login.
 Sonnet remains the default; current model IDs, family aliases and reasoning effort
 are configurable. Terminal and web dashboards show the configured Claude effort.
+The dashboard updates input tokens during Claude steps and confirms output tokens
+at turn completion; session totals include cached input and avoid duplicate tool blocks.
 It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain

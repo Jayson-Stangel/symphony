@@ -143,3 +143,65 @@ test('interrupt cancels callbacks and emits a single cancellation outcome', asyn
   await ctx.helper.stop('repeat');
   assert.equal(ctx.messages.filter(value => value.type === 'stopped').length, 1);
 });
+
+function assistant(ctx, id, input, extra = {}) {
+  ctx.query.push({ type: 'assistant', session_id: 'native-one', parent_tool_use_id: null,
+    message: { id, usage: { input_tokens: input, cache_read_input_tokens: 20,
+      cache_creation_input_tokens: 10, output_tokens: 999 } }, ...extra });
+}
+
+function modelUsage(input, output) {
+  return { sonnet: { inputTokens: input, outputTokens: output,
+    cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } };
+}
+
+test('live input usage deduplicates tool blocks and reconciles cumulative multi-turn results', async t => {
+  const ctx = await fixture(t);
+  const first = await turn(ctx);
+  assistant(ctx, 'message-one', 10);
+  assistant(ctx, 'message-one', 10);
+  assistant(ctx, 'message-two', 20);
+  await tick();
+  assert.deepEqual(ctx.messages.filter(value => value.type === 'usage').map(value => value.totals), [
+    { input_tokens: 40, output_tokens: 0, total_tokens: 40 },
+    { input_tokens: 90, output_tokens: 0, total_tokens: 90 },
+  ]);
+  result(ctx.query, first, { modelUsage: modelUsage(100, 50) });
+  await tick();
+  const second = await turn(ctx, 'turn-two');
+  assistant(ctx, 'message-three', 10);
+  await tick();
+  assert.deepEqual(ctx.messages.filter(value => value.type === 'usage').at(-1).totals,
+    { input_tokens: 140, output_tokens: 50, total_tokens: 190 });
+  result(ctx.query, second, { modelUsage: modelUsage(150, 80) });
+  await tick();
+  assert.deepEqual(ctx.messages.filter(value => value.type === 'usage').at(-1).totals,
+    { input_tokens: 150, output_tokens: 80, total_tokens: 230 });
+});
+
+test('missing, malformed and uncorrelated assistant usage is ignored without losing progress', async t => {
+  const ctx = await fixture(t);
+  await turn(ctx);
+  assistant(ctx, 'other-session', 10, { session_id: 'other' });
+  assistant(ctx, 'other-turn', 10, { user_message_uuid: 'stale' });
+  assistant(ctx, 'error', 10, { error: 'server_error' });
+  assistant(ctx, 'bad-count', -1);
+  assistant(ctx, 'no-usage', 10, { message: { id: 'no-usage' } });
+  await tick();
+  assert.equal(ctx.messages.some(value => value.type === 'usage'), false);
+  assert.ok(ctx.messages.some(value => value.type === 'progress'));
+});
+
+test('zeroed or missing result usage preserves live counts into the next turn', async t => {
+  const ctx = await fixture(t);
+  const first = await turn(ctx);
+  assistant(ctx, 'first', 10);
+  result(ctx.query, first, { modelUsage: modelUsage(0, 0) });
+  await tick();
+  const second = await turn(ctx, 'turn-two');
+  assistant(ctx, 'second', 10);
+  result(ctx.query, second);
+  await tick();
+  assert.deepEqual(ctx.messages.filter(value => value.type === 'usage').at(-1).totals,
+    { input_tokens: 80, output_tokens: 0, total_tokens: 80 });
+});
