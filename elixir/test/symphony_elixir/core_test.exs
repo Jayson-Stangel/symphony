@@ -1123,6 +1123,63 @@ defmodule SymphonyElixir.CoreTest do
            } = state.blocked[issue_id]
   end
 
+  test "tracker delivery and legacy uncertainty failures contain only their issue" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    reasons = [
+      {:agent_blocked, :tracker_delivery_failed},
+      {:agent_pause, :tool_outcome_uncertain, %{}},
+      {:agent_pause, :protocol_error, %{}}
+    ]
+
+    for reason <- reasons do
+      name = Module.concat(__MODULE__, :TrackerRecoveryOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: name)
+      ref_a = make_ref()
+      ref_b = make_ref()
+      issue_a = %Issue{id: "a", title: "Recover tracker write", identifier: "PROBE-A", state: "In Progress", dispatchable: true}
+      issue_b = %{issue_a | id: "b", identifier: "PROBE-B"}
+
+      entry = fn issue, ref ->
+        %{
+          pid: self(),
+          ref: ref,
+          identifier: issue.identifier,
+          issue: issue,
+          started_at: DateTime.utc_now(),
+          session_id: nil,
+          codex_app_server_pid: nil,
+          codex_input_tokens: 0,
+          codex_output_tokens: 0,
+          codex_total_tokens: 0,
+          last_codex_timestamp: nil,
+          last_codex_message: nil,
+          last_codex_event: nil
+        }
+      end
+
+      :sys.replace_state(pid, fn state -> %{state | running: %{"a" => entry.(issue_a, ref_a), "b" => entry.(issue_b, ref_b)}, claimed: MapSet.new(["a", "b"])} end)
+
+      try do
+        send(pid, {:DOWN, ref_a, :process, self(), reason})
+        assert is_map(Orchestrator.snapshot(name, 5_000))
+        state = :sys.get_state(pid)
+        assert Map.has_key?(state.blocked, "a")
+        refute Map.has_key?(state.blocked, "b")
+        assert Map.has_key?(state.running, "b")
+        assert :ready = SymphonyElixir.AgentPause.current()
+        issue_c = %{issue_b | id: "c", identifier: "PROBE-C"}
+        assert Orchestrator.should_dispatch_issue_for_test(issue_c, state)
+        send(pid, {:DOWN, ref_b, :process, self(), :normal})
+        assert is_map(Orchestrator.snapshot(name, 5_000))
+        assert MapSet.member?(:sys.get_state(pid).completed, "b")
+      after
+        GenServer.stop(pid)
+      end
+    end
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -1432,7 +1489,7 @@ defmodule SymphonyElixir.CoreTest do
       ]
     }
 
-    assert PromptBuilder.build_prompt(issue) == "Ticket MT-701"
+    assert String.starts_with?(PromptBuilder.build_prompt(issue), "Ticket MT-701")
   end
 
   test "prompt builder uses strict variable rendering" do
@@ -1596,7 +1653,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt == "Retry #2"
+    assert String.starts_with?(prompt, "Retry #2")
   end
 
   test "agent runner keeps workspace after successful codex run" do

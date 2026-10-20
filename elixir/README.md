@@ -33,10 +33,12 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
-Codex and Claude share Linear outcome classification. Definite pre-execution
-GraphQL request rejections return to the agent for correction; partial writes,
-resolver failures and lost write responses pause for reconciliation. Symphony
-never automatically retries a mutation. See [tracker diagnostics](docs/logging.md).
+Codex and Claude return tracker errors to the agent, following the original Codex
+recovery flow. The agent reads back uncertain writes before retrying and corrects
+rejected requests. Lost delivery blocks only the affected issue; unrelated work
+continues. Symphony never automatically retries a mutation. Every initial/retry
+prompt includes tracker recovery instructions, including for custom workflows.
+See [tracker diagnostics](docs/logging.md).
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -195,6 +197,26 @@ Notes:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
+- Optional `codex.model` and `codex.reasoning_effort` select a model and reasoning
+  level for new sessions. For example:
+
+  ```yaml
+  codex:
+    command: codex app-server
+    model: gpt-5.5
+    reasoning_effort: xhigh
+  ```
+
+  Explicit fields override native command/config defaults for the new thread.
+  Omit them or use `null` to preserve the runner's defaults and existing command
+  flags. Model IDs and effort names are nonblank strings, validated for support
+  by the installed Codex app-server and account; available effort levels vary
+  by model and client (for example `low`, `medium`, `high`, `xhigh`, `max`, `ultra`).
+  Symphony sends `model` and `config.model_reasoning_effort` on `thread/start`.
+  [Codex configuration reference](https://developers.openai.com/codex/config-reference)
+  and [app-server protocol](https://developers.openai.com/codex/app-server) define
+  the native contract. Reload applies changes to new sessions; existing threads
+  retain their selected model and reasoning effort.
 - `codex.turn_timeout_ms` is the maximum silence interval while a turn is streaming. Each
   app-server update resets it; it is not a total turn runtime cap.
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
@@ -354,11 +376,14 @@ The observability UI now runs on a minimal Phoenix stack:
 
 Both the web and terminal dashboards show the selected coding agent and model
 near the top, including while idle. Claude displays its configured model alias
-(currently `sonnet`). Codex displays the model returned by its most recent
-session startup, labelled “last session”; before the first report it shows
-“Not yet reported” rather than guessing from a command or account.
-The JSON state API includes `agent.model` and `agent.model_source` (`configured`
-or `last_session`). Reported Codex identity resets when the runner restarts.
+or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.
+Codex displays `codex.model` when explicitly configured; otherwise it displays
+the model returned by its most recent session startup, labelled “last session”.
+Before either is available it shows “Not yet reported”. Codex reasoning shows
+`codex.reasoning_effort` or “Runner default”; Symphony does not guess values from
+command flags or native account configuration.
+The JSON state API includes `agent.model`, `agent.model_source` (`configured`
+or `last_session`), and configured `agent.effort` (null for native defaults). Reported Codex identity resets when the runner restarts.
 
 ## Project Layout
 
@@ -465,19 +490,28 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 
 `bin/symphony --agent codex|claude` selects one startup-owned coding provider;
 Codex is the default. Claude runs only in its qualified nonroot container image.
-Workflow reload cannot change providers. See [the Claude runner contract](../docs/claude.md)
+Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
+accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
+`claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
+omit it for the model default. Both dashboards show the configured reasoning
+level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
+
+Development updater retries refresh stale pending images from the current checkout,
+preserving the rollback container until the replacement passes readiness. See
+[development updates](../docs/development.md#refresh-the-development-build).
 
 Development verification now also requires Node 24.18.0 (included in mise.toml).
 Run `make setup` to install the locked helper dependencies without install scripts;
 `make all` includes the credential-free Node protocol/process tests. Native process
 ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
 
-Linear tool calls share outcome handling across Codex and Claude. Read errors and
-local rejections return to the agent for correction; ambiguous writes retain a
-durable pause requiring reconciliation. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
+The agent owns outcome reconciliation. Legacy unresolved-call files remain evidence
+for the matching issue's recovery prompt, without blocking dispatch. Auth, quota
+and shared policy failures still pause the runner. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
 
 ## Claude token observability

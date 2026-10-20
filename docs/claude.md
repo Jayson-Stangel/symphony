@@ -2,8 +2,8 @@
 
 Symphony can run a local isolated worker through pinned Claude Code and the
 Claude Agent SDK. Codex remains the default. The initial Claude profile supports
-one worker, Sonnet, Docker-compatible Linux isolation, and native Claude Pro/Max
-subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
+one worker, configurable Claude models (Sonnet by default), Docker-compatible
+Linux isolation, and native Claude Pro/Max subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
 
 This profile is intended for an owner-operated installation. Permission to offer
 subscription sign-in as a third-party service is a separate distribution question;
@@ -57,12 +57,37 @@ by editing the workflow. Existing Codex settings retain their meaning.
 ```yaml
 claude:
   model: sonnet
+  effort: high # optional; omit or use null for the model default
   max_concurrent_agents: 1
   max_agentic_turns: 50
   read_timeout_ms: 5000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 ```
+
+`claude.model` accepts the family aliases `sonnet` (default), `opus`, `haiku`,
+and `fable`, or the current model IDs `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, and `claude-fable-5-1`. These match Anthropic's
+[model lineup](https://platform.claude.com/docs/en/models/overview) and
+[Claude Code aliases](https://code.claude.com/docs/en/model-config), checked
+October 20, 2026. For example, set `claude.model: claude-opus-5-5` to select
+Opus 5.5. Values are passed unchanged to the SDK; aliases follow the pinned
+Claude Code runtime's resolution. Account access and included subscription
+allowance still determine whether a selected model can run. Model validation
+is not live qualification: the original live pilot exercised Sonnet only.
+Unknown IDs, special modes such as `opusplan`, and provider-specific IDs remain
+rejected by both workflow and runner validation.
+
+`claude.effort` controls reasoning depth through the SDK's `effort` option.
+Accepted levels are `low`, `medium`, `high`, `xhigh`, and `max`, as documented in
+[Claude Code effort levels](https://code.claude.com/docs/en/model-config#adjust-effort-level).
+Omit it or set it to `null` to preserve the native model default. Symphony does
+not turn thinking off or set a fixed token budget. Workflow reload applies the
+new setting to new sessions; an existing session keeps its original effort.
+The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
+(`agent.effort`, null for model default). The displays label it as configured:
+model support and account policies may cap the effective level. The web UI
+shows status; edit `WORKFLOW.md` to change the setting.
 
 `agent.max_turns` still bounds Symphony continuation turns, while
 `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
@@ -84,52 +109,51 @@ including Codex Workpad comments, are reused.
 sanitized pause metadata. Legacy token fields remain for API compatibility;
 Claude usage totals include cached input and do not imply dollar costs.
 
-Authoritative quota events can provide a reset time. One persisted probe is
+Authoritative quota events can provide a reset time, including the Fable weekly
+included-allowance bucket (`seven_day_overage_included`). Actual paid-overage
+signals remain policy blockers. One persisted probe is
 allowed after that time; absent/unknown reset times require explicit operator
 recheck. That probe is consumed on disk before sending model input. A failed or
 interrupted probe remains blocked as `probe_inflight`, including after restart;
 inspect the failure and explicitly recheck before another attempt. Native
-authentication, policy and protocol failures pause the project
-instead of consuming issue retries indefinitely. An unresolved tracker call
-retains a durable intent marker so a crash cannot silently replay a side effect.
-Reconcile the external result before clearing that marker with the explicit API
-confirmation below.
+authentication, quota and shared policy failures pause the project. Worker
+protocol and tracker delivery failures block only the affected issue.
 
-Definite tracker client rejections, including a Linear HTTP 400 for an invalid
-GraphQL document, are returned to the agent so it can correct the request. Linear
-reads (classified from the parsed GraphQL document) and local validation/auth
-rejections cannot change Linear and do not create uncertain-write pauses. Read
-errors, including HTTP 200 GraphQL errors, are returned for correction. Both
-providers also receive definite mutation request rejections: a valid errors-only
-GraphQL response with no data or execution path, or explicit parse/schema-validation
-errors with absent/null data and no execution path. The agent can correct the
-request; Symphony never automatically replays it. Null/partial data with generic
-input errors (including Linear's `INVALID_INPUT`) remains uncertain because a
-resolver may already have executed. Error messages and HTTP 200 alone do not
-establish whether a write occurred.
+Both providers follow the original Codex tool recovery model: tracker responses,
+including GraphQL errors, partial results and transport failures, return to the
+agent. Error bodies are preserved for correction. The shared handler normalizes
+malformed/raised results and oversized responses into bounded actionable tool
+failures; outcome classification does not control dispatch or hide errors.
+Symphony disables automatic HTTP retries for Linear requests.
 
-Both Codex and Claude persist an intent before a mutation or unclassified request.
-Write transport failures, server errors, partial GraphQL results and lost delivery
-remain paused for reconciliation. Symphony disables automatic HTTP retries for
-Linear requests. A live worker's in-flight call does not block other workers;
-worker death or restart exposes its unresolved intent as a blocker. Codex uses a
-logical tool-state namespace, which is not an account identity or auth attestation.
-Existing `claude-tools` and `claude-pause.json` state paths remain compatible and
-now protect both providers.
+Every initial/retry prompt includes recovery instructions, including with a
+custom workflow. The agent reads current issue/workpad and target state, checks
+whether a failed write already took effect, corrects rejected requests using the
+schema, and reconciles partial mutations target by target before retrying. If
+readback remains inconclusive, it avoids the unresolved write and dependent
+writes, keeps evidence, and continues safe independent implementation/testing.
+It blocks only its issue when remaining required work depends on that outcome.
+
+New tool calls use redacted logs rather than durable dispatch-gating intents.
+After a crash or restart, the next attempt reconciles live tracker state before
+writing. Existing `claude-tools` files remain legacy evidence: matching issues
+receive a recovery notice; other issues can run. Legacy `tool_outcome_uncertain`
+and worker `protocol_error` pause records no longer block project dispatch or
+mask later auth/quota/policy pauses. No automatic replay or rollback is inferred.
 
 `Tracker tool outcome` logs correlate issue and tool IDs with provider, document
 SHA-256, parsed operation type, phase, elapsed time, HTTP status, GraphQL response
 category (`request_error`, `execution_error`,
 `success` or `malformed`), allowlisted GraphQL codes (including `INVALID_INPUT`)
-and transport reason. Outstanding intent files retain the latest
-phase, including `started`, `response_received` or `uncertain`; `accepted` records
-successful delivery (Claude acknowledgement or a Codex RPC write). Query text, variables, error bodies and credentials are not
+and transport reason. `accepted` records successful delivery (Claude
+acknowledgement or a Codex RPC write); `delivery_failed` records a lost reply or
+acknowledgement. Neither phase asserts the external effect was reconciled. Query text, variables, error bodies and credentials are not
 included in these diagnostics. These fields help reconcile a write but do not
 prove whether an unconfirmed external effect occurred.
 
 An intentional scheduler stop when an issue leaves active states is cancellation,
 not a helper protocol failure. Confirmed cleanup can finish a non-quota operator
-recheck; quota probes and unresolved tracker intents remain blocked until reconciled.
+recheck; consumed quota probes remain blocked until explicitly rechecked.
 
 ```sh
 symphony runner drain
@@ -138,14 +162,10 @@ symphony runner resume
 ```
 
 These operations do not perform model probes. They expose at most the next normal
-work attempt. To reconcile uncertain tracker effects, use the local control API
-only after checking the actual issue/comment/PR outcome:
-
-```sh
-curl --fail -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
-  -d '{"confirm_tools_reconciled":true}' \
-  http://127.0.0.1:4010/api/v1/agent/recheck
-```
+work attempt. Tracker errors do not require runner recheck or operator clearance.
+The legacy `confirm_tools_reconciled` control API option remains available to
+remove old intent evidence after external verification; ordinary runner rechecks
+preserve that evidence and do not require the option.
 
 The control API requires an explicit header; keep its published port on loopback.
 Drain persists through restarts. Existing workers can finish, but new work is

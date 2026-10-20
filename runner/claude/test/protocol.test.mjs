@@ -14,11 +14,48 @@ test('protocol rejects versions, unknown options, oversized frames and stale sha
   }
 });
 
+test('start accepts current Claude model IDs and family aliases without rewriting them', () => {
+  const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
+    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  for (const model of ['sonnet', 'opus', 'haiku', 'fable',
+    'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) {
+    const command = { ...start, config: { ...start.config, model } };
+    assert.deepEqual(parseCommand(JSON.stringify(command)), { ...command, skills: {} });
+  }
+  for (const model of ['', 'Opus', 'claude-opus-5-5-typo', 'claude-opus-99', 'opusplan', 'default', 'sonnet[1m]', 123, null, undefined]) {
+    assert.throws(() => parseCommand(JSON.stringify({ ...start, config: { ...start.config, model } })));
+  }
+});
+
+test('effort accepts SDK levels and leaves omitted effort unset', () => {
+  const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
+    config: { model: 'claude-opus-5-5', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  assert.ok(!Object.hasOwn(parseCommand(JSON.stringify(start)).config, 'effort'));
+  for (const effort of [null, 'low', 'medium', 'high', 'xhigh', 'max']) {
+    assert.equal(parseCommand(JSON.stringify({ ...start, config: { ...start.config, effort } })).config.effort, effort);
+  }
+  for (const effort of ['', 'auto', 'ultracode', 'High', 'ultra', 42, {}]) {
+    assert.throws(() => parseCommand(JSON.stringify({ ...start, config: { ...start.config, effort } })));
+  }
+});
+
 test('only authoritative quota buckets establish a reset time; prose does not', () => {
   assert.equal(classifyEvent({ type: 'assistant', message: 'quota exceeded' }), null);
-  assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-    status: 'rejected', rateLimitType: 'five_hour', resetsAt: 12345,
-  } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+  for (const rateLimitType of ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included']) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType, resetsAt: 12345,
+    } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+  }
+  for (const resetsAt of [undefined, null, 'tomorrow', -1, 0]) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt,
+    } }), { outcome: 'quota_exhausted', resets_at: null });
+  }
+  for (const info of [{ isUsingOverage: true }, { overageStatus: 'allowed' }, { overageStatus: 'allowed_warning' }]) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: 12345, ...info,
+    } }), { outcome: 'policy_blocked' });
+  }
   assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
     status: 'rejected', rateLimitType: 'seven_day', resetsAt: 'tomorrow',
   } }), { outcome: 'quota_exhausted', resets_at: null });

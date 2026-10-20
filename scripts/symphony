@@ -266,7 +266,7 @@ update() {
     case "$transition_target" in
       pause) runner_pause "$(repo_root)" true ;;
       rollback) runner_rollback "$(repo_root)" ;;
-      *) runner_transition "$(repo_root)" "$transition_target" ;;
+      *) runner_transition "$(repo_root)" "$transition_target" true ;;
     esac
     return
   fi
@@ -751,6 +751,10 @@ runner_report() {
   if [ "$state" = missing ]; then printf 'Isolated worker: not running\n'; return; fi
   storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
   [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name has unknown or foreign repository storage"
+  if [ "$("$runtime" inspect --format '{{.State.Restarting}}' "$name")" = true ]; then
+    printf 'Isolated worker: restarting; inspect runner logs for the startup error.\n'
+    return
+  fi
   if [ "$state" != true ]; then printf 'Isolated worker: stopped (%s)\n' "$state"; return; fi
   agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
   validate_agent "$agent"
@@ -1006,27 +1010,81 @@ runner_finish_journal() {
   local journal=$1
   [ ! -e "$journal.complete" ] || die 'completed transition metadata already exists; inspect it before retrying'
   mv "$journal" "$journal.complete"
+  rm -f "$journal.complete/image.next" "$journal.complete/previous.env.next"
   rm "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
   rmdir "$journal.complete"
 }
 
+# Development retries follow the current checkout rather than a journal's old image.
+# Commit the replacement image only after removing the verified old candidate.
+# A crash before that commit is retryable: the retained backup is never removed.
+runner_refresh_pending() {
+  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 runtime name old replacement state previous
+  runtime=$(container_runtime); name=$(runner_id "$root"); old=$(cat "$journal/image")
+  if [ "$(runner_status "$root")" = true ] && ! "$runtime" inspect "$backup" >/dev/null 2>&1 &&
+     runner_is_legacy "$runtime" "$name"; then
+    die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
+  fi
+  export SYMPHONY_RUNNER_IMAGE="$desired"
+  runner_build_image "$agent"
+  runner_doctor "$root" "$agent"
+  replacement=$("$runtime" image inspect --format '{{.Id}}' "$desired")
+  [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
+  if [ "$replacement" = "$old" ]; then return; fi
+
+  state=$(runner_status "$root")
+  if "$runtime" inspect "$backup" >/dev/null 2>&1; then
+    runner_owned "$root" "$runtime" "$backup"
+    [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
+    if [ "$state" != missing ]; then
+      runner_owned "$root" "$runtime" "$name"
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
+      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$old" ] || die 'candidate image differs; updater refused'
+      if [ "$state" = true ] &&
+         "$runtime" exec "$name" sh -ceu 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'; then
+        "$runtime" stop --time 30 "$name" >/dev/null
+      else
+        runner_pause "$root"
+      fi
+      "$runtime" rm "$name" >/dev/null
+    fi
+  else
+    # Before the first rename, or after the previous candidate already committed,
+    # the current qualified container becomes the rollback source for this image.
+    runner_owned "$root" "$runtime" "$name"
+    previous=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
+    state=$("$runtime" inspect --format '{{.Image}}' "$name")
+    [ "$state" = "$old" ] || [ "$state" = "$previous" ] || die 'pending source image differs; updater refused'
+    if [ "$state" = "$old" ] && [ "$state" != "$previous" ]; then
+      [ "$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$(runner_env_file "$root")")" = "$state" ] || die 'committed candidate metadata differs; updater refused'
+      cp "$(runner_env_file "$root")" "$journal/previous.env.next"
+      mv "$journal/previous.env.next" "$journal/previous.env"
+    fi
+  fi
+  printf '%s\n' "$replacement" > "$journal/image.next"
+  mv "$journal/image.next" "$journal/image"
+  printf 'Refreshed pending development candidate: %s -> %s. Rollback source retained.\n' "$old" "$replacement"
+}
+
 runner_transition() (
-  local root=$1 agent=$2 runtime name storage id env_file journal backup candidate port=4010 state users owner old_agent
+  local root=$1 agent=$2 development=${3:-false} runtime name storage id env_file journal backup candidate port=4010 state users owner old_agent
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); storage=$(runner_storage_id "$root"); id=$(project_id "$root")
   mkdir -p "$runner_home"
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
   runner_transition_lock "$journal.lock"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
+      "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
   fi
   trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
   candidate="$runtime_prefix-runner-$agent:$(source_revision)"
   export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ -d "$journal" ]; then
-    candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
     [ "$(cat "$journal/target")" = "$agent" ] || die 'a different transition is pending; finish it or use symphony update --rollback-runner'
+    if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
+    candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
     [ "$(runner_status "$root")" != missing ] || die 'start a fresh project with symphony run --agent; no existing runner to transition'
@@ -1104,7 +1162,8 @@ runner_rollback() (
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
   runner_transition_lock "$journal.lock"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
+      "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
   fi
   trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT

@@ -21,6 +21,8 @@ defmodule SymphonyElixir.Config do
   """
 
   @type codex_runtime_settings :: %{
+          model: String.t() | nil,
+          reasoning_effort: String.t() | nil,
           approval_policy: String.t() | map(),
           thread_sandbox: String.t(),
           turn_sandbox_policy: map()
@@ -183,6 +185,8 @@ defmodule SymphonyElixir.Config do
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
         {:ok,
          %{
+           model: settings.codex.model,
+           reasoning_effort: settings.codex.reasoning_effort,
            approval_policy: settings.codex.approval_policy,
            thread_sandbox: settings.codex.thread_sandbox,
            turn_sandbox_policy: turn_sandbox_policy

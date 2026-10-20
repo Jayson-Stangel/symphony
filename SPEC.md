@@ -486,6 +486,12 @@ fields locally if they want stricter startup checks.
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process MUST speak a compatible app-server protocol over stdio.
+- `model` (optional nonblank string)
+  - Sent as `thread/start.model`; omitted/null preserves native runner configuration.
+- `reasoning_effort` (optional nonblank string)
+  - Sent as `thread/start.config.model_reasoning_effort` for the new session.
+  - Omitted/null preserves native runner configuration. Codex validates model/effort support.
+  - Workflow reload changes new sessions; an existing thread retains its original settings.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default: implementation-defined.
 - `thread_sandbox` (Codex `SandboxMode` value)
@@ -2359,36 +2365,52 @@ The Elixir implementation can select one coding provider at startup. Codex is
 the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
-scheduling authority. Selection survives workflow reload. One worker and Sonnet
-are initially supported. Native subscription authentication and a dated
-account-bound disabled-overages attestation gate dispatch without model probes.
+scheduling authority. Selection survives workflow reload. One worker is supported,
+with Sonnet as the default. Workflow and helper validation accept the current
+Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
+Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
+omission preserves the model default. Terminal and web dashboards expose the
+configured effort, also available as `agent.effort` in the state API.
+Native subscription authentication and a dated account-bound disabled-overages attestation gate dispatch without model probes.
 No API-key inference fallback is configured.
 
 Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authoritative quota/auth/policy
 failures persist project pauses. Known quota resets permit one durable probe;
 unknown resets require explicit recheck. A probe is consumed durably before model
-input; failure or restart cannot automatically replay it. External tracker calls persist intent
-before execution and clear it only on helper acknowledgement. Unknown outcomes
-require operator reconciliation rather than automatic replay. Drain is durable,
-account identity is pinned, and unconfirmed process cleanup blocks readiness
-until updater-owned container recovery. Public state adds provider/readiness/
-pause fields without removing legacy token fields. See docs/claude.md for the
-closed configuration, isolation assumptions and qualified transition contract.
+input; failure or restart cannot automatically replay it. Tracker errors and
+worker protocol/delivery failures are issue-scoped; the agent owns tracker
+reconciliation. Drain is durable, account identity is pinned, and unconfirmed
+process cleanup blocks readiness until updater-owned container recovery. Public
+state adds provider/readiness/pause fields without removing legacy token fields.
+See docs/claude.md for the closed configuration, isolation assumptions and
+qualified transition contract.
 
 Expected scheduler cancellation when an issue leaves active states must not
 create a helper protocol failure. Confirmed cleanup can end a non-quota operator
-recheck; it must not clear consumed quota probes or unresolved tracker intents.
+recheck; it must not clear consumed quota probes.
 
-Linear tool outcome safety applies to both Codex and Claude. Parsed query-only
-documents and locally rejected requests cannot produce writes; their failures
-remain correctable tool results. A valid errors-only GraphQL request rejection
-without data or execution paths, or explicit parse/schema-validation errors
-with absent/null data and no execution paths, must also remain correctable.
-Generic resolver input failures and null/partial execution results do not prove
-non-execution. No mutation is automatically replayed. Mutations and unclassified documents persist
-intent before execution. Ambiguous responses or interrupted delivery retain that
-intent and block redispatch until explicit reconciliation. Live in-flight calls
-are tracked separately from abandoned intents; process death or restart must fail
-closed. Redacted diagnostics retain operation type/hash, provider, correlation
-IDs, delivery phase, response category, status/code and timing without query text or credentials.
+Tracker recovery applies to both Codex and Claude and follows the original Codex
+model: deliver errors and partial results to the agent rather than withholding
+uncertain outcomes. Normalize raised, malformed or oversized results into bounded
+tool failures. No mutation is automatically replayed. Every initial/retry prompt
+instructs the agent to inspect live target state before retrying writes, reconcile
+partial mutations target by target, and avoid duplicate creates. It may continue
+safe independent work while an outcome is unresolved, blocking only its issue
+when remaining required work depends on that outcome. Custom workflow prompts
+receive the same runtime recovery guidance.
+
+New tracker calls do not create global intent gates. Existing unresolved-call
+records remain recovery evidence in the matching issue's prompt. Legacy tracker
+uncertainty and worker protocol pauses must not block other issues or mask later
+account-wide auth/quota/policy failures. Redacted logs retain operation type/hash,
+provider, correlation IDs, delivery phase, response category, status/code and
+timing without query text or credentials. Delivery acknowledgement is not proof
+of outcome reconciliation. Restart recovery reads live tracker state.
+
+Development runner updates may refresh a pending candidate from the current
+checkout after building and preflighting it. Refresh must verify ownership and
+image identity, drain/stop the previous candidate before replacement, retain the
+rollback source and volumes until readiness succeeds, and persist the replacement
+image atomically before starting it. Interrupted refreshes must remain retryable.
+Stable update recovery retains its recorded candidate image.

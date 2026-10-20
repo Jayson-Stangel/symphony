@@ -29,7 +29,7 @@ defmodule SymphonyElixir.LinearTransportTest do
       executor = fn "linear_graphql", arguments ->
         count = Process.get(:linear_calls)
         Process.put(:linear_calls, count + 1)
-        response = if count == 0, do: %{"errors" => [%{"message" => "Unknown field rejected"}]}, else: %{"data" => %{"viewer" => %{"id" => "one"}}}
+        response = if count == 0, do: %{"errors" => [%{"message" => "Unknown field rejected"}]}, else: %{"data" => %{"issue" => %{"id" => "one", "title" => "probe"}}}
         AgentTool.execute("linear_graphql", arguments, linear_client: fn _, _, _ -> {:ok, response} end)
       end
 
@@ -41,38 +41,31 @@ defmodule SymphonyElixir.LinearTransportTest do
     end
   end
 
-  test "Codex withholds uncertain mutation results, blocks subsequent turns, and requires reconciliation", ctx do
+  test "Codex sees uncertain write errors and reads back in the same turn", ctx do
     for mode <- ["startup", "streaming"] do
-      File.rm_rf!(Path.join(ctx.root, "state"))
       trace = configure_peer(ctx, mode, "mutation { issueUpdate(id: \"one\", input: {title: \"probe\"}) {success} }")
 
       executor = fn "linear_graphql", args ->
-        AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, %{"data" => %{"issueUpdate" => nil}, "errors" => [%{"message" => "partial write"}]}} end)
+        response =
+          if String.starts_with?(args["query"], "mutation"),
+            do: %{"data" => %{"issueUpdate" => nil}, "errors" => [%{"message" => "partial write"}]},
+            else: %{"data" => %{"issue" => %{"id" => "one", "title" => "probe"}}}
+
+        AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, response} end)
       end
 
-      assert {:ok, session} = AppServer.start_session(ctx.workspace)
-
-      try do
-        assert {:error, {:agent_pause, :tool_outcome_uncertain, _}} = Codex.run_turn(session, "probe", ctx.issue, tool_executor: executor)
-        refute File.read!(trace) =~ ~s("id":101)
-
-        assert {:error, {:agent_pause, :tool_outcome_uncertain, _}} =
-                 Codex.run_turn(session, "probe", ctx.issue, tool_executor: fn _, _ -> flunk("replayed uncertain write") end)
-
-        assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(AgentPause.codex_profile())
-        assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile(), confirm_tools_reconciled: true)
-        assert {:probe, _} = AgentPause.current()
-        assert :ok = AgentPause.begin_turn(AgentPause.codex_profile())
-        assert :ok = Codex.interrupt(session, :issue_state_change)
-        assert :ready = AgentPause.current()
-      after
-        AppServer.stop_session(session)
-      end
+      assert {:ok, _} = AppServer.run(ctx.workspace, "probe", ctx.issue, tool_executor: executor)
+      replies = trace |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1) |> Enum.filter(&(&1["id"] in [101, 102]))
+      assert [%{"result" => %{"success" => false, "output" => error}}, %{"result" => %{"success" => true}}] = replies
+      assert error =~ "partial write"
+      assert %{"errors" => [%{"message" => "partial write"}]} = Jason.decode!(error)
+      assert :ready = AgentPause.current()
+      assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
     end
   end
 
-  test "Codex lost reply keeps a confirmed mutation intent with delivery diagnostics", ctx do
-    configure_peer(ctx, "streaming", "mutation { issueUpdate(id: \"one\", input: {title: \"probe\"}) {success} }")
+  test "Codex lost reply blocks only the affected issue", ctx do
+    configure_peer(ctx, "streaming", "mutation { write }")
     assert {:ok, session} = AppServer.start_session(ctx.workspace)
 
     executor = fn "linear_graphql", args ->
@@ -82,16 +75,18 @@ defmodule SymphonyElixir.LinearTransportTest do
     end
 
     try do
-      assert {:error, {:agent_pause, :tool_outcome_uncertain, _}} = Codex.run_turn(session, "probe", ctx.issue, tool_executor: executor)
-      [marker] = Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json"))
-      assert marker |> File.read!() |> Jason.decode!() |> get_in(["diagnostics", "reason"]) == "reply_failed"
+      assert {:error, {:agent_blocked, :tracker_delivery_failed}} = Codex.run_turn(session, "probe", ctx.issue, tool_executor: executor)
+      assert :ready = AgentPause.current()
+      other_issue = %{ctx.issue | id: "other-issue", identifier: "PROBE-2"}
+      configure_peer(ctx, "streaming", "query { viewer { id } }")
+      assert {:ok, _} = AppServer.run(ctx.workspace, "other issue", other_issue, tool_executor: fn _, _ -> %{"success" => true, "output" => "readback"} end)
     after
       AppServer.stop_session(session)
     end
   end
 
   test "Codex blocked turns preserve the pause reason without sending native input", ctx do
-    for kind <- [:protocol_error, :policy_blocked, :auth_required, :quota_exhausted] do
+    for kind <- [:policy_blocked, :auth_required, :quota_exhausted] do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert :ok = AgentPause.record(kind, %{profile: AgentPause.codex_profile()})
       assert {:error, {:agent_pause, ^kind, _}} = Codex.run_turn(nil, "not sent", ctx.issue, [])

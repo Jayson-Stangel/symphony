@@ -23,13 +23,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:identity_frame, content}, 1_000
     assert content =~ "Agent: Claude Code"
     assert content =~ "Model: sonnet"
+    assert content =~ "Reasoning: Model default (configured)"
     assert content =~ "Tokens: unavailable"
 
     snapshot = Orchestrator.snapshot()
+    configured = %{snapshot | agent: %{snapshot.agent | effort: "xhigh"}}
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, configured}, 0.0)
+    assert rendered =~ "Reasoning: xhigh (configured)"
     agent = %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}
     rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: agent}}, 0.0)
     assert rendered =~ "Agent: Codex"
     assert rendered =~ "Model: gpt-example (last session)"
+    assert rendered =~ "Reasoning: Runner default (configured)"
+    configured = %{snapshot | agent: %{agent | effort: "ultra"}}
+    assert StatusDashboard.format_snapshot_content_for_test({:ok, configured}, 0.0) =~ "Reasoning: ultra (configured)"
     rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
     assert rendered =~ "Not yet reported"
   end

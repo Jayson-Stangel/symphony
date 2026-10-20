@@ -3,6 +3,29 @@
 These rules apply to all work in this repository. Also follow directory-specific
 `AGENTS.md` instructions where present.
 
+## Explicit approval for production
+
+- Before merging any promotion into `main` or performing any stable rollout,
+  obtain the operator's explicit approval for that action and the exact PRs
+  included. Approval to review, land, or test changes in `dev` does not authorize
+  promotion to `main` or changes to the stable installation.
+- Present the complete included PR list with links and purposes, the promotion
+  PR and exact head revision, and the proposed stable revision and runtime/project
+  targets when rollout is requested. Include every change since the target
+  `main` or deployed stable revision, not only the PR that motivated the request.
+  Check this inventory against live Git history before acting.
+- A request to "roll out the fix" does not authorize other changes accumulated
+  in `dev`. If the promotion or rollout includes any PR outside the explicitly
+  approved set, stop and obtain approval for the complete set. Announcing extra
+  scope, a PR description asserting approval, passing checks, and lack of an
+  objection are not operator approval.
+- Promotion and stable rollout are separate approval boundaries. One explicit
+  instruction may authorize both for the presented exact PR set and revisions;
+  approval of promotion alone does not authorize rollout. If the included PRs,
+  revisions, or rollout targets change, present the updated scope and obtain
+  renewed approval before acting. Preparing a draft promotion PR does not grant
+  permission to merge it.
+
 ## Protect the stable installation
 
 - Develop Symphony only in a separate development checkout or worktree. Before

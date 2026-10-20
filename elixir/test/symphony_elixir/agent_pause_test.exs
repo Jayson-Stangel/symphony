@@ -80,30 +80,61 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ready = AgentPause.current()
   end
 
-  test "tracker call intent survives a crash and needs explicit reconciliation" do
-    assert :ok = AgentPause.begin_tool(@profile, "issue-one", "tool-one", "probe")
-    assert {:error, :eexist} = AgentPause.begin_tool(@profile, "issue-one", "tool-one", "probe")
-    assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = AgentPause.current()
-    assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(@profile)
+  test "legacy tracker evidence survives without blocking dispatch or global recovery", ctx do
+    tools = Path.join(ctx.root, "claude-tools")
+    File.mkdir_p!(tools)
+    path = Path.join(tools, "legacy.json")
+    evidence = Jason.encode!(%{issue: "issue-one", tool: "linear_graphql", diagnostics: %{phase: "uncertain", secret: "secret-canary"}})
+    File.write!(path, evidence)
+
+    for kind <- ["tool_outcome_uncertain", "protocol_error"] do
+      File.write!(Path.join(ctx.root, "claude-pause.json"), Jason.encode!(%{version: 1, kind: kind, phase: "waiting", profile: @profile, resets_at: nil}))
+      assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+      assert AgentPause.recovery_notice("issue-one") =~ "1 tracker call"
+      assert AgentPause.recovery_notice("issue-two") == ""
+      refute AgentPause.recovery_notice("issue-one") =~ "secret-canary"
+      assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
+      assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
+      assert :ok = AgentPause.explicit_recheck(@profile)
+      assert :ok = AgentPause.begin_turn(@profile)
+      assert :ok = AgentPause.complete_probe(@profile)
+      assert File.read!(path) == evidence
+    end
+
+    assert :ok = AgentPause.record(:tool_outcome_uncertain, %{profile: @profile})
+    assert :ready = AgentPause.current()
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+    assert {:paused, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+    assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
+    assert {:paused, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+  end
+
+  test "optional legacy evidence cleanup is explicit and unreadable evidence stays issue-local", ctx do
+    tools = Path.join(ctx.root, "claude-tools")
+    File.mkdir_p!(tools)
+    marker = Path.join(tools, "old.json")
+    File.write!(marker, Jason.encode!(%{issue: "one"}))
+    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert File.regular?(marker)
     assert :ok = AgentPause.explicit_recheck(@profile, confirm_tools_reconciled: true)
-    assert AgentPause.current() == :ready
-    assert :ok = AgentPause.begin_tool(@profile, "issue-one", "tool-two", "probe")
-    assert :ok = AgentPause.finish_tool("tool-two")
-    assert AgentPause.current() == :ready
-    assert {:error, :invalid_tool_id} = AgentPause.begin_tool(@profile, "issue-one", "../escape", "probe")
-    assert {:error, :invalid_tool_id} = AgentPause.finish_tool(nil)
+    refute File.exists?(marker)
+    File.chmod!(ctx.root, 0o000)
+
+    try do
+      assert AgentPause.recovery_notice("one") =~ "could not be read"
+    after
+      File.chmod!(ctx.root, 0o700)
+    end
+
+    assert :ready = AgentPause.current()
   end
 
   test "expected handoff clears only a non-quota recheck with no pending effects", ctx do
-    assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
     assert :ok = AgentPause.begin_turn(@profile)
     assert {:paused, %{"kind" => "operator_recheck_inflight"}} = AgentPause.current()
     assert :ok = AgentPause.cancel_recheck(String.duplicate("b", 64))
-    assert :ok = AgentPause.begin_tool(@profile, "issue", "pending", "probe")
-    assert :ok = AgentPause.cancel_recheck(@profile)
-    assert {:paused, %{"kind" => "tool_outcome_uncertain"}} = AgentPause.current()
-    assert :ok = AgentPause.finish_tool("pending")
     File.chmod!(ctx.root, 0o500)
 
     try do
@@ -114,7 +145,7 @@ defmodule SymphonyElixir.AgentPauseTest do
 
     assert :ok = AgentPause.cancel_recheck(@profile)
     assert :ready = AgentPause.current()
-    assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
     assert :ok = AgentPause.begin_turn(@profile)
     assert :ok = AgentPause.complete_probe(@profile)
@@ -156,8 +187,8 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert {:error, :eperm} = AgentPause.explicit_recheck(@profile, confirm_tools_reconciled: true)
     File.rm_rf!(tools)
     File.write!(tools, "not a directory")
-    assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
-    assert {:error, :unsafe_state_directory} = AgentPause.explicit_recheck(@profile)
+    assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
+    assert {:error, :unsafe_state_directory} = AgentPause.explicit_recheck(@profile, confirm_tools_reconciled: true)
     blocked = Path.join(ctx.root, "blocked")
     File.write!(blocked, "not a directory")
     Application.put_env(:symphony_elixir, :agent_state_root, blocked)
@@ -179,7 +210,8 @@ defmodule SymphonyElixir.AgentPauseTest do
     File.rm!(path)
     File.mkdir_p!(Path.join(ctx.root, "claude-tools"))
     File.write!(Path.join([ctx.root, "claude-tools", "unknown.file"]), "secret-canary")
-    assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+    assert :ready = AgentPause.current()
+    assert AgentPause.recovery_notice("issue") =~ "could not be read"
     assert {:error, :unknown_state_file} = AgentPause.explicit_recheck(@profile, confirm_tools_reconciled: true)
   end
 end

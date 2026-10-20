@@ -289,13 +289,18 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
+  defp handle_agent_down({:agent_pause, kind, _details}, state, issue_id, running_entry, _session_id)
+       when kind in [:tool_outcome_uncertain, :protocol_error, "tool_outcome_uncertain", "protocol_error"] do
+    block_issue_from_entry(state, issue_id, running_entry, "coding agent requires issue recovery: #{kind}")
+  end
+
   defp handle_agent_down({:agent_pause, kind, details}, state, issue_id, _running_entry, _session_id) do
     SymphonyElixir.AgentPause.record(kind, details)
     release_issue_claim(state, issue_id)
   end
 
   defp handle_agent_down({:agent_blocked, kind}, state, issue_id, running_entry, _session_id) do
-    block_issue_from_entry(state, issue_id, running_entry, "coding agent requires operator input: #{kind}")
+    block_issue_from_entry(state, issue_id, running_entry, "coding agent blocked on this issue: #{kind}")
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
@@ -1693,12 +1698,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    configured_model =
+      if Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: Config.settings!().codex.model
+
+    configured_effort =
+      if Config.coding_agent() == :claude do
+        Config.settings!().claude.effort
+      else
+        Config.settings!().codex.reasoning_effort
+      end
+
     {:reply,
      %{
        agent: %{
          provider: Config.coding_agent(),
-         model: if(Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: state.agent_model),
-         model_source: if(Config.coding_agent() == :claude, do: "configured", else: "last_session"),
+         model: configured_model || state.agent_model,
+         effort: configured_effort,
+         model_source: if(configured_model, do: "configured", else: "last_session"),
          readiness: state.readiness,
          draining: state.draining,
          pause: public_agent_pause(),

@@ -416,3 +416,18 @@ mutation FileUpload(
 - Do not introduce new raw-token shell helpers for GraphQL access.
 - If you need shell work for uploads, only use it for signed upload URLs
   returned by `fileUpload`; those URLs already carry the needed authorization.
+
+## Recover failed and uncertain writes
+
+Read the tool error and correct the request using schema discovery. Before
+retrying any failed or interrupted mutation, read back all affected targets.
+An error response does not prove rollback; an acknowledged response does not
+prove the intended effect. If a comment, attachment or state change already
+exists, continue without duplicating it. Reconcile partial or multi-object
+mutations target by target instead of replaying the whole mutation.
+
+Use bounded correction/read attempts. If the outcome stays unresolved, avoid
+that write and dependent writes, retain the evidence in the available workpad
+(locally if necessary), and continue safe independent work. Block only the
+current issue when remaining required work depends on the outcome. Never clear
+runner pause files, change credentials, or blindly repeat a mutation to recover.

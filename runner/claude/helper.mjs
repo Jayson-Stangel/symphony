@@ -80,7 +80,9 @@ export class Helper {
       settingSources: [], strictMcpConfig: true, mcpServers: { symphony: server },
       plugins: [{ type: 'local', path: this.skillPlugin.path }], skills: 'all',
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `${command.instructions}\nCanonical skill aliases: symphony-commit, symphony-push, symphony-pull, symphony-linear and symphony-land are available as symphony:<name>. Follow the same procedures.\nTracker tool aliases:\n${aliases}` },
-      model: command.config.model, maxTurns: command.config.max_agentic_turns,
+      model: command.config.model,
+      ...(command.config.effort ? { effort: command.config.effort } : {}),
+      maxTurns: command.config.max_agentic_turns,
       permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,
       promptSuggestions: false, agentProgressSummaries: false, persistSession: false, stderr: () => {},
       spawnClaudeCodeProcess: options => {

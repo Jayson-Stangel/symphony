@@ -33,7 +33,9 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all app-server
+  model: gpt-5.5
+  reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: workspace-write
   live_max_total_tokens: 500000
@@ -241,12 +243,22 @@ If launch fails, capture the actual command and error before treating it as bloc
 
 ## Tracker tool failures
 
-For Linear, read errors and definite pre-execution request rejections return to
-the agent for correction. Read the error and correct the operation instead of
-repeating the unchanged request. Resolve state names to the team's exact state
-UUIDs before `issueUpdate`. Ambiguous mutation outcomes pause the runner; verify
-the external result before operator reconciliation. Never infer that a failed
-response means a write was rolled back.
+Tracker errors return to you for recovery, including uncertain write outcomes.
+Read the actual error and correct the request using the schema; resolve team state
+names to exact state UUIDs before `issueUpdate`. Do not repeat an unchanged failing
+request. A failed or interrupted response does not prove a write was rolled back.
+Before retrying a write, read back every affected target, including comments and
+attachments. For partial mutations, reconcile each target separately; do not
+replay the entire mutation or duplicate a create operation that already succeeded.
+
+If readback establishes the intended effect, continue from that state. Otherwise
+use bounded correction/read attempts. While an effect remains unresolved, avoid
+that write and dependent writes, record the evidence in the available workpad
+(locally if tracker access failed), and continue safe independent implementation
+or verification. Block only this issue when remaining required work depends on
+that outcome. Do not clear runner state or change credentials to recover a write.
+The runtime includes this recovery guidance in each initial/retry prompt even
+when the project supplies a custom workflow.
 
 ## Step 1: Start/continue execution (Todo or In Progress)
 
@@ -467,7 +479,9 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 <!-- Optional startup-selected Claude profile: see ../docs/claude.md.
 Claude configuration lives in a `claude` front-matter mapping. Only `model`
-(sonnet), `max_concurrent_agents` (1), `max_agentic_turns` (1–100),
+(sonnet by default; current model IDs and family aliases listed in docs/claude.md),
+`effort` (low, medium, high, xhigh, max; omitted/null uses the model default),
+`max_concurrent_agents` (1), `max_agentic_turns` (1–100),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider
