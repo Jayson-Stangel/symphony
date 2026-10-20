@@ -2,6 +2,25 @@ defmodule SymphonyElixir.ConcurrencyTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixirWeb.Presenter
 
+  setup_all do
+    # This suite changes process-wide provider/tracker configuration. The default
+    # application scheduler must not dispatch its own workers into those fixtures.
+    previous_workflow = Application.fetch_env(:symphony_elixir, :workflow_file_path)
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+
+    on_exit(fn ->
+      case previous_workflow do
+        {:ok, path} -> Application.put_env(:symphony_elixir, :workflow_file_path, path)
+        :error -> Application.delete_env(:symphony_elixir, :workflow_file_path)
+      end
+
+      WorkflowStore.force_reload()
+      assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+    end)
+
+    :ok
+  end
+
   setup do
     # The opt-in path runs this same suite with Claude's production adapter/helper
     # in a disposable Linux image that mounts the no-inference peer at /opt.

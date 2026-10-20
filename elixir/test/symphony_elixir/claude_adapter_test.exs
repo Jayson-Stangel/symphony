@@ -208,6 +208,47 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "a probe claimed between admission read and begin_turn defers without changing the owner", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:auth_required, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+    lock = {AgentPause, self()}
+    assert :global.set_lock(lock, [node()])
+    :erlang.trace_pattern({AgentPause, :begin_turn, 1}, true, [:local])
+
+    worker =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, :race_session_ready)
+
+        try do
+          receive do: (:run -> :ok)
+          Adapter.run_turn(session, "must not send model input", ctx.issue, [])
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    try do
+      assert_receive :race_session_ready, 3_000
+      :erlang.trace(worker.pid, true, [:call])
+      send(worker.pid, :run)
+      # Entry proves the adapter already read the available probe. Its serialized
+      # claim waits behind this test's existing lock while the owner claims it.
+      assert_receive {:trace, pid, :call, {AgentPause, :begin_turn, [^profile]}}, 3_000
+      assert pid == worker.pid
+      assert :ok = AgentPause.begin_turn(profile)
+      :global.del_lock(lock, [node()])
+      assert {:error, :claude_turn_not_admitted} = Task.await(worker, 5_000)
+      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
+    after
+      :global.del_lock(lock, [node()])
+      :erlang.trace_pattern({AgentPause, :begin_turn, 1}, false, [:local])
+      if Process.alive?(worker.pid), do: Task.shutdown(worker, 5_000)
+    end
+  end
+
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
     contents = File.read!(Workflow.workflow_file_path())
     File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))
