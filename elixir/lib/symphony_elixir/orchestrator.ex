@@ -1679,7 +1679,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp available_slots(%State{} = state) do
     if agent_dispatch_ready?(state) do
-      max((state.max_concurrent_agents || Config.max_concurrent_agents()) - map_size(state.running), 0)
+      # Explicit auth/policy recovery retains its existing single turn owner.
+      # Check inflight too: the first worker may claim between admission reads.
+      limit =
+        case active_agent_pause() do
+          {:probe, _} -> 1
+          {:paused, %{"kind" => "operator_recheck_inflight"}} -> 1
+          _ -> state.max_concurrent_agents || Config.max_concurrent_agents()
+        end
+
+      max(limit - map_size(state.running), 0)
     else
       0
     end
@@ -1801,6 +1810,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        agent: %{
          provider: Config.coding_agent(),
+         max_concurrent_agents: state.max_concurrent_agents,
          model: configured_model || state.agent_model,
          effort: configured_effort,
          model_source: if(configured_model, do: "configured", else: "last_session"),

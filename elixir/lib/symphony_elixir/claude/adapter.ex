@@ -34,24 +34,49 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   defp initialize_or_close(port, workspace, instructions, skills, opts) do
-    case initialize(port, workspace, instructions, skills, opts) do
+    id = new_id()
+    request = new_id()
+
+    case initialize(port, workspace, instructions, skills, opts, id, request) do
       {:ok, session} ->
         {:ok, session}
 
-      {:error, reason} ->
+      {:error, {:before_start, code}} ->
         close_port(port)
-        {:error, reason}
+        paused_start(code)
+
+      {:error, {:stopped, code}} ->
+        close_port(port)
+        startup_failure(code, :ok)
+
+      {:error, code} ->
+        # A failed initialization may already own detached native processes.
+        # Only the helper can prove their cleanup before ownership handoff.
+        write(port, %{v: 1, type: "stop", session_id: id, request_id: request})
+        cleanup = await_startup_stop(port, deadline(5_000), id, request)
+        close_port(port)
+        startup_failure(code, cleanup)
     end
   end
 
-  defp initialize(port, workspace, instructions, skills, opts) do
+  defp initialize(port, workspace, instructions, skills, opts, id, start_id) do
+    case frame(port, deadline(35_000)) do
+      {:ok, %{"v" => 1, "type" => "hello", "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1}} ->
+        initialize_native(port, workspace, instructions, skills, opts, id, start_id)
+
+      {:ok, %{"ready" => false, "code" => code}} ->
+        {:error, {:before_start, code}}
+
+      _ ->
+        {:error, {:before_start, "protocol_error"}}
+    end
+  end
+
+  defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
     config = Config.settings!().claude
-    id = new_id()
-    start_id = new_id()
     binding = Keyword.get(opts, :tool_binding, Tracker.bind_agent_tools())
 
-    with {:ok, %{"v" => 1, "type" => "hello", "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1}} <- frame(port, deadline(35_000)),
-         :ok <-
+    with :ok <-
            write(port, %{
              v: 1,
              type: "start",
@@ -82,11 +107,31 @@ defmodule SymphonyElixir.Claude.Adapter do
          cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
        }}
     else
-      {:error, :native_identity_mismatch} -> paused_start("policy_blocked")
-      {:ok, %{"ready" => false, "code" => code}} -> paused_start(code)
-      {:ok, %{"type" => "error", "code" => code}} -> paused_start(code)
-      _ -> paused_start("protocol_error")
+      {:ok, %{"v" => 1, "type" => "stopped", "session_id" => ^id, "request_id" => ^start_id}} -> {:error, {:stopped, "protocol_error"}}
+      {:error, :native_identity_mismatch} -> {:error, "policy_blocked"}
+      false -> {:error, "native_ownership_unavailable"}
+      {:ok, %{"ready" => false, "code" => code}} -> {:error, code}
+      {:ok, %{"type" => "error", "code" => code}} -> {:error, code}
+      _ -> {:error, "protocol_error"}
     end
+  end
+
+  defp await_startup_stop(port, until, id, request) do
+    case frame(port, until) do
+      {:ok, %{"v" => 1, "type" => "stopped", "session_id" => ^id, "request_id" => ^request}} -> :ok
+      {:ok, _other} -> await_startup_stop(port, until, id, request)
+      _ -> {:error, :cleanup_unconfirmed}
+    end
+  end
+
+  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart"],
+    do: {:error, {:claude_startup_failed, code}}
+
+  defp startup_failure(code, :ok), do: paused_start(code)
+
+  defp startup_failure(code, {:error, :cleanup_unconfirmed}) do
+    record_unconfirmed_cleanup(nil)
+    {:error, {:agent_pause, :policy_blocked, %{startup_code: safe_startup_code(code), cleanup: :unconfirmed}}}
   end
 
   defp match_expected_profile(_profile, nil), do: :ok
@@ -98,6 +143,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     expected_profile = session.identity["profile"]
 
     case AgentPause.current() do
+      {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^expected_profile}} ->
+        {:error, :claude_turn_not_admitted}
+
       {:paused, value} ->
         pause(session, value["kind"], Map.take(value, ["resets_at"]))
 
@@ -107,6 +155,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       _ ->
         case AgentPause.begin_turn(expected_profile) do
           :ok -> do_run_turn(session, prompt, issue, opts)
+          {:error, :probe_not_available} -> {:error, :claude_turn_not_admitted}
           _ -> pause(session, "policy_blocked", %{})
         end
     end
@@ -330,12 +379,16 @@ defmodule SymphonyElixir.Claude.Adapter do
       end
 
     if result != :ok do
-      File.mkdir_p(Config.agent_state_root())
-      File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync])
-      AgentPause.record(:policy_blocked, %{profile: session.identity["profile"]})
+      record_unconfirmed_cleanup(session.identity["profile"])
     end
 
     result
+  end
+
+  defp record_unconfirmed_cleanup(profile) do
+    File.mkdir_p(Config.agent_state_root())
+    File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync])
+    AgentPause.record(:policy_blocked, %{profile: profile})
   end
 
   defp await_stopped(port, until) do
@@ -361,10 +414,13 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp paused_start(code) do
     kind = if code in ["auth_required", "unqualified_auth", "unknown_auth_status"], do: :auth_required, else: :policy_blocked
     AgentPause.record(kind)
+    {:error, {:agent_pause, kind, %{startup_code: safe_startup_code(code)}}}
+  end
+
+  defp safe_startup_code(code) do
     safe_codes = ~w(auth_required unqualified_auth unknown_auth_status unsupported_tool_schema duplicate_tool_name
                     native_ownership_unavailable native_initialization_timeout unexpected_native_restart policy_blocked protocol_error)
-    safe_code = if code in safe_codes, do: code, else: "runtime_unavailable"
-    {:error, {:agent_pause, kind, %{startup_code: safe_code}}}
+    if code in safe_codes, do: code, else: "runtime_unavailable"
   end
 
   defp start_port(workspace, env, opts) do

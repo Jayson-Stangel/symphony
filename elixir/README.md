@@ -39,8 +39,9 @@ rejected requests. After confirmed session cleanup, lost delivery, malformed tur
 frames, unexpected EOF and helper timeouts retry the affected attempt with backoff.
 The next attempt reads tracker state before writing; Symphony never automatically
 retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
-authentication/policy stops remain gated. Startup ownership/initialization failures
-remain fail-closed; retry recovery applies to established sessions. Every initial/retry
+authentication/policy stops remain gated. Transient startup failures retry only after a
+matching helper cleanup acknowledgement. Explicit startup policy/identity failures
+and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 See [tracker diagnostics](docs/logging.md).
 
@@ -522,7 +523,7 @@ accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
-for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
+for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
 Model-free Claude readiness runs in one supervised task at startup, on explicit
@@ -594,3 +595,13 @@ subprocess cleanup, and TERM shutdown without a forced kill. The current CLI
 returns exit 1 for supervisor shutdown; the smoke accepts that convention or exit 0.
 It mounts no host credentials and makes no model requests. This proves packaging and process behavior; authenticated native
 sessions and updater transition/rollback acceptance require separate evidence.
+
+Both coding providers use the existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
+one-worker ceiling for normal dispatch. Explicit authentication/policy rechecks
+retain one recovery owner until success, then resume configured parallel work.
+Legacy positive `claude.max_concurrent_agents` values remain
+accepted but are ignored; migrate the desired limit into the `agent` section.
+Changing limits affects new dispatch; existing sessions keep their ownership and
+may temporarily exceed a reduced limit until they finish. The state API reports
+the effective global setting as `agent.max_concurrent_agents`.
