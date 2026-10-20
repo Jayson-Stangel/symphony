@@ -46,9 +46,9 @@ function result(query, input, extra = {}) {
     session_id: 'native-one', user_message_uuid: input.uuid, ...extra });
 }
 
-test('an explicit Opus model reaches the SDK unchanged', async t => {
-  const ctx = await fixture(t, 'claude-opus-5-5');
-  assert.equal(ctx.query.params.options.model, 'claude-opus-5-5');
+test('a future native model ID reaches the SDK unchanged', async t => {
+  const ctx = await fixture(t, 'future-native-model-99');
+  assert.equal(ctx.query.params.options.model, 'future-native-model-99');
   const input = await turn(ctx);
   result(ctx.query, input);
   await tick();

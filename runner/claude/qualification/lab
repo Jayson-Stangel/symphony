@@ -3,7 +3,7 @@
 set -euo pipefail
 lab_root=$(cd "$(dirname "$0")" && pwd)
 lab_namespace=symphony-claude-qualification-01a15554
-lab_image="$lab_namespace:0.3.303-2.1.303"
+lab_image="$lab_namespace:runtime"
 lab_auth="$lab_namespace-auth"
 lab_workspace="$lab_namespace-workspace"
 lab_label=com.symphony.claude-qualification
@@ -38,14 +38,14 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
   build)
     [ "$#" = 0 ] || fail 'build takes no arguments'
-    docker build --label "$lab_label=$lab_namespace" --tag "$lab_image" "$lab_root"
+    docker build --file "$lab_root/Dockerfile" --label "$lab_label=$lab_namespace" --tag "$lab_image" "$lab_root/.."
     ;;
   test)
     [ "$#" = 0 ] || fail 'test takes no arguments'
     verify_image
     docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,exec,nosuid,nodev,size=32m \
-      --entrypoint npm --workdir /opt/symphony-claude-lab "$lab_image" test
+      --entrypoint sh --workdir /opt/symphony-claude-lab/qualification "$lab_image" -c 'node --test test/*.test.mjs'
     ;;
   inspect|login|status|live|cancel)
     if [ "$command" = live ] || [ "$command" = cancel ]; then

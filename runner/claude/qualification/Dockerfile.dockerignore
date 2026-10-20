@@ -1,0 +1,10 @@
+*
+!package.json
+!package-lock.json
+!runtime.mjs
+!qualification/
+!qualification/Dockerfile
+!qualification/*.mjs
+!qualification/lab
+!qualification/test/
+!qualification/test/**

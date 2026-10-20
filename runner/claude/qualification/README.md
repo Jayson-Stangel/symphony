@@ -7,8 +7,8 @@ The production transport decision remains open until qualification passes.
 ## Candidate runtime
 
 - Node 24.18.0, with the base image digest pinned in `Dockerfile`.
-- Official `@anthropic-ai/claude-agent-sdk` 0.3.303.
-- Official `@anthropic-ai/claude-code` 2.1.303.
+- SDK and CLI pins come from the production `../package.json` and `../package-lock.json`.
+  The lab imports the same runtime pin owner; it has no separate dependency manifest.
 - Native Linux ARM64/X64 executable explicitly resolved from the pinned CLI package;
   login and SDK execution use that same executable. The SDK's own bundled executable
   is not selected implicitly. Dependencies are locked; install scripts are disabled.
@@ -20,15 +20,21 @@ These are candidate pins, not a claim of tested subscription funding.
 From this directory:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
-npm test
-npm run check
+npm --prefix .. ci --ignore-scripts --no-audit --no-fund
+node --test test/*.test.mjs
+for file in *.mjs; do node --check "$file"; done
 bash -n lab
 ./lab build
 ./lab test
 ./lab inspect
 ./lab status
 ```
+
+`lab build` uses the parent production dependency context with a Dockerfile-specific
+allowlist; host dependency directories, credentials and other files are excluded.
+The fixed `:runtime` image tag is resolved to an immutable image ID for each invocation.
+If upgrading from the old independent lab setup, remove obsolete local
+`qualification/node_modules` before local checks so Node uses the parent install.
 
 `test` and `inspect` have no network access. `status` invokes native auth status,
 never a model prompt, and prints only a normalized category. Logged-out status exits

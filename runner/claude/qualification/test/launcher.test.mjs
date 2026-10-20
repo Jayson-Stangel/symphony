@@ -75,3 +75,19 @@ test('native login gets a terminal and unknown arguments cannot reach Docker', t
   assert.equal(invalid.status, 1);
   assert.deepEqual(invalid.calls, []);
 });
+
+
+test('build and offline test reuse the production dependency owner without starting live work', t => {
+  const build = fixture(t, ['build']);
+  assert.equal(build.status, 0, build.stderr);
+  const args = build.calls.find(call => call[0] === 'build');
+  assert.ok(args[args.indexOf('--file') + 1].endsWith('/qualification/Dockerfile'));
+  assert.ok(args.at(-1).endsWith('/qualification/..'));
+  assert.ok(args.includes(`${namespace}:runtime`));
+  const offline = fixture(t, ['test']);
+  assert.equal(offline.status, 0, offline.stderr);
+  const run = offline.calls.find(call => call[0] === 'run');
+  assert.equal(run[run.indexOf('--network') + 1], 'none');
+  assert.ok(run.includes('node --test test/*.test.mjs'));
+  assert.ok(run.includes('/opt/symphony-claude-lab/qualification'));
+});
