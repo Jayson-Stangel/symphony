@@ -68,7 +68,9 @@ Both providers use `agent.max_concurrent_agents` (default 10) and
 `agent.max_concurrent_agents_by_state` through the same scheduler. Set the global
 value to 1 for serial execution, or 3 to allow three independent worker sessions;
 per-state limits can further restrict admission. Reloaded limits apply to new
-starts without terminating existing workers. There is no additional Claude cap.
+starts without terminating existing workers. Normal dispatch has no additional Claude cap. An explicit authentication/policy
+recheck admits one recovery owner until that turn succeeds; it then restores the
+configured parallel capacity. Quota cooldown expiry uses normal capacity.
 The old positive `claude.max_concurrent_agents` field is accepted for workflow
 compatibility but is deprecated and **ignored**. Move any desired cap to
 `agent.max_concurrent_agents`; for example, a legacy Claude value of 1 with an agent

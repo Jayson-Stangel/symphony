@@ -163,6 +163,30 @@ defmodule SymphonyElixir.ConcurrencyTest do
     stop_workers(ctx)
   end
 
+  @tag skip: System.get_env("SYMPHONY_TEST_CLAUDE_CONCURRENCY") != "1"
+  test "one operator recheck owns recovery before normal configured concurrency resumes", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = SymphonyElixir.AgentPause.record(:auth_required, %{profile: profile})
+    assert {:ok, %{draining: false}} = GenServer.call(ctx.server, {:agent_control, :recheck, false})
+    issues = Enum.take(ctx.issues, 3)
+    set_issues(issues)
+    poll(ctx.server)
+    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 1
+    await(fn -> Enum.count(issues, &started?(ctx, &1)) == 1 end)
+    assert {:paused, %{"kind" => "operator_recheck_inflight"}} = SymphonyElixir.AgentPause.current()
+    poll(ctx.server)
+    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 1
+    probe = Enum.find(issues, &started?(ctx, &1))
+    File.write!(Path.join([ctx.root, "workspaces", probe.identifier, "complete-once"]), "complete")
+    await(fn -> SymphonyElixir.AgentPause.current() == :ready end)
+    poll(ctx.server)
+    await(fn -> Enum.all?(issues, &started?(ctx, &1)) end)
+    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 3
+    assert Presenter.state_payload(__MODULE__, 5_000).agent.admission.ready
+    assert :ready = SymphonyElixir.AgentPause.current()
+    stop_workers(ctx)
+  end
+
   defp stop_workers(ctx) do
     set_issues(Enum.map(ctx.issues, &%{&1 | state: "Human Review"}))
     poll(ctx.server)

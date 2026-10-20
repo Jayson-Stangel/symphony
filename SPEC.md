@@ -2442,7 +2442,10 @@ Stable update recovery retains its recorded candidate image.
 
 Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
-additional Claude worker ceiling. The deprecated positive
+additional Claude worker ceiling for normal dispatch. Explicit authentication/policy
+rechecks retain one existing recovery owner until success; non-owners retry without
+changing that pause. Quota cooldown expiry restores normal configured capacity.
+The deprecated positive
 `claude.max_concurrent_agents` input is accepted for existing workflow compatibility
 but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.
 Reloaded limits govern new starts without terminating existing sessions. The state

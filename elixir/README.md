@@ -573,7 +573,9 @@ sessions and updater transition/rollback acceptance require separate evidence.
 
 Both coding providers use the existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
-one-worker ceiling. Legacy positive `claude.max_concurrent_agents` values remain
+one-worker ceiling for normal dispatch. Explicit authentication/policy rechecks
+retain one recovery owner until success, then resume configured parallel work.
+Legacy positive `claude.max_concurrent_agents` values remain
 accepted but are ignored; migrate the desired limit into the `agent` section.
 Changing limits affects new dispatch; existing sessions keep their ownership and
 may temporarily exceed a reduced limit until they finish. The state API reports

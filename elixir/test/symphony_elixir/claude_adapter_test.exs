@@ -176,6 +176,38 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
+  test "a non-owner waits for an in-flight operator recheck without poisoning its pause", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:auth_required, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+
+    owner =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:probe_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue, on_message: fn %{event: event} -> if event == :session_started, do: send(parent, :probe_waiting) end)
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:probe_session, probe}, 3_000
+    assert_receive :probe_waiting, 3_000
+    assert {:ok, other} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:error, :claude_turn_not_admitted} = Adapter.run_turn(other, "no model input", ctx.issue, [])
+      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
+    after
+      Adapter.stop_session(other)
+      Adapter.interrupt(probe, :test_cleanup)
+      Task.await(owner, 5_000)
+    end
+  end
+
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
     contents = File.read!(Workflow.workflow_file_path())
     File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))

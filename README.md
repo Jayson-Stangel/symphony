@@ -355,6 +355,7 @@ stale pending candidates while retaining their rollback source.
 
 Codex and Claude share the configured global and per-state worker limits. Use
 `agent.max_concurrent_agents: 1` for serial work or a larger value for bounded
-parallel work. The deprecated `claude.max_concurrent_agents` input is accepted
+parallel work. Explicit authentication/policy rechecks admit one recovery owner
+until success, then restore normal parallel capacity. The deprecated `claude.max_concurrent_agents` input is accepted
 but ignored; move any desired limit into `agent`. See the
 [Claude workflow settings](docs/claude.md#workflow-settings) for migration details.
