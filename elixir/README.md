@@ -35,8 +35,12 @@ the Codex child, so the agent does not need a second tracker login.
 
 Codex and Claude return tracker errors to the agent, following the original Codex
 recovery flow. The agent reads back uncertain writes before retrying and corrects
-rejected requests. Lost delivery blocks only the affected issue; unrelated work
-continues. Symphony never automatically retries a mutation. Every initial/retry
+rejected requests. After confirmed session cleanup, lost delivery, malformed turn
+frames, unexpected EOF and helper timeouts retry the affected attempt with backoff.
+The next attempt reads tracker state before writing; Symphony never automatically
+retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
+authentication/policy stops remain gated. Startup ownership/initialization failures
+remain fail-closed; retry recovery applies to established sessions. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 See [tracker diagnostics](docs/logging.md).
 

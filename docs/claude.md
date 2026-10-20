@@ -120,8 +120,13 @@ current tracker state and resumes in its preserved workspace. A repeated quota
 rejection defers the next attempt again.
 
 Native authentication and shared policy failures still require explicit operator
-recovery. Paid-overage signals remain policy blockers. Worker protocol and tracker
-delivery failures block only the affected issue. Explicit drains remain durable.
+recovery. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
+delivery failures retry the affected attempt with scheduler backoff after confirmed
+cleanup, preserving its workspace and requiring tracker readback before writing.
+No tracker mutation is replayed by the runner. Explicit permission/input and
+turn-limit stops remain blocked. Startup ownership/initialization failures remain
+fail-closed; this retry recovery applies to established sessions. Explicit drains
+remain durable and prevent queued retries from dispatching.
 
 Both providers follow the original Codex tool recovery model: tracker responses,
 including GraphQL errors, partial results and transport failures, return to the
