@@ -942,7 +942,7 @@ runner_transition_lock() {
 }
 
 runner_resume_when_ready() {
-  local port=$1 legacy=${2:-false} attempt data
+  local port=$1 legacy=${2:-false} prior=${3:-false} attempt data
   for attempt in $(seq 1 15); do
     if data=$(curl --fail --silent --max-time 3 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state"); then
       if "$legacy"; then
@@ -950,13 +950,35 @@ runner_resume_when_ready() {
         sleep 1
         continue
       fi
-      if printf '%s' "$data" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("agent",{}); sys.exit(0 if a.get("draining") is False and a.get("readiness",{}).get("ready") is True else 1)'; then return; fi
-      runner_control_request "$port" resume >/dev/null
-      return
+      if runner_admission_ready "$data" "$prior"; then return; fi
+      data=$(runner_control_request "$port" resume) || return 1
+      if runner_admission_ready "$data"; then return; fi
+      if "$prior"; then
+        data=$(curl --fail --silent --max-time 3 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state") || return 1
+        runner_admission_ready "$data" true
+        return $?
+      fi
+      return 1
     fi
     sleep 1
   done
   return 1
+}
+
+# State snapshots wrap admission in agent; control replies return it directly.
+runner_admission_ready() {
+  local outcome
+  # Only a verified restored prior image may use the older provider-aware API.
+  if [ "${2:-false}" = true ] && printf '%s' "$1" | python3 -c 'import json,sys; a=json.load(sys.stdin).get("agent",{}); sys.exit(0 if "admission" not in a and a.get("draining") is False and a.get("readiness",{}).get("ready") is True and a.get("pause","unknown") is None else 1)'; then
+    printf 'Prior runner restored using its pre-admission API; native readiness passed with no retained pause.\n'
+    return 0
+  fi
+  outcome=$(printf '%s' "$1" | python3 -c 'import json,sys; s=json.load(sys.stdin); a=s.get("agent",s); d=a.get("admission") or {}; print("operational" if a.get("draining") is False and d.get("ready") is True else "quota_paused" if a.get("draining") is False and d.get("ready") is False and d.get("reason")=="quota_exhausted" and type(d.get("retry_at")) is int else "unhealthy")') || return 1
+  case "$outcome" in
+    operational) return 0 ;;
+    quota_paused) printf 'Runner resumed with dispatch intentionally paused until the recorded quota reset.\n'; return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 runner_control_request() {
@@ -1197,7 +1219,7 @@ runner_rollback() (
     runner_resume_when_ready "$port" true || die 'prior legacy runner retained but not ready; retry rollback when healthy'
     previous_agent=codex
   else
-    runner_resume_when_ready "$port" || die 'prior runner retained but not ready; repair authentication then retry recovery'
+    runner_resume_when_ready "$port" false true || die 'prior runner retained but not ready; repair authentication then retry recovery'
     previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
   fi
   previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")

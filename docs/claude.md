@@ -171,7 +171,12 @@ symphony runner resume
 ```
 
 These operations do not perform model probes. They expose at most the next normal
-work attempt. Tracker errors do not require runner recheck or operator clearance.
+work attempt. State snapshots (`agent.admission`) and successful resume/recheck
+responses (`admission`) report effective dispatch eligibility, its reason,
+provider/profile and optional quota retry time. Ordinary resume refuses retained
+Claude authentication/policy pauses; explicit recheck follows operator repair.
+Quota cooldown resumes polling with admission false until the reset. Switching to
+Codex ignores Claude pause files without deleting their evidence. Tracker errors do not require runner recheck or operator clearance.
 The legacy `confirm_tools_reconciled` control API option remains available to
 remove old intent evidence after external verification; ordinary runner rechecks
 preserve that evidence and do not require the option.
@@ -213,8 +218,14 @@ The updater preflights the candidate, drains the qualified listener, waits for
 zero workers, retains the stopped prior container, and checks exclusive volume
 ownership before migrating root-owned workspace/state files to UID 11001. It
 pins the candidate image ID and journals the transition. It resumes the
-candidate only after native policy readiness, then removes the stopped prior
-container. Rollback retains Git commits, untracked files, state and logs.
+candidate only after native policy readiness and verifies its effective admission
+result before removing the stopped prior container. A retained quota cooldown is
+reported explicitly as intentionally paused until its reset; it is not operational
+dispatch. Authentication/policy pauses refuse ordinary resume and retain rollback
+recovery. A successful HTTP response alone does not establish admission. Verified
+rollback sources with the older provider-aware API require native readiness, no
+drain and no retained pause. Rollback retains Git commits, untracked files, state
+and logs.
 
 `run` refuses provider, image, port or native-profile mismatches. It does not
 replace an active listener. The previous Codex listener format has no provider or
