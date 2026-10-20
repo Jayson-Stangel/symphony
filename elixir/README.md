@@ -39,8 +39,9 @@ rejected requests. After confirmed session cleanup, lost delivery, malformed tur
 frames, unexpected EOF and helper timeouts retry the affected attempt with backoff.
 The next attempt reads tracker state before writing; Symphony never automatically
 retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
-authentication/policy stops remain gated. Startup ownership/initialization failures
-remain fail-closed; retry recovery applies to established sessions. Every initial/retry
+authentication/policy stops remain gated. Transient startup failures retry only after a
+matching helper cleanup acknowledgement. Explicit startup policy/identity failures
+and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 See [tracker diagnostics](docs/logging.md).
 

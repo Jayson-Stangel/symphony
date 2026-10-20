@@ -159,8 +159,12 @@ automatic-observation repair does not resolve that migration limitation. Paid-ov
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and
-native turn-limit stops remain blocked. Startup ownership/initialization failures remain
-fail-closed; this retry recovery applies to established sessions. Explicit drains
+native turn-limit stops remain blocked. Transient startup protocol or native initialization failures also retry once the
+helper acknowledges owned-native cleanup for that exact session/request. The
+cleanup wait is bounded; a missing or foreign acknowledgement retains the original
+startup cause and creates the existing cleanup-unconfirmed stop. Explicit startup
+auth/policy/schema/identity failures remain gated. A helper crash before ownership
+handoff still requires recovery because native cleanup cannot be proven. Explicit drains
 remain durable and prevent queued retries from dispatching.
 
 Both providers follow the original Codex tool recovery model: tracker responses,

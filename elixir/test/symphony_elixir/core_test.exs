@@ -1153,15 +1153,15 @@ defmodule SymphonyElixir.CoreTest do
     for {reason, last_event, blocked?} <- cases do
       name = Module.concat(__MODULE__, :TrackerRecoveryOrchestrator)
       {:ok, pid} = Orchestrator.start_link(name: name)
-      ref_a = make_ref()
-      ref_b = make_ref()
+      worker_a = spawn(fn -> receive do: ({:finish, reason} -> exit(reason)) end)
+      worker_b = spawn(fn -> receive do: ({:finish, reason} -> exit(reason)) end)
       issue_a = %Issue{id: "a", title: "Recover tracker write", identifier: "PROBE-A", state: "In Progress", dispatchable: true}
       issue_b = %{issue_a | id: "b", identifier: "PROBE-B"}
 
-      entry = fn issue, ref ->
+      entry = fn issue, worker ->
         %{
-          pid: self(),
-          ref: ref,
+          pid: worker,
+          ref: Process.monitor(worker),
           identifier: issue.identifier,
           issue: issue,
           started_at: DateTime.utc_now(),
@@ -1176,15 +1176,29 @@ defmodule SymphonyElixir.CoreTest do
         }
       end
 
-      :sys.replace_state(pid, fn state ->
-        %{state | running: %{"a" => Map.put(entry.(issue_a, ref_a), :last_codex_event, last_event), "b" => entry.(issue_b, ref_b)}, claimed: MapSet.new(["a", "b"])}
-      end)
-
       try do
+        assert eventually_value(fn ->
+                 state = :sys.get_state(pid)
+
+                 if not state.poll_check_in_progress and is_integer(state.next_poll_due_at_ms) and
+                      state.next_poll_due_at_ms - System.monotonic_time(:millisecond) > 30_000,
+                    do: true
+               end)
+
+        :sys.replace_state(pid, fn state ->
+          %{state | running: %{"a" => Map.put(entry.(issue_a, worker_a), :last_codex_event, last_event), "b" => entry.(issue_b, worker_b)}, claimed: MapSet.new(["a", "b"])}
+        end)
+
         requested_at = System.monotonic_time(:millisecond)
-        send(pid, {:DOWN, ref_a, :process, self(), reason})
-        assert is_map(Orchestrator.snapshot(name, 5_000))
-        state = :sys.get_state(pid)
+        send(worker_a, {:finish, reason})
+
+        state =
+          eventually_value(fn ->
+            state = :sys.get_state(pid)
+            if not Map.has_key?(state.running, "a"), do: state
+          end)
+
+        assert is_map(state)
 
         if blocked? do
           assert Map.has_key?(state.blocked, "a")
@@ -1208,12 +1222,18 @@ defmodule SymphonyElixir.CoreTest do
         assert :ready = SymphonyElixir.AgentPause.current()
         issue_c = %{issue_b | id: "c", identifier: "PROBE-C"}
         assert Orchestrator.should_dispatch_issue_for_test(issue_c, state)
-        send(pid, {:DOWN, ref_b, :process, self(), :normal})
-        assert is_map(Orchestrator.snapshot(name, 5_000))
-        assert MapSet.member?(:sys.get_state(pid).completed, "b")
+        assert Process.alive?(worker_b)
+        send(worker_b, {:finish, :normal})
+
+        assert eventually_value(fn ->
+                 if MapSet.member?(:sys.get_state(pid).completed, "b"), do: true
+               end)
+
         unless blocked?, do: assert({:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :resume, false}))
       after
-        GenServer.stop(pid)
+        if Process.alive?(pid), do: GenServer.stop(pid)
+        Process.exit(worker_a, :kill)
+        Process.exit(worker_b, :kill)
       end
     end
   end
