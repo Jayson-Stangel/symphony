@@ -58,6 +58,46 @@ defmodule SymphonyElixir.AgentReadinessTest do
     end
   end
 
+  test "Codex admission and resume ignore retained Claude pauses", ctx do
+    Application.put_env(:symphony_elixir, :coding_agent, :codex)
+
+    for kind <- [:auth_required, :quota_exhausted] do
+      File.rm_rf!(Path.join(ctx.root, "state"))
+      assert :ok = AgentPause.record(kind, %{profile: String.duplicate("a", 64), resets_at: System.system_time(:second) + 600})
+      path = Path.join(ctx.root, "state/claude-pause.json")
+      evidence = File.read!(path)
+      {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe)
+      assert %{ready: true, provider: "codex"} = Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.admission
+      assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.pause == nil
+      assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+      assert {:ok, %{admission: %{ready: true}}} = GenServer.call(pid, {:agent_control, :recheck, false})
+      assert File.read!(path) == evidence
+      GenServer.stop(pid)
+    end
+  end
+
+  test "resume refuses auth and policy pauses while quota cooldown is reported explicitly", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    for kind <- [:auth_required, :policy_blocked] do
+      File.rm_rf!(Path.join(ctx.root, "state"))
+      assert :ok = AgentPause.record(kind, %{profile: String.duplicate("a", 64)})
+      assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+      assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+      assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
+      assert {:paused, _} = AgentPause.current()
+    end
+
+    File.rm_rf!(Path.join(ctx.root, "state"))
+    reset = System.system_time(:second) + 600
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64), resets_at: reset})
+    assert {:ok, %{draining: false, admission: %{ready: false, reason: "quota_exhausted", retry_at: ^reset}}} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert %{ready: false, reason: "quota_exhausted"} = Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.admission
+    assert {:paused, _} = AgentPause.current()
+  end
+
   test "drain survives orchestrator restart and account changes block explicit recovery", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)

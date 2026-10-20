@@ -168,7 +168,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], dev_env)
     assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], dev_env)
     curl = Path.join(ctx.root, "curl")
-    File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true}}}'\n")
+    File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
     File.chmod!(curl, 0o755)
     env = dev_env ++ [{"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     File.write!(ctx.log, "")
@@ -195,7 +195,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
       assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
       curl = Path.join(ctx.root, "curl")
-      File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true}}}'\n")
+      File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
       File.chmod!(curl, 0o755)
       env = env ++ [{"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
       File.write!(ctx.log, "")
@@ -294,6 +294,53 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.read!(ctx.log) =~ "volume\trm"
   end
 
+  test "rollback restores a provider-labelled image with the pre-admission state API", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
+
+    File.write!(Path.join(ctx.root, "curl"), """
+    #!/bin/sh
+    printf '%s' '{"agent":{"draining":false,"readiness":{"ready":true},"pause":null}}'
+    """)
+
+    File.chmod!(Path.join(ctx.root, "curl"), 0o755)
+    # An old-shaped response must never prove the new candidate operational.
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    assert File.exists?(ctx.state <> ".backup")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "pre-admission API"
+    assert message =~ "Prior runner restored"
+    assert File.read!(ctx.state <> ".agent") == "codex"
+    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+  end
+
+  for {label, admission, succeeds} <- [
+        {"quota cooldown", %{ready: false, reason: "quota_exhausted", retry_at: 4_000_000_000}, true},
+        {"authentication pause", %{ready: false, reason: "auth_required"}, false},
+        {"missing admission", nil, false}
+      ] do
+    @admission admission
+    @succeeds succeeds
+    test "updater validates #{label} after an HTTP-successful resume", ctx do
+      env = pending_claude_transition!(ctx)
+      body = Jason.encode!(%{draining: false, admission: @admission})
+      File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nprintf '%s' '#{body}'\n")
+      File.chmod!(Path.join(ctx.root, "curl"), 0o755)
+      {message, code} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+      assert code == 0 == @succeeds
+
+      if @succeeds do
+        assert message =~ "intentionally paused"
+      else
+        assert message =~ "candidate is not ready"
+        assert File.exists?(ctx.state <> ".backup")
+      end
+    end
+  end
+
   test "rollback recovers an API-dead unresumed candidate and refuses unproven or foreign candidates", ctx do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
@@ -304,7 +351,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(curl, """
     #!/bin/sh
     if [ "$(cat "$FIXTURE_STATE.agent")" = claude ]; then exit 1; fi
-    printf '%s' '{"agent":{"draining":false,"readiness":{"ready":true}}}'
+    printf '%s' '{"agent":{"draining":false,"readiness":{"ready":true},"admission":{"ready":true}}}'
     """)
 
     File.chmod!(curl, 0o755)
@@ -430,7 +477,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     esac
     draining=false
     if [ -f "$FIXTURE_STATE.api-draining" ]; then draining=true; fi
-    printf '{"counts":{"running":0},"agent":{"draining":%s,"readiness":{"ready":true}}}' "$draining"
+    printf '{"counts":{"running":0},"agent":{"draining":%s,"readiness":{"ready":true},"admission":{"ready":true}}}' "$draining"
     """)
   end
 

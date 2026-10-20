@@ -74,7 +74,8 @@ defmodule SymphonyElixir.QuotaRetryTest do
     poll(ctx.server)
   end
 
-  test "known reset delays the existing retry timer, then resumes without recheck", ctx do
+  test "known Claude reset delays the existing retry timer, then releases it without recheck", ctx do
+    ctx = claude_scheduler(ctx)
     reset = System.system_time(:second) + 2
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [ctx.issue])
     quota_exit(ctx.server, ctx.issue, %{resets_at: reset})
@@ -83,13 +84,15 @@ defmodule SymphonyElixir.QuotaRetryTest do
     poll(ctx.server)
     refute File.exists?(ctx.turns)
     assert {:paused, %{"kind" => "quota_exhausted"}} = AgentPause.current()
-    await(fn -> turn_count(ctx.turns) == 1 end, 3_000)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Human Review"}])
+    await(fn -> not Map.has_key?(:sys.get_state(ctx.server).retry_attempts, ctx.issue.id) end, 3_000)
     assert :ready = AgentPause.current()
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Human Review"}])
     poll(ctx.server)
   end
 
-  test "a shared cooldown extension retains queued retries and does not duplicate dispatch", ctx do
+  test "a shared Claude cooldown extension retains queued retries until reset", ctx do
+    ctx = claude_scheduler(ctx)
     reset = System.system_time(:second) + 1
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [ctx.issue])
     quota_exit(ctx.server, ctx.issue, %{resets_at: reset})
@@ -99,10 +102,10 @@ defmodule SymphonyElixir.QuotaRetryTest do
     await(fn -> :sys.get_state(ctx.server).retry_attempts[ctx.issue.id].due_at_ms > initial.due_at_ms end, 2_000)
     assert :sys.get_state(ctx.server).retry_attempts[ctx.issue.id].attempt == 1
     refute File.exists?(ctx.turns)
-    await(fn -> turn_count(ctx.turns) == 1 end, 2_000)
-    poll(ctx.server)
-    assert map_size(:sys.get_state(ctx.server).running) == 1
-    assert turn_count(ctx.turns) == 1
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Human Review"}])
+    await(fn -> not Map.has_key?(:sys.get_state(ctx.server).retry_attempts, ctx.issue.id) end, 2_000)
+    assert :ready = AgentPause.current()
+    refute File.exists?(ctx.turns)
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Human Review"}])
     poll(ctx.server)
   end
@@ -124,13 +127,66 @@ defmodule SymphonyElixir.QuotaRetryTest do
     poll(server)
   end
 
-  defp quota_exit(server, issue, details) do
+  test "retained Claude cooldown does not delay a Codex failure retry", ctx do
+    reset = System.system_time(:second) + 600
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64), resets_at: reset})
+    path = Path.join(Config.agent_state_root(), "claude-pause.json")
+    evidence = File.read!(path)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [ctx.issue])
+    quota_exit(ctx.server, ctx.issue, %{}, :fixture_transient_failure)
+    retry = :sys.get_state(ctx.server).retry_attempts[ctx.issue.id]
+    assert retry.due_at_ms - System.monotonic_time(:millisecond) <= 100
+    await(fn -> turn_count(ctx.turns) == 1 end)
+    assert File.read!(path) == evidence
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Human Review"}])
+    poll(ctx.server)
+  end
+
+  # Exercise Claude's scheduler cooldown using its existing readiness seam.
+  # The issue becomes ineligible before reset; no native Claude process starts.
+  defp claude_scheduler(ctx) do
+    SymphonyElixir.TestSupport.isolate_inference_environment()
+    previous = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:symphony_elixir, :coding_agent, value)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
+    node = Path.join(ctx.root, "native-check")
+    helper = Path.join(ctx.root, "readiness.json")
+    File.write!(node, "#!/bin/sh\ncat \"$1\"\n")
+    File.chmod!(node, 0o755)
+
+    File.write!(
+      helper,
+      Jason.encode!(%{
+        ready: true,
+        profile: AgentPause.codex_profile(),
+        sdk: "0.3.303",
+        cli: "2.1.303",
+        policy: 1,
+        overages_disabled_attested: true,
+        attested_at: DateTime.to_iso8601(DateTime.utc_now())
+      })
+    )
+
+    stop_supervised!(Orchestrator)
+    server = start_supervised!({Orchestrator, name: __MODULE__, readiness_opts: [node_path: node, helper_path: helper]})
+    poll(server)
+    %{ctx | server: server}
+  end
+
+  defp quota_exit(server, issue, details, reason \\ :quota) do
     {:ok, worker} =
       Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
         receive do
           :quota ->
             details = Map.put(details, :profile, AgentPause.codex_profile())
-            exit({:agent_pause, :quota_exhausted, details})
+            exit(if reason == :quota, do: {:agent_pause, :quota_exhausted, details}, else: reason)
         end
       end)
 

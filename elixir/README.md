@@ -498,6 +498,13 @@ level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
+Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
+`provider`, `profile`, and optional `retry_at`), including drain and account pauses.
+Resume refuses retained Claude authentication/policy pauses; use explicit recheck
+after repair. A retained quota cooldown resumes polling with `admission.ready=false`
+and its reset time. The updater reports this as intentionally paused, never as
+operational. Codex ignores retained Claude pause files and leaves their evidence
+untouched when switching providers.
 
 Development updater retries refresh stale pending images from the current checkout,
 preserving the rollback container until the replacement passes readiness. See

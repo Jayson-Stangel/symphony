@@ -2385,6 +2385,15 @@ Tracker errors and worker protocol/delivery failures are issue-scoped; the agent
 reconciliation. Drain is durable, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
+The orchestrator's admission result is authoritative for dispatch, status and
+resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
+neither reads nor modifies Claude pause evidence, including retry-delay decisions.
+Resume refuses retained authentication/policy pauses until explicit repair/recheck.
+A retained quota cooldown may resume polling while admission remains false;
+updater completion must explicitly report this intentional pause rather than claim
+operational dispatch. New candidates must prove admission, not only native readiness
+or successful HTTP resume. Verified rollback sources may use their pre-admission
+API only with native readiness, no drain and no retained pause.
 See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.
 
