@@ -161,3 +161,17 @@ test('containment requires the effective root and policy mounts to be read-only'
   assert.equal(isReadOnlyMount('/etc/symphony/claude/attestation.json', root + '\n' + policy.replace('rw,relatime', 'ro,relatime')), true);
   assert.equal(isReadOnlyMount('/', ''), false);
 });
+
+test('skill transport bounds names, paths and count while the packaged plugin validates membership', () => {
+  const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
+    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  const skills = { 'packaged-procedure': '/workspaces/issue/.codex/skills/local' };
+  assert.deepEqual(parseCommand(JSON.stringify({ ...start, skills })).skills, skills);
+  // Zod drops the JSON prototype key instead of installing it as an inherited selection.
+  assert.deepEqual(parseCommand(JSON.stringify({ ...start, skills: JSON.parse('{"__proto__":"escape"}') })).skills, {});
+  for (const invalid of [{ '../escape': '/tmp/x' },
+    { 'symphony-land': '' }, { 'symphony-land': 'x'.repeat(4097) },
+    Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`procedure-${i}`, '/tmp/x']))]) {
+    assert.throws(() => parseCommand(JSON.stringify({ ...start, skills: invalid })));
+  }
+});
