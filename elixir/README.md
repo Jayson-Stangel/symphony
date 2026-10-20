@@ -1,10 +1,10 @@
 # Symphony Elixir
 
-The workflow template requires workers to publish generated validation artifacts
-to the Linear issue, link them in the existing workpad, and verify those links
-before handoff or completion. Evidence must come from actual validation of the
-stated revision and be inspected before it is cited. Existing project workflows
-must adopt `Evidence publication (required)` explicitly; updates preserve them.
+The workflow template asks workers to record actual validation results and durable
+acceptance evidence. Publish artifacts needed for review or explicitly required by
+the repository/ticket; temporary logs do not all require upload. Evidence must match
+the stated revision and remain accessible after workspace cleanup. Existing project
+workflows are preserved; adopt `Evidence for review` deliberately when changing policy.
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -47,7 +47,10 @@ Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
 sessions; managed/remote policy and unqualified installed-plugin metadata retain
 the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
-See [tracker diagnostics](docs/logging.md).
+See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
+correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
+execution certainty. Existing issue-local legacy notices preserve old evidence
+without gating dispatch; no new intent files or automatic purge are introduced.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -94,11 +97,11 @@ For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create
 tracker. These states must not overlap active or terminal states. Symphony polls them alongside
 active work and shows matching issues in the dashboard and JSON API, including after a restart.
 Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
-`Human Review` is reserved for validated work with an attached PR whose automated review has
-completed for the latest commit and whose actionable findings are resolved. Pending automated
-review and feedback fixes remain `In Progress` (or `Rework` during a rework attempt); green CI or
-an empty comment list alone does not authorize handoff. See the automated PR review gate in
-[`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
+`Human Review` holds validated PRs awaiting human assessment. Record available feedback
+and pending external reviews, then end the worker turn. Required repository checks,
+reviews and human approval remain merge obligations; optional bot latency is not a
+reason to occupy a coding worker. See Review handoff in [`WORKFLOW.md`](WORKFLOW.md).
+Move an unblocked issue back to
 `Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
 blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
 Tracker read failures preserve the last successful blocked view until polling recovers.
@@ -525,7 +528,7 @@ accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
-for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
+for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
 Model-free Claude readiness runs in one supervised task at startup, on explicit
@@ -597,3 +600,13 @@ subprocess cleanup, and TERM shutdown without a forced kill. The current CLI
 returns exit 1 for supervisor shutdown; the smoke accepts that convention or exit 0.
 It mounts no host credentials and makes no model requests. This proves packaging and process behavior; authenticated native
 sessions and updater transition/rollback acceptance require separate evidence.
+
+Both coding providers use the existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
+one-worker ceiling for normal dispatch. Explicit authentication/policy rechecks
+retain one recovery owner until success, then resume configured parallel work.
+Legacy positive `claude.max_concurrent_agents` values remain
+accepted but are ignored; migrate the desired limit into the `agent` section.
+Changing limits affects new dispatch; existing sessions keep their ownership and
+may temporarily exceed a reduced limit until they finish. The state API reports
+the effective global setting as `agent.max_concurrent_agents`.

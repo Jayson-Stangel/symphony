@@ -2372,8 +2372,8 @@ The Elixir implementation can select one coding provider at startup. Codex is
 the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
-scheduling authority. Selection survives workflow reload. One worker is supported,
-with Sonnet as the default. Workflow and helper validation accept the current
+scheduling authority. Selection survives workflow reload. Both providers use the
+configured global and per-state concurrency limits, with Sonnet as Claude default. Workflow and helper validation accept the current
 Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
@@ -2459,9 +2459,12 @@ receive the same runtime recovery guidance.
 New tracker calls do not create global intent gates. Existing unresolved-call
 records remain recovery evidence in the matching issue's prompt. Legacy tracker
 uncertainty and worker protocol pauses must not block other issues or mask later
-account-wide auth/quota/policy failures. Redacted logs retain operation type/hash,
-provider, correlation IDs, delivery phase, response category, status/code and
-timing without query text or credentials. Delivery acknowledgement is not proof
+account-wide auth/quota/policy failures. Redacted logs retain document hashes,
+provider, correlation IDs, delivery phase, response/delivery reason, status/code
+and timing without query text or credentials. Execution certainty, GraphQL
+operation kind and request-versus-execution error categories are not inferred. The bounded issue-local legacy notice remains compatibility for existing
+volumes until evidence-preserving retirement; no new intent writer or automatic
+evidence deletion is introduced. Delivery acknowledgement is not proof
 of outcome reconciliation. Restart recovery reads live tracker state.
 
 Development runner updates may refresh a pending candidate from the current
@@ -2470,3 +2473,16 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+
+### Shared provider concurrency
+
+Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
+additional Claude worker ceiling for normal dispatch. Explicit authentication/policy
+rechecks retain one existing recovery owner until success; non-owners retry without
+changing that pause. Quota cooldown expiry restores normal configured capacity.
+The deprecated positive
+`claude.max_concurrent_agents` input is accepted for existing workflow compatibility
+but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.
+Reloaded limits govern new starts without terminating existing sessions. The state
+API reports the effective global setting as `agent.max_concurrent_agents`.

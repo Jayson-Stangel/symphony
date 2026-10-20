@@ -22,33 +22,15 @@ defmodule SymphonyElixir.ToolCallTest do
     %{root: root}
   end
 
-  test "classification parses documents rather than trusting prefixes or embedded keywords" do
-    for document <- [
-          @query,
-          "{ viewer { id } }",
-          "# mutation\nquery A { viewer { id } }",
-          "fragment F on User { id } query { viewer { ...F } }",
-          "query { issue(id: \"mutation { secret }\") { id } }",
-          "query { issue(id: \"\"\"mutation { secret }\"\"\") { id } }",
-          "query A { viewer { id } } query B { viewer { id } }"
-        ] do
-      assert %{"operation" => "query", "document_sha256" => hash} = Operation.describe(document)
-      assert byte_size(hash) == 64
-    end
-
-    for {document, kind} <- [
-          {@mutation, "mutation"},
-          {"subscription { updates { id } }", "subscription"},
-          {"query { viewer { id } } mutation { x }", "unknown"},
-          {"fragment F on User { id }", "unknown"},
-          {"not GraphQL", "unknown"},
-          {"type User { id: ID }", "unknown"}
-        ] do
-      assert Operation.describe(%{query: document})["operation"] == kind
+  test "request fingerprints correlate documents without parsing or inferring execution" do
+    for document <- [@query, @mutation, "# mutation\nquery A { viewer { id } }", "query { issue(id: \"mutation { secret }\") { id } }", "not GraphQL"] do
+      expected = Base.encode16(:crypto.hash(:sha256, document), case: :lower)
+      assert Operation.describe(document) == %{"document_sha256" => expected}
+      assert Operation.describe(%{query: "  " <> document <> "  "}) == %{"document_sha256" => expected}
     end
 
     for arguments <- [nil, false, %{}, " ", %{query: 123}] do
-      assert Operation.describe(arguments) == %{"operation" => "local"}
+      assert Operation.describe(arguments) == %{}
     end
 
     errors = [nil, %{"extensions" => %{"code" => "secret-canary"}}, %{"extensions" => %{"code" => "INPUT_ERROR"}}]
@@ -86,6 +68,37 @@ defmodule SymphonyElixir.ToolCallTest do
     end
 
     refute File.exists?(ctx.root)
+  end
+
+  test "diagnostics retain bounded correlation without certainty or response reparsing" do
+    response = %{"data" => nil, "errors" => [%{"message" => "secret-canary", "extensions" => %{"code" => "INVALID_INPUT"}}]}
+    result = AgentTool.execute("linear_graphql", %{"query" => @mutation}, linear_client: fn _, _, _ -> {:ok, response} end)
+    assert result["execution"] == %{"http_status" => 200, "graphql_codes" => ["INVALID_INPUT"], "reason" => "graphql_error"}
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{"output" => "not-json-secret-canary"}, context} =
+                 run(
+                   %{"query" => @mutation},
+                   fn ->
+                     %{result | "output" => "not-json-secret-canary", "execution" => Map.put(result["execution"], "graphql_codes", ["INVALID_INPUT", "secret-canary"])}
+                   end,
+                   :claude
+                 )
+
+        assert context.metadata["graphql_codes"] == ["INVALID_INPUT"]
+        assert context.metadata["provider"] == "claude"
+        assert context.metadata["phase"] == "response_received"
+        assert context.id == "call"
+        assert context.issue == "issue"
+      end)
+
+    assert log =~ "INVALID_INPUT"
+    assert log =~ "document_sha256"
+    refute log =~ "secret-canary"
+    refute log =~ "certainty"
+    refute log =~ "graphql_result"
+    refute log =~ "\"operation\""
   end
 
   test "original errors reach the agent while diagnostics omit response bodies" do

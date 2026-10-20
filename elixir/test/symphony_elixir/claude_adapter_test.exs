@@ -37,7 +37,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     defp result(query) do
       case query do
-        "tool-invalid-success" -> %{"success" => "invalid", "output" => "malformed reply", "execution" => %{"certainty" => "confirmed"}}
+        "tool-invalid-success" -> %{"success" => "invalid", "output" => "malformed reply"}
         "tool-shape" -> :unexpected
         "tool-failed" -> %{"success" => false, "output" => "transport response lost"}
         "tool-read-error" -> %{"success" => false, "output" => "read response lost"}
@@ -92,6 +92,161 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     opts = [node_path: System.find_executable("node"), helper_path: @helper, cleanup_path: Path.expand("../../../runner/claude/cleanup.mjs", __DIR__)]
     %{root: root, workspace: workspace, opts: opts, issue: %Issue{id: "one", identifier: "PROBE-1", title: "Probe"}}
+  end
+
+  test "three independent helper sessions isolate callbacks, workspaces, failure and cleanup", ctx do
+    parent = self()
+
+    workers =
+      for n <- 1..3 do
+        Task.async(fn ->
+          workspace = Path.join([ctx.root, "workspaces", "parallel-#{n}"])
+          File.mkdir_p!(workspace)
+          issue = %{ctx.issue | id: "parallel-#{n}", identifier: "PAR-#{n}"}
+
+          binding = %{
+            adapter: BoundTool,
+            tracker_settings: %{owner: parent, tag: n},
+            tool_specs: [
+              %{
+                "name" => "probe_tool",
+                "description" => "probe",
+                "inputSchema" => %{"type" => "object", "properties" => %{"query" => %{"type" => "string"}}, "required" => ["query"], "additionalProperties" => false}
+              }
+            ]
+          }
+
+          assert {:ok, session} = Adapter.start_session(workspace, Keyword.put(ctx.opts, :tool_binding, binding))
+          send(parent, {:parallel_started, n, session})
+
+          try do
+            for _ <- 1..2 do
+              receive do
+                {:turn, prompt} ->
+                  on_message = fn event -> send(parent, {:parallel_event, n, event}) end
+                  result = Adapter.run_turn(session, prompt, issue, on_message: on_message)
+                  send(parent, {:parallel_result, n, result})
+
+                :finish ->
+                  :ok
+              end
+            end
+          after
+            assert :ok = Adapter.stop_session(session)
+            send(parent, {:parallel_stopped, n})
+          end
+        end)
+      end
+
+    sessions =
+      for _ <- 1..3 do
+        assert_receive {:parallel_started, n, session}, 3_000
+        {n, session}
+      end
+      |> Map.new()
+
+    assert sessions |> Map.values() |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 3
+    assert sessions |> Map.values() |> Enum.map(& &1.port) |> Enum.uniq() |> length() == 3
+    assert sessions |> Map.values() |> Enum.map(& &1.workspace) |> Enum.uniq() |> length() == 3
+    assert {:error, :wrong_session_owner} = Adapter.run_turn(sessions[2], "wrong-owner", ctx.issue, [])
+    Enum.each(Enum.with_index(workers, 1), fn {worker, n} -> send(worker.pid, {:turn, if(n == 1, do: "malformed", else: "tool")}) end)
+    assert_receive {:parallel_result, 1, {:error, {:agent_blocked, "protocol_error"}}}, 3_000
+
+    for n <- [2, 3] do
+      assert_receive {:bound_tool_executed, ^n, %{"query" => "query"}, %{id: id}}, 3_000
+      assert id == "parallel-#{n}"
+      assert_receive {:parallel_result, ^n, {:ok, %{session_id: id}}}, 3_000
+      assert String.starts_with?(id, "claude:#{sessions[n].id}:")
+      assert_receive {:parallel_event, ^n, %{event: :session_started, session_id: ^id}}
+    end
+
+    send(hd(workers).pid, :finish)
+    Task.await(hd(workers), 5_000)
+    assert_receive {:parallel_stopped, 1}
+    assert Port.info(sessions[1].port) == nil
+
+    for {worker, n} <- Enum.with_index(tl(workers), 2) do
+      assert Port.info(sessions[n].port) != nil
+      send(worker.pid, {:turn, "second"})
+      assert_receive {:parallel_result, ^n, {:ok, _}}, 3_000
+      Task.await(worker, 5_000)
+      assert_receive {:parallel_stopped, ^n}
+    end
+
+    assert :ready = AgentPause.current()
+  end
+
+  test "a non-owner waits for an in-flight operator recheck without poisoning its pause", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:auth_required, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+
+    owner =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:probe_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue, on_message: fn %{event: event} -> if event == :session_started, do: send(parent, :probe_waiting) end)
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:probe_session, probe}, 3_000
+    assert_receive :probe_waiting, 3_000
+    assert {:ok, other} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:error, :claude_turn_not_admitted} = Adapter.run_turn(other, "no model input", ctx.issue, [])
+      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
+    after
+      Adapter.stop_session(other)
+      Adapter.interrupt(probe, :test_cleanup)
+      Task.await(owner, 5_000)
+    end
+  end
+
+  test "a probe claimed between admission read and begin_turn defers without changing the owner", ctx do
+    profile = String.duplicate("a", 64)
+    assert :ok = AgentPause.record(:auth_required, %{profile: profile})
+    assert :ok = AgentPause.explicit_recheck(profile)
+    parent = self()
+    lock = {AgentPause, self()}
+    assert :global.set_lock(lock, [node()])
+    :erlang.trace_pattern({AgentPause, :begin_turn, 1}, true, [:local])
+
+    worker =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, :race_session_ready)
+
+        try do
+          receive do: (:run -> :ok)
+          Adapter.run_turn(session, "must not send model input", ctx.issue, [])
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    try do
+      assert_receive :race_session_ready, 3_000
+      :erlang.trace(worker.pid, true, [:call])
+      send(worker.pid, :run)
+      # Entry proves the adapter already read the available probe. Its serialized
+      # claim waits behind this test's existing lock while the owner claims it.
+      assert_receive {:trace, pid, :call, {AgentPause, :begin_turn, [^profile]}}, 3_000
+      assert pid == worker.pid
+      assert :ok = AgentPause.begin_turn(profile)
+      :global.del_lock(lock, [node()])
+      assert {:error, :claude_turn_not_admitted} = Task.await(worker, 5_000)
+      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
+    after
+      :global.del_lock(lock, [node()])
+      :erlang.trace_pattern({AgentPause, :begin_turn, 1}, false, [:local])
+      if Process.alive?(worker.pid), do: Task.shutdown(worker, 5_000)
+    end
   end
 
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do

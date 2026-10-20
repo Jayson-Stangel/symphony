@@ -95,7 +95,7 @@ defmodule SymphonyElixir.Config do
   @spec max_concurrent_agents() :: pos_integer()
   def max_concurrent_agents do
     config = settings!()
-    provider_concurrency_limit(config, config.agent.max_concurrent_agents)
+    config.agent.max_concurrent_agents
   end
 
   @spec agent_stall_timeout_ms() :: non_neg_integer()
@@ -119,21 +119,14 @@ defmodule SymphonyElixir.Config do
   def max_concurrent_agents_for_state(state_name) when is_binary(state_name) do
     config = settings!()
 
-    limit =
-      Map.get(
-        config.agent.max_concurrent_agents_by_state,
-        Schema.normalize_issue_state(state_name),
-        config.agent.max_concurrent_agents
-      )
-
-    provider_concurrency_limit(config, limit)
+    Map.get(
+      config.agent.max_concurrent_agents_by_state,
+      Schema.normalize_issue_state(state_name),
+      config.agent.max_concurrent_agents
+    )
   end
 
   def max_concurrent_agents_for_state(_state_name), do: max_concurrent_agents()
-
-  defp provider_concurrency_limit(config, limit) do
-    if coding_agent() == :claude, do: min(limit, config.claude.max_concurrent_agents), else: limit
-  end
 
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
