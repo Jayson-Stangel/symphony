@@ -520,7 +520,10 @@ The state API adds an `agent` object while retaining existing token fields.
 Model-free Claude readiness runs in one supervised task at startup, on explicit
 refresh/control, and every 30 seconds after completion. Failed observations recover
 automatically after repair; they are not persisted as account pauses. Snapshots,
-drain and worker exits remain responsive during native checks. GNU timeout bounds
+drain and worker exits remain responsive during native checks.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress. GNU timeout bounds
 the external check group to 35 seconds, including after task/scheduler loss; an old
 OS check may briefly overlap restart until that deadline. Explicit runtime pauses,
 quota cooldowns, drain and cleanup safety remain enforced. Ambiguous unscoped

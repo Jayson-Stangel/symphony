@@ -465,6 +465,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp finish_readiness_check(state, readiness) do
+    previous_admission = agent_admission(state)
+    control_pending = not is_nil(state.readiness_control)
     readiness = pin_readiness(readiness, state.expected_profile)
     token = make_ref()
     timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
@@ -479,7 +481,13 @@ defmodule SymphonyElixir.Orchestrator do
 
     state = finish_readiness_control(state)
     notify_dashboard()
-    schedule_tick(state, 0)
+
+    if control_pending or previous_admission != agent_admission(state) do
+      {state, _coalesced} = queue_poll(state)
+      state
+    else
+      state
+    end
   end
 
   defp finish_readiness_control(%{readiness_control: nil} = state), do: state
@@ -1863,10 +1871,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_call(:request_refresh, _from, state) do
     state = refresh_agent_readiness(state)
-    now_ms = System.monotonic_time(:millisecond)
-    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
-    coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    {state, coalesced} = queue_poll(state)
 
     {:reply,
      %{
@@ -1911,7 +1916,8 @@ defmodule SymphonyElixir.Orchestrator do
           expected_profile: state.expected_profile || readiness[:profile]
       }
 
-      {:reply, {:ok, %{draining: false, admission: admission}}, schedule_tick(state, 0)}
+      {state, _coalesced} = queue_poll(state)
+      {:reply, {:ok, %{draining: false, admission: admission}}, state}
     else
       _ -> {:reply, {:error, :agent_not_ready}, %{state | readiness: readiness}}
     end
@@ -2033,6 +2039,14 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp queue_poll(state) do
+    now_ms = System.monotonic_time(:millisecond)
+    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
+    coalesced = state.poll_check_in_progress == true or already_due?
+    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    {state, coalesced}
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

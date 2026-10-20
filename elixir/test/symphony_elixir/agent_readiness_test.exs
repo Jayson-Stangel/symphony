@@ -377,6 +377,111 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert_native_gone(pid_file)
   end
 
+  test "unchanged healthy observations preserve the configured long poll timer without tracker calls", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    await_poll_idle(pid)
+    trace_polls(pid)
+    previous = :sys.get_state(pid)
+    assert previous.poll_interval_ms == 60_000
+    assert Process.read_timer(previous.tick_timer_ref) > 30_000
+
+    for _ <- 1..3 do
+      # Metadata renewal does not change effective admission.
+      File.write!(ctx.helper, Jason.encode!(ready()))
+      {_timer, token} = :sys.get_state(pid).readiness_timer
+      send(pid, {:refresh_agent_readiness, token})
+      await_check(pid)
+      state = :sys.get_state(pid)
+      assert state.tick_timer_ref == previous.tick_timer_ref
+      assert state.tick_token == previous.tick_token
+      assert state.next_poll_due_at_ms == previous.next_poll_due_at_ms
+    end
+
+    assert_no_polls(pid)
+  end
+
+  test "repaired observation promptly polls and dispatches before the long tracker interval", ctx do
+    dispatched = Path.join(ctx.root, "dispatched")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 60_000,
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      hook_before_run: "touch '#{dispatched}'; exit 1"
+    )
+
+    issue = %Issue{id: "recovered-dispatch", identifier: "PROBE-RECOVER", title: "Recover", state: "In Progress", dispatchable: true}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    await_poll_idle(pid)
+    trace_polls(pid)
+    refute File.exists?(dispatched)
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {_timer, token} = :sys.get_state(pid).readiness_timer
+    send(pid, {:refresh_agent_readiness, token})
+    await_check(pid)
+    assert_receive {:trace, ^pid, :call, {SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, [_states]}}, 1_000
+    await(fn -> File.exists?(dispatched) end)
+    assert :sys.get_state(pid).readiness.ready
+    assert :ready = AgentPause.current()
+  end
+
+  test "readiness recovery coalesces with a poll cycle already in progress", ctx do
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    await_poll_idle(pid)
+    trace_polls(pid)
+
+    :sys.replace_state(pid, fn state ->
+      Process.cancel_timer(state.tick_timer_ref)
+      %{state | poll_check_in_progress: true, tick_timer_ref: nil, tick_token: nil, next_poll_due_at_ms: nil}
+    end)
+
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {_timer, token} = :sys.get_state(pid).readiness_timer
+    send(pid, {:refresh_agent_readiness, token})
+    await_check(pid)
+    state = :sys.get_state(pid)
+    assert state.poll_check_in_progress
+    assert state.tick_timer_ref == nil
+    assert_no_polls(pid)
+    # Complete the existing cycle with the repaired observation; no second cycle is queued.
+    send(pid, :run_poll_cycle)
+    assert_receive {:trace, ^pid, :call, {SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, [_states]}}, 1_000
+    await_poll_idle(pid)
+    assert_no_polls(pid)
+    assert Process.read_timer(:sys.get_state(pid).tick_timer_ref) > 30_000
+  end
+
+  defp await_poll_idle(pid) do
+    await(fn ->
+      state = :sys.get_state(pid)
+
+      not state.poll_check_in_progress and is_integer(state.next_poll_due_at_ms) and
+        state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 30_000
+    end)
+  end
+
+  defp trace_polls(pid) do
+    :erlang.trace_pattern({SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, 1}, true, [:local])
+    :erlang.trace(pid, true, [:call, {:tracer, self()}])
+    on_exit(fn -> :erlang.trace_pattern({SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, 1}, false, [:local]) end)
+  end
+
+  defp assert_no_polls(pid) do
+    ref = :erlang.trace_delivered(pid)
+    assert_receive {:trace_delivered, ^pid, ^ref}, 1_000
+    refute_receive {:trace, ^pid, :call, {SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, _states}}, 0
+  end
+
   defp await_check(pid) do
     await(fn ->
       state = :sys.get_state(pid)

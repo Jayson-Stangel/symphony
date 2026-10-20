@@ -2387,6 +2387,9 @@ retain their individual 15-second limits. Task or scheduler exit may leave a
 model-free OS check running only until that deadline; restart may briefly overlap
 that old bounded check. No inference occurs in readiness checks. The last completed
 observation is used between checks; pending explicit controls block admission.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress.
 Drain cancels a waiting resume, and late results cannot undrain or replace a pinned
 account. Old unscoped durable auth/policy records have no reliable provenance and
 still require explicit recheck; they cannot safely be assumed to be observations.

@@ -133,7 +133,10 @@ Repairing authentication or readiness is recognized automatically without restar
 or recheck when no separate durable runtime pause exists. Explicit drain remains
 in force. The last completed observation remains visible during periodic refresh;
 explicit resume/recheck waits asynchronously for verification without blocking
-snapshots, drain or worker exits. Drain cancels a waiting resume.
+snapshots, drain or worker exits.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress. Drain cancels a waiting resume.
 
 The external check uses GNU timeout to kill its own process group after at most
 35 seconds; native version/authentication checks retain 15-second limits. If the
