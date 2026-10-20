@@ -99,7 +99,14 @@ Workers must read applicable directory instructions before editing. Canonical
 Symphony skills are packaged once as a local plugin; aliases are
 `symphony:symphony-commit`, `symphony:symphony-push`, `symphony:symphony-pull`,
 `symphony:symphony-linear`, and `symphony:symphony-land`. Declared local overrides
-in `.codex/symphony-skill-overrides.yml` are copied into a bounded private overlay.
+in `.codex/symphony-skill-overrides.yml` are selected by Elixir and copied into a
+bounded private overlay. Sessions without overrides load the packaged plugin
+directly. Mixed sessions link immutable packaged procedures and snapshot only
+local overrides, preserving their relative helper paths. The helper validates
+selected names against the packaged plugin rather than another hard-coded list.
+The overlay is removed at session cleanup without changing the repository or
+canonical procedures. Optional override validation still occurs at session start;
+there is no setup-time cache to invalidate when repository procedures change.
 Unsafe paths, symlinks and malformed manifests fail closed. Existing workpads,
 including Codex Workpad comments, are reused.
 

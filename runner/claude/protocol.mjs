@@ -15,7 +15,8 @@ const settings = z.object({ model: z.enum(models), effort: z.enum(['low', 'mediu
 
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ ...common, type: z.literal('start'), workspace: z.string().min(1).max(4096),
-    skills: z.partialRecord(z.enum(['symphony-commit', 'symphony-push', 'symphony-pull', 'symphony-linear', 'symphony-land']), z.string().max(4096)).default({}),
+    skills: z.record(z.string().regex(/^[a-z][a-z0-9-]{0,127}$/), z.string().min(1).max(4096))
+      .refine(sources => Object.keys(sources).length <= 5).default({}),
     config: settings, tools: z.array(toolSpec).max(16), instructions: z.string().max(131072) }).strict(),
   z.object({ ...common, type: z.literal('turn'), prompt: z.string().min(1).max(524288) }).strict(),
   z.object({ ...common, type: z.literal('tool_result'), tool_id: id,
