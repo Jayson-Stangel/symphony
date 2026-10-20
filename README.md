@@ -341,3 +341,5 @@ for the contract and its limits. Existing stable installations change only throu
 reviewed promotion and the installed `symphony update` command.
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
 with separate configuration, Docker resource names and a separate dashboard port.
+Development update retries rebuild from the current checkout and safely refresh
+stale pending candidates while retaining their rollback source.

@@ -28,6 +28,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         [ -f "$state" ] || { printf '\\n'; exit 1; }
         case "$*" in
           *State.Running*) cat "$state" ;;
+          *State.Restarting*) echo "${FIXTURE_RESTARTING:-false}" ;;
+          *State.Pid*) echo "${FIXTURE_PID:-42}" ;;
           *com.symphony.mode*) echo listener ;;
           *com.symphony.agent*) cat "$state.agent" ;;
           *com.symphony.port*)
@@ -50,10 +52,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *Config.User*) echo 11001:11001 ;;
           *)
             case "$*" in
-              *runner-claude*|*fixture-claude-image*) echo fixture-claude-image ;;
+              *runner-claude*|*fixture-claude-image*) echo "${FIXTURE_CLAUDE_IMAGE_ID:-fixture-claude-image}" ;;
               *) echo "${FIXTURE_IMAGE_ID:-fixture-image}" ;;
             esac ;;
         esac ;;
+      build) [ "${FIXTURE_FAIL_BUILD:-false}" != true ] ;;
       volume)
         case "$*" in
           *--format*)
@@ -88,7 +91,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           rm "$FIXTURE_FAIL_START_FILE"; exit 1
         fi
         echo true > "$FIXTURE_STATE" ;;
-      rm) rm -f "$state" ;;
+      rm)
+        rm -f "$state"
+        if [ -f "${FIXTURE_FAIL_RM_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_RM_FILE"; exit 1; fi ;;
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
         case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
@@ -313,7 +318,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(ctx.log, "")
     assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     refute File.read!(ctx.log) =~ "stop\t"
-    refute File.read!(ctx.log) =~ "rm\t"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\t/
     assert File.exists?(ctx.state <> ".backup")
 
     File.write!(ctx.state <> ".unresumed", "")
@@ -329,6 +334,184 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.exists?(ctx.state <> ".backup")
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
+  end
+
+  test "development retry replaces a stale crash-loop candidate without changing workflow or rollback source", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    previous = File.read!(Path.join(journal, "previous.env"))
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}, {"FIXTURE_RESTARTING", "true"}, {"FIXTURE_PID", "0"}]
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Refreshed pending development candidate"
+    assert message =~ "Rollback source retained"
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
+    assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
+    refute File.exists?(journal)
+    refute File.exists?(ctx.state <> ".backup")
+    calls = File.read!(ctx.log)
+    assert calls =~ "stop\t--time\t30\tsymphony-review-service"
+    assert calls =~ "tag\tfixture-claude-image-new\tsymphony-review-runner-claude:local"
+    refute calls =~ "volume\trm"
+    assert previous =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image"
+  end
+
+  test "failed development rebuild leaves the pending image, container and rollback metadata intact", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    before = for name <- ~w(image previous.env target port), into: %{}, do: {name, File.read!(Path.join(journal, name))}
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_BUILD", "true"}])
+    for {name, contents} <- before, do: assert(File.read!(Path.join(journal, name)) == contents)
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image"
+    assert File.exists?(ctx.state <> ".backup")
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\t/
+  end
+
+  test "development refresh retains an API-dead candidate when it cannot prove dispatch is disabled", ctx do
+    env = pending_claude_transition!(ctx)
+    File.rm!(ctx.state <> ".unresumed")
+    File.write!(ctx.log, "")
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rm)\t/
+    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+  end
+
+  test "development refresh refuses a foreign candidate before stopping or removing it", ctx do
+    env = pending_claude_transition!(ctx)
+    File.write!(ctx.state <> ".image", "foreign-image")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}])
+    assert message =~ "candidate image differs"
+    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\t/
+  end
+
+  test "development refresh resumes after interruption between candidate removal and journal commit", ctx do
+    env = pending_claude_transition!(ctx) ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    ready_curl!(ctx)
+    File.write!(ctx.state, "false")
+    fail = Path.join(ctx.root, "fail-rm-once")
+    File.write!(fail, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_RM_FILE", fail}])
+    refute File.exists?(ctx.state)
+    assert File.exists?(ctx.state <> ".backup")
+    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Runner transition complete: claude"
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
+  end
+
+  defp pending_claude_transition!(ctx) do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
+    File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nexit 1\n")
+    File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
+    File.chmod!(Path.join(ctx.root, "curl"), 0o755)
+    File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    env
+  end
+
+  defp ready_curl!(ctx) do
+    File.write!(Path.join(ctx.root, "curl"), """
+    #!/bin/sh
+    case "$*" in
+      */api/v1/agent/drain*) touch "$FIXTURE_STATE.api-draining" ;;
+      */api/v1/agent/resume*) rm -f "$FIXTURE_STATE.api-draining" ;;
+    esac
+    draining=false
+    if [ -f "$FIXTURE_STATE.api-draining" ]; then draining=true; fi
+    printf '{"counts":{"running":0},"agent":{"draining":%s,"readiness":{"ready":true}}}' "$draining"
+    """)
+  end
+
+  test "development refresh can retry a journal created before the original runner was renamed", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+
+    for suffix <- ["", ".agent", ".port", ".profile", ".image", ".storage"] do
+      if File.exists?(ctx.state <> ".backup" <> suffix) do
+        File.rename!(ctx.state <> ".backup" <> suffix, ctx.state <> suffix)
+      end
+    end
+
+    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/service.env"))
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Runner transition complete: claude"
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-review-service\t/
+  end
+
+  test "development refresh refuses a running rollback source without replacing either container", ctx do
+    env = pending_claude_transition!(ctx)
+    File.write!(ctx.state <> ".backup", "true")
+    File.write!(ctx.log, "")
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "prior runner is unexpectedly active"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rm)\t/
+    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+  end
+
+  test "same-image development retry resumes the journal without replacing the candidate", ctx do
+    env = pending_claude_transition!(ctx)
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    refute message =~ "Refreshed pending development candidate"
+    calls = File.read!(ctx.log)
+    refute calls =~ "stop\t"
+    refute calls =~ ~r/(^|\n)rm\tsymphony-review-service\t/
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image"
+  end
+
+  test "failed replacement readiness retains the original rollback image and remains recoverable", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    previous = File.read!(Path.join(journal, "previous.env"))
+    File.write!(ctx.state, "false")
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "candidate is not ready"
+    assert File.read!(Path.join(journal, "image")) == "fixture-claude-image-new\n"
+    assert File.read!(Path.join(journal, "previous.env")) == previous
+    assert File.read!(ctx.state <> ".backup.image") == "fixture-image"
+    ready_curl!(ctx)
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "Prior runner restored"
+    assert File.read!(ctx.state <> ".image") == "fixture-image"
+  end
+
+  test "development refresh recovers a journal after the old candidate committed and backup was removed", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    # The previous transition passed readiness and removed its backup, but died before journal cleanup.
+    File.rm!(ctx.state <> ".backup")
+    ready_curl!(ctx)
+    env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Runner transition complete: claude"
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
+    refute File.exists?(journal)
+  end
+
+  test "runner status reports a restarting container rather than claiming it is running", ctx do
+    assert {_, 0} = launch(ctx, "start")
+    assert {message, 0} = launch_args(ctx, ["runner", "status"], [{"FIXTURE_RESTARTING", "true"}])
+    assert message =~ "Isolated worker: restarting"
+    refute message =~ "Isolated Symphony: running"
   end
 
   test "development namespace separates container, storage, native login and image identities", ctx do
