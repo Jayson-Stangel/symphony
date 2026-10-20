@@ -50,13 +50,14 @@ defmodule SymphonyElixir.AgentSelectionTest do
   test "Claude schema delegates nonblank model IDs to native runtime, with Sonnet as default" do
     assert {:ok, defaults} = Schema.parse(%{})
     assert defaults.claude.model == "sonnet"
+    assert {:ok, %{claude: %{model: "sonnet"}}} = Schema.parse(%{"claude" => %{"model" => nil}})
 
     for model <- ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1 future-native-model-99 opusplan Opus) do
       assert {:ok, config} = Schema.parse(%{"claude" => %{"model" => model}})
       assert config.claude.model == model
     end
 
-    for model <- ["", "  ", String.duplicate("a", 257), %{}, 123] do
+    for model <- ["", "  ", "\u00A0", String.duplicate("a", 257), %{}, 123] do
       assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"claude" => %{"model" => model}})
       assert message =~ "claude.model"
     end

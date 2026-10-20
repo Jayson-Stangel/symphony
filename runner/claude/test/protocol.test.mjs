@@ -22,7 +22,7 @@ test('start delegates nonblank model IDs to the native runtime without rewriting
     const command = { ...start, config: { ...start.config, model } };
     assert.deepEqual(parseCommand(JSON.stringify(command)), { ...command, skills: {} });
   }
-  for (const model of ['', '   ', 'a'.repeat(257), 123, null, undefined]) {
+  for (const model of ['', '   ', '\u00A0', 'a'.repeat(257), 123, null, undefined]) {
     assert.throws(() => parseCommand(JSON.stringify({ ...start, config: { ...start.config, model } })));
   }
 });

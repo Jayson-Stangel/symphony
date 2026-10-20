@@ -297,7 +297,7 @@ defmodule SymphonyElixir.Config.Schema do
         schema
         |> cast(attrs, @fields, empty_values: [])
         |> validate_length(:model, min: 1, max: 256)
-        |> validate_format(:model, ~r/\S/)
+        |> validate_format(:model, ~r/(*UCP)\S/u)
         |> validate_inclusion(:effort, ~w(low medium high xhigh max))
         |> validate_number(:max_concurrent_agents, greater_than: 0)
         |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
