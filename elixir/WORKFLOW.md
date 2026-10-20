@@ -138,9 +138,18 @@ upload the bytes with the returned headers, then attach the resulting asset URL
 to this issue with a descriptive title. Embed screenshots in the existing workpad
 for inline review. Record the tested revision, command/result, and viewport or
 other context alongside each artifact. Inspect artifacts for secrets or private
-data before uploading; publish a sanitized copy when needed.
+data before uploading; publish a sanitized copy when needed. A verified sanitized
+replacement satisfies this requirement for its unsafe original. Record the
+substitution without revealing removed data; never upload the unsafe original.
 
-Read back the issue attachments and workpad to verify every artifact is linked
+Require a successful upload HTTP status (`curl --fail-with-body` or equivalent);
+a successful tool call or a created attachment does not prove the bytes arrived.
+Retrieve the published asset through authorized Linear access and compare its
+byte count and SHA-256 with the intended local file (the sanitized copy when
+applicable). Use an authorized download link or Linear interface when required;
+do not expose credentials or introduce raw-token shell helpers. Record the
+verification result. An inaccessible, truncated, or mismatched asset is unpublished.
+Read back the issue attachments and workpad to verify each verified asset is linked
 to the correct issue. On retry or continuation, reuse verified attachments;
 publish any missing artifacts and identify fresh evidence when the candidate
 changes. Preserve local evidence until publication is verified. If uploading or
@@ -378,7 +387,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
-- Every generated evidence artifact is attached to this Linear issue, linked in the workpad, and verified by read-back.
+- Every evidence artifact or its sanitized replacement is attached to this Linear issue, linked in the workpad, and verified by asset retrieval and read-back.
 - Validation/tests are green for the latest commit.
 - PR feedback sweep is complete and no actionable comments remain.
 - Every configured automated reviewer has completed review of the latest PR head, all actionable findings are resolved, and the workpad records the reviewed SHA and review evidence.
