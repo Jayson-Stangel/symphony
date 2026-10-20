@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 const mode = readFileSync('peer-mode', 'utf8').trim();
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
-send({ v: mode === 'bad-version' ? 9 : 1, type: 'hello', sdk: '0.3.303', cli: '2.1.303', policy: 1 });
+send({ v: mode === 'bad-version' ? 9 : 1, type: 'hello', protocol: mode === 'bad-protocol' ? 9 : 1,
+  sdk: mode === 'bad-sdk' ? 'x'.repeat(129) : mode === 'future-runtime' ? '0.999.0' : 'fixture-sdk',
+  cli: mode === 'future-runtime' ? '9.999.0' : 'fixture-cli', policy: mode === 'bad-policy' ? 9 : 1 });
 let active, activePrompt;
 for await (const line of createInterface({ input: process.stdin })) {
   const c = JSON.parse(line);

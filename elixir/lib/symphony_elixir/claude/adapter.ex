@@ -50,7 +50,8 @@ defmodule SymphonyElixir.Claude.Adapter do
     start_id = new_id()
     binding = Keyword.get(opts, :tool_binding, Tracker.bind_agent_tools())
 
-    with {:ok, %{"v" => 1, "type" => "hello", "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1}} <- frame(port, deadline(35_000)),
+    with {:ok, %{"v" => 1, "type" => "hello", "protocol" => 1, "sdk" => sdk, "cli" => cli, "policy" => 1}}
+         when is_binary(sdk) and byte_size(sdk) in 1..128 and is_binary(cli) and byte_size(cli) in 1..128 <- frame(port, deadline(35_000)),
          :ok <-
            write(port, %{
              v: 1,

@@ -35,6 +35,9 @@ hooks:
     fi
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
+# Optional Claude settings use the same workspace/hooks and scheduler contract.
+# claude.model defaults to sonnet; any nonblank identifier up to 256 characters
+# passes unchanged to the native runtime, which owns model support validation.
 agent:
   max_concurrent_agents: 10
   max_turns: 20

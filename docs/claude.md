@@ -65,18 +65,13 @@ claude:
   stall_timeout_ms: 300000
 ```
 
-`claude.model` accepts the family aliases `sonnet` (default), `opus`, `haiku`,
-and `fable`, or the current model IDs `claude-opus-5-5`, `claude-sonnet-5-5`,
-`claude-haiku-5-5`, and `claude-fable-5-1`. These match Anthropic's
-[model lineup](https://platform.claude.com/docs/en/models/overview) and
-[Claude Code aliases](https://code.claude.com/docs/en/model-config), checked
-October 20, 2026. For example, set `claude.model: claude-opus-5-5` to select
-Opus 5.5. Values are passed unchanged to the SDK; aliases follow the pinned
-Claude Code runtime's resolution. Account access and included subscription
-allowance still determine whether a selected model can run. Model validation
-is not live qualification: the original live pilot exercised Sonnet only.
-Unknown IDs, special modes such as `opusplan`, and provider-specific IDs remain
-rejected by both workflow and runner validation.
+`claude.model` defaults to `sonnet` and accepts nonblank identifiers up to 256
+characters. Values pass unchanged to the SDK; the pinned native runtime owns
+aliases, supported IDs and unsupported-model errors. Symphony keeps no parallel
+model catalog. Account access and included subscription allowance still determine
+whether a selected model can run. Passing configuration validation is not live
+model qualification. Native failures continue through the existing session error
+classification and retry behavior; this change does not add a new error policy.
 
 `claude.effort` controls reasoning depth through the SDK's `effort` option.
 Accepted levels are `low`, `medium`, `high`, `xhigh`, and `max`, as documented in
@@ -257,7 +252,12 @@ failed drain.
 
 ## Runtime contract
 
-The image pins SDK 0.3.303, Claude Code 2.1.303 and Node 24.18.0. A bounded stdio
+The production `runner/claude/package.json` and generated lock own the SDK/CLI
+pins. Node validates the installed SDK and measured native CLI against those pins;
+the qualification lab reuses the same dependencies. Elixir checks protocol/policy
+version 1 and the required metadata shape, treating dependency version strings as
+bounded diagnostics. A compatible dependency upgrade therefore requires no
+synchronized Elixir version edit. The Dockerfile pins Node. A bounded stdio
 protocol separates OTP scheduling/tracker ownership from one native SDK
 conversation. Tool replies remain asynchronous; native outcomes are correlated
 with the current user input. Plain assistant prose, partial EOF and malformed
