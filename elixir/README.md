@@ -517,6 +517,19 @@ level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, one-worker limits, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 The state API adds an `agent` object while retaining existing token fields.
+Model-free Claude readiness runs in one supervised task at startup, on explicit
+refresh/control, and every 30 seconds after completion. Failed observations recover
+automatically after repair; they are not persisted as account pauses. Snapshots,
+drain and worker exits remain responsive during native checks. GNU timeout bounds
+the external check group to 35 seconds, including after task/scheduler loss; an old
+OS check may briefly overlap restart until that deadline. Explicit runtime pauses,
+quota cooldowns, drain and cleanup safety remain enforced. Ambiguous unscoped
+legacy auth/policy pause files still require explicit recheck after repair.
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission still validates the attestation.
+
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck

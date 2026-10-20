@@ -126,8 +126,31 @@ longer gate dispatch, including after restart; work is revalidated against the
 current tracker state and resumes in its preserved workspace. A repeated quota
 rejection defers the next attempt again.
 
-Native authentication and shared policy failures still require explicit operator
-recovery. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
+Model-free readiness failures remain observations and are not written as durable
+account pauses. Startup returns while checking; one supervised check refreshes
+the observation every 30 seconds after completion, and on refresh/resume/recheck.
+Repairing authentication or readiness is recognized automatically without restart
+or recheck when no separate durable runtime pause exists. Explicit drain remains
+in force. The last completed observation remains visible during periodic refresh;
+explicit resume/recheck waits asynchronously for verification without blocking
+snapshots, drain or worker exits. Drain cancels a waiting resume.
+
+The external check uses GNU timeout to kill its own process group after at most
+35 seconds; native version/authentication checks retain 15-second limits. If the
+supervised task or scheduler dies, a model-free OS check may survive until that
+deadline, so a restart can briefly overlap the old bounded check. No model request
+is made. This does not promise immediate OS-process quiescence on owner loss.
+
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission still validates the attestation.
+
+Authentication and shared policy failures reported by actual native sessions still
+require explicit operator recovery. Older readiness failures and actual session
+startup failures wrote indistinguishable unscoped pause records. Those ambiguous
+legacy records remain intact and still need explicit recheck after repair; the
+automatic-observation repair does not resolve that migration limitation. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and

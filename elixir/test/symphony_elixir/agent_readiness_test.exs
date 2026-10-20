@@ -46,6 +46,12 @@ defmodule SymphonyElixir.AgentReadinessTest do
 
     assert %{ready: false} = AgentReadiness.check(Keyword.put(ctx.opts, :helper_path, "/missing"))
     File.write!(ctx.helper, Jason.encode!(good))
+
+    for timeout <- [0, -1, "unbounded"] do
+      assert %{ready: false, code: "runtime_unavailable"} = AgentReadiness.check(Keyword.put(ctx.opts, :timeout_ms, timeout))
+    end
+
+    assert %{ready: false, code: "runtime_unavailable"} = AgentReadiness.check(Keyword.put(ctx.opts, :node_path, 123))
     File.chmod!(ctx.node, 0o644)
     assert %{ready: false} = AgentReadiness.check(ctx.opts)
     previous = System.get_env("ANTHROPIC_API_KEY")
@@ -79,6 +85,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
   test "resume refuses auth and policy pauses while quota cooldown is reported explicitly", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     for kind <- [:auth_required, :policy_blocked] do
@@ -101,12 +108,14 @@ defmodule SymphonyElixir.AgentReadinessTest do
   test "drain survives orchestrator restart and account changes block explicit recovery", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
     assert {:ok, %{draining: true, running: 0}} = GenServer.call(pid, {:agent_control, :drain, false})
     guard = Path.join([ctx.root, "state", "agent-upgrade-unresumed"])
     File.write!(guard, "unresumed\n")
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     GenServer.stop(pid)
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
@@ -130,6 +139,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     File.mkdir_p!(guard)
     File.write!(Path.join([ctx.root, "state", "agent-draining"]), "draining\n")
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
@@ -147,6 +157,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
     File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
     snapshot = Orchestrator.snapshot(__MODULE__.Probe, 5_000)
     assert snapshot.agent.readiness.ready == false
     assert snapshot.running == []
@@ -181,6 +192,221 @@ defmodule SymphonyElixir.AgentReadinessTest do
       after
         GenServer.stop(pid)
       end
+    end
+  end
+
+  test "repaired observations recover on the scheduled refresh without durable pause or manual recheck", ctx do
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    assert %{ready: false, code: "auth_required"} = :sys.get_state(pid).readiness
+    assert :ready = AgentPause.current()
+    refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {timer, token} = :sys.get_state(pid).readiness_timer
+    assert Process.read_timer(timer) in 1..30_000
+    send(pid, {:refresh_agent_readiness, token})
+    await_check(pid)
+    assert :sys.get_state(pid).readiness.ready
+    assert :sys.get_state(pid).expected_profile == String.duplicate("a", 64)
+    assert :sys.get_state(pid).draining
+    assert %{ready: false, reason: "draining"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.admission
+    assert :ready = AgentPause.current()
+  end
+
+  test "healthy repeated checks preserve ambiguous legacy policy pauses", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    assert :ok = AgentPause.record(:policy_blocked)
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    evidence = File.read!(path)
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    assert :sys.get_state(pid).readiness.ready
+    assert %{ready: false, reason: "policy_blocked"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.admission
+    assert %{queued: true} = GenServer.call(pid, :request_refresh)
+    await_check(pid)
+    assert File.read!(path) == evidence
+  end
+
+  test "slow checks leave startup, snapshots, drain and worker exits responsive", ctx do
+    pid_file = Path.join(ctx.root, "native-pid")
+    File.write!(ctx.helper, "{}")
+    File.write!(ctx.node, "#!/bin/sh\necho $$ > '#{pid_file}'\nexec sleep 10\n")
+    started = System.monotonic_time(:millisecond)
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: Keyword.put(ctx.opts, :timeout_ms, 500))
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert System.monotonic_time(:millisecond) - started < 250
+    await(fn -> File.exists?(pid_file) end)
+    assert %{ready: false, code: "checking"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.readiness
+    task = :sys.get_state(pid).readiness_task
+    assert %{queued: true} = GenServer.call(pid, :request_refresh, 200)
+    assert :sys.get_state(pid).readiness_task == task
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false}, 200)
+
+    issue = %Issue{id: "exit-during-readiness", identifier: "PROBE-EXIT", title: "Exit", state: "In Progress"}
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(worker, :finish) end)
+
+    :sys.replace_state(pid, fn state ->
+      entry = %{
+        pid: worker,
+        ref: Process.monitor(worker),
+        identifier: issue.identifier,
+        issue: issue,
+        started_at: DateTime.utc_now(),
+        session_id: nil,
+        codex_app_server_pid: nil,
+        codex_input_tokens: 0,
+        codex_output_tokens: 0,
+        codex_total_tokens: 0,
+        last_codex_timestamp: nil,
+        last_codex_message: nil,
+        last_codex_event: nil
+      }
+
+      %{state | running: %{issue.id => entry}, claimed: MapSet.new([issue.id])}
+    end)
+
+    send(worker, :finish)
+    await(fn -> map_size(:sys.get_state(pid).running) == 0 end)
+    assert Map.has_key?(:sys.get_state(pid).retry_attempts, issue.id)
+    assert :sys.get_state(pid).readiness_task == task
+    await_check(pid)
+    refute :sys.get_state(pid).readiness.ready
+    assert :ready = AgentPause.current()
+    assert_native_gone(pid_file)
+  end
+
+  test "failed observations block new admission while an established worker remains owned", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    issue = %Issue{id: "existing-session", identifier: "PROBE-ACTIVE", title: "Existing", state: "In Progress"}
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(worker, :finish) end)
+
+    :sys.replace_state(pid, fn state ->
+      entry = %{
+        pid: worker,
+        ref: Process.monitor(worker),
+        identifier: issue.identifier,
+        issue: issue,
+        started_at: DateTime.utc_now(),
+        session_id: nil,
+        codex_app_server_pid: nil,
+        codex_input_tokens: 0,
+        codex_output_tokens: 0,
+        codex_total_tokens: 0,
+        last_codex_timestamp: nil,
+        last_codex_message: nil,
+        last_codex_event: nil
+      }
+
+      %{state | running: %{issue.id => entry}, claimed: MapSet.new([issue.id])}
+    end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    File.write!(ctx.helper, Jason.encode!(%{code: "overage_attestation_expired"}))
+    assert %{queued: true} = GenServer.call(pid, :request_refresh)
+    await_check(pid)
+    assert %{ready: false, reason: "overage_attestation_expired"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.admission
+    assert Process.alive?(worker)
+    assert :sys.get_state(pid).running[issue.id].pid == worker
+    assert :ready = AgentPause.current()
+    send(worker, :finish)
+    await(fn -> map_size(:sys.get_state(pid).running) == 0 end)
+  end
+
+  test "drain cancels a pending resume and late results cannot undrain or change the pinned profile", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    release = Path.join(ctx.root, "release")
+    started = Path.join(ctx.root, "started")
+    File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
+    File.write!(ctx.node, "#!/bin/sh\ntouch '#{started}'\nwhile [ ! -f '#{release}' ]; do sleep 0.01; done\ncat \"$1\"\n")
+    caller = Task.async(fn -> GenServer.call(pid, {:agent_control, :resume, false}, 2_000) end)
+    await(fn -> File.exists?(started) end)
+    assert {:error, :readiness_check_in_progress} = GenServer.call(pid, {:agent_control, :resume, false}, 200)
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false}, 200)
+    assert {:error, :agent_drained} = Task.await(caller)
+    File.write!(release, "ready")
+    await_check(pid)
+    assert :sys.get_state(pid).draining
+    assert :sys.get_state(pid).expected_profile == String.duplicate("a", 64)
+    assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+  end
+
+  test "task crashes and scheduler restart leave only deadline-bounded native checks", ctx do
+    pid_file = Path.join(ctx.root, "native-pids")
+    File.write!(ctx.helper, "{}")
+    File.write!(ctx.node, "#!/bin/sh\necho $$ >> '#{pid_file}'\nexec sleep 10\n")
+    opts = [name: __MODULE__.Probe, readiness_opts: Keyword.put(ctx.opts, :timeout_ms, 200)]
+    {:ok, pid} = Orchestrator.start_link(opts)
+    await(fn -> File.exists?(pid_file) end)
+    task = :sys.get_state(pid).readiness_task
+    Process.exit(task.pid, :kill)
+    await_check(pid)
+    assert %{ready: false, code: "runtime_unavailable"} = :sys.get_state(pid).readiness
+    assert :ready = AgentPause.current()
+    GenServer.stop(pid)
+    {:ok, pid} = Orchestrator.start_link(opts)
+    await(fn -> length(File.read!(pid_file) |> String.split("\n", trim: true)) == 2 end)
+    task = :sys.get_state(pid).readiness_task
+    GenServer.stop(pid)
+    refute Process.alive?(task.pid)
+    assert_native_gone(pid_file)
+  end
+
+  defp await_check(pid) do
+    await(fn ->
+      state = :sys.get_state(pid)
+      is_nil(state.readiness_task) and state.readiness[:code] != "checking"
+    end)
+  end
+
+  defp assert_native_gone(path) do
+    if File.dir?("/proc/self") do
+      pids = File.read!(path) |> String.split("\n", trim: true)
+      await(fn -> Enum.all?(pids, &(not native_running?(&1))) end)
+    end
+  end
+
+  defp native_running?(pid) do
+    case File.read("/proc/#{pid}/stat") do
+      {:ok, data} -> (data |> String.split(") ") |> List.last() |> String.first()) not in ["Z", "X"]
+      _ -> false
+    end
+  end
+
+  defp await(check, attempts \\ 300)
+  defp await(_check, 0), do: flunk("readiness state did not converge")
+
+  defp await(check, attempts) do
+    if check.() do
+      :ok
+    else
+      Process.sleep(5)
+      await(check, attempts - 1)
     end
   end
 
