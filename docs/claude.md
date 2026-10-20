@@ -326,8 +326,11 @@ Marker persistence is best effort if the state filesystem is unavailable; the
 running scheduler still refuses admission until controlled runtime replacement.
 Restart durability cannot be promised when that filesystem cannot persist evidence;
 replace the container rather than restart only its scheduler in that condition.
-Helper death before native ownership publication remains a limitation requiring
-replacement, not permission to rediscover or broadly kill unknown processes. No
+Helper-reported startup failure without its matching cleanup acknowledgement
+remains gated. A separate original gap remains: untrappable worker death before
+`worker_agent_session` publication leaves no captured ownership, so the scheduler
+may retry without confirmed native cleanup. This repair does not close that unsafe
+window; future ownership publication needs an explicit design and proof. No
 new supervision service, native guardian or ownership protocol is introduced.
 
 Token usage appears as Claude reports assistant steps, including cached input.

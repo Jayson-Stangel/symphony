@@ -746,11 +746,29 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "invalid state-root exceptions do not escape the cleanup recorder" do
+    Application.put_env(:symphony_elixir, :agent_state_root, 123)
+    assert :ok = Adapter.record_unconfirmed_cleanup(nil)
+  end
+
+  test "unpublished worker ownership remains an explicit retry gap", ctx do
+    ref = make_ref()
+    entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+    assert state.retry_attempts[ctx.issue.id].attempt == 1
+    Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+    refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+    # This state-machine proof claims neither native cleanup nor a safe retry:
+    # no captured session exists for the scheduler to clean before handoff.
+  end
+
   test "missing captured identity cannot mask cleanup failure or prevent its marker", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     Port.close(session.port)
     session = Map.delete(%{session | owned_native: [%{"pid" => 999_999, "start" => "0"}]}, :identity)
-    assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(%{adapter: Adapter, native: session})
+    captured = %{adapter: Adapter, native: session}
+    assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
     assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
   end
 

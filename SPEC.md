@@ -2431,8 +2431,10 @@ any detached native group was cleaned. Actual Claude cleanup failure retains
 `cleanup_restart_required` through healthy observations and resume/recheck. Existing
 marker persistence remains best effort under filesystem failure; current admission
 stays blocked, but durable recovery requires controlled container replacement when
-evidence cannot be persisted. The pre-publication native ownership gap remains
-fail-closed and is not repaired by a new process service or protocol here. Public
+evidence cannot be persisted. Helper-reported missing startup cleanup acknowledgement remains gated. A separate
+original gap remains: untrappable worker loss before session publication can retry
+without captured ownership or confirmed native cleanup. This unsafe window remains
+unrepaired; no new process service or ownership protocol is introduced here. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
