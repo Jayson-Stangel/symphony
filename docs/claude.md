@@ -103,7 +103,6 @@ shows status; edit `WORKFLOW.md` to change the setting.
 `agent.max_turns` still bounds Symphony continuation turns, while
 `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
 unknown keys, arbitrary commands, authentication overrides and raw SDK options.
-The initial worker cap is one even if general agent limits are higher.
 
 Root AGENTS.md and CLAUDE.md are combined without generating tracked files.
 Workers must read applicable directory instructions before editing. Canonical

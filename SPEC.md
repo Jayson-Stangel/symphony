@@ -2370,8 +2370,8 @@ The Elixir implementation can select one coding provider at startup. Codex is
 the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
-scheduling authority. Selection survives workflow reload. One worker is supported,
-with Sonnet as the default. Workflow and helper validation accept the current
+scheduling authority. Selection survives workflow reload. Both providers use the
+configured global and per-state concurrency limits, with Sonnet as Claude default. Workflow and helper validation accept the current
 Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
