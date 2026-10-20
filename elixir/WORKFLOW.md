@@ -375,8 +375,9 @@ Use this only when completion is blocked by missing required tools or missing au
 1. In `Human Review`, end the turn without polling, coding or changing ticket content.
 2. The operator uses the existing tracker flow to request `Rework` or approve `Merging`.
 3. On `Rework`, inspect current feedback and follow the rework flow.
-4. On `Merging`, follow `symphony-land`, preserving all required checks and human
-   approval boundaries. Handoff or pending bot review is not merge approval.
+4. On `Merging`, open and follow `symphony-land`, preserving all required checks and
+   human approval boundaries. Do not call `gh pr merge` directly. Handoff or pending
+   bot review is not merge approval.
 5. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
