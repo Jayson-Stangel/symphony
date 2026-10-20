@@ -200,12 +200,17 @@ writing. Existing `claude-tools` files remain legacy evidence: matching issues
 receive a recovery notice; other issues can run. Legacy `tool_outcome_uncertain`
 and worker `protocol_error` pause records no longer block project dispatch or
 mask later auth/quota/policy pauses. No automatic replay or rollback is inferred.
+This bounded issue-local reader remains compatibility for retained state volumes,
+not a dispatch gate. Retire it only through evidence-preserving cleanup after
+legacy volumes have been inventoried; ordinary attempts never delete legacy files,
+and there is no automatic expiry or purge. The existing explicit reconciliation
+control remains an operator action. No new intent records are written.
 
 `Tracker tool outcome` logs correlate issue and tool IDs with provider, document
-SHA-256, parsed operation type, phase, elapsed time, HTTP status, GraphQL response
-category (`request_error`, `execution_error`,
-`success` or `malformed`), allowlisted GraphQL codes (including `INVALID_INPUT`)
-and transport reason. `accepted` records successful delivery (Claude
+SHA-256, phase, elapsed time, HTTP status, response/delivery reason, allowlisted
+GraphQL codes (including `INVALID_INPUT`) and transport reason. The hash
+correlates requests without parsing GraphQL or inferring operation kind, execution
+certainty or whether an error preceded a write. `accepted` records successful delivery (Claude
 acknowledgement or a Codex RPC write); `delivery_failed` records a lost reply or
 acknowledgement. Neither phase asserts the external effect was reconciled. Query text, variables, error bodies and credentials are not
 included in these diagnostics. These fields help reconcile a write but do not

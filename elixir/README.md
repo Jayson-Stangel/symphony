@@ -1,10 +1,10 @@
 # Symphony Elixir
 
-The workflow template requires workers to publish generated validation artifacts
-to the Linear issue, link them in the existing workpad, and verify those links
-before handoff or completion. Evidence must come from actual validation of the
-stated revision and be inspected before it is cited. Existing project workflows
-must adopt `Evidence publication (required)` explicitly; updates preserve them.
+The workflow template asks workers to record actual validation results and durable
+acceptance evidence. Publish artifacts needed for review or explicitly required by
+the repository/ticket; temporary logs do not all require upload. Evidence must match
+the stated revision and remain accessible after workspace cleanup. Existing project
+workflows are preserved; adopt `Evidence for review` deliberately when changing policy.
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -43,7 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
-See [tracker diagnostics](docs/logging.md).
+See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
+correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
+execution certainty. Existing issue-local legacy notices preserve old evidence
+without gating dispatch; no new intent files or automatic purge are introduced.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -92,11 +95,11 @@ For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create
 tracker. These states must not overlap active or terminal states. Symphony polls them alongside
 active work and shows matching issues in the dashboard and JSON API, including after a restart.
 Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
-`Human Review` is reserved for validated work with an attached PR whose automated review has
-completed for the latest commit and whose actionable findings are resolved. Pending automated
-review and feedback fixes remain `In Progress` (or `Rework` during a rework attempt); green CI or
-an empty comment list alone does not authorize handoff. See the automated PR review gate in
-[`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
+`Human Review` holds validated PRs awaiting human assessment. Record available feedback
+and pending external reviews, then end the worker turn. Required repository checks,
+reviews and human approval remain merge obligations; optional bot latency is not a
+reason to occupy a coding worker. See Review handoff in [`WORKFLOW.md`](WORKFLOW.md).
+Move an unblocked issue back to
 `Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
 blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
 Tracker read failures preserve the last successful blocked view until polling recovers.

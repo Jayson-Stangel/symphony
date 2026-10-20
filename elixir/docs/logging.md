@@ -44,12 +44,12 @@ When logging Codex execution lifecycle events, include:
 Codex and Claude share redacted `Tracker tool outcome` diagnostics. Search by
 `issue_id`, `issue_identifier` and `tool_id`; Claude includes its session ID, while
 Codex includes the native thread ID (startup callbacks can precede a turn ID).
-The JSON diagnostics record provider, operation type, document SHA-256, phase,
-elapsed time, HTTP status, GraphQL response category and allowlisted GraphQL/transport codes.
-`graphql_result=request_error` identifies a definite pre-execution rejection;
-`execution_error` can include partial writes or null bubbling. `INVALID_INPUT`
-is retained as a diagnostic code, not treated as proof of non-execution. These
-categories are diagnostic only: no tracker outcome suppresses delivery to the
+The JSON diagnostics record provider, document SHA-256, phase, elapsed time,
+HTTP status, response/delivery reason and allowlisted GraphQL/transport codes.
+The request fingerprint correlates calls without parsing or classifying GraphQL.
+Operation kind, execution certainty and request-versus-execution response
+categories are not inferred. `INVALID_INPUT` remains a diagnostic code; it is not
+proof that a write did not execute. No tracker outcome suppresses delivery to the
 agent or pauses project dispatch. No raw query, variables, response body,
 exception text or credential is stored in these diagnostics.
 
@@ -59,3 +59,11 @@ affected issue needs recovery. The agent owns readback and correction; HTTP 200
 or a failed response alone cannot establish whether a write occurred. Legacy
 intent files remain issue-local recovery evidence; their phase alone does not
 prove execution or rollback. New calls do not create dispatch-gating markers.
+
+The issue-local legacy intent notice is retained for existing state volumes only.
+It reads a bounded metadata record to identify the matching issue, never infers
+execution from its phase, and does not block dispatch. New calls do not create
+these files. Keep the notice and ignored legacy pause kinds until retained volumes
+have been inventoried and an evidence-preserving retirement can be made; this is
+not a runtime gate or automatic purge. Files are never deleted by ordinary
+attempts. The existing explicit reconciliation control remains operator-invoked.
