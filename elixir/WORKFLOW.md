@@ -303,7 +303,9 @@ its AGENTS.md and ticket validation, not only GitHub branch-protection settings.
 available actionable feedback through the sweep above. Do not impose a separate
 requirement that every installed bot complete a review unless the repository or
 ticket explicitly requires it. Record the reviewed head and pending external
-reviews accurately; handoff is not approval or permission to merge.
+reviews accurately, including each required reviewer or process and the source
+of that requirement in the existing workpad; handoff is not approval or permission
+to merge.
 
 After implementation, required validation and available feedback are complete,
 move to `Human Review` and end the turn. The existing tracker flow resumes work
@@ -377,7 +379,9 @@ Use this only when completion is blocked by missing required tools or missing au
 3. On `Rework`, inspect current feedback and follow the rework flow.
 4. On `Merging`, open and follow `symphony-land`, preserving all required checks and
    human approval boundaries. Do not call `gh pr merge` directly. Handoff or pending
-   bot review is not merge approval.
+   bot review is not merge approval. Verify each pending required review from the
+   workpad against the current head; if required external review or CI is still
+   pending, record it, return to `Human Review` and end the turn.
 5. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
