@@ -159,8 +159,12 @@ http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interaction
 are shared through `PLAYWRIGHT_BROWSERS_PATH`; projects using a different Playwright version
 may need to set that variable to a writable workspace directory and install their own
 matching browser before running tests. The workflow template includes web app
-validation guidance. Existing project workflows are preserved, so copy that section into
-them explicitly when adopting this capability.
+validation and evidence publication guidance. Workers must attach every generated
+review artifact to its Linear issue, link it in the workpad, and verify publication
+before handoff or completion. Local paths alone are insufficient because completed
+workspaces may be removed. Existing project workflows are preserved, so copy the
+evidence publication and app validation sections into them explicitly when adopting
+this capability.
 
 To verify just the browser layer without credentials or a running listener:
 

@@ -1,5 +1,11 @@
 # Symphony Elixir
 
+The workflow template requires workers to publish generated validation artifacts
+to the Linear issue, link them in the existing workpad, and verify those links
+before handoff or completion. Evidence must come from actual validation of the
+stated revision and be inspected before it is cited. Existing project workflows
+must adopt `Evidence publication (required)` explicitly; updates preserve them.
+
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 

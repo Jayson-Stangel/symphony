@@ -334,16 +334,30 @@ query IssueFieldArgs {
 }
 ```
 
-### Upload a video to a comment
+### Attach generated evidence to the issue
 
-Do this in three steps:
+Apply this to every generated screenshot, recording, report, log, or other
+review artifact. Inspect the file for secrets/private data first and sanitize
+when needed. A local path or an upload on the PR alone is not delivered evidence.
+
+Do this in four steps:
 
 1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
    any required upload headers.
 2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
    headers returned by `fileUpload`.
-3. Call `linear_graphql` again with `commentCreate` (or `commentUpdate`) and
-   include the resulting `assetUrl` in the comment body.
+3. Call `attachmentLinkURL` with the current issue ID, resulting `assetUrl`, and
+   a descriptive title (see the URL attachment example above). Update the
+   existing workpad with the asset link and its tested revision, command/result,
+   and viewport or other context. Embed screenshots with `![description](assetUrl)`.
+4. Read back the issue attachments and workpad and verify the asset links target
+   this issue. Preserve the local file until verified; on continuation reuse
+   verified attachments and publish missing files. If upload or linking fails,
+   record the error and preserved path and follow the workflow's blocked-access
+   policy instead of claiming publication or handing off with missing evidence.
+
+Use the returned asset URL for permanent links, never the temporary signed
+upload URL. Keep signed URLs and upload headers out of comments and logs.
 
 Useful mutations:
 
