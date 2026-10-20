@@ -27,7 +27,9 @@ defmodule SymphonyElixir.AgentReadiness do
 
     with {:ok, env} <- Config.claude_child_environment(),
          true <- File.regular?(node) and File.regular?(helper),
-         {data, status} when byte_size(data) <= 4096 <- System.cmd(node, [helper, "check"], env: env, stderr_to_stdout: true),
+         timeout when is_binary(timeout) <- System.find_executable("timeout"),
+         duration when is_binary(duration) <- check_duration(opts),
+         {data, status} when byte_size(data) <= 4096 <- System.cmd(timeout, ["--signal=KILL", duration, node, helper, "check"], env: env, stderr_to_stdout: true),
          {:ok, value} when is_map(value) <- Jason.decode(data) do
       interpret(status, value)
     else
@@ -36,6 +38,18 @@ defmodule SymphonyElixir.AgentReadiness do
     end
   rescue
     _ -> blocked("runtime_unavailable")
+  end
+
+  # GNU timeout owns and kills the complete model-free check process group. Port
+  # closure alone does not terminate an external helper on scheduler/task exit.
+  defp check_duration(opts) do
+    case Keyword.get(opts, :timeout_ms, 35_000) do
+      milliseconds when is_integer(milliseconds) and milliseconds > 0 ->
+        :erlang.float_to_binary(min(milliseconds, 35_000) / 1_000, decimals: 3) <> "s"
+
+      _ ->
+        nil
+    end
   end
 
   defp interpret(0, %{"ready" => true, "profile" => profile, "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1, "overages_disabled_attested" => true, "attested_at" => at})

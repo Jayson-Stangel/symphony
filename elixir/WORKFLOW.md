@@ -47,8 +47,6 @@ codex:
   reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: workspace-write
-  live_max_total_tokens: 500000
-  live_max_turns: 5
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
