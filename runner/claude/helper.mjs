@@ -70,6 +70,7 @@ export class Helper {
     if (this.state !== 'new') throw new RuntimeError('session_already_started');
     if (realpathSync(command.workspace) !== process.cwd()) throw new RuntimeError('workspace_identity_mismatch');
     this.sessionId = command.session_id;
+    this.startRequest = command.request_id;
     this.config = command.config;
     this.state = 'starting';
     this.skillPlugin = skillPlugin(command.workspace, command.skills ?? {});
@@ -268,7 +269,7 @@ export function serve(context, options = {}) {
     buffer = Buffer.alloc(0);
     const code = error instanceof RuntimeError && ['unsupported_tool_schema', 'duplicate_tool_name', 'native_ownership_unavailable', 'native_initialization_timeout', 'unexpected_native_restart'].includes(error.message) ? error.message : 'protocol_error';
     try { send({ v: 1, type: 'error', code }); } catch { /* Broken or full output. */ }
-    void helper.stop('protocol_error');
+    void helper.stop(helper.startRequest ?? 'protocol_error');
   };
   process.on('unhandledRejection', fail);
   process.on('uncaughtException', fail);

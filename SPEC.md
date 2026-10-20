@@ -2392,7 +2392,11 @@ helper timeouts and tracker delivery failures retry the attempt with scheduler
 backoff in its retained workspace. The runner MUST NOT replay tracker mutations.
 The next prompt requires live target readback before uncertain writes are retried.
 Explicit input/permission requirements and turn-limit stops remain blocked;
-startup ownership/initialization failures remain fail-closed.
+transient startup protocol/native initialization failures retry only after a
+stopped acknowledgement correlated to the attempted session/request confirms
+owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
+stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
+crashes before ownership handoff cannot retry without cleanup proof.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
