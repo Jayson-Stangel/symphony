@@ -355,10 +355,15 @@ defmodule SymphonyElixir.StatusDashboard do
     name = if provider in [:claude, "claude"], do: "Claude Code", else: "Codex"
     model = agent[:model] || "Not yet reported"
     source = if agent[:model_source] == "last_session" and agent[:model], do: " (last session)", else: ""
-    ["│ Agent: #{name} · #{status}", "│ Model: #{model}#{source}"]
+    ["│ Agent: #{name} · #{status}", "│ Model: #{model}#{source}"] ++ format_agent_effort(agent)
   end
 
   defp format_agent_status(_snapshot), do: []
+
+  defp format_agent_effort(%{provider: provider} = agent) do
+    default = if provider in [:claude, "claude"], do: "Model default", else: "Runner default"
+    ["│ Reasoning: #{agent[:effort] || default} (configured)"]
+  end
 
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do

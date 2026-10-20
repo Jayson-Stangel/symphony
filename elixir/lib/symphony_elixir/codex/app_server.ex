@@ -308,18 +308,20 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_thread(
          port,
          workspace,
-         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
+         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox} = session_policies,
          dynamic_tool_binding
        ) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
-      "params" => %{
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => dynamic_tool_binding.tool_specs
-      }
+      "params" =>
+        %{
+          "approvalPolicy" => approval_policy,
+          "sandbox" => thread_sandbox,
+          "cwd" => workspace,
+          "dynamicTools" => dynamic_tool_binding.tool_specs
+        }
+        |> Map.merge(thread_model_options(session_policies))
     })
 
     case await_response(port, @thread_start_id) do
@@ -332,6 +334,14 @@ defmodule SymphonyElixir.Codex.AppServer do
       other ->
         other
     end
+  end
+
+  defp thread_model_options(settings) do
+    %{
+      "model" => settings.model,
+      "config" => if(settings.reasoning_effort, do: %{"model_reasoning_effort" => settings.reasoning_effort})
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity

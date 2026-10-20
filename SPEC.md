@@ -486,6 +486,12 @@ fields locally if they want stricter startup checks.
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process MUST speak a compatible app-server protocol over stdio.
+- `model` (optional nonblank string)
+  - Sent as `thread/start.model`; omitted/null preserves native runner configuration.
+- `reasoning_effort` (optional nonblank string)
+  - Sent as `thread/start.config.model_reasoning_effort` for the new session.
+  - Omitted/null preserves native runner configuration. Codex validates model/effort support.
+  - Workflow reload changes new sessions; an existing thread retains its original settings.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default: implementation-defined.
 - `thread_sandbox` (Codex `SandboxMode` value)
@@ -2359,9 +2365,13 @@ The Elixir implementation can select one coding provider at startup. Codex is
 the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
-scheduling authority. Selection survives workflow reload. One worker and Sonnet
-are initially supported. Native subscription authentication and a dated
-account-bound disabled-overages attestation gate dispatch without model probes.
+scheduling authority. Selection survives workflow reload. One worker is supported,
+with Sonnet as the default. Workflow and helper validation accept the current
+Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
+Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
+omission preserves the model default. Terminal and web dashboards expose the
+configured effort, also available as `agent.effort` in the state API.
+Native subscription authentication and a dated account-bound disabled-overages attestation gate dispatch without model probes.
 No API-key inference fallback is configured.
 
 Native terminal results must correlate to the current input; text, malformed

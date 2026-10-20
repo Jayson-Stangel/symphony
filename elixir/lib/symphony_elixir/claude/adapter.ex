@@ -58,7 +58,7 @@ defmodule SymphonyElixir.Claude.Adapter do
              session_id: id,
              request_id: start_id,
              workspace: workspace,
-             config: Map.take(Map.from_struct(config), [:model, :max_agentic_turns, :turn_timeout_ms]),
+             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]),
              tools: binding.tool_specs,
              skills: skills,
              instructions: instructions

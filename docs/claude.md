@@ -2,8 +2,8 @@
 
 Symphony can run a local isolated worker through pinned Claude Code and the
 Claude Agent SDK. Codex remains the default. The initial Claude profile supports
-one worker, Sonnet, Docker-compatible Linux isolation, and native Claude Pro/Max
-subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
+one worker, configurable Claude models (Sonnet by default), Docker-compatible
+Linux isolation, and native Claude Pro/Max subscription sign-in (the live qualification used Pro on Linux ARM64). Host and SSH Claude execution are unsupported.
 
 This profile is intended for an owner-operated installation. Permission to offer
 subscription sign-in as a third-party service is a separate distribution question;
@@ -57,12 +57,37 @@ by editing the workflow. Existing Codex settings retain their meaning.
 ```yaml
 claude:
   model: sonnet
+  effort: high # optional; omit or use null for the model default
   max_concurrent_agents: 1
   max_agentic_turns: 50
   read_timeout_ms: 5000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 ```
+
+`claude.model` accepts the family aliases `sonnet` (default), `opus`, `haiku`,
+and `fable`, or the current model IDs `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, and `claude-fable-5-1`. These match Anthropic's
+[model lineup](https://platform.claude.com/docs/en/models/overview) and
+[Claude Code aliases](https://code.claude.com/docs/en/model-config), checked
+October 20, 2026. For example, set `claude.model: claude-opus-5-5` to select
+Opus 5.5. Values are passed unchanged to the SDK; aliases follow the pinned
+Claude Code runtime's resolution. Account access and included subscription
+allowance still determine whether a selected model can run. Model validation
+is not live qualification: the original live pilot exercised Sonnet only.
+Unknown IDs, special modes such as `opusplan`, and provider-specific IDs remain
+rejected by both workflow and runner validation.
+
+`claude.effort` controls reasoning depth through the SDK's `effort` option.
+Accepted levels are `low`, `medium`, `high`, `xhigh`, and `max`, as documented in
+[Claude Code effort levels](https://code.claude.com/docs/en/model-config#adjust-effort-level).
+Omit it or set it to `null` to preserve the native model default. Symphony does
+not turn thinking off or set a fixed token budget. Workflow reload applies the
+new setting to new sessions; an existing session keeps its original effort.
+The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
+(`agent.effort`, null for model default). The displays label it as configured:
+model support and account policies may cap the effective level. The web UI
+shows status; edit `WORKFLOW.md` to change the setting.
 
 `agent.max_turns` still bounds Symphony continuation turns, while
 `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
@@ -84,7 +109,9 @@ including Codex Workpad comments, are reused.
 sanitized pause metadata. Legacy token fields remain for API compatibility;
 Claude usage totals include cached input and do not imply dollar costs.
 
-Authoritative quota events can provide a reset time. One persisted probe is
+Authoritative quota events can provide a reset time, including the Fable weekly
+included-allowance bucket (`seven_day_overage_included`). Actual paid-overage
+signals remain policy blockers. One persisted probe is
 allowed after that time; absent/unknown reset times require explicit operator
 recheck. That probe is consumed on disk before sending model input. A failed or
 interrupted probe remains blocked as `probe_inflight`, including after restart;

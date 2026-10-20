@@ -513,7 +513,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil})
+    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", effort: nil, model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil})
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -533,6 +533,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Operations Dashboard"
     assert has_element?(view, "#runner-identity", "Agent: Claude Code")
     assert has_element?(view, "#runner-identity", "Model: sonnet")
+    assert has_element?(view, ".runner-effort", "Model default")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == nil
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -585,7 +587,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       ])
 
     :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, updated_snapshot)
+      Keyword.put(state, :snapshot, put_in(updated_snapshot.agent.effort, "high"))
     end)
 
     StatusDashboard.notify_update()
@@ -595,6 +597,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
+    assert has_element?(view, ".runner-effort", "high")
+    assert has_element?(view, ".runner-effort", "configured")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == "high"
 
     :sys.replace_state(orchestrator_pid, fn state ->
       Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: nil, model_source: "last_session"}))
@@ -602,15 +607,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     send(view.pid, :observability_updated)
     assert has_element?(view, "#runner-identity", "Agent: Codex")
+    assert has_element?(view, ".runner-effort", "Runner default")
     assert has_element?(view, "#runner-identity", "Not yet reported")
 
     :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}))
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", effort: "xhigh", model_source: "last_session"}))
     end)
 
     send(view.pid, :observability_updated)
     assert has_element?(view, "#runner-identity", "Model: gpt-example")
     assert has_element?(view, "#runner-identity", "last session")
+    assert has_element?(view, ".runner-effort", "xhigh")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == "xhigh"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do

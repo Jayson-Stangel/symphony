@@ -33,7 +33,9 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all app-server
+  model: gpt-5.5
+  reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: workspace-write
   live_max_total_tokens: 500000
@@ -477,7 +479,9 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 <!-- Optional startup-selected Claude profile: see ../docs/claude.md.
 Claude configuration lives in a `claude` front-matter mapping. Only `model`
-(sonnet), `max_concurrent_agents` (1), `max_agentic_turns` (1–100),
+(sonnet by default; current model IDs and family aliases listed in docs/claude.md),
+`effort` (low, medium, high, xhigh, max; omitted/null uses the model default),
+`max_concurrent_agents` (1), `max_agentic_turns` (1–100),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider

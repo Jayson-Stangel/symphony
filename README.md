@@ -316,6 +316,12 @@ help with the setup:
 
 ---
 
+## Model and reasoning configuration
+
+Codex workflows also accept optional `codex.model` and `codex.reasoning_effort`
+for new sessions. Both dashboards show configured reasoning levels. Omitted
+values preserve native runner defaults; see [workflow configuration](elixir/README.md).
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
@@ -323,7 +329,9 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 ## Claude subscription workers
 
 Codex remains the default. A qualified personal Claude profile adds one isolated
-Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
+Claude worker through pinned Claude Code/Agent SDK and native subscription login.
+Sonnet remains the default; current model IDs, family aliases and reasoning effort
+are configurable. Terminal and web dashboards show the configured Claude effort.
 It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain
