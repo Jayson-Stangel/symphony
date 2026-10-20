@@ -135,6 +135,8 @@ defmodule SymphonyElixir.ToolCall do
     status = execution["http_status"]
     details = if is_integer(status) and status in 100..599, do: Map.put(details, "http_status", status), else: details
     details = Map.put(details, "graphql_codes", graphql_codes(output))
+    kind = execution["graphql_result"]
+    details = if kind in ~w(request_error execution_error success malformed), do: Map.put(details, "graphql_result", kind), else: details
     transport = execution["transport_reason"]
     if transport in ~w(timeout closed econnrefused econnreset nxdomain enetunreach ehostunreach other), do: Map.put(details, "transport_reason", transport), else: details
   end

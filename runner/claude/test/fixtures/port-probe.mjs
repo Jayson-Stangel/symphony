@@ -18,6 +18,12 @@ class Probe {
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }
       if (text === 'quota') this.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
       if (text === 'auth') this.push({ type: 'assistant', error: 'authentication_failed' });
+      if (text === 'linear-recovery') {
+        const rejected = await helper.callTool('linear_graphql', { query: 'mutation { rejected }' });
+        if (rejected.success || !JSON.parse(rejected.output).errors) throw new Error('missing request error');
+        const corrected = await helper.callTool('linear_graphql', { query: 'mutation { corrected }' });
+        if (!corrected.success) throw new Error('correction failed');
+      }
       if (text === 'tool') await helper.callTool('probe_tool', { query: 'query' });
       this.push({ type: 'result', subtype: 'success', is_error: false, uuid: randomUUID(),
         session_id: 'native-probe', user_message_uuid: input.uuid,

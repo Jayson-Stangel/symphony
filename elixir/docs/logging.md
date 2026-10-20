@@ -45,7 +45,10 @@ Codex and Claude share redacted `Tracker tool outcome` diagnostics. Search by
 `issue_id`, `issue_identifier` and `tool_id`; Claude includes its session ID, while
 Codex includes the native thread ID (startup callbacks can precede a turn ID).
 The JSON diagnostics record provider, operation type, document SHA-256, phase,
-elapsed time, HTTP status and allowlisted GraphQL/transport codes. Outstanding
+elapsed time, HTTP status, GraphQL response category and allowlisted GraphQL/transport codes.
+`graphql_result=request_error` identifies a definite pre-execution rejection;
+`execution_error` can include partial writes or null bubbling. `INVALID_INPUT`
+is retained as a diagnostic code, not treated as proof of non-execution. Outstanding
 intent markers retain the latest phase across restarts. No raw query, variables,
 response body, exception text or credential is stored in these diagnostics.
 

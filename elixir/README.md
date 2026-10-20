@@ -27,6 +27,11 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
+Codex and Claude share Linear outcome classification. Definite pre-execution
+GraphQL request rejections return to the agent for correction; partial writes,
+resolver failures and lost write responses pause for reconciliation. Symphony
+never automatically retries a mutation. See [tracker diagnostics](docs/logging.md).
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 Successful polls also clean retained local terminal workspaces that no longer have a

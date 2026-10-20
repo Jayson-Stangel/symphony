@@ -73,15 +73,18 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp execution_response({:ok, response}, operation) do
     result = graphql_response(response)
+    kind = Operation.response_kind(response)
 
     certainty =
       cond do
         operation["operation"] == "query" -> "read_only"
-        result["success"] and is_map(response) and is_map(response["data"]) and Map.get(response, "errors", []) == [] -> "confirmed"
+        kind == "request_error" -> "not_executed"
+        kind == "success" -> "confirmed"
         true -> "uncertain"
       end
 
-    execution(result, certainty, if(result["success"], do: "response", else: "graphql_error"), Map.put(operation, "http_status", 200))
+    metadata = Map.merge(operation, %{"http_status" => 200, "graphql_result" => kind})
+    execution(result, certainty, if(result["success"], do: "response", else: "graphql_error"), metadata)
   end
 
   defp execution_response({:error, reason}, operation) do

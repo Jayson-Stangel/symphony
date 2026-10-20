@@ -98,6 +98,56 @@ defmodule SymphonyElixir.ToolCallTest do
     assert :ok = ToolCall.accept(context)
   end
 
+  test "both providers can correct request errors without leaving a restart blocker", ctx do
+    errors = [
+      %{"errors" => [%{"message" => "secret-canary: variable coercion failed"}]},
+      %{"errors" => [%{"message" => "validation failed", "extensions" => %{"code" => "GRAPHQL_VALIDATION_FAILED"}}], "data" => nil},
+      %{"errors" => [%{"message" => "parse failed", "extensions" => %{"code" => "GRAPHQL_PARSE_FAILED"}}]}
+    ]
+
+    for provider <- [:codex, :claude], response <- errors do
+      log =
+        capture_log(fn ->
+          assert {:ok, %{"success" => false, "execution" => %{"certainty" => "not_executed"}}, rejected} = call(@mutation, {:ok, response}, provider)
+          refute rejected.durable
+          assert Path.wildcard(Path.join(ctx.root, "claude-tools/*.json")) == []
+          assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+          assert :ok = ToolCall.accept(rejected)
+          assert {:ok, %{"success" => true}, corrected} = call(@mutation, {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}, provider)
+          assert :ok = ToolCall.accept(corrected)
+        end)
+
+      refute log =~ "secret-canary"
+      assert log =~ ~s("graphql_result":"request_error")
+    end
+
+    assert {:ok, _, rejected} = call(@mutation, {:ok, hd(errors)})
+    assert {:error, :protocol_error, _} = ToolCall.fail(rejected, "ack_missing")
+    assert Path.wildcard(Path.join(ctx.root, "claude-tools/*.json")) == []
+  end
+
+  test "request-error detection never clears partial execution or malformed errors", ctx do
+    validation = %{"message" => "secret-canary", "extensions" => %{"code" => "GRAPHQL_VALIDATION_FAILED"}}
+
+    for response <- [
+          %{"data" => nil, "errors" => [%{"message" => "secret-canary", "extensions" => %{"code" => "INVALID_INPUT"}, "path" => ["issueUpdate"]}]},
+          %{"data" => %{"firstWrite" => %{"success" => true}}, "errors" => [validation]},
+          %{"data" => nil, "errors" => [validation, %{"message" => "other failure"}]},
+          %{"errors" => [Map.put(validation, "path", ["issueUpdate"])]},
+          %{"errors" => [Map.put(validation, "path", nil)]},
+          %{"errors" => [nil]},
+          %{"errors" => [%{"message" => 123}]},
+          %{"errors" => []},
+          %{"errors" => "malformed"},
+          %{"data" => false, "errors" => [validation]}
+        ] do
+      File.rm_rf!(ctx.root)
+      assert {:error, :tool_outcome_uncertain, _} = call(@mutation, {:ok, response})
+      assert {:paused, _} = Task.async(fn -> AgentPause.current() end) |> Task.await()
+      assert {:error, :tool_reconciliation_required} = AgentPause.explicit_recheck(AgentPause.codex_profile())
+    end
+  end
+
   test "both providers retain ambiguous writes with safe diagnostics", ctx do
     for provider <- [:codex, :claude],
         response <- [

@@ -1687,7 +1687,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     StatusDashboard.notify_update(dashboard_name)
     assert_receive {:render, first_render_ms, content}, 1_000
-    assert content =~ "Agent: Claude Code · blocked"
+    assert content =~ "Agent: Claude Code · policy_blocked"
     assert content =~ "Tokens: unavailable"
     :sys.replace_state(orchestrator, &%{&1 | draining: true})
 

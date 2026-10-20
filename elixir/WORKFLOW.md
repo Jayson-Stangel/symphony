@@ -200,6 +200,15 @@ If launch fails, capture the actual command and error before treating it as bloc
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
+## Tracker tool failures
+
+For Linear, read errors and definite pre-execution request rejections return to
+the agent for correction. Read the error and correct the operation instead of
+repeating the unchanged request. Resolve state names to the team's exact state
+UUIDs before `issueUpdate`. Ambiguous mutation outcomes pause the runner; verify
+the external result before operator reconciliation. Never infer that a failed
+response means a write was rolled back.
+
 ## Step 1: Start/continue execution (Todo or In Progress)
 
 1.  Find or create a single persistent scratchpad comment for the issue:

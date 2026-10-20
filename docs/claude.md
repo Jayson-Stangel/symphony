@@ -99,7 +99,14 @@ Definite tracker client rejections, including a Linear HTTP 400 for an invalid
 GraphQL document, are returned to the agent so it can correct the request. Linear
 reads (classified from the parsed GraphQL document) and local validation/auth
 rejections cannot change Linear and do not create uncertain-write pauses. Read
-errors, including HTTP 200 GraphQL errors, are returned for correction.
+errors, including HTTP 200 GraphQL errors, are returned for correction. Both
+providers also receive definite mutation request rejections: a valid errors-only
+GraphQL response with no data or execution path, or explicit parse/schema-validation
+errors with absent/null data and no execution path. The agent can correct the
+request; Symphony never automatically replays it. Null/partial data with generic
+input errors (including Linear's `INVALID_INPUT`) remains uncertain because a
+resolver may already have executed. Error messages and HTTP 200 alone do not
+establish whether a write occurred.
 
 Both Codex and Claude persist an intent before a mutation or unclassified request.
 Write transport failures, server errors, partial GraphQL results and lost delivery
@@ -111,8 +118,10 @@ Existing `claude-tools` and `claude-pause.json` state paths remain compatible an
 now protect both providers.
 
 `Tracker tool outcome` logs correlate issue and tool IDs with provider, document
-SHA-256, parsed operation type, phase, elapsed time, HTTP status, allowlisted
-GraphQL codes and transport reason. Outstanding intent files retain the latest
+SHA-256, parsed operation type, phase, elapsed time, HTTP status, GraphQL response
+category (`request_error`, `execution_error`,
+`success` or `malformed`), allowlisted GraphQL codes (including `INVALID_INPUT`)
+and transport reason. Outstanding intent files retain the latest
 phase, including `started`, `response_received` or `uncertain`; `accepted` records
 successful delivery (Claude acknowledgement or a Codex RPC write). Query text, variables, error bodies and credentials are not
 included in these diagnostics. These fields help reconcile a write but do not

@@ -4,7 +4,8 @@ defmodule SymphonyElixir.Linear.Operation do
   alias Absinthe.Language.Source
   alias Absinthe.Phase.Parse
 
-  @codes ~w(INPUT_ERROR BAD_USER_INPUT GRAPHQL_VALIDATION_FAILED GRAPHQL_PARSE_FAILED AUTHENTICATION_ERROR AUTHORIZATION_ERROR RATELIMITED RATE_LIMITED INTERNAL_SERVER_ERROR)
+  @request_error_codes ~w(GRAPHQL_VALIDATION_FAILED GRAPHQL_PARSE_FAILED)
+  @codes ~w(INVALID_INPUT INPUT_ERROR BAD_USER_INPUT GRAPHQL_VALIDATION_FAILED GRAPHQL_PARSE_FAILED AUTHENTICATION_ERROR AUTHORIZATION_ERROR RATELIMITED RATE_LIMITED INTERNAL_SERVER_ERROR)
   @transport_reasons ~w(timeout closed econnrefused econnreset nxdomain enetunreach ehostunreach)a
 
   @spec error_codes(term()) :: [String.t()]
@@ -15,6 +16,39 @@ defmodule SymphonyElixir.Linear.Operation do
   end
 
   def error_codes(_response), do: []
+
+  @doc "Classify the response envelope, never error-message text, to distinguish rejection from execution."
+  @spec response_kind(term()) :: String.t()
+  def response_kind(%{"errors" => errors} = response) when is_list(errors) and errors != [] do
+    cond do
+      not Enum.all?(errors, &valid_error?/1) -> "malformed"
+      request_errors?(response, errors) -> "request_error"
+      true -> "execution_error"
+    end
+  end
+
+  def response_kind(%{"data" => data} = response) when is_map(data) do
+    if Map.get(response, "errors", []) == [], do: "success", else: "malformed"
+  end
+
+  def response_kind(_response), do: "malformed"
+
+  defp valid_error?(%{"message" => message}), do: is_binary(message)
+  defp valid_error?(_error), do: false
+
+  defp request_errors?(response, errors) do
+    # GraphQL request errors have no data entry. Null data can instead mean a
+    # resolver failed after a write; accept that shape only for explicit parse
+    # or schema-validation errors, never generic input/authorization codes.
+    no_execution_path = Enum.all?(errors, &(not Map.has_key?(&1, "path")))
+
+    no_execution_path and
+      (not Map.has_key?(response, "data") or
+         (is_nil(response["data"]) and Enum.all?(errors, &request_error_code?/1)))
+  end
+
+  defp request_error_code?(%{"extensions" => %{"code" => code}}), do: code in @request_error_codes
+  defp request_error_code?(_error), do: false
 
   @spec transport_reason(term()) :: String.t()
   def transport_reason({:linear_api_request, reason}), do: transport_reason(reason)

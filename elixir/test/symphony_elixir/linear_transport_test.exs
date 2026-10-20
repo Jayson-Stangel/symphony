@@ -21,15 +21,15 @@ defmodule SymphonyElixir.LinearTransportTest do
     %{root: root, workspace: workspace, issue: %Issue{id: "linear-issue", identifier: "PROBE-1", title: "Linear outcome"}}
   end
 
-  test "Codex receives a correctable read error and can issue a second call in startup and streaming paths", ctx do
-    for mode <- ["startup", "streaming"] do
-      trace = configure_peer(ctx, mode, "query { viewer { id } }")
+  test "Codex receives correctable read and mutation request errors in startup and streaming paths", ctx do
+    for mode <- ["startup", "streaming"], query <- ["query { viewer { id } }", "mutation { rejected } "] do
+      trace = configure_peer(ctx, mode, query)
       Process.put(:linear_calls, 0)
 
       executor = fn "linear_graphql", arguments ->
         count = Process.get(:linear_calls)
         Process.put(:linear_calls, count + 1)
-        response = if count == 0, do: %{"data" => nil, "errors" => [%{"extensions" => %{"code" => "INPUT_ERROR"}}]}, else: %{"data" => %{"viewer" => %{"id" => "one"}}}
+        response = if count == 0, do: %{"errors" => [%{"message" => "Unknown field rejected"}]}, else: %{"data" => %{"viewer" => %{"id" => "one"}}}
         AgentTool.execute("linear_graphql", arguments, linear_client: fn _, _, _ -> {:ok, response} end)
       end
 
