@@ -460,7 +460,9 @@ Fields:
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
 - `max_turns` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session.
+  - Limits the number of coding-agent turns within one worker session, for both providers.
+  - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
+    continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
@@ -662,8 +664,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
-- `codex.live_max_total_tokens`: integer, default implementation-defined
-- `codex.live_max_turns`: integer, default implementation-defined
+- `codex.live_max_total_tokens`: integer, default `0` (disabled)
+- `codex.live_max_turns`: integer, default `0` (disabled)
 
 ## 7. Orchestration State Machine
 
@@ -2377,7 +2379,27 @@ Optional `claude.effort` selects low, medium, high, xhigh or max for new session
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.
 Native subscription authentication and a dated account-bound disabled-overages attestation gate dispatch without model probes.
-No API-key inference fallback is configured.
+No API-key inference fallback is configured. Model-free readiness is an observation,
+not a durable account pause. A failed observation is refreshed automatically after
+repair, including while drained or paused. One supervised task performs the check
+at startup, on explicit refresh/resume/recheck and every 30 seconds after completion.
+The scheduler remains responsive to snapshots, drain and worker exits. GNU timeout
+bounds each external check process group to 35 seconds; native version/auth calls
+retain their individual 15-second limits. Task or scheduler exit may leave a
+model-free OS check running only until that deadline; restart may briefly overlap
+that old bounded check. No inference occurs in readiness checks. The last completed
+observation is used between checks; pending explicit controls block admission.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress.
+Drain cancels a waiting resume, and late results cannot undrain or replace a pinned
+account. Old unscoped durable auth/policy records have no reliable provenance and
+still require explicit recheck; they cannot safely be assumed to be observations.
+
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission still validates the attestation.
 
 Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authentication and shared policy
@@ -2391,8 +2413,12 @@ confirmed session cleanup, established-session protocol errors, unexpected EOF,
 helper timeouts and tracker delivery failures retry the attempt with scheduler
 backoff in its retained workspace. The runner MUST NOT replay tracker mutations.
 The next prompt requires live target readback before uncertain writes are retried.
-Explicit input/permission requirements and turn-limit stops remain blocked;
-startup ownership/initialization failures remain fail-closed.
+Explicit input/permission requirements and native turn-limit stops remain blocked;
+transient startup protocol/native initialization failures retry only after a
+stopped acknowledgement correlated to the attempted session/request confirms
+owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
+stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
+crashes before ownership handoff cannot retry without cleanup proof.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
 state adds provider/readiness/pause fields without removing legacy token fields.

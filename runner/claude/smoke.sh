@@ -51,6 +51,9 @@ for attempt in range(60):
     try:
         with urlopen('http://127.0.0.1:4010/api/v1/state', timeout=2) as response:
             state = json.load(response)
+        if state.get('agent', {}).get('readiness', {}).get('code') == 'checking':
+            time.sleep(1)
+            continue
         break
     except OSError:
         time.sleep(1)

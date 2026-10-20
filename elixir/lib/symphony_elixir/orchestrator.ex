@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @readiness_interval_ms 30_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -37,6 +38,9 @@ defmodule SymphonyElixir.Orchestrator do
       :expected_profile,
       :agent_model,
       readiness_opts: [],
+      readiness_task: nil,
+      readiness_timer: nil,
+      readiness_control: nil,
       draining: false,
       agent_usage_observed: false,
       task_supervisor: SymphonyElixir.TaskSupervisor,
@@ -64,8 +68,11 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, config} ->
         now_ms = System.monotonic_time(:millisecond)
         readiness_opts = Keyword.get(opts, :readiness_opts, [])
-        readiness = AgentReadiness.check(readiness_opts)
-        persist_readiness_failure(readiness)
+
+        readiness =
+          if Config.coding_agent() == :codex,
+            do: AgentReadiness.check(readiness_opts),
+            else: %{ready: false, provider: "claude", code: "checking"}
 
         state = %State{
           poll_interval_ms: config.polling.interval_ms,
@@ -86,11 +93,21 @@ defmodule SymphonyElixir.Orchestrator do
         if agent_dispatch_ready?(state), do: run_terminal_workspace_cleanup()
         state = schedule_tick(state, 0)
 
-        {:ok, state}
+        {:ok, state, {:continue, :check_readiness}}
 
       {:error, reason} ->
         {:stop, reason}
     end
+  end
+
+  @impl true
+  def handle_continue(:check_readiness, state), do: {:noreply, refresh_agent_readiness(state)}
+
+  @impl true
+  def terminate(_reason, state) do
+    cancel_readiness_timer(state)
+    if state.readiness_task, do: Task.Supervisor.terminate_child(state.task_supervisor, state.readiness_task.pid)
+    :ok
   end
 
   @impl true
@@ -137,6 +154,21 @@ defmodule SymphonyElixir.Orchestrator do
 
     notify_dashboard()
     {:noreply, state}
+  end
+
+  def handle_info({:refresh_agent_readiness, token}, %{readiness_timer: {_timer, token}} = state) do
+    {:noreply, refresh_agent_readiness(%{state | readiness_timer: nil})}
+  end
+
+  def handle_info({:refresh_agent_readiness, _token}, state), do: {:noreply, state}
+
+  def handle_info({ref, readiness}, %{readiness_task: %Task{ref: ref}} = state) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_readiness_check(state, readiness)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{readiness_task: %Task{ref: ref}} = state) do
+    {:noreply, finish_readiness_check(state, %{ready: false, provider: "claude", code: "runtime_unavailable"})}
   end
 
   def handle_info(
@@ -241,8 +273,6 @@ defmodule SymphonyElixir.Orchestrator do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
         {:ok, attempt, metadata, state} ->
-          state = refresh_agent_readiness(state)
-
           cond do
             agent_dispatch_ready?(state) ->
               handle_retry_issue(state, issue_id, attempt, metadata)
@@ -287,15 +317,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_agent_down({:max_turns_reached, details}, state, issue_id, running_entry, session_id) do
-    max_turns = max_turns_from_details(details)
-    error = "agent.max_turns reached with issue still active after #{max_turns} turns"
-
-    Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
-
-    block_issue_from_entry(state, issue_id, running_entry, error)
-  end
-
   # AgentRunner confirms session cleanup before reporting these turn failures.
   # Retry the attempt, never the tracker mutation; the next prompt requires readback.
   defp handle_agent_down({:agent_pause, kind, _details} = reason, state, issue_id, running_entry, session_id)
@@ -335,10 +356,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp max_turns_from_details(%{max_turns: max_turns}) when is_integer(max_turns), do: max_turns
-  defp max_turns_from_details(%{"max_turns" => max_turns}) when is_integer(max_turns), do: max_turns
-  defp max_turns_from_details(_details), do: Config.settings!().agent.max_turns
-
   defp block_input_required_agent_down(state, issue_id, running_entry, session_id, reason) do
     error = blocker_error(running_entry, "agent exited: #{inspect(reason)}")
 
@@ -362,8 +379,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_dispatch(%State{} = state) do
-    state = refresh_agent_readiness(state)
-
     if agent_dispatch_ready?(state) do
       maybe_dispatch_ready(state)
     else
@@ -423,21 +438,61 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp refresh_agent_readiness(%{readiness_task: %Task{}} = state), do: state
+
   defp refresh_agent_readiness(state) do
     if Config.coding_agent() == :claude do
-      case active_agent_pause() do
-        {:paused, _value} ->
-          state
-
-        _ ->
-          readiness = AgentReadiness.check(state.readiness_opts)
-          readiness = pin_readiness(readiness, state.expected_profile)
-          persist_readiness_failure(readiness)
-          %{state | readiness: readiness, expected_profile: state.expected_profile || readiness[:profile]}
-      end
+      cancel_readiness_timer(state)
+      opts = state.readiness_opts
+      task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> AgentReadiness.check(opts) end)
+      %{state | readiness_task: task, readiness_timer: nil}
     else
       state
     end
+  end
+
+  defp finish_readiness_check(state, readiness) do
+    previous_admission = agent_admission(state)
+    control_pending = not is_nil(state.readiness_control)
+    readiness = pin_readiness(readiness, state.expected_profile)
+    token = make_ref()
+    timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
+
+    state = %{
+      state
+      | readiness: readiness,
+        readiness_task: nil,
+        readiness_timer: {timer, token},
+        expected_profile: state.expected_profile || readiness[:profile]
+    }
+
+    state = finish_readiness_control(state)
+    notify_dashboard()
+
+    if control_pending or previous_admission != agent_admission(state) do
+      {state, _coalesced} = queue_poll(state)
+      state
+    else
+      state
+    end
+  end
+
+  defp finish_readiness_control(%{readiness_control: nil} = state), do: state
+
+  defp finish_readiness_control(%{readiness_control: {from, action, reconcile}} = state) do
+    {:reply, reply, state} = resume_agent(%{state | readiness_control: nil}, action, reconcile)
+    GenServer.reply(from, reply)
+    state
+  end
+
+  defp cancel_readiness_timer(%{readiness_timer: {timer, _token}}), do: Process.cancel_timer(timer)
+  defp cancel_readiness_timer(_state), do: :ok
+
+  defp cancel_readiness_control(%{readiness_control: nil} = state), do: state
+
+  defp cancel_readiness_control(%{readiness_control: {from, _action, _reconcile}} = state) do
+    GenServer.reply(from, {:error, :agent_drained})
+    %{state | readiness_control: nil}
   end
 
   defp pin_readiness(%{ready: true, profile: profile} = readiness, expected)
@@ -446,13 +501,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp pin_readiness(readiness, _expected), do: readiness
-
-  defp persist_readiness_failure(%{ready: false, provider: "claude", code: code}) do
-    kind = if code in ["auth_required", "unqualified_auth", "unknown_auth_status"], do: :auth_required, else: :policy_blocked
-    AgentPause.record(kind)
-  end
-
-  defp persist_readiness_failure(_readiness), do: :ok
 
   defp active_agent_pause do
     if Config.coding_agent() == :claude, do: AgentPause.current(), else: :ready
@@ -1789,18 +1837,19 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
-  def handle_call({:agent_control, action, reconcile}, _from, state) do
+  def handle_call({:agent_control, action, reconcile}, from, state) do
     case action do
       :drain ->
         with :ok <- File.mkdir_p(Config.agent_state_root()),
              :ok <- File.write(drain_path(), "draining\n", [:sync]) do
-          {:reply, {:ok, %{draining: true, running: map_size(state.running)}}, %{state | draining: true}}
+          state = cancel_readiness_control(%{state | draining: true})
+          {:reply, {:ok, %{draining: true, running: map_size(state.running)}}, state}
         else
           _ -> {:reply, {:error, :state_write_failed}, state}
         end
 
       action when action in [:resume, :recheck] ->
-        resume_agent(state, action, reconcile)
+        request_agent_resume(state, action, reconcile, from)
 
       _ ->
         {:reply, {:error, :invalid_action}, state}
@@ -1808,10 +1857,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_call(:request_refresh, _from, state) do
-    now_ms = System.monotonic_time(:millisecond)
-    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
-    coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    state = refresh_agent_readiness(state)
+    {state, coalesced} = queue_poll(state)
 
     {:reply,
      %{
@@ -1822,11 +1869,27 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  defp request_agent_resume(%{running: running} = state, _action, _reconcile, _from) when map_size(running) != 0,
+    do: {:reply, {:error, :workers_active}, state}
+
+  defp request_agent_resume(%{readiness_control: control} = state, _action, _reconcile, _from) when not is_nil(control),
+    do: {:reply, {:error, :readiness_check_in_progress}, state}
+
+  defp request_agent_resume(state, action, reconcile, from) do
+    if Config.coding_agent() == :claude do
+      readiness = %{ready: false, provider: "claude", code: "checking"}
+      state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
+      {:noreply, refresh_agent_readiness(state)}
+    else
+      resume_agent(state, action, reconcile)
+    end
+  end
+
   defp resume_agent(%{running: running} = state, _action, _reconcile) when map_size(running) != 0,
     do: {:reply, {:error, :workers_active}, state}
 
   defp resume_agent(state, action, reconcile) do
-    readiness = AgentReadiness.check(state.readiness_opts) |> pin_readiness(state.expected_profile)
+    readiness = state.readiness
 
     with true <- readiness.ready,
          :ok <- recheck_agent_pause(action, readiness, reconcile),
@@ -1840,7 +1903,8 @@ defmodule SymphonyElixir.Orchestrator do
           expected_profile: state.expected_profile || readiness[:profile]
       }
 
-      {:reply, {:ok, %{draining: false, admission: admission}}, schedule_tick(state, 0)}
+      {state, _coalesced} = queue_poll(state)
+      {:reply, {:ok, %{draining: false, admission: admission}}, state}
     else
       _ -> {:reply, {:error, :agent_not_ready}, %{state | readiness: readiness}}
     end
@@ -1962,6 +2026,14 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp queue_poll(state) do
+    now_ms = System.monotonic_time(:millisecond)
+    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
+    coalesced = state.poll_check_in_progress == true or already_due?
+    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    {state, coalesced}
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
