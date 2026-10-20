@@ -159,8 +159,12 @@ http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interaction
 are shared through `PLAYWRIGHT_BROWSERS_PATH`; projects using a different Playwright version
 may need to set that variable to a writable workspace directory and install their own
 matching browser before running tests. The workflow template includes web app
-validation guidance. Existing project workflows are preserved, so copy that section into
-them explicitly when adopting this capability.
+validation and evidence publication guidance. Workers must attach every generated
+review artifact to its Linear issue, link it in the workpad, and verify publication
+before handoff or completion. Local paths alone are insufficient because completed
+workspaces may be removed. Existing project workflows are preserved, so copy the
+evidence publication and app validation sections into them explicitly when adopting
+this capability.
 
 To verify just the browser layer without credentials or a running listener:
 
@@ -321,7 +325,8 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 Codex remains the default. A qualified personal Claude profile adds one isolated
 Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
 It requires disabled-overage owner attestation, project-scoped credentials and
-model-free readiness checks. See [setup, pauses and updater transitions](docs/claude.md)
+model-free readiness checks. Both agents return correctable Linear read errors
+and pause on uncertain writes, with redacted diagnostics for reconciliation. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)

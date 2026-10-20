@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentPause do
-  @moduledoc "Durable Claude pause and unresolved tracker-call metadata in the project state volume."
+  @moduledoc "Durable agent pause and unresolved tracker-call metadata in the project state volume."
 
   alias SymphonyElixir.Config
 
@@ -96,7 +96,7 @@ defmodule SymphonyElixir.AgentPause do
   @spec explicit_recheck(String.t(), keyword()) :: :ok | {:error, term()}
   def explicit_recheck(profile, opts \\ []) do
     serialized(fn ->
-      with {:ok, pending} <- pending_tools(),
+      with {:ok, pending} <- pending_tools(true),
            :ok <- recheck_identity(profile),
            :ok <- reconcile_pending(pending, Keyword.get(opts, :confirm_tools_reconciled, false)) do
         recheck_pause(read_pause(), profile)
@@ -104,14 +104,30 @@ defmodule SymphonyElixir.AgentPause do
     end)
   end
 
-  @spec begin_tool(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def begin_tool(profile, issue, tool_id, name) do
+  @spec register_tool(String.t()) :: :ok
+  def register_tool(tool_id) do
+    serialized(fn ->
+      owners = :persistent_term.get({__MODULE__, :tool_owners}, %{}) |> Map.filter(fn {_key, pid} -> Process.alive?(pid) end)
+      :persistent_term.put({__MODULE__, :tool_owners}, Map.put(owners, {Config.agent_state_root(), tool_id}, self()))
+    end)
+  end
+
+  @spec unregister_tool(String.t()) :: :ok
+  def unregister_tool(tool_id) do
+    serialized(fn ->
+      owners = :persistent_term.get({__MODULE__, :tool_owners}, %{})
+      :persistent_term.put({__MODULE__, :tool_owners}, Map.delete(owners, {Config.agent_state_root(), tool_id}))
+    end)
+  end
+
+  @spec begin_tool(String.t(), String.t(), String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def begin_tool(profile, issue, tool_id, name, diagnostics \\ %{}) do
     with :ok <- validate_tool_id(tool_id),
          :ok <- File.mkdir_p(tool_root()),
          {:ok, %{type: :directory}} <- File.lstat(tool_root()),
          {:ok, io} <- File.open(tool_path(tool_id), [:write, :binary, :exclusive]) do
       try do
-        with :ok <- IO.binwrite(io, Jason.encode!(%{version: 1, profile: profile, issue: issue, tool: name})),
+        with :ok <- IO.binwrite(io, Jason.encode!(%{version: 1, profile: profile, issue: issue, tool: name, diagnostics: diagnostics})),
              :ok <- :file.sync(io) do
           File.chmod(tool_path(tool_id), 0o600)
         end
@@ -120,6 +136,19 @@ defmodule SymphonyElixir.AgentPause do
       end
     end
   end
+
+  @spec annotate_tool(String.t(), map()) :: :ok | {:error, term()}
+  def annotate_tool(tool_id, diagnostics) do
+    with :ok <- validate_tool_id(tool_id),
+         {:ok, data} <- File.read(tool_path(tool_id)),
+         {:ok, value} <- Jason.decode(data) do
+      atomic_write(tool_path(tool_id), Map.put(value, "diagnostics", diagnostics))
+    end
+  end
+
+  @doc "Logical Codex tool-state namespace, not an account identity or authentication attestation."
+  @spec codex_profile() :: String.t()
+  def codex_profile, do: Base.encode16(:crypto.hash(:sha256, "symphony:codex:tool-state:v1"), case: :lower)
 
   @spec finish_tool(String.t()) :: :ok | {:error, term()}
   def finish_tool(tool_id) do
@@ -222,14 +251,16 @@ defmodule SymphonyElixir.AgentPause do
   defp valid_phase?(kind, "probe"), do: kind == "quota_exhausted"
   defp valid_phase?(_kind, "waiting"), do: true
 
-  defp pending_tools do
+  defp pending_tools(include_active \\ false) do
     case File.lstat(tool_root()) do
       {:error, :enoent} ->
         {:ok, []}
 
       {:ok, %{type: :directory}} ->
-        with {:ok, names} <- File.ls(tool_root()) do
-          validate_pending_names(names)
+        with {:ok, names} <- File.ls(tool_root()),
+             {:ok, names} <- validate_pending_names(names) do
+          owners = :persistent_term.get({__MODULE__, :tool_owners}, %{})
+          {:ok, Enum.reject(names, &active_tool?(&1, owners, include_active))}
         end
 
       {:ok, _other} ->
@@ -240,6 +271,11 @@ defmodule SymphonyElixir.AgentPause do
     end
   end
 
+  defp active_tool?(name, owners, include_active) do
+    owner = Map.get(owners, {Config.agent_state_root(), Path.rootname(name)})
+    not include_active and is_pid(owner) and Process.alive?(owner)
+  end
+
   defp validate_tool_id(value) when is_binary(value) do
     if Regex.match?(~r/^[A-Za-z0-9_-]{1,128}$/, value), do: :ok, else: {:error, :invalid_tool_id}
   end
@@ -247,7 +283,7 @@ defmodule SymphonyElixir.AgentPause do
   defp validate_tool_id(_value), do: {:error, :invalid_tool_id}
 
   defp atomic_write(path, value) do
-    temp = path <> ".tmp-#{System.unique_integer([:positive])}"
+    temp = Path.join(Config.agent_state_root(), ".agent-state-#{System.unique_integer([:positive])}")
 
     with :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- synced_write(temp, Jason.encode!(value)),

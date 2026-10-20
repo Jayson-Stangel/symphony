@@ -1124,6 +1124,10 @@ Unsupported dynamic tool calls:
 
 Optional provider-native agent tool extension:
 
+- A Linear tool implementation MAY request short-lived signed file-storage URLs
+  host-side so isolated workers can verify published evidence without receiving
+  tracker credentials. Signed download URLs SHOULD expire promptly and MUST NOT
+  replace canonical asset URLs in durable issue links.
 - An adapter MAY expose provider-native tools to the app-server session.
 - The selected adapter's tool specs SHOULD be advertised during session startup using the protocol
   mechanism supported by the targeted Codex app-server version.
@@ -2375,3 +2379,12 @@ closed configuration, isolation assumptions and qualified transition contract.
 Expected scheduler cancellation when an issue leaves active states must not
 create a helper protocol failure. Confirmed cleanup can end a non-quota operator
 recheck; it must not clear consumed quota probes or unresolved tracker intents.
+
+Linear tool outcome safety applies to both Codex and Claude. Parsed query-only
+documents and locally rejected requests cannot produce writes; their failures
+remain correctable tool results. Mutations and unclassified documents persist
+intent before execution. Ambiguous responses or interrupted delivery retain that
+intent and block redispatch until explicit reconciliation. Live in-flight calls
+are tracked separately from abandoned intents; process death or restart must fail
+closed. Redacted diagnostics retain operation type/hash, provider, correlation
+IDs, delivery phase, status/code and timing without query text or credentials.

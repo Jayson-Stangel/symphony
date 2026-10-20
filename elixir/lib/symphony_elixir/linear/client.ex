@@ -5,10 +5,10 @@ defmodule SymphonyElixir.Linear.Client do
 
   require Logger
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Linear.Operation
   alias SymphonyElixir.Tracker.Issue
 
   @issue_page_size 50
-  @max_error_body_log_bytes 1_000
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -147,7 +147,7 @@ defmodule SymphonyElixir.Linear.Client do
         post_graphql_request(request_payload, headers, tracker_settings.endpoint)
       end)
 
-    with {:ok, headers} <- graphql_headers(tracker_settings),
+    with {:ok, headers} <- graphql_headers(tracker_settings, Keyword.get(opts, :sign_file_urls, false)),
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
       {:ok, body}
     else
@@ -160,7 +160,11 @@ defmodule SymphonyElixir.Linear.Client do
         {:error, {:linear_api_status, response.status}}
 
       {:error, reason} ->
-        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+        Logger.error(
+          "Linear GraphQL request failed transport_reason=#{Operation.transport_reason(reason)}" <>
+            linear_error_context(payload, %{})
+        )
+
         {:error, {:linear_api_request, reason}}
     end
   end
@@ -334,53 +338,19 @@ defmodule SymphonyElixir.Linear.Client do
   defp maybe_put_operation_name(payload, _operation_name), do: payload
 
   defp linear_error_context(payload, response) when is_map(payload) do
-    operation_name =
-      case Map.get(payload, "operationName") do
-        name when is_binary(name) and name != "" -> " operation=#{name}"
-        _ -> ""
-      end
-
-    body =
-      response
-      |> Map.get(:body)
-      |> summarize_error_body()
-
-    operation_name <> " body=" <> body
+    metadata = Operation.describe(payload)
+    codes = Operation.error_codes(Map.get(response, :body))
+    " diagnostics=" <> Jason.encode!(Map.put(metadata, "graphql_codes", codes))
   end
 
-  defp summarize_error_body(body) when is_binary(body) do
-    body
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> truncate_error_body()
-    |> inspect()
-  end
-
-  defp summarize_error_body(body) do
-    body
-    |> inspect(limit: 20, printable_limit: @max_error_body_log_bytes)
-    |> truncate_error_body()
-  end
-
-  defp truncate_error_body(body) when is_binary(body) do
-    if byte_size(body) > @max_error_body_log_bytes do
-      binary_part(body, 0, @max_error_body_log_bytes) <> "...<truncated>"
-    else
-      body
-    end
-  end
-
-  defp graphql_headers(tracker_settings) do
+  defp graphql_headers(tracker_settings, sign_file_urls) do
     case tracker_settings.api_key do
       nil ->
         {:error, :missing_linear_api_token}
 
       token ->
-        {:ok,
-         [
-           {"Authorization", token},
-           {"Content-Type", "application/json"}
-         ]}
+        headers = [{"Authorization", token}, {"Content-Type", "application/json"}]
+        {:ok, if(sign_file_urls, do: [{"public-file-urls-expire-in", "300"} | headers], else: headers)}
     end
   end
 
@@ -388,6 +358,7 @@ defmodule SymphonyElixir.Linear.Client do
     Req.post(endpoint,
       headers: headers,
       json: payload,
+      retry: false,
       connect_options: [timeout: 30_000]
     )
   end

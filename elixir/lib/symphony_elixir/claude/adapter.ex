@@ -2,11 +2,10 @@ defmodule SymphonyElixir.Claude.Adapter do
   @moduledoc "CodingAgent transport for the pinned, subscription-authenticated SDK helper."
   @behaviour SymphonyElixir.CodingAgent
 
-  alias SymphonyElixir.{AgentPause, Config, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
-  @client_error_statuses [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
   @pause_kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
   @codes %{
     "auth_required" => :auth_required,
@@ -135,7 +134,7 @@ defmodule SymphonyElixir.Claude.Adapter do
     case frame(session.port, min(until, deadline(session.config.read_timeout_ms))) do
       {:error, :timeout} ->
         if System.monotonic_time(:millisecond) >= until do
-          pause(session, "protocol_error", %{})
+          pending_failure(session, pending)
         else
           await_turn(session, request, event_id, issue, callback, until, pending)
         end
@@ -147,7 +146,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         handle_message(message, session, request, event_id, issue, callback, until, pending)
 
       _ ->
-        pause(session, "protocol_error", %{})
+        pending_failure(session, pending)
     end
   end
 
@@ -172,23 +171,33 @@ defmodule SymphonyElixir.Claude.Adapter do
     seen_key = {__MODULE__, session.id, :tools}
     seen = Process.get(seen_key, %{})
 
-    with true <- valid_tool_call?(session, seen, tool, name, args),
-         :ok <- AgentPause.begin_tool(session.identity["profile"], issue.id, tool, name) do
+    if valid_tool_call?(session, seen, tool, name, args) do
       Process.put(seen_key, Map.put(seen, tool, true))
 
-      result = execute_tool(session.binding, name, args, issue)
+      result =
+        ToolCall.run(fn -> Tracker.execute_bound_agent_tool(session.binding, name, args, issue: issue) end, name, args,
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          session_id: event_id,
+          tool_id: tool,
+          provider: :claude,
+          profile: session.identity["profile"]
+        )
 
-      case send_tool_result(session, request, tool, result) do
-        :ok -> await_turn(session, request, event_id, issue, callback, until, Map.put(pending, tool, true))
-        _ -> pause(session, "tool_outcome_uncertain", %{})
+      case result do
+        {:ok, result, context} ->
+          deliver_tool_result(session, request, event_id, issue, callback, until, pending, tool, result, context)
+
+        error ->
+          tool_pause(session, error)
       end
     else
-      _ -> pause(session, "protocol_error", %{})
+      pause(session, "protocol_error", %{})
     end
   end
 
   defp handle_message(%{"type" => "tool_result_accepted", "tool_id" => tool}, session, request, event_id, issue, callback, until, pending) do
-    if Map.has_key?(pending, tool) and AgentPause.finish_tool(tool) == :ok do
+    if Map.has_key?(pending, tool) and ToolCall.accept(pending[tool]) == :ok do
       await_turn(session, request, event_id, issue, callback, until, Map.delete(pending, tool))
     else
       pause(session, "tool_outcome_uncertain", %{})
@@ -202,7 +211,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         _ -> pause(session, "policy_blocked", %{})
       end
     else
-      pause(session, "tool_outcome_uncertain", %{})
+      pending_failure(session, pending)
     end
   end
 
@@ -219,35 +228,27 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, _pending),
     do: pause(session, "protocol_error", %{})
 
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp deliver_tool_result(session, request, event_id, issue, callback, until, pending, tool, result, context) do
+    case send_tool_result(session, request, tool, result) do
+      :ok -> await_turn(session, request, event_id, issue, callback, until, Map.put(pending, tool, context))
+      _ -> tool_pause(session, ToolCall.fail(context, "reply_failed"))
+    end
+  end
+
+  defp pending_failure(session, pending) do
+    Enum.each(pending, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
+    kind = if Enum.any?(pending, fn {_id, context} -> context.durable end), do: "tool_outcome_uncertain", else: "protocol_error"
+    pause(session, kind, %{})
+  end
+
   defp valid_tool_call?(session, seen, tool, name, args) do
     is_binary(tool) and Enum.any?(session.binding.tool_specs, &(&1["name"] == name)) and
       not Map.has_key?(seen, tool) and map_size(seen) < 4096 and
       is_map(args) and byte_size(Jason.encode!(args)) <= 524_288
   end
 
-  defp execute_tool(binding, name, args, issue) do
-    result = Tracker.execute_bound_agent_tool(binding, name, args, issue: issue)
-    if confirmed_tracker_response?(result, args), do: result, else: :uncertain
-  rescue
-    _ -> :uncertain
-  catch
-    _, _ -> :uncertain
-  end
-
-  defp confirmed_tracker_response?(%{"success" => true}, _args), do: true
-  defp confirmed_tracker_response?(%{"success" => false}, %{"method" => method}) when method in ["GET", "get"], do: true
-
-  defp confirmed_tracker_response?(%{"success" => false, "output" => output}, _args) when is_binary(output) do
-    # A transport/tool error is not evidence that a remote mutation was rejected.
-    # Only a definite client-error HTTP response is safe to hand back for correction.
-    case Jason.decode(output) do
-      {:ok, %{"status" => status}} -> status in @client_error_statuses
-      {:ok, %{"error" => %{"status" => status}} = payload} when map_size(payload) == 1 -> status in @client_error_statuses
-      _ -> false
-    end
-  end
-
-  defp confirmed_tracker_response?(_result, _args), do: false
+  defp tool_pause(session, {:error, kind, _context}), do: pause(session, to_string(kind), %{})
 
   defp send_tool_result(session, request, tool, %{"success" => success, "output" => output})
        when is_boolean(success) and is_binary(output) and byte_size(output) <= 524_288 do

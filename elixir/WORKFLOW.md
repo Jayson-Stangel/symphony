@@ -122,13 +122,52 @@ requires them. A missing tool matters only when required for that project's work
   the globally installed `symphony-land` skill, which includes the land loop.
   A repository may deliberately override it with `.codex/skills/symphony-land`.
 
+## Evidence publication (required)
+
+Whenever you create review evidence (screenshots, recordings, reports, logs, or
+other validation artifacts), upload it to the current Linear issue and link it
+from the existing workpad. Local paths and PR-only uploads do not satisfy this
+requirement. Publish evidence as it is created, including evidence of failures;
+do not wait until handoff or rely on the workspace surviving completion.
+Evidence must come from the actual validation run for the stated revision.
+Inspect the generated artifact before citing it; a filename, placeholder image,
+or a test-success summary is not proof of the rendered result.
+
+Use the `symphony-linear` file upload procedure: request a signed upload URL,
+upload the bytes with the returned headers, then attach the resulting asset URL
+to this issue with a descriptive title. Embed screenshots in the existing workpad
+for inline review. Record the tested revision, command/result, and viewport or
+other context alongside each artifact. Inspect artifacts for secrets or private
+data before uploading; publish a sanitized copy when needed. A verified sanitized
+replacement satisfies this requirement for its unsafe original. Record the
+substitution without revealing removed data; never upload the unsafe original.
+
+Require a successful upload HTTP status (`curl --fail-with-body` or equivalent);
+a successful tool call or a created attachment does not prove the bytes arrived.
+Retrieve the published asset through authorized Linear access and compare its
+byte count and SHA-256 with the intended local file (the sanitized copy when
+applicable). Worker `linear_graphql` reads return file URLs signed for five
+minutes: read the attached asset URL, download it with `curl --fail --location`,
+and repeat the read if the download URL expires. Store the canonical asset URL
+without its temporary signature in issue links, not the expiring download URL;
+do not expose credentials or introduce raw-token shell helpers. Record the
+verification result. An inaccessible, truncated, or mismatched asset is unpublished.
+Read back the issue attachments and workpad to verify each verified asset is linked
+to the correct issue. On retry or continuation, reuse verified attachments;
+publish any missing artifacts and identify fresh evidence when the candidate
+changes. Preserve local evidence until publication is verified. If uploading or
+linking fails after bounded supported recovery, record the failure and preserved
+paths in the workpad and use Blocked; do not claim evidence delivery or move to
+Human Review, Merging, or Done with unpublished evidence.
+
 ## App runtime validation (required)
 
 For web application changes, start the app using the target repository's documented
 command, wait for it to be ready, and exercise the changed user flow in a browser.
 Verify the expected result and capture screenshots in the issue workspace. Record
-the commands, results, and artifact paths in the workpad. Follow repository-specific
-media upload procedures when available. Stop any servers you started after testing.
+the commands and results in the workpad and publish the screenshots using
+`Evidence publication (required)`. Follow repository-specific media upload
+procedures as well when required. Stop any servers you started after testing.
 
 The standard Symphony container includes headless Chromium and Playwright for both
 Codex and Claude. No desktop browser or browser MCP tool is required: use the shell.
@@ -351,6 +390,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
+- Every evidence artifact or its sanitized replacement is attached to this Linear issue, linked in the workpad, and verified by asset retrieval and read-back.
 - Validation/tests are green for the latest commit.
 - PR feedback sweep is complete and no actionable comments remain.
 - Every configured automated reviewer has completed review of the latest PR head, all actionable findings are resolved, and the workpad records the reviewed SHA and review evidence.

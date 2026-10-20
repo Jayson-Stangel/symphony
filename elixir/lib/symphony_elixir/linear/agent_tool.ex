@@ -3,11 +3,15 @@ defmodule SymphonyElixir.Linear.AgentTool do
   Provider-native Linear tool exposed to Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Linear.{Client, Operation}
+
+  @rejections [400, 401, 403, 404, 405, 409, 410, 412, 413, 415, 422, 429]
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
+  File-storage URLs returned in the response are signed for five minutes so artifacts
+  can be downloaded and verified without exposing the Linear API key.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -55,15 +59,54 @@ defmodule SymphonyElixir.Linear.AgentTool do
 
   defp execute_linear_graphql(arguments, opts) do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
-    client_opts = Keyword.take(opts, [:tracker_settings])
+    client_opts = opts |> Keyword.take([:tracker_settings]) |> Keyword.put(:sign_file_urls, true)
 
-    with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
-         {:ok, response} <- linear_client.(query, variables, client_opts) do
-      graphql_response(response)
-    else
+    case normalize_linear_graphql_arguments(arguments) do
+      {:ok, query, variables} ->
+        operation = Operation.describe(query)
+        response = linear_client.(query, variables, client_opts)
+        execution_response(response, operation)
+
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+        |> execution("not_executed", "local_validation", Operation.describe(arguments))
     end
+  end
+
+  defp execution_response({:ok, response}, operation) do
+    result = graphql_response(response)
+
+    certainty =
+      cond do
+        operation["operation"] == "query" -> "read_only"
+        result["success"] and is_map(response) and is_map(response["data"]) and Map.get(response, "errors", []) == [] -> "confirmed"
+        true -> "uncertain"
+      end
+
+    execution(result, certainty, if(result["success"], do: "response", else: "graphql_error"), Map.put(operation, "http_status", 200))
+  end
+
+  defp execution_response({:error, reason}, operation) do
+    {certainty, category, details} = failure_certainty(reason, operation)
+
+    failure_response(tool_error_payload(reason))
+    |> execution(certainty, category, Map.merge(operation, details))
+  end
+
+  defp failure_certainty(:missing_linear_api_token, _operation), do: {"not_executed", "missing_auth", %{}}
+  defp failure_certainty({:linear_api_request, :missing_linear_api_token}, operation), do: failure_certainty(:missing_linear_api_token, operation)
+
+  defp failure_certainty({:linear_api_status, status}, operation) do
+    certainty = if status in @rejections, do: "not_executed", else: uncertainty(operation)
+    {certainty, "http_error", %{"http_status" => status}}
+  end
+
+  defp failure_certainty(reason, operation), do: {uncertainty(operation), "transport_error", %{"transport_reason" => Operation.transport_reason(reason)}}
+  defp uncertainty(%{"operation" => "query"}), do: "read_only"
+  defp uncertainty(_operation), do: "uncertain"
+
+  defp execution(result, certainty, reason, metadata) do
+    Map.put(result, "execution", Map.merge(metadata, %{"certainty" => certainty, "reason" => reason}))
   end
 
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do
@@ -105,7 +148,10 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp normalize_variables(arguments) do
-    case Map.get(arguments, "variables") || Map.get(arguments, :variables) || %{} do
+    value = Map.get(arguments, "variables", Map.get(arguments, :variables))
+
+    case value do
+      nil -> {:ok, %{}}
       variables when is_map(variables) -> {:ok, variables}
       _ -> {:error, :invalid_variables}
     end
