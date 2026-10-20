@@ -147,7 +147,7 @@ defmodule SymphonyElixir.Linear.Client do
         post_graphql_request(request_payload, headers, tracker_settings.endpoint)
       end)
 
-    with {:ok, headers} <- graphql_headers(tracker_settings),
+    with {:ok, headers} <- graphql_headers(tracker_settings, Keyword.get(opts, :sign_file_urls, false)),
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
       {:ok, body}
     else
@@ -343,17 +343,14 @@ defmodule SymphonyElixir.Linear.Client do
     " diagnostics=" <> Jason.encode!(Map.put(metadata, "graphql_codes", codes))
   end
 
-  defp graphql_headers(tracker_settings) do
+  defp graphql_headers(tracker_settings, sign_file_urls) do
     case tracker_settings.api_key do
       nil ->
         {:error, :missing_linear_api_token}
 
       token ->
-        {:ok,
-         [
-           {"Authorization", token},
-           {"Content-Type", "application/json"}
-         ]}
+        headers = [{"Authorization", token}, {"Content-Type", "application/json"}]
+        {:ok, if(sign_file_urls, do: [{"public-file-urls-expire-in", "300"} | headers], else: headers)}
     end
   end
 

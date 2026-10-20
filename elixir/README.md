@@ -270,6 +270,11 @@ codex:
   with the session-bound endpoint/token and strips declared token environment variables from the
   Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
   whatever the configured Linear token can access.
+- Evidence downloads: worker tool calls request file URLs signed for five minutes
+  with Linear's `public-file-urls-expire-in` header. Workers can retrieve and hash
+  uploaded artifacts without receiving the API key. Ordinary scheduler reads do
+  not request signed URLs. Store canonical asset URLs in durable issue links and
+  request fresh signed URLs through the tool when a download expires.
 - Responsibility and errors: `linear_graphql` adds no idempotency key, retry, scope guard, or
   rate-limit policy, so workflows own idempotent mutations and handling provider errors. Read/config
   failures use `{:error, :missing_linear_api_token}`, `{:error, :missing_linear_project_slug}`,

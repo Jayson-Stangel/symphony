@@ -146,7 +146,10 @@ Require a successful upload HTTP status (`curl --fail-with-body` or equivalent);
 a successful tool call or a created attachment does not prove the bytes arrived.
 Retrieve the published asset through authorized Linear access and compare its
 byte count and SHA-256 with the intended local file (the sanitized copy when
-applicable). Use an authorized download link or Linear interface when required;
+applicable). Worker `linear_graphql` reads return file URLs signed for five
+minutes: read the attached asset URL, download it with `curl --fail --location`,
+and repeat the read if the download URL expires. Store the canonical asset URL
+without its temporary signature in issue links, not the expiring download URL;
 do not expose credentials or introduce raw-token shell helpers. Record the
 verification result. An inaccessible, truncated, or mismatched asset is unpublished.
 Read back the issue attachments and workpad to verify each verified asset is linked

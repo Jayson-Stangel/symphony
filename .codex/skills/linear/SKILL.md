@@ -13,6 +13,9 @@ Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
 
 Use the `linear_graphql` client tool exposed by Symphony's app-server session.
 It reuses Symphony's configured Linear auth for the session.
+Worker calls request signed file-storage URLs valid for five minutes. No extra
+tool argument or API key is needed. Keep those temporary download URLs out of
+durable comments; use the canonical asset URL for issue links and embeds.
 
 Tool input:
 
@@ -353,8 +356,11 @@ Do this in four steps:
    a descriptive title (see the URL attachment example above). Update the
    existing workpad with the asset link and its tested revision, command/result,
    and viewport or other context. Embed screenshots with `![description](assetUrl)`.
-4. Retrieve the published asset through authorized Linear access (using an
-   authorized download link or Linear interface when required). Verify its byte
+4. Read the issue's attachment URL through `linear_graphql` to obtain a fresh
+   signed download URL, then fetch its bytes with `curl --fail --location` into
+   a local verification file. The signature supplies temporary download access;
+   never use the PUT upload URL for this GET. If it expires, repeat the read for
+   a fresh URL. Verify the retrieved file's byte
    count and SHA-256 against the intended local file or sanitized replacement;
    attachment metadata alone cannot establish a successful upload. Read back the
    issue attachments and workpad, verify the asset links target this issue, and
@@ -364,7 +370,10 @@ Do this in four steps:
    policy instead of claiming publication or handing off with missing evidence.
 
 Use the returned asset URL for permanent links, never the temporary signed
-upload URL. Keep signed URLs and upload headers out of comments and logs.
+upload or download URL. Strip only the temporary `signature` query parameter
+from a returned signed asset URL when storing its canonical issue link; do not
+strip it from the URL used to download. Keep signed URLs and upload headers out
+of comments and logs.
 
 Useful mutations:
 
