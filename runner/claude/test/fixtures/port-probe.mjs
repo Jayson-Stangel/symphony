@@ -18,6 +18,9 @@ class Probe {
       if (text === 'silence') continue;
       if (text === 'malformed') { process.stdout.write('not JSON\n'); continue; }
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }
+      if (text.startsWith('fable-quota:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
+        status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: Number(text.split(':')[1]),
+      } });
       if (text === 'quota') this.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
       if (text === 'auth') this.push({ type: 'assistant', error: 'authentication_failed' });
       if (text === 'linear-recovery') {

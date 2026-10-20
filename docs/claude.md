@@ -109,7 +109,9 @@ including Codex Workpad comments, are reused.
 sanitized pause metadata. Legacy token fields remain for API compatibility;
 Claude usage totals include cached input and do not imply dollar costs.
 
-Authoritative quota events can provide a reset time. One persisted probe is
+Authoritative quota events can provide a reset time, including the Fable weekly
+included-allowance bucket (`seven_day_overage_included`). Actual paid-overage
+signals remain policy blockers. One persisted probe is
 allowed after that time; absent/unknown reset times require explicit operator
 recheck. That probe is consumed on disk before sending model input. A failed or
 interrupted probe remains blocked as `probe_inflight`, including after restart;

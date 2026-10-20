@@ -41,9 +41,21 @@ test('effort accepts SDK levels and leaves omitted effort unset', () => {
 
 test('only authoritative quota buckets establish a reset time; prose does not', () => {
   assert.equal(classifyEvent({ type: 'assistant', message: 'quota exceeded' }), null);
-  assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-    status: 'rejected', rateLimitType: 'five_hour', resetsAt: 12345,
-  } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+  for (const rateLimitType of ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included']) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType, resetsAt: 12345,
+    } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+  }
+  for (const resetsAt of [undefined, null, 'tomorrow', -1, 0]) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt,
+    } }), { outcome: 'quota_exhausted', resets_at: null });
+  }
+  for (const info of [{ isUsingOverage: true }, { overageStatus: 'allowed' }, { overageStatus: 'allowed_warning' }]) {
+    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: 12345, ...info,
+    } }), { outcome: 'policy_blocked' });
+  }
   assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
     status: 'rejected', rateLimitType: 'seven_day', resetsAt: 'tomorrow',
   } }), { outcome: 'quota_exhausted', resets_at: null });

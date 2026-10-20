@@ -107,10 +107,10 @@ test('tool callbacks can resolve while the stream is active and stale replies ar
   await tick();
 });
 
-test('quota evidence cannot be downgraded by a later generic rate-limit error', async t => {
-  const ctx = await fixture(t);
+test('Fable quota evidence cannot be downgraded by a later generic rate-limit error', async t => {
+  const ctx = await fixture(t, 'claude-fable-5-1');
   const input = await turn(ctx);
-  ctx.query.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: 12345 } });
+  ctx.query.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: 12345 } });
   ctx.query.push({ type: 'assistant', error: 'rate_limit' });
   result(ctx.query, input);
   await tick();
