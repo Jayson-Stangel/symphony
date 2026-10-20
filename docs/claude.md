@@ -237,6 +237,13 @@ with the current user input. Plain assistant prose, partial EOF and malformed
 frames never establish successful completion or quota resets. Captured process
 generations constrain cleanup to the helper's owned native group.
 
+Token usage appears as Claude reports assistant steps, including cached input.
+Repeated tool blocks sharing a message ID count once. Step-level output counts
+are SDK placeholders, so output stays at its last confirmed value until the turn
+result arrives. Result `modelUsage` reconciles cumulative session totals, including
+auxiliary calls, without adding earlier turns again. Before any usage arrives,
+both the dashboard total and running-session cells display `unavailable`.
+
 Qualification uses offline OTP/Node/shell tests and bounded owner-approved live
 checks. Multi-hour credential refresh, every quota bucket, and commercial
 third-party distribution require additional evidence; a short pilot does not

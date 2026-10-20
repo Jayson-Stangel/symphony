@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCommand, classifyEvent, summarizeResult, usageTotals } from '../protocol.mjs';
+import { parseCommand, classifyEvent, summarizeResult, usageTotals, assistantInputTokens } from '../protocol.mjs';
 import { approvedEnvironment, profileFromStatus, validateAttestation } from '../runtime.mjs';
 import { sameGroupGeneration } from '../processes.mjs';
 import { toolShape } from '../tools.mjs';
@@ -85,6 +85,17 @@ test('usage is cumulative across models, includes cache input once, and excludes
   });
   assert.equal(usageTotals({ sonnet: { inputTokens: 'secret-canary' } }), null);
   assert.equal(usageTotals(undefined), null);
+  assert.equal(usageTotals({ sonnet: null }), null);
+});
+
+test('live input validates cached counts and excludes placeholder output', () => {
+  assert.equal(assistantInputTokens({ input_tokens: 10, output_tokens: 999 }), 10);
+  assert.equal(assistantInputTokens({ input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 }), 60);
+  for (const usage of [null, {}, { input_tokens: -1 }, { input_tokens: '10' },
+    { input_tokens: 1, cache_read_input_tokens: -1 },
+    { input_tokens: Number.MAX_SAFE_INTEGER, cache_creation_input_tokens: 1 }]) {
+    assert.equal(assistantInputTokens(usage), null);
+  }
 });
 
 test('only native subscription identity produces an account fingerprint', () => {

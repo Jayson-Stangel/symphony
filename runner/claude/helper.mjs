@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { realpathSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseCommand, maxFrameBytes, classifyEvent, summarizeResult, usageTotals } from './protocol.mjs';
+import { parseCommand, maxFrameBytes, classifyEvent, summarizeResult, usageTotals, assistantInputTokens } from './protocol.mjs';
 import { readiness, RuntimeError, runtime } from './runtime.mjs';
 import { trackerServer } from './tools.mjs';
 import { processIdentity, signalOwnedGroup, ownedGroupAlive } from './processes.mjs';
@@ -21,6 +21,7 @@ export class Helper {
     this.terminals = new Set();
     this.usedRequests = new Set();
     this.children = new Set();
+    this.usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   }
 
   async command(command) {
@@ -51,7 +52,7 @@ export class Helper {
     if (this.state !== 'ready' || this.active || this.usedRequests.has(command.request_id)) throw new RuntimeError('invalid_turn_state');
     if (this.usedRequests.size >= 128) throw new RuntimeError('attempt_turn_limit');
     this.usedRequests.add(command.request_id);
-    this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, progressEvents: new Set() };
+    this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set(), progressEvents: new Set() };
     this.pendingInput.push({ type: 'user', session_id: '', uuid: this.active.uuid, parent_tool_use_id: null,
       message: { role: 'user', content: command.prompt } });
     this.wake?.();
@@ -137,9 +138,23 @@ export class Helper {
         this.terminals.add(event.uuid);
         if (event.user_message_uuid !== this.active.uuid) throw new RuntimeError('stale_native_result');
         const totals = usageTotals(event.modelUsage);
-        if (totals) this.emit('usage', this.active.id, { totals });
+        // modelUsage already includes earlier turns and auxiliary calls. Never sum results.
+        if (totals) this.reportUsage(totals);
         this.finish(summarizeResult(event, this.active.cause, this.active.cancelled));
-      } else {
+      } else if (['assistant', 'tool_progress', 'system'].includes(event.type)) {
+        if (event.type === 'assistant' && !event.error && event.session_id === this.nativeSession &&
+            (!event.user_message_uuid || event.user_message_uuid === this.active.uuid)) {
+          const id = event.message?.id;
+          const input = assistantInputTokens(event.message?.usage);
+          if (typeof id === 'string' && id.length && input !== null && !this.active.messages.has(id)) {
+            this.active.messages.add(id);
+            const inputTokens = this.usage.input_tokens + input;
+            const totalTokens = inputTokens + this.usage.output_tokens;
+            if (Number.isSafeInteger(totalTokens)) {
+              this.reportUsage({ input_tokens: inputTokens, output_tokens: this.usage.output_tokens, total_tokens: totalTokens });
+            }
+          }
+        }
         const details = progressDetails(event);
         if (!details) continue;
         const seen = this.active.progressEvents;
@@ -157,6 +172,15 @@ export class Helper {
       if (this.active) this.finish({ outcome: 'protocol_error' });
       await this.stop('native_eof');
     }
+  }
+
+  reportUsage(totals) {
+    // Crash results may be zeroed. Keep already observed usage and session totals monotonic.
+    const input = Math.max(this.usage.input_tokens, totals.input_tokens);
+    const output = Math.max(this.usage.output_tokens, totals.output_tokens);
+    if (!Number.isSafeInteger(input + output)) return;
+    this.usage = { input_tokens: input, output_tokens: output, total_tokens: input + output };
+    this.emit('usage', this.active.id, { totals: { ...this.usage } });
   }
 
   finish(outcome) {

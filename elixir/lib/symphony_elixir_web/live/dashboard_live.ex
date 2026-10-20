@@ -209,8 +209,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        <span>Total: <%= token_total(@payload, :total_tokens, entry.tokens) %></span>
+                        <span class="muted">In <%= token_total(@payload, :input_tokens, entry.tokens) %> / Out <%= token_total(@payload, :output_tokens, entry.tokens) %></span>
                       </div>
                     </td>
                   </tr>
@@ -390,9 +390,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp token_total(payload, key) do
+    token_total(payload, key, payload.codex_totals)
+  end
+
+  defp token_total(payload, key, tokens) do
     case Map.get(payload, :agent) do
       %{usage_available: false} -> "unavailable"
-      _ -> format_int(payload.codex_totals[key])
+      _ -> format_int(tokens[key])
     end
   end
 
