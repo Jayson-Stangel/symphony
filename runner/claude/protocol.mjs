@@ -58,10 +58,19 @@ export function usageTotals(modelUsage) {
   const totals = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   for (const usage of Object.values(modelUsage ?? {})) {
     const fields = ['inputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens', 'outputTokens'];
-    if (!fields.every(key => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) return null;
+    if (!usage || !fields.every(key => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) return null;
     totals.input_tokens += usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
     totals.output_tokens += usage.outputTokens;
   }
   totals.total_tokens = totals.input_tokens + totals.output_tokens;
   return Object.values(totals).every(Number.isSafeInteger) ? totals : null;
+}
+
+// Assistant output_tokens is a placeholder; only result.modelUsage confirms output.
+export function assistantInputTokens(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const values = [usage.input_tokens, usage.cache_read_input_tokens ?? 0, usage.cache_creation_input_tokens ?? 0];
+  if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) return null;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Number.isSafeInteger(total) ? total : null;
 }

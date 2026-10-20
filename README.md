@@ -324,6 +324,8 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 Codex remains the default. A qualified personal Claude profile adds one isolated
 Sonnet worker through pinned Claude Code/Agent SDK and native subscription login.
+The dashboard updates input tokens during Claude steps and confirms output tokens
+at turn completion; session totals include cached input and avoid duplicate tool blocks.
 It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents return correctable Linear read errors
 and definite GraphQL request rejections, letting the agent correct them. They pause

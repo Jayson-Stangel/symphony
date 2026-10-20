@@ -479,3 +479,10 @@ Linear tool calls share outcome handling across Codex and Claude. Read errors an
 local rejections return to the agent for correction; ambiguous writes retain a
 durable pause requiring reconciliation. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
+
+## Claude token observability
+
+Claude reports input tokens during assistant steps, including cached input;
+output tokens update at turn completion. Cumulative result totals reconcile
+live counts without counting earlier turns twice. The dashboard shows
+`unavailable` until usage is reported. See [the Claude runtime contract](../docs/claude.md#runtime-contract).

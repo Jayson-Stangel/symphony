@@ -613,6 +613,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert has_element?(view, "#runner-identity", "last session")
   end
 
+  test "Claude token cells stay unavailable until reported usage reaches the dashboard" do
+    name = Module.concat(__MODULE__, :ClaudeUsageOrchestrator)
+    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil, usage_available: false})
+    {:ok, pid} = StaticOrchestrator.start_link(name: name, snapshot: snapshot)
+    start_test_endpoint(orchestrator: name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+    assert has_element?(view, ".metric-grid", "In unavailable / Out unavailable")
+    assert has_element?(view, ".data-table-running .token-stack", "Total: unavailable")
+
+    :sys.replace_state(pid, fn state ->
+      Keyword.put(state, :snapshot, put_in(snapshot, [:agent, :usage_available], true))
+    end)
+
+    send(view.pid, :observability_updated)
+    refute render(view) =~ "Total: unavailable"
+    assert has_element?(view, ".data-table-running .token-stack", "Total:")
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
