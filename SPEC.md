@@ -2393,7 +2393,7 @@ confirmed session cleanup, established-session protocol errors, unexpected EOF,
 helper timeouts and tracker delivery failures retry the attempt with scheduler
 backoff in its retained workspace. The runner MUST NOT replay tracker mutations.
 The next prompt requires live target readback before uncertain writes are retried.
-Explicit input/permission requirements and turn-limit stops remain blocked;
+Explicit input/permission requirements and native turn-limit stops remain blocked;
 startup ownership/initialization failures remain fail-closed.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
