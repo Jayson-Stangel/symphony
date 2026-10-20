@@ -96,8 +96,27 @@ Reconcile the external result before clearing that marker with the explicit API
 confirmation below.
 
 Definite tracker client rejections, including a Linear HTTP 400 for an invalid
-GraphQL document, are returned to Claude so it can correct the request. Transport
-failures, server errors and partial GraphQL results still pause for reconciliation.
+GraphQL document, are returned to the agent so it can correct the request. Linear
+reads (classified from the parsed GraphQL document) and local validation/auth
+rejections cannot change Linear and do not create uncertain-write pauses. Read
+errors, including HTTP 200 GraphQL errors, are returned for correction.
+
+Both Codex and Claude persist an intent before a mutation or unclassified request.
+Write transport failures, server errors, partial GraphQL results and lost delivery
+remain paused for reconciliation. Symphony disables automatic HTTP retries for
+Linear requests. A live worker's in-flight call does not block other workers;
+worker death or restart exposes its unresolved intent as a blocker. Codex uses a
+logical tool-state namespace, which is not an account identity or auth attestation.
+Existing `claude-tools` and `claude-pause.json` state paths remain compatible and
+now protect both providers.
+
+`Tracker tool outcome` logs correlate issue and tool IDs with provider, document
+SHA-256, parsed operation type, phase, elapsed time, HTTP status, allowlisted
+GraphQL codes and transport reason. Outstanding intent files retain the latest
+phase, including `started`, `response_received` or `uncertain`; `accepted` records
+successful delivery (Claude acknowledgement or a Codex RPC write). Query text, variables, error bodies and credentials are not
+included in these diagnostics. These fields help reconcile a write but do not
+prove whether an unconfirmed external effect occurred.
 
 An intentional scheduler stop when an issue leaves active states is cancellation,
 not a helper protocol failure. Confirmed cleanup can finish a non-quota operator

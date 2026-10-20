@@ -458,3 +458,8 @@ Development verification now also requires Node 24.18.0 (included in mise.toml).
 Run `make setup` to install the locked helper dependencies without install scripts;
 `make all` includes the credential-free Node protocol/process tests. Native process
 ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
+
+Linear tool calls share outcome handling across Codex and Claude. Read errors and
+local rejections return to the agent for correction; ambiguous writes retain a
+durable pause requiring reconciliation. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+and [recovery](../docs/claude.md#pauses-and-recovery).

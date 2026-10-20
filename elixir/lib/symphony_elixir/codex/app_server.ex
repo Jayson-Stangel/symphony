@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, SSH, Workspace}
+  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, Config, SSH, ToolCall, Workspace}
 
   @initialize_id 1
   @thread_start_id 2
@@ -88,10 +88,32 @@ defmodule SymphonyElixir.Codex.AppServer do
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
-    tool_executor =
+    executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
       end)
+
+    tool_executor = fn
+      "linear_graphql" = tool, arguments ->
+        {:symphony_tool,
+         ToolCall.run(
+           fn ->
+             result = executor.(tool, arguments)
+             if is_map(result), do: Map.merge(result, normalize_dynamic_tool_result(result)), else: result
+           end,
+           tool,
+           arguments,
+           issue_id: issue.id,
+           issue_identifier: issue.identifier,
+           thread_id: thread_id,
+           tool_id: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+           provider: :codex,
+           profile: AgentPause.codex_profile()
+         )}
+
+      tool, arguments ->
+        executor.(tool, arguments)
+    end
 
     case start_turn(
            port,
@@ -500,6 +522,9 @@ defmodule SymphonyElixir.Codex.AppServer do
            tool_executor,
            auto_approve_requests
          ) do
+      {:tool_pause, kind, details} ->
+        {:error, {:agent_pause, kind, details}}
+
       :input_required ->
         emit_message(
           on_message,
@@ -585,26 +610,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     tool_name = tool_call_name(params)
     arguments = tool_call_arguments(params)
 
-    result =
-      tool_name
-      |> tool_executor.(arguments)
-      |> normalize_dynamic_tool_result()
+    case tool_executor.(tool_name, arguments) do
+      {:symphony_tool, {:error, kind, context}} ->
+        tool_pause(kind, context)
 
-    send_message(port, %{
-      "id" => id,
-      "result" => result
-    })
+      {:symphony_tool, {:ok, result, context}} ->
+        deliver_tool_result(port, id, result, context, tool_name, payload, payload_string, on_message, metadata)
 
-    event =
-      case result do
-        %{"success" => true} -> :tool_call_completed
-        _ when is_nil(tool_name) -> :unsupported_tool_call
-        _ -> :tool_call_failed
-      end
-
-    emit_message(on_message, event, %{payload: payload, raw: payload_string}, metadata)
-
-    :approved
+      result ->
+        deliver_tool_result(port, id, result, nil, tool_name, payload, payload_string, on_message, metadata)
+    end
   end
 
   defp maybe_handle_approval_request(
@@ -708,6 +723,49 @@ defmodule SymphonyElixir.Codex.AppServer do
     :unhandled
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp deliver_tool_result(port, id, result, context, tool_name, payload, payload_string, on_message, metadata) do
+    result = normalize_dynamic_tool_result(result)
+
+    with true <- send_tool_reply(port, id, result, context),
+         :ok <- if(context, do: ToolCall.accept(context), else: :ok) do
+      event =
+        cond do
+          result["success"] -> :tool_call_completed
+          is_nil(tool_name) -> :unsupported_tool_call
+          true -> :tool_call_failed
+        end
+
+      emit_message(on_message, event, %{payload: payload, raw: payload_string}, metadata)
+      :approved
+    else
+      {:tool_pause, _, _} = failure ->
+        failure
+
+      _ ->
+        {:error, kind, context} = ToolCall.fail(context, "state_write_failed")
+        tool_pause(kind, context)
+    end
+  end
+
+  defp send_tool_reply(port, id, result, context) do
+    send_message(port, %{"id" => id, "result" => result})
+  rescue
+    error in ArgumentError ->
+      if context do
+        {:error, kind, context} = ToolCall.fail(context, "reply_failed")
+        tool_pause(kind, context)
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp tool_pause(kind, context) do
+    details = %{profile: context.profile}
+    AgentPause.record(kind, details)
+    {:tool_pause, kind, details}
+  end
+
   defp normalize_dynamic_tool_result(%{"success" => success} = result) when is_boolean(success) do
     output =
       case Map.get(result, "output") do
@@ -722,6 +780,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       end
 
     result
+    |> Map.take(["success", "output", "contentItems"])
     |> Map.put("output", output)
     |> Map.put("contentItems", content_items)
   end
@@ -968,7 +1027,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{"id" => ^request_id, "result" => result}} ->
         {:ok, result}
 
-      {:ok, %{"id" => ^request_id, "method" => method} = response_payload} when is_binary(method) ->
+      {:ok, %{"method" => method} = response_payload} when is_binary(method) ->
         handle_response_method(
           port,
           request_id,
@@ -1050,6 +1109,9 @@ defmodule SymphonyElixir.Codex.AppServer do
           tool_executor,
           auto_approve_requests
         )
+
+      {:tool_pause, kind, details} ->
+        {:error, {:agent_pause, kind, details}}
 
       :input_required ->
         emit_message(on_message, :turn_input_required, %{payload: payload, raw: payload_string}, response_metadata)

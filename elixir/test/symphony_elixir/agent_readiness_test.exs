@@ -114,6 +114,40 @@ defmodule SymphonyElixir.AgentReadinessTest do
     GenServer.stop(pid)
   end
 
+  test "Codex startup and restart honor unresolved writes and explicit recovery", ctx do
+    Application.put_env(:symphony_elixir, :coding_agent, :codex)
+    profile = AgentPause.codex_profile()
+    assert %{ready: true, provider: "codex", profile: ^profile} = AgentReadiness.check()
+    workspace_root = Path.join(ctx.root, "workspaces")
+    marker = Path.join(workspace_root, "PROBE-1/retained")
+    File.mkdir_p!(Path.dirname(marker))
+    File.write!(marker, "retained workspace")
+    issue = %Issue{id: "one", identifier: "PROBE-1", title: "Retain", state: "Done", dispatchable: false}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    assert :ok = AgentPause.begin_tool(profile, issue.id, "codex-write", "linear_graphql")
+
+    for _restart <- 1..2 do
+      {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe)
+      snapshot = Orchestrator.snapshot(__MODULE__.Probe, 5_000)
+      assert %{"kind" => "tool_outcome_uncertain"} = snapshot.agent.pause
+      assert snapshot.running == []
+      assert File.read!(marker) == "retained workspace"
+      assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :recheck, false})
+      GenServer.stop(pid)
+    end
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe)
+
+    try do
+      assert {:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :recheck, true})
+      assert :ready = AgentPause.current()
+    after
+      GenServer.stop(pid)
+    end
+  end
+
   defp ready(profile \\ String.duplicate("a", 64)) do
     %{"ready" => true, "profile" => profile, "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1, "overages_disabled_attested" => true, "attested_at" => DateTime.to_iso8601(DateTime.utc_now())}
   end

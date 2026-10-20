@@ -428,16 +428,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp agent_dispatch_ready?(%{draining: true}), do: false
 
   defp agent_dispatch_ready?(state) do
-    if Config.coding_agent() == :claude do
-      ready = Map.get(state.readiness || %{}, :ready, false)
+    ready = Config.coding_agent() == :codex or Map.get(state.readiness || %{}, :ready, false)
+    profile = if Config.coding_agent() == :codex, do: AgentPause.codex_profile(), else: state.readiness[:profile]
 
-      case AgentPause.current() do
-        :ready -> ready
-        {:probe, %{"profile" => profile}} -> ready and profile == state.readiness[:profile]
-        _ -> false
-      end
-    else
-      true
+    case AgentPause.current() do
+      :ready -> ready
+      {:probe, %{"profile" => expected}} -> ready and profile == expected
+      _ -> false
     end
   end
 
@@ -1776,7 +1773,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp recheck_agent_pause(:recheck, %{provider: "claude", profile: profile}, reconcile),
+  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile),
     do: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
 
   defp recheck_agent_pause(_action, _readiness, _reconcile), do: :ok
@@ -1799,11 +1796,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp public_agent_pause do
-    if Config.coding_agent() == :claude do
-      case AgentPause.current() do
-        :ready -> nil
-        {status, value} -> Map.take(value, ["kind", "resets_at", "probe"]) |> Map.put("status", status)
-      end
+    case AgentPause.current() do
+      :ready -> nil
+      {status, value} -> Map.take(value, ["kind", "resets_at", "probe"]) |> Map.put("status", status)
     end
   end
 

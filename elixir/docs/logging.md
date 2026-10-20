@@ -38,3 +38,19 @@ When logging Codex execution lifecycle events, include:
 - Is this event tied to a Codex session? Include `session_id`.
 - Is the failure reason present and concise?
 - Is the message format consistent with existing lifecycle logs?
+
+## Tracker tool outcomes
+
+Codex and Claude share redacted `Tracker tool outcome` diagnostics. Search by
+`issue_id`, `issue_identifier` and `tool_id`; Claude includes its session ID, while
+Codex includes the native thread ID (startup callbacks can precede a turn ID).
+The JSON diagnostics record provider, operation type, document SHA-256, phase,
+elapsed time, HTTP status and allowlisted GraphQL/transport codes. Outstanding
+intent markers retain the latest phase across restarts. No raw query, variables,
+response body, exception text or credential is stored in these diagnostics.
+
+A read error is correctable and does not mean an uncertain write. For a mutation
+or unclassified request, `uncertain` requires checking the external outcome before
+explicit reconciliation. A `started` marker left by a dead worker means execution
+may have begun; a `response_received` marker may mean delivery was interrupted.
+Do not automatically clear either marker based solely on its phase.
