@@ -510,8 +510,9 @@ ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
 
 Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
 The agent owns outcome reconciliation. Legacy unresolved-call files remain evidence
-for the matching issue's recovery prompt, without blocking dispatch. Auth, quota
-and shared policy failures still pause the runner. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+for the matching issue's recovery prompt, without blocking dispatch. Authentication and shared policy
+failures still pause the runner. Quota exhaustion uses existing retries with bounded
+backoff and respects reliable reset times; it recovers without manual recheck. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
 
 ## Claude token observability

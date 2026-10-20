@@ -66,14 +66,7 @@ defmodule SymphonyElixir.AgentPause do
     atomic_write(pause_path(), merge_pause(old, value))
   end
 
-  @spec claim_due_probe() :: :ready | {:paused | :probe, map()}
-  def claim_due_probe do
-    serialized(fn ->
-      claim_probe(current())
-    end)
-  end
-
-  @doc "Consumes a durable probe before sending input, so a failed attempt or restart cannot replay it."
+  @doc "Consumes only an explicit authentication/policy recheck before sending input."
   @spec begin_turn(String.t()) :: :ok | {:error, term()}
   def begin_turn(profile) do
     serialized(fn ->
@@ -82,17 +75,13 @@ defmodule SymphonyElixir.AgentPause do
           :ok
 
         {:probe, %{"profile" => ^profile} = value} ->
-          kind = inflight_kind(value["kind"])
-          atomic_write(pause_path(), %{value | "kind" => kind, "phase" => "waiting", "resets_at" => nil})
+          atomic_write(pause_path(), %{value | "kind" => "operator_recheck_inflight", "phase" => "waiting", "resets_at" => nil})
 
         _ ->
           {:error, :probe_not_available}
       end
     end)
   end
-
-  defp inflight_kind("operator_recheck"), do: "operator_recheck_inflight"
-  defp inflight_kind(_kind), do: "probe_inflight"
 
   @spec complete_probe(String.t()) :: :ok | {:error, term()}
   def complete_probe(profile) do
@@ -151,35 +140,23 @@ defmodule SymphonyElixir.AgentPause do
 
   defp merge_pause(old, value) do
     cond do
-      Map.get(@rank, old["kind"], 10) > @rank[value["kind"]] -> old
-      old["phase"] == "probe" && old["resets_at"] == value["resets_at"] -> %{value | "resets_at" => nil}
-      true -> value
-    end
-  end
+      Map.get(@rank, old["kind"], 10) > @rank[value["kind"]] ->
+        old
 
-  defp claim_probe({:paused, %{"kind" => "quota_exhausted", "resets_at" => reset} = value}) when is_integer(reset) do
-    if reset <= System.system_time(:second), do: persist_probe(value), else: {:paused, value}
-  end
+      old["kind"] == "quota_exhausted" and value["kind"] == "quota_exhausted" and
+          (is_nil(value["resets_at"]) or old["resets_at"] > value["resets_at"]) ->
+        old
 
-  defp claim_probe(result), do: result
-
-  defp persist_probe(value) do
-    probe = Map.put(value, "phase", "probe")
-
-    case atomic_write(pause_path(), probe) do
-      :ok -> {:probe, probe}
-      _ -> {:paused, blocker("policy_blocked")}
+      true ->
+        value
     end
   end
 
   defp recheck_pause(:ready, _profile), do: :ok
 
-  defp recheck_pause({_, %{"kind" => "quota_exhausted", "resets_at" => reset}}, profile) when is_integer(reset) and reset > 0 do
-    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: write_probe(profile, "quota_exhausted")
+  defp recheck_pause({_, %{"kind" => "quota_exhausted", "resets_at" => reset}}, _profile) when is_integer(reset) and reset > 0 do
+    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: remove_pause()
   end
-
-  defp recheck_pause({_, %{"kind" => kind}}, profile) when kind in ["quota_exhausted", "probe_inflight"],
-    do: write_probe(profile, "quota_exhausted")
 
   defp recheck_pause(_pause, profile), do: write_probe(profile)
 
@@ -228,6 +205,18 @@ defmodule SymphonyElixir.AgentPause do
   end
 
   defp public_pause(%{"kind" => kind}) when kind in ["tool_outcome_uncertain", "protocol_error"], do: :ready
+
+  # Quota is a retry delay, never a lease that a turn must finish to release.
+  # Legacy consumed probes have no live owner after a restart or handoff.
+  defp public_pause(%{"kind" => "probe_inflight"}), do: :ready
+
+  defp public_pause(%{"kind" => "quota_exhausted"} = value) do
+    reset = value["resets_at"]
+
+    if is_integer(reset) and reset > System.system_time(:second),
+      do: {:paused, Map.take(value, ~w(version kind phase profile resets_at))},
+      else: :ready
+  end
 
   defp public_pause(value) do
     {if(value["phase"] == "probe", do: :probe, else: :paused), Map.take(value, ~w(version kind phase profile resets_at))}

@@ -21,33 +21,31 @@ defmodule SymphonyElixir.AgentPauseTest do
     %{root: root}
   end
 
-  test "unknown quota reset persists and does not create speculative probes", ctx do
-    assert AgentPause.current() == :ready
+  test "unknown quota resets leave backoff to the orchestrator, including after restart", ctx do
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
-    assert {:paused, pause} = AgentPause.current()
-    assert pause["resets_at"] == nil
-    assert {:paused, ^pause} = AgentPause.claim_due_probe()
     assert File.regular?(Path.join(ctx.root, "claude-pause.json"))
-    # State comes entirely from disk, independent of an agent/scheduler process.
-    assert Task.async(fn -> AgentPause.current() end) |> Task.await() == {:paused, pause}
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert {:probe, _} = AgentPause.current()
-    assert :ok = AgentPause.complete_probe(@profile)
-    assert AgentPause.current() == :ready
+    assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert :ready = AgentPause.current()
   end
 
-  test "reliable reset permits one persisted serialized probe, and a failed probe re-pauses", ctx do
+  test "a reliable reset is a durable cooldown that expires without a probe", ctx do
     now = System.system_time(:second)
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: now + 60})
     assert {:error, :reset_not_due} = AgentPause.explicit_recheck(@profile)
-    assert {:paused, _} = AgentPause.claim_due_probe()
+    assert {:paused, _} = AgentPause.current()
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+    assert {:paused, %{"resets_at" => retained_reset}} = AgentPause.current()
+    assert retained_reset == now + 60
     path = Path.join(ctx.root, "claude-pause.json")
     value = path |> File.read!() |> Jason.decode!() |> Map.put("resets_at", now - 1)
     File.write!(path, Jason.encode!(value))
-    assert {:probe, _} = AgentPause.claim_due_probe()
-    assert {:probe, _} = AgentPause.claim_due_probe()
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: now - 1})
-    assert {:paused, %{"resets_at" => nil}} = AgentPause.claim_due_probe()
+    assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert :ok = AgentPause.begin_turn(@profile)
+    assert :ready = AgentPause.current()
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: now + 120})
+    assert {:paused, %{"resets_at" => reset}} = AgentPause.current()
+    assert reset == now + 120
   end
 
   test "authentication and policy blockers cannot be overwritten by quota or healthy in-flight completion" do
@@ -60,9 +58,24 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
 
-  test "a probe is spent durably before input and cannot replay after a failure or restart", ctx do
-    assert :ok = AgentPause.begin_turn(@profile)
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+  test "legacy quota probes cannot strand handoff or restart recovery", ctx do
+    File.mkdir_p!(ctx.root)
+
+    for {kind, phase} <- [{"probe_inflight", "waiting"}, {"quota_exhausted", "probe"}] do
+      File.write!(Path.join(ctx.root, "claude-pause.json"), Jason.encode!(%{version: 1, kind: kind, phase: phase, profile: @profile, resets_at: nil}))
+      assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+      assert :ok = AgentPause.begin_turn(@profile)
+      assert :ok = AgentPause.cancel_recheck(@profile)
+      assert :ready = AgentPause.current()
+      path = Path.join(ctx.root, "claude-pause.json")
+      legacy = path |> File.read!() |> Jason.decode!() |> Map.delete("resets_at")
+      File.write!(path, Jason.encode!(legacy))
+      assert :ready = AgentPause.current()
+    end
+  end
+
+  test "an explicit policy recheck still checks identity and durable input consumption", ctx do
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
     assert {:error, :probe_not_available} = AgentPause.begin_turn(String.duplicate("b", 64))
     File.chmod!(ctx.root, 0o500)
@@ -73,9 +86,6 @@ defmodule SymphonyElixir.AgentPauseTest do
       File.chmod!(ctx.root, 0o700)
     end
 
-    assert :ok = AgentPause.begin_turn(@profile)
-    assert {:paused, %{"kind" => "probe_inflight"}} = Task.async(fn -> AgentPause.claim_due_probe() end) |> Task.await()
-    assert {:error, :probe_not_available} = AgentPause.begin_turn(@profile)
     assert :ok = AgentPause.complete_probe(@profile)
     assert :ready = AgentPause.current()
   end
@@ -104,9 +114,9 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ok = AgentPause.record(:tool_outcome_uncertain, %{profile: @profile})
     assert :ready = AgentPause.current()
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
-    assert {:paused, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+    assert :ready = AgentPause.current()
     assert :ok = AgentPause.record(:protocol_error, %{profile: @profile})
-    assert {:paused, %{"kind" => "quota_exhausted"}} = AgentPause.current()
+    assert :ready = AgentPause.current()
   end
 
   test "optional legacy evidence cleanup is explicit and unreadable evidence stays issue-local", ctx do
@@ -151,32 +161,14 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ok = AgentPause.complete_probe(@profile)
     assert :ready = AgentPause.current()
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert {:probe, %{"kind" => "quota_exhausted"}} = AgentPause.current()
     assert :ok = AgentPause.begin_turn(@profile)
     assert :ok = AgentPause.cancel_recheck(@profile)
-    assert {:paused, %{"kind" => "probe_inflight"}} = AgentPause.current()
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert {:probe, %{"kind" => "quota_exhausted"}} = AgentPause.current()
-  end
-
-  test "a due quota probe cannot proceed when durable state cannot be written", ctx do
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
-    path = Path.join(ctx.root, "claude-pause.json")
-    value = path |> File.read!() |> Jason.decode!() |> Map.put("resets_at", System.system_time(:second) - 1)
-    File.write!(path, Jason.encode!(value))
-    File.chmod!(ctx.root, 0o500)
-
-    try do
-      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.claim_due_probe()
-    after
-      File.chmod!(ctx.root, 0o700)
-    end
+    assert :ready = AgentPause.current()
   end
 
   test "failed filesystem operations never clear blockers or pending tools", ctx do
     assert {:error, :invalid_profile} = AgentPause.explicit_recheck(12)
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
     assert {:error, :pause_not_clearable} = AgentPause.complete_probe(String.duplicate("b", 64))
     File.rm!(Path.join(ctx.root, "claude-pause.json"))
