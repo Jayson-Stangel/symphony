@@ -1062,6 +1062,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert remaining_ms <= 10_500
   end
 
+  test "Claude status remains visible but cannot keep a stalled worker alive" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", codex_stall_timeout_ms: 1_000)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :ClaudeStallOrchestrator)})
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale = DateTime.add(DateTime.utc_now(), -5, :second)
+    issue = %Issue{id: "claude-stall", identifier: "CLAUDE-STALL", state: "In Progress"}
+    entry = %{pid: worker, ref: make_ref(), identifier: issue.identifier, issue: issue, started_at: stale}
+    entry = Map.put(entry, :session_id, "claude:one:turn")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    :sys.replace_state(pid, &%{&1 | running: %{issue.id => entry}, claimed: MapSet.new([issue.id])})
+
+    send(pid, {:codex_worker_update, issue.id, %{event: :agent_progress, provider: :claude, timestamp: stale, productive: true, payload: "Agent response received"}})
+
+    for _ <- 1..3 do
+      send(pid, {:codex_worker_update, issue.id, %{event: :agent_progress, provider: :claude, timestamp: DateTime.utc_now(), productive: false, payload: "Waiting for command"}})
+    end
+
+    state = :sys.get_state(pid)
+    assert state.running[issue.id].last_agent_activity_at == stale
+    assert DateTime.compare(state.running[issue.id].last_codex_timestamp, stale) == :gt
+    send(pid, :run_poll_cycle)
+    # Snapshot is a synchronous barrier after reconciliation.
+    GenServer.call(pid, :snapshot, 1_000)
+    state = :sys.get_state(pid)
+    refute Process.alive?(worker)
+    refute Map.has_key?(state.running, issue.id)
+    assert state.retry_attempts[issue.id].error =~ "stalled for"
+  end
+
+  test "Claude productive activity advances the stall clock while status and usage do not" do
+    stale = DateTime.add(DateTime.utc_now(), -60, :second)
+    now = DateTime.utc_now()
+    issue = %Issue{id: "claude-progress", identifier: "CLAUDE-PROGRESS"}
+    state = %Orchestrator.State{running: %{issue.id => %{session_id: nil, issue: issue, started_at: stale}}, codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    status = %{event: :agent_progress, provider: :claude, timestamp: now, productive: false}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, status}, state)
+    assert state.running[issue.id].last_agent_activity_at == nil
+    progress = %{status | productive: true}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, progress}, state)
+    assert state.running[issue.id].last_agent_activity_at == now
+    usage = %{event: :token_usage_updated, provider: :claude, timestamp: DateTime.add(now, 1, :second)}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, usage}, state)
+    assert state.running[issue.id].last_agent_activity_at == now
+    codex = %{event: :notification, timestamp: now, payload: %{}}
+    codex_state = %{state | running: %{issue.id => %{session_id: nil, issue: issue}}}
+    assert {:noreply, codex_state} = Orchestrator.handle_info({:codex_worker_update, issue.id, codex}, codex_state)
+    refute Map.has_key?(codex_state.running[issue.id], :last_agent_activity_at)
+    assert codex_state.running[issue.id].last_codex_timestamp == now
+  end
+
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",

@@ -513,3 +513,9 @@ The agent owns outcome reconciliation. Legacy unresolved-call files remain evide
 for the matching issue's recovery prompt, without blocking dispatch. Auth, quota
 and shared policy failures still pause the runner. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
+
+Claude progress displays fixed, privacy-preserving activity descriptions in both
+dashboards, with a waiting fallback when details are missing. Liveness timestamps
+can update without resetting stall detection; only new assistant content or
+session startup advances Claude's activity clock. See
+[progress and stall detection](../docs/claude.md#progress-and-stall-detection).

@@ -35,6 +35,21 @@ class Probe {
         const read = await helper.callTool('linear_graphql', { query: 'query { issue(id: "one") { id title } }' });
         if (!read.success || JSON.parse(read.output).data.issue.title !== 'x') throw new Error('reconciliation read blocked');
       }
+      if (text === 'progress') {
+        this.push({ type: 'assistant', session_id: 'native-probe', uuid: randomUUID(), message: { content: [
+          { type: 'tool_use', name: 'Bash', input: { command: 'SECRET' } },
+        ] } });
+        this.push({ type: 'tool_progress', tool_name: 'Bash', heartbeat: true });
+        this.push({ type: 'system', subtype: 'api_retry', error: 'SECRET' });
+        this.push({ type: 'system', subtype: 'status', status: 'compacting' });
+        this.push({ type: 'assistant', message: {} });
+        for (const name of ['Read', 'Edit', 'Grep', 'custom-SECRET']) {
+          this.push({ type: 'assistant', session_id: 'native-probe', uuid: randomUUID(), message: { content: [
+            { type: 'tool_use', name, input: { secret: 'SECRET' } },
+          ] } });
+        }
+        this.push({ type: 'assistant', session_id: 'native-probe', uuid: randomUUID(), message: { content: [{ type: 'text', text: 'SECRET' }] } });
+      }
       if (text === 'tool') await helper.callTool('probe_tool', { query: 'query' });
       this.push({ type: 'result', subtype: 'success', is_error: false, uuid: randomUUID(),
         session_id: 'native-probe', user_message_uuid: input.uuid,

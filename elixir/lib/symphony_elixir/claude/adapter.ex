@@ -151,9 +151,12 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
-  defp handle_message(%{"type" => "progress", "activity" => activity}, session, request, event_id, issue, callback, until, pending)
+  defp handle_message(%{"type" => "progress", "activity" => activity} = message, session, request, event_id, issue, callback, until, pending)
        when activity in ["agent", "tool"] do
-    emit(callback, :agent_progress, %{session_id: event_id, activity: activity, provider: :claude})
+    {text, advances?} = progress_summary(message)
+    productive = advances? and message["productive"] == true
+    details = %{session_id: event_id, activity: activity, provider: :claude, payload: text, productive: productive}
+    emit(callback, :agent_progress, details)
     await_turn(session, request, event_id, issue, callback, until, pending)
   end
 
@@ -222,6 +225,27 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, _pending),
     do: pause(session, "protocol_error", %{})
+
+  # Validate categories again at the transport boundary; arbitrary helper text
+  # and unknown details must never reach dashboards or logs.
+  defp progress_summary(%{"status" => status} = message) when status in ["tool_started", "tool_running"] do
+    tool =
+      case message["tool"] do
+        "command" -> "command"
+        "read" -> "file or web read"
+        "edit" -> "file edit"
+        "search" -> "search"
+        _ -> "tool"
+      end
+
+    prefix = if status == "tool_started", do: "Requested", else: "Waiting for"
+    {"#{prefix} #{tool}", status == "tool_started"}
+  end
+
+  defp progress_summary(%{"status" => "response"}), do: {"Agent response received", true}
+  defp progress_summary(%{"status" => "retrying"}), do: {"Waiting for retry", false}
+  defp progress_summary(%{"status" => "compacting"}), do: {"Compacting context", false}
+  defp progress_summary(_message), do: {"Waiting for agent activity", false}
 
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   defp deliver_tool_result(session, request, event_id, issue, callback, until, pending, tool, result, context) do

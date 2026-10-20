@@ -836,7 +836,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    Map.get(running_entry, :last_agent_activity_at, Map.get(running_entry, :last_codex_timestamp)) ||
+      Map.get(running_entry, :started_at)
   end
 
   defp last_activity_timestamp(_running_entry), do: nil
@@ -1836,7 +1837,7 @@ defmodule SymphonyElixir.Orchestrator do
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     {
-      Map.merge(running_entry, %{
+      Map.merge(activity_entry(running_entry, update), %{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
@@ -1853,6 +1854,15 @@ defmodule SymphonyElixir.Orchestrator do
       token_delta
     }
   end
+
+  defp activity_entry(entry, %{provider: :claude} = update) do
+    # Liveness remains visible in last_codex_timestamp. Status/usage notifications
+    # cannot extend a Claude attempt without actual assistant activity.
+    timestamp = if update[:event] == :session_started or update[:productive] == true, do: update.timestamp, else: Map.get(entry, :last_agent_activity_at)
+    Map.put(entry, :last_agent_activity_at, timestamp)
+  end
+
+  defp activity_entry(entry, _update), do: entry
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
