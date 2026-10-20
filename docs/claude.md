@@ -109,15 +109,19 @@ including Codex Workpad comments, are reused.
 sanitized pause metadata. Legacy token fields remain for API compatibility;
 Claude usage totals include cached input and do not imply dollar costs.
 
-Authoritative quota events can provide a reset time, including the Fable weekly
-included-allowance bucket (`seven_day_overage_included`). Actual paid-overage
-signals remain policy blockers. One persisted probe is
-allowed after that time; absent/unknown reset times require explicit operator
-recheck. That probe is consumed on disk before sending model input. A failed or
-interrupted probe remains blocked as `probe_inflight`, including after restart;
-inspect the failure and explicitly recheck before another attempt. Native
-authentication, quota and shared policy failures pause the project. Worker
-protocol and tracker delivery failures block only the affected issue.
+Temporary quota exhaustion uses the existing orchestrator retry queue and bounded
+failure backoff. A reliable provider reset time extends the delay and pauses new
+dispatch until that time. Unknown or expired reset times use ordinary retries;
+no successful turn or operator recheck is required to release quota recovery.
+An interrupted recovery or a normal Human Review handoff cannot leave a consumed
+quota probe behind. Legacy `probe_inflight` and expired/unknown quota records no
+longer gate dispatch, including after restart; work is revalidated against the
+current tracker state and resumes in its preserved workspace. A repeated quota
+rejection defers the next attempt again.
+
+Native authentication and shared policy failures still require explicit operator
+recovery. Paid-overage signals remain policy blockers. Worker protocol and tracker
+delivery failures block only the affected issue. Explicit drains remain durable.
 
 Both providers follow the original Codex tool recovery model: tracker responses,
 including GraphQL errors, partial results and transport failures, return to the
@@ -153,7 +157,7 @@ prove whether an unconfirmed external effect occurred.
 
 An intentional scheduler stop when an issue leaves active states is cancellation,
 not a helper protocol failure. Confirmed cleanup can finish a non-quota operator
-recheck; consumed quota probes remain blocked until explicitly rechecked.
+recheck. Quota recovery uses scheduler retries and has no consumed-probe latch.
 
 ```sh
 symphony runner drain

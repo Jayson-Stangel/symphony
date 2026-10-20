@@ -86,7 +86,10 @@ defmodule SymphonyElixir.LinearTransportTest do
   end
 
   test "Codex blocked turns preserve the pause reason without sending native input", ctx do
-    for kind <- [:policy_blocked, :auth_required, :quota_exhausted] do
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: AgentPause.codex_profile(), resets_at: System.system_time(:second) + 60})
+    assert {:error, {:agent_pause, :quota_exhausted, _}} = Codex.run_turn(nil, "before reset", ctx.issue, [])
+
+    for kind <- [:policy_blocked, :auth_required] do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert :ok = AgentPause.record(kind, %{profile: AgentPause.codex_profile()})
       assert {:error, {:agent_pause, ^kind, _}} = Codex.run_turn(nil, "not sent", ctx.issue, [])

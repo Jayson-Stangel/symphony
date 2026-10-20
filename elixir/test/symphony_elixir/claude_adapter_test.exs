@@ -157,7 +157,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
 
-  test "a transient probe failure leaves a durable blocker instead of spending another probe", ctx do
+  test "a transient error after quota recovery remains eligible for scheduler backoff", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
     assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
@@ -167,8 +167,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     try do
       assert {:error, :claude_transient_error} = Adapter.run_turn(session, "transient_error", ctx.issue, [])
-      assert {:paused, %{"kind" => "probe_inflight"}} = AgentPause.claim_due_probe()
-      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
+      assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
     end
@@ -319,14 +318,42 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
+  test "quota recovery handoff cancels a real waiting Port without a quota latch", ctx do
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64)})
+    parent = self()
+
+    worker =
+      Task.async(fn ->
+        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+        send(parent, {:waiting_session, session})
+
+        try do
+          Adapter.run_turn(session, "silence", ctx.issue,
+            on_message: fn
+              %{event: :session_started} -> send(parent, :waiting_turn)
+              _ -> :ok
+            end
+          )
+        after
+          Adapter.stop_session(session)
+        end
+      end)
+
+    assert_receive {:waiting_session, session}, 1_000
+    assert_receive :waiting_turn, 1_000
+    assert :ok = Adapter.interrupt(session, :issue_state_change)
+    assert {:error, :claude_cancelled} = Task.await(worker, 10_000)
+    assert :ready = AgentPause.current()
+  end
+
   test "a different account's probe cannot run and unwritable probe completion cannot clear policy", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: other})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: other})
     assert :ok = AgentPause.explicit_recheck(other)
     assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
     File.rm!(Path.join(ctx.root, "state/claude-pause.json"))
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64)})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: String.duplicate("a", 64)})
     assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
     state_root = Path.join(ctx.root, "state")
     File.chmod!(state_root, 0o500)
@@ -600,14 +627,14 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "Fable weekly quota persists its reset and recovers through the due probe after helper replacement", ctx do
+  test "Fable weekly quota persists its reset and recovers automatically after the cooldown after helper replacement", ctx do
     reset = System.system_time(:second) + 3_600
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
       assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "fable-quota:#{reset}", ctx.issue, [])
       assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => ^reset}} = AgentPause.current()
-      assert {:paused, _} = AgentPause.claim_due_probe()
+      assert {:paused, _} = AgentPause.current()
       assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "no request", ctx.issue, [])
     after
       Adapter.stop_session(session)
@@ -617,7 +644,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     path = Path.join(ctx.root, "state/claude-pause.json")
     expired = path |> File.read!() |> Jason.decode!() |> Map.put("resets_at", System.system_time(:second) - 1)
     File.write!(path, Jason.encode!(expired))
-    assert {:probe, _} = AgentPause.claim_due_probe()
+    assert :ready = AgentPause.current()
     assert {:ok, replacement} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
@@ -628,18 +655,24 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "quota survives helper replacement and prevents another turn", ctx do
+  test "unknown quota resets return control to scheduler retries without a durable latch", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
       assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "quota", ctx.issue, [])
-      assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => nil}} = AgentPause.current()
-      assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "no request", ctx.issue, [])
+      assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
     end
 
-    assert {:paused, _} = AgentPause.current()
+    assert {:ok, replacement} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(replacement, "recovered", ctx.issue, [])
+      assert :ready = AgentPause.current()
+    after
+      Adapter.stop_session(replacement)
+    end
   end
 
   test "partial output and malformed frames never count as completion", ctx do

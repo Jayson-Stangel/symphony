@@ -2375,11 +2375,13 @@ Native subscription authentication and a dated account-bound disabled-overages a
 No API-key inference fallback is configured.
 
 Native terminal results must correlate to the current input; text, malformed
-frames or partial EOF cannot complete a turn. Authoritative quota/auth/policy
-failures persist project pauses. Known quota resets permit one durable probe;
-unknown resets require explicit recheck. A probe is consumed durably before model
-input; failure or restart cannot automatically replay it. Tracker errors and
-worker protocol/delivery failures are issue-scoped; the agent owns tracker
+frames or partial EOF cannot complete a turn. Authentication and shared policy
+failures persist project pauses. Temporary quota failures use the existing scheduler
+retry lifecycle and bounded backoff, extended to a reliable provider reset time
+when supplied. Quota cooldowns expire automatically; unknown resets use backoff.
+No durable consumed-quota-probe gate survives handoff, interruption or restart.
+Legacy consumed probes and expired/unknown quota records do not block dispatch.
+Tracker errors and worker protocol/delivery failures are issue-scoped; the agent owns tracker
 reconciliation. Drain is durable, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
@@ -2388,7 +2390,8 @@ qualified transition contract.
 
 Expected scheduler cancellation when an issue leaves active states must not
 create a helper protocol failure. Confirmed cleanup can end a non-quota operator
-recheck; it must not clear consumed quota probes.
+recheck. Quota recovery requires no turn-completion handshake and cannot remain
+latched by an expected cancellation.
 
 Tracker recovery applies to both Codex and Claude and follows the original Codex
 model: deliver errors and partial results to the agent rather than withholding

@@ -243,9 +243,16 @@ defmodule SymphonyElixir.Orchestrator do
         {:ok, attempt, metadata, state} ->
           state = refresh_agent_readiness(state)
 
-          if agent_dispatch_ready?(state),
-            do: handle_retry_issue(state, issue_id, attempt, metadata),
-            else: {:noreply, release_issue_claim(state, issue_id)}
+          cond do
+            agent_dispatch_ready?(state) ->
+              handle_retry_issue(state, issue_id, attempt, metadata)
+
+            not state.draining and match?({:paused, %{"kind" => "quota_exhausted"}}, AgentPause.current()) ->
+              {:noreply, schedule_issue_retry(state, issue_id, attempt, metadata)}
+
+            true ->
+              {:noreply, release_issue_claim(state, issue_id)}
+          end
 
         :missing ->
           {:noreply, state}
@@ -292,6 +299,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_agent_down({:agent_pause, kind, _details}, state, issue_id, running_entry, _session_id)
        when kind in [:tool_outcome_uncertain, :protocol_error, "tool_outcome_uncertain", "protocol_error"] do
     block_issue_from_entry(state, issue_id, running_entry, "coding agent requires issue recovery: #{kind}")
+  end
+
+  defp handle_agent_down({:agent_pause, kind, details} = reason, state, issue_id, running_entry, session_id)
+       when kind in [:quota_exhausted, "quota_exhausted"] do
+    AgentPause.record(kind, details)
+    retry_agent_down(state, issue_id, running_entry, session_id, reason)
   end
 
   defp handle_agent_down({:agent_pause, kind, details}, state, issue_id, _running_entry, _session_id) do
@@ -401,7 +414,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_agent_readiness(state) do
     if Config.coding_agent() == :claude do
-      case AgentPause.claim_due_probe() do
+      case AgentPause.current() do
         {:paused, _value} ->
           state
 
@@ -1258,7 +1271,7 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = retry_delay(next_attempt, metadata)
+    delay_ms = max(retry_delay(next_attempt, metadata), quota_retry_delay())
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
@@ -1293,6 +1306,16 @@ defmodule SymphonyElixir.Orchestrator do
             workspace_path: workspace_path
           })
     }
+  end
+
+  defp quota_retry_delay do
+    case AgentPause.current() do
+      {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}} ->
+        max(reset * 1_000 - System.system_time(:millisecond), 0)
+
+      _ ->
+        0
+    end
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
