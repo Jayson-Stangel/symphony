@@ -342,7 +342,9 @@ It requires disabled-overage owner attestation, project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain
 unresolved failures to the affected issue. Tracker errors do not pause unrelated
-work. Per-attempt turn allowances use the original scheduler continuation path for
+work. Redacted diagnostics retain request fingerprints and correlation/status
+fields without an execution-certainty classifier or GraphQL parser dependency.
+Per-attempt turn allowances use the original scheduler continuation path for
 both providers; new workflows do not impose live token/turn circuit breakers.
 Established-session transport and delivery failures retry after confirmed
 cleanup with backoff and tracker readback; startup transient failures retry after

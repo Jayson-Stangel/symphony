@@ -37,7 +37,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     defp result(query) do
       case query do
-        "tool-invalid-success" -> %{"success" => "invalid", "output" => "malformed reply", "execution" => %{"certainty" => "confirmed"}}
+        "tool-invalid-success" -> %{"success" => "invalid", "output" => "malformed reply"}
         "tool-shape" -> :unexpected
         "tool-failed" -> %{"success" => false, "output" => "transport response lost"}
         "tool-read-error" -> %{"success" => false, "output" => "read response lost"}
