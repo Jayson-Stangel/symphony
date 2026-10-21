@@ -82,6 +82,28 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert :ready = AgentPause.current()
   end
 
+  test "oversized multibyte tool transport is rejected before executing the helper", ctx do
+    marker = Path.join(ctx.root, "helper-started")
+    File.write!(ctx.node, "#!/bin/sh\ntouch '#{marker}'\ncat \"$1\"\n")
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    names = ["SYMPHONY_TOOL_ENV", "TOOL_TOKEN"]
+    previous = Map.new(names, &{&1, System.get_env(&1)})
+
+    try do
+      System.put_env(%{"SYMPHONY_TOOL_ENV" => "TOOL_TOKEN", "TOOL_TOKEN" => String.duplicate("界", 50_000)})
+      assert %{ready: false, code: "invalid_tool_environment"} = result = AgentReadiness.check(ctx.opts)
+      refute inspect(result) =~ "界"
+      refute File.exists?(marker)
+      assert :ready = AgentPause.current()
+
+      System.put_env("TOOL_TOKEN", "日本語 🔑")
+      assert %{ready: true} = AgentReadiness.check(ctx.opts)
+      assert File.exists?(marker)
+    after
+      Enum.each(previous, fn {name, value} -> restore_env(name, value) end)
+    end
+  end
+
   test "compatible dependency upgrades remain ready under the existing protocol contract", ctx do
     upgraded = ready() |> Map.put("sdk", "0.999.0") |> Map.put("cli", "9.999.0")
     File.write!(ctx.helper, Jason.encode!(upgraded))

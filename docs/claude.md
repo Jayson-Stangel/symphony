@@ -74,7 +74,7 @@ AWS_REGION=us-east-1
 
 An unset selected name is omitted (for example an optional session token). Select
 at most 128 names; the encoded selection, values and reserved-name metadata must
-fit within 64 KiB. No other ambient variable is forwarded. Active tracker secret names, native identity
+fit within 64 KiB of UTF-8 bytes. Oversized envelopes are rejected before helper execution. No other ambient variable is forwarded. Active tracker secret names, native identity
 and inference selectors, runtime/preload variables and Git token aliases cannot
 be selected; invalid selections return `invalid_tool_environment` without values.
 Keep the selected Git credential on its existing route. Variable names do not

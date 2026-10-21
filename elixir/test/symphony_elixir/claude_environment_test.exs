@@ -20,6 +20,19 @@ defmodule SymphonyElixir.ClaudeEnvironmentTest do
     assert {:error, :invalid_tool_environment} = Config.claude_child_environment(source, [])
   end
 
+  test "serialized tool transport bounds bytes and preserves small Unicode" do
+    source = Map.put(environment(), "AWS_ACCESS_KEY_ID", "日本語 🔑")
+    assert {:ok, pairs} = Config.claude_child_environment(source, [])
+    envelope = Map.new(pairs)["SYMPHONY_TOOL_ENVIRONMENT"]
+    assert Jason.decode!(envelope)["values"]["AWS_ACCESS_KEY_ID"] == "日本語 🔑"
+
+    oversized = Map.put(source, "AWS_ACCESS_KEY_ID", String.duplicate("界", 50_000))
+    encoded = Jason.encode!(%{names: ["AWS_ACCESS_KEY_ID"], values: Map.take(oversized, ["AWS_ACCESS_KEY_ID"]), reserved: []})
+    assert String.length(encoded) < 65_536
+    assert byte_size(encoded) > 131_072
+    assert {:error, :invalid_tool_environment} = Config.claude_child_environment(oversized, [])
+  end
+
   test "cleanup never receives selected tools or the internal envelope" do
     source = environment() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", "secret-canary") |> Map.put("SYMPHONY_GIT_TOKEN", "git-canary")
     previous = Map.new(source, fn {name, _} -> {name, System.get_env(name)} end)
