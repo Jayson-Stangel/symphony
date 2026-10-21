@@ -209,7 +209,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ok = AgentPause.explicit_recheck(profile)
     assert :ready = AgentPause.current()
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
-    assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, "malformed", ctx.issue, [])
+    assert {:error, :claude_invalid_frame} = Adapter.run_turn(session, "malformed", ctx.issue, [])
     assert :ok = Adapter.stop_session(session)
     assert :ready = AgentPause.current()
     assert {:ok, next} = Adapter.start_session(ctx.workspace, ctx.opts)
