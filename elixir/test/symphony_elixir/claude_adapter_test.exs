@@ -746,11 +746,6 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "invalid state-root exceptions do not escape the cleanup recorder" do
-    Application.put_env(:symphony_elixir, :agent_state_root, 123)
-    assert :ok = Adapter.record_unconfirmed_cleanup(nil)
-  end
-
   test "unpublished worker ownership remains an explicit retry gap", ctx do
     ref = make_ref()
     entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
@@ -772,7 +767,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
     # A transport exception with a still-valid captured identity retains that
     # profile in the existing marker/pause rather than losing its ownership scope.
-    invalid_port = %{failed | port: nil}
+    invalid_port = %{failed | port: 123}
     captured = %{adapter: Adapter, native: invalid_port}
     assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
     assert {:paused, %{"profile" => profile}} = AgentPause.current()

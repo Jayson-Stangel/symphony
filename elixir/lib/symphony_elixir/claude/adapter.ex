@@ -410,10 +410,6 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
 
     :ok
-  rescue
-    _ ->
-      Logger.warning("Claude cleanup persistence failed; runtime replacement remains required")
-      :ok
   end
 
   defp await_stopped(port, until) do
