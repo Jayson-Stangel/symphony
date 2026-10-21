@@ -58,19 +58,19 @@ defmodule SymphonyElixir.Config do
     Enum.map(reduced_claude_environment(System.get_env()), fn {key, value} -> {key, if(key == "SYMPHONY_GIT_TOKEN", do: nil, else: value)} end)
   end
 
-  @spec claude_child_environment(map()) :: {:ok, [{String.t(), String.t() | nil}]} | {:error, atom()}
-  def claude_child_environment(environment \\ System.get_env()) do
-    allowed = ~w(HOME CLAUDE_CONFIG_DIR CLAUDE_CODE_DISABLE_FAST_MODE)
+  @spec claude_child_environment(map(), [String.t()] | nil) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, :invalid_tool_environment}
+  def claude_child_environment(environment \\ System.get_env(), secret_names \\ nil) do
+    names = String.split(environment["SYMPHONY_TOOL_ENV"] || "", ",", trim: true) |> Enum.map(&String.trim/1)
+    reserved = secret_names || Tracker.bind_agent_tools().secret_environment_names
 
-    conflict? =
-      Enum.any?(environment, fn {key, value} ->
-        is_binary(value) and value != "" and Regex.match?(~r/^(ANTHROPIC_|CLAUDE_|AWS_|AZURE_|GOOGLE_|VERTEX_|BEDROCK_)/i, key) and key not in allowed
-      end)
+    case Jason.encode(%{names: names, values: Map.take(environment, names), reserved: reserved}) do
+      {:ok, envelope} ->
+        env = reduced_claude_environment(environment) |> Map.new() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", envelope)
+        {:ok, Enum.to_list(env)}
 
-    if conflict? do
-      {:error, :conflicting_inference_environment}
-    else
-      {:ok, reduced_claude_environment(environment)}
+      {:error, _reason} ->
+        {:error, :invalid_tool_environment}
     end
   end
 

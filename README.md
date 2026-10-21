@@ -354,7 +354,9 @@ stops retain their gates. Cleanup failures retain separate bounded primary and c
 causes and explicitly require runtime replacement; a healthy check cannot waive
 uncertain captured native ownership. Worker loss before ownership publication
 remains an explicit unsafe retry gap. See [setup, pauses and updater transitions](docs/claude.md)
-for the contract and its limits. Existing stable installations change only through
+for the contract and its limits. Ordinary dispatch excludes terminal history; startup and tracked-issue reconciliation
+retain cleanup, with unclaimed completed workspaces waiting for the next restart.
+Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
 Container execution keeps its fixed workspace, bind address and outer-container
 permission boundary. Requested SSH execution is rejected instead of silently removed.

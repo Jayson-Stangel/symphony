@@ -36,24 +36,49 @@ included-allowance usage in the account UI after a small pilot. Unexplained paid
 usage blocks rollout. No API-key or alternate-cloud fallback is configured.
 
 Use a fine-grained repository-scoped GitHub credential in the existing project
-credentials file. The listener keeps tracker credentials; only its explicitly
-selected Git credential is passed to the coding process. Credentials are never
+credentials file. The listener keeps tracker credentials; its explicitly selected
+Git credential and named project-tool variables can reach the coding process. Credentials are never
 copied from the host Claude or Codex home. Native login lives in a project-scoped
 Docker volume; workspace and state/log volumes are separate and retained.
 
 The Claude image uses UID/GID 11001, a read-only root filesystem, no Linux
 capabilities, no-new-privileges and a private process namespace. Coding tools are
 trusted to execute repository code. They can access their native account and
-selected Git credential as that same user; this is not isolation from hostile
-code or an absolute spending firewall. Query startup and native authentication
-commands disable user/project/local settings sources. Their mere presence does
-not block readiness. Strict MCP configuration also ignores project `.mcp.json`
-and user/plugin MCP definitions. This does not enable those settings or MCP servers.
-Managed/remote organizational policy and installed-plugin metadata remain an
-explicit unsupported-settings limitation (`unqualified_native_settings`); they
-are preserved rather than silently removed or overridden. Alternate inference
-credentials, unqualified runtime versions and expired policy metadata still block
-readiness rather than selecting a different inference route.
+selected Git and project-tool credentials as that same user; this is not isolation
+from hostile code or an absolute spending firewall. Query startup and native
+authentication commands disable user/project/local settings sources. Their mere
+presence does not block readiness. Strict MCP configuration also ignores project
+`.mcp.json` and user/plugin MCP definitions. This does not enable those settings
+or MCP servers. Managed/remote organizational policy and installed-plugin metadata
+remain an explicit unsupported-settings limitation (`unqualified_native_settings`);
+they are preserved rather than silently removed or overridden. Unselected ambient
+inference credentials are stripped rather than becoming readiness gates or alternate
+inference routes. Explicitly selected inference selectors are rejected. Unqualified
+runtime versions and expired policy metadata retain their readiness checks.
+
+## Project tool credentials
+
+Use the existing project credentials env file reported by `symphony init`; select
+only the variable names the target application's tools need. For example:
+
+```sh
+SYMPHONY_TOOL_ENV=AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION
+AWS_ACCESS_KEY_ID=your-project-tool-access-key
+AWS_SECRET_ACCESS_KEY=your-project-tool-secret
+AWS_REGION=us-east-1
+```
+
+An unset selected name is omitted (for example an optional session token). Select
+at most 128 names; the encoded selection, values and reserved-name metadata must
+fit within 64 KiB. No other ambient variable is forwarded. Active tracker secret names, native identity
+and inference selectors, runtime/preload variables and Git token aliases cannot
+be selected; invalid selections return `invalid_tool_environment` without values.
+Keep the selected Git credential on its existing route. Variable names do not
+select a cloud model provider: AWS tool access leaves native Claude first-party
+routing unchanged. The listener transports selected values as data; Node builds
+the native environment at one boundary. Cleanup receives neither the selection
+nor its values. This explicit forwarding is for trusted repository tools and does
+not isolate a native login or spending from arbitrary code run by those tools.
 
 ## Workflow settings
 
