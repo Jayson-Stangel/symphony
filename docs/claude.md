@@ -311,9 +311,11 @@ symphony update --agent claude
 symphony runner recheck
 ```
 
-Native logout/removal refuses a profile mounted by an active container and never
-removes workspaces or logs. Account changes are not silently adopted by an
-existing listener.
+Native login and logout/removal hold the existing project transition lock through
+prerequisite checks and credential changes. They refuse concurrent runner
+transitions and profiles mounted by active containers, without removing workspaces
+or logs. Model-free native authentication checks remain available during transitions.
+Account changes are not silently adopted by an existing listener.
 
 `runner stop` retains the stopped container and its metadata as a qualified
 source for a later updater transition. A normal run can restart the same profile.
