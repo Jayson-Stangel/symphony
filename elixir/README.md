@@ -681,3 +681,10 @@ directories require operator inspection; a proven-dead legacy owner can be retir
 Every installed update repeats idempotent setup, even when source is already current, so
 retry completes an interrupted setup. Source/runner updates reload the newly installed
 launcher against the exact fetched revision before transitioning; completion never refetches.
+
+Installed source updates hold checkout ownership in Git metadata across fetch, exec handoff,
+installation, setup and transition. The inherited source descriptor remains separate from
+per-project transition ownership; competing updated updaters refuse before changing source.
+Already-running older launchers and manual Git operations do not honor this ownership.
+Finish older calls before source-only adoption. Development-runner operations keep their
+existing isolated-checkout and per-project behavior.

@@ -489,3 +489,8 @@ exits; unknown legacy ownerless locks remain refused for operator inspection.
 An installed update retries idempotent setup even when Git is current. Combined source
 and runner updates hand completion to the newly installed implementation at the exact
 fetched revision, preserving resolved paths and target without fetching again.
+
+Installed source updates hold shared-checkout ownership across fetch, exec handoff, setup
+and transition. Finish already-running older launchers before source-only adoption; manual
+Git operations and older launchers do not participate in that ownership. Development-runner
+operations retain their isolated-checkout behavior.

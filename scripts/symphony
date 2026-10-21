@@ -239,6 +239,55 @@ setup() {
   printf 'Runtime setup complete: %s\n' "$symphony_home/elixir"
 }
 
+# The same advisory inode discipline protects shared source and project runtime
+# state. Inherited ownership is checked without reopening the held descriptor.
+updater_file_lock() {
+  python3 - "$1" "$2" "${3:-acquire}" <<'PYLOCK'
+import fcntl, os, stat, sys
+
+path, fd, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    info = os.fstat(fd)
+    current = os.stat(path, follow_symlinks=False)
+except OSError:
+    sys.exit('symphony: update continuation is missing source ownership' if mode == 'inherited'
+             else 'symphony: updater lock cannot be verified')
+if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(current.st_mode)
+        or info.st_uid != os.geteuid() or info.st_nlink != 1
+        or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+    sys.exit('symphony: unknown or foreign updater lock; inspect it before recovery')
+if mode == 'inherited':
+    # A second open description must be excluded before confirming FD ownership.
+    # This rejects internal completion with an open but previously unlocked FD.
+    probe = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            sys.exit('symphony: update continuation is missing source ownership')
+    finally:
+        os.close(probe)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit('symphony: another updater is active')
+PYLOCK
+}
+
+source_update_lock() {
+  local mode=${1:-acquire} metadata path
+  metadata=$(git -C "$symphony_home" rev-parse --absolute-git-dir) || die 'cannot locate installed source metadata'
+  path="$metadata/symphony-update.lock"
+  if [ "$mode" = acquire ]; then
+    [ ! -L "$path" ] || die 'unsafe source updater lock'
+    [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe source updater lock'
+    exec 8>>"$path"
+  fi
+  updater_file_lock "$path" 8 "$mode"
+}
+
 update() {
   local transition_target= development_runner=false
   while [ "$#" -gt 0 ]; do
@@ -283,6 +332,7 @@ update() {
   fi
 
   [ -d "$symphony_home/.git" ] || die "Symphony source is not a Git checkout: $symphony_home"
+  source_update_lock
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die "Symphony source has uncommitted changes; update it manually: $symphony_home"
   local branch upstream remote merge_ref before after
   branch=$(git -C "$symphony_home" branch --show-current)
@@ -313,6 +363,7 @@ update() {
 complete_update() {
   [ "$#" -eq 3 ] || die 'invalid update continuation'
   local before=$1 after=$2 transition_target=$3
+  source_update_lock inherited
   [ "$(source_revision)" = "$after" ] && [ "$(source_state)" = clean ] || die 'update source changed before completion; retry update'
   install --bin-dir "$bin_dir" --config-dir "$config_home" --skills-dir "$skills_dir"
   setup
@@ -1024,20 +1075,7 @@ PYLEGACY
   # If an old updater's mkdir wins first, opening the directory fails. If this
   # O_CREAT wins first, its permanent regular file makes the old mkdir fail.
   exec 9>>"$path"
-  python3 - "$path" <<'PYLOCK'
-import fcntl, os, stat, sys
-
-info = os.fstat(9)
-current = os.stat(sys.argv[1], follow_symlinks=False)
-if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(current.st_mode)
-        or info.st_uid != os.geteuid() or info.st_nlink != 1
-        or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
-    sys.exit('symphony: unknown or foreign updater lock; inspect it before recovery')
-try:
-    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    sys.exit('symphony: another updater is active')
-PYLOCK
+  updater_file_lock "$path" 9
   runner_lock_path=$path
 }
 

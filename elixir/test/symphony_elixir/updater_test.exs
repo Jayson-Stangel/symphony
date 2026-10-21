@@ -366,6 +366,152 @@ defmodule SymphonyElixir.UpdaterTest do
     assert File.read!(marker) == "preserved"
   end
 
+  for stage <- ["install", "setup", "project", "build"] do
+    @stage stage
+    test "shared source remains pinned across #{@stage} with ordinary updater contenders", ctx do
+      script = Path.join(ctx.seed, "scripts/symphony")
+      File.write!(script, transition_fixture_launcher("A"))
+      git!(ctx.seed, ["add", "scripts/symphony"])
+      commit!(ctx.seed, "Source version A")
+      git!(ctx.seed, ["push", "origin", "main"])
+      assert {_, 0} = update(ctx)
+      a = git!(ctx.installation, ["rev-parse", "HEAD"])
+      config = Path.join(ctx.root, "selected-config")
+      runners = Path.join(ctx.root, "selected-runners")
+      File.mkdir_p!(runners)
+      File.write!(Path.join(runners, "upstream.env"), "fixture metadata")
+      paused = Path.join(ctx.root, "source-paused")
+      peer_dir = Path.join(ctx.root, "source-python-peer")
+      File.mkdir!(peer_dir)
+
+      peer = """
+      #!#{System.find_executable("python3")}
+      import os, pathlib, sys, time
+      program = sys.stdin.read()
+      if os.environ.get('FIXTURE_STAGE') == 'project' and sys.argv[3:4] == ['9']:
+          marker = pathlib.Path(os.environ['FIXTURE_PAUSED'])
+          marker.write_text('project lock wait')
+          deadline = time.monotonic() + 10
+          while not pathlib.Path(str(marker) + '.release').exists():
+              if time.monotonic() > deadline:
+                  raise RuntimeError('fixture release timed out')
+              time.sleep(.01)
+      os.execv(sys.executable, [sys.executable, '-c', program, *sys.argv[2:]])
+      """
+
+      File.write!(Path.join(peer_dir, "python3"), peer)
+      File.chmod!(Path.join(peer_dir, "python3"), 0o755)
+      env = [{"FIXTURE_STAGE", @stage}, {"FIXTURE_PAUSED", paused}, {"SYMPHONY_RUNNER_HOME", runners}, {"SYMPHONY_CONFIG_HOME", config}, {"PATH", peer_dir <> ":" <> System.fetch_env!("PATH")}]
+      first = Task.async(fn -> installed_update(ctx, ["--agent", "claude"], env) end)
+
+      try do
+        wait_for_file!(paused, 500)
+        File.write!(script, transition_fixture_launcher("B"))
+        git!(ctx.seed, ["add", "scripts/symphony"])
+        commit!(ctx.seed, "Source version B")
+        git!(ctx.seed, ["push", "origin", "main"])
+        assert {output, 1} = installed_update(ctx)
+        assert output =~ "another updater is active"
+        other = Path.join(ctx.root, "other-project")
+        git!(ctx.root, ["init", other])
+        assert {output, 1} = installed_update(ctx, ["--agent", "codex"], [], other)
+        assert output =~ "another updater is active"
+        assert git!(ctx.installation, ["rev-parse", "HEAD"]) == a
+        assert git!(ctx.installation, ["rev-parse", "origin/main"]) == a
+      after
+        File.write!(paused <> ".release", "release")
+      end
+
+      assert {output, 91} = Task.await(first, 15_000)
+      assert output =~ "LOADED_VERSION=A IMAGE=symphony-runner-claude:#{a} CONTEXT=#{a}"
+      assert output =~ "RUNNERS=#{runners} CONFIG=#{config}"
+      assert File.regular?(Path.join(runners, "upstream.transition.lock"))
+      assert {_, 0} = installed_update(ctx)
+      assert git!(ctx.installation, ["rev-parse", "HEAD"]) == git!(ctx.seed, ["rev-parse", "HEAD"])
+    end
+  end
+
+  test "internal completion refuses missing or unheld source ownership", ctx do
+    args = ["_complete-update", ctx.initial, ctx.initial, ""]
+    assert {output, 1} = System.cmd("bash", [@launcher | args], env: updater_env(ctx), stderr_to_stdout: true)
+    assert output =~ "missing source ownership"
+    definitions = launcher_definitions!(ctx)
+    path = Path.join(ctx.installation, ".git/symphony-update.lock")
+    script = ~s|source "$1"; exec 8>>"$2"; complete_update "$3" "$3" ""|
+    assert {output, 1} = System.cmd("bash", ["-c", script, "fixture", definitions, path, ctx.initial], env: updater_env(ctx), stderr_to_stdout: true)
+    assert output =~ "missing source ownership"
+    refute File.exists?(ctx.log)
+  end
+
+  test "inherited source ownership refuses an unrelated descriptor inode", ctx do
+    definitions = launcher_definitions!(ctx)
+    script = ~s|source "$1"; source_update_lock; exec 8>>"$2"; source_update_lock inherited|
+    assert {output, 1} = System.cmd("bash", ["-c", script, "fixture", definitions, Path.join(ctx.root, "unrelated")], env: updater_env(ctx), stderr_to_stdout: true)
+    assert output =~ "unknown or foreign updater lock"
+  end
+
+  test "inherited descriptor cannot borrow ownership held by another updater", ctx do
+    definitions = launcher_definitions!(ctx)
+    marker = Path.join(ctx.root, "source-held")
+    path = Path.join(ctx.installation, ".git/symphony-update.lock")
+    hold = ~s|source "$1"; source_update_lock; printf held > "$2"; for attempt in $(seq 1 1000); do [ -f "$2.release" ] && exit 0; sleep .01; done; exit 1|
+    owner = Task.async(fn -> System.cmd("bash", ["-c", hold, "fixture", definitions, marker], env: updater_env(ctx), stderr_to_stdout: true) end)
+
+    try do
+      wait_for_file!(marker, 500)
+      contender = ~s|source "$1"; exec 8>>"$2"; source_update_lock inherited|
+      assert {output, 1} = System.cmd("bash", ["-c", contender, "fixture", definitions, path], env: updater_env(ctx), stderr_to_stdout: true)
+      assert output =~ "another updater is active"
+    after
+      File.write!(marker <> ".release", "release")
+    end
+
+    assert {_, 0} = Task.await(owner, 15_000)
+  end
+
+  test "source ownership survives updater death until its bounded in-flight child exits", ctx do
+    marker = Path.join(ctx.root, "child-held")
+    first = Task.async(fn -> installed_update(ctx, [], [{"FIXTURE_CRASH_SETUP", marker}]) end)
+
+    try do
+      wait_for_file!(marker, 500)
+      assert {output, 1} = installed_update(ctx)
+      assert output =~ "another updater is active"
+    after
+      File.write!(marker <> ".release", "release")
+    end
+
+    assert {_, 137} = Task.await(first, 15_000)
+    assert {_, 0} = installed_update(ctx)
+  end
+
+  defp transition_fixture_launcher(version) do
+    [definitions, main] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
+
+    overrides = """
+    fixture_pause() {
+      [ "${FIXTURE_STAGE:-}" = "$1" ] || return 0
+      printf paused > "$FIXTURE_PAUSED"
+      for attempt in $(seq 1 1000); do [ -f "$FIXTURE_PAUSED.release" ] && return 0; sleep .01; done
+      return 92
+    }
+    install() { fixture_pause install; }
+    setup() { fixture_pause setup; }
+    container_runtime() { printf false; }
+    runner_status() { printf true; }
+    runner_owned() { :; }
+    runner_is_legacy() { return 1; }
+    runner_update_port() { printf 4010; }
+    runner_build_image() {
+      fixture_pause build
+      printf 'LOADED_VERSION=#{version} IMAGE=%s CONTEXT=%s RUNNERS=%s CONFIG=%s\\n' "$SYMPHONY_RUNNER_IMAGE" "$(source_revision)" "$runner_home" "$config_home"
+      exit 91
+    }
+    """
+
+    definitions <> overrides <> "\ncase \"${1:-}\" in" <> main
+  end
+
   defp fixture_launcher(prefix \\ "") do
     [definitions, main] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
 
@@ -376,6 +522,11 @@ defmodule SymphonyElixir.UpdaterTest do
     }
     setup() {
       printf '#{prefix}setup\\n' >> \"$FIXTURE_LOG\"
+      if [ -n \"${FIXTURE_CRASH_SETUP:-}\" ]; then
+        (for attempt in $(seq 1 1000); do [ -f \"$FIXTURE_CRASH_SETUP.release\" ] && exit 0; sleep .01; done) &
+        printf held > \"$FIXTURE_CRASH_SETUP\"
+        kill -KILL $$
+      fi
       if [ -f \"${FIXTURE_FAIL_SETUP:-/nonexistent}\" ]; then
         rm \"$FIXTURE_FAIL_SETUP\"; printf 'simulated setup failure\\n'; exit 47
       fi
@@ -430,17 +581,22 @@ defmodule SymphonyElixir.UpdaterTest do
   end
 
   defp update(ctx, args \\ [], extra_env \\ []) do
-    env =
-      @git_env ++
-        [
-          {"SYMPHONY_HOME", ctx.installation},
-          {"FIXTURE_LOG", ctx.log},
-          {"SYMPHONY_BIN_DIR", Path.join(ctx.root, "bin")},
-          {"SYMPHONY_CONFIG_HOME", Path.join(ctx.root, "config")},
-          {"SYMPHONY_SKILLS_DIR", Path.join(ctx.root, "skills")},
-          {"SYMPHONY_RUNNER_HOME", nil}
-        ] ++ extra_env
+    System.cmd("bash", [@launcher, "update" | args], cd: ctx.installation, env: updater_env(ctx, extra_env), stderr_to_stdout: true)
+  end
 
-    System.cmd("bash", [@launcher, "update" | args], cd: ctx.installation, env: env, stderr_to_stdout: true)
+  defp installed_update(ctx, args \\ [], extra_env \\ [], cwd \\ nil) do
+    System.cmd("bash", [Path.join(ctx.installation, "scripts/symphony"), "update" | args], cd: cwd || ctx.installation, env: updater_env(ctx, extra_env), stderr_to_stdout: true)
+  end
+
+  defp updater_env(ctx, extra_env \\ []) do
+    @git_env ++
+      [
+        {"SYMPHONY_HOME", ctx.installation},
+        {"FIXTURE_LOG", ctx.log},
+        {"SYMPHONY_BIN_DIR", Path.join(ctx.root, "bin")},
+        {"SYMPHONY_CONFIG_HOME", Path.join(ctx.root, "config")},
+        {"SYMPHONY_SKILLS_DIR", Path.join(ctx.root, "skills")},
+        {"SYMPHONY_RUNNER_HOME", nil}
+      ] ++ extra_env
   end
 end

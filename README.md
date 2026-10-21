@@ -87,7 +87,11 @@ without changing project credentials or workflows. You do not need to run `symph
 a successful update. A combined source/runner update hands completion to the newly installed
 launcher at the exact fetched revision, without a second fetch. When updating from a launcher
 that predates this handoff, first run a source-only `symphony update`, then invoke the updated
-command for a runner transition.
+command for a runner transition. Updated installed source updaters share checkout ownership
+from before fetching through installation, setup and the selected runner transition; a competing
+update refuses immediately. Finish already-running older launchers before adopting this behavior.
+Manual Git changes and older launchers do not participate in this ownership; revision checks
+continue to reject source changes they can observe.
 `--config-dir` selects configuration and its derived runner storage; an explicit
 `SYMPHONY_RUNNER_HOME` still takes precedence. Runner transitions use a process-held advisory
 lock at the original lock pathname, excluding already-loaded older launchers too. Rerun the
