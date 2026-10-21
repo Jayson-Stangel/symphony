@@ -134,7 +134,7 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart"],
+  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart", "native_ownership_unavailable"],
     do: {:error, {:claude_startup_failed, code}}
 
   defp startup_failure(code, :ok), do: paused_start(code)

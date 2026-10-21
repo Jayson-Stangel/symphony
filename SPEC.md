@@ -2447,7 +2447,9 @@ Recognized explicit model-free readiness failures before hello use startup retry
 without a durable pause; malformed or unknown pre-hello failures retain their
 existing classification. Transient startup protocol/native initialization failures
 attempt a correlated bounded stop, then retain their original retry classification
-even when cleanup acknowledgement is missing or foreign.
+even when cleanup acknowledgement is missing or foreign. Missing/invalid captured
+ownership metadata aborts startup and uses normal retry, never a global pause;
+expected account/profile mismatch remains an independent policy stop.
 
 The existing attempt task owns normal cleanup once. Scheduler cancellation MUST
 attempt the captured session's common interrupt callback before retiring the Task
@@ -2467,7 +2469,8 @@ Drain remains durable, account identity remains pinned, and actual auth/quota/po
 pauses remain independent of cleanup. Retired `claude-cleanup-unconfirmed` files
 MUST be ignored without deleting bytes; uniquely attributed `policy_blocked`
 records with code `cleanup_restart_required` and stage `cleanup` are ignored
-read-only. Untagged policy records are ambiguous with real native policy and retain
+read-only. Known legacy `native_ownership_unavailable`/`startup` policy records are
+also retired read-only. Untagged policy records are ambiguous with real native policy and retain
 the existing fresh healthy explicit recheck path, never mandatory replacement
 solely because an old marker exists. A retired cleanup tag does not prove that no
 older real pause was overwritten; unknown historical causes cannot be reconstructed.

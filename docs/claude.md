@@ -357,7 +357,10 @@ watchdog, native guardian or extra supervision service is introduced.
 
 Old `claude-cleanup-unconfirmed` files are preserved but ignored, including across
 startup, workflow refresh, restart and controls. Attributed `policy_blocked` records
-with code `cleanup_restart_required` and stage `cleanup` are ignored read-only.
+with code `cleanup_restart_required`/stage `cleanup`, or code
+`native_ownership_unavailable`/stage `startup`, are ignored read-only. Missing
+captured ownership metadata still aborts startup, then retries normally; it never
+creates an unowned session. Actual expected account/profile mismatch stays a policy stop.
 An old untagged policy record is indistinguishable from a real native policy stop;
 it still uses ordinary healthy explicit recheck rather than automatic deletion.
 Historical cleanup may have overwritten an earlier auth/quota/policy record, so

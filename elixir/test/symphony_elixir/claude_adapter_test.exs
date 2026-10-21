@@ -389,13 +389,22 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "unqualified handshakes and invalid native ownership cannot start a session", ctx do
+  test "unqualified handshakes pause while missing ownership metadata aborts for normal retry", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk", "bad-profile", "bad-owned", "bad-pid"] do
+    for mode <- ["auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
+    end
+
+    File.rm(Path.join(ctx.root, "state/claude-pause.json"))
+
+    for mode <- ["bad-profile", "bad-owned", "bad-pid"] do
+      File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
+      assert {:error, {:claude_startup_failed, "native_ownership_unavailable"}} = Adapter.start_session(ctx.workspace, opts)
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
     end
 
     assert {:error, :claude_runtime_missing} = Adapter.start_session(ctx.workspace, Keyword.put(opts, :node_path, "/missing"))
@@ -820,6 +829,34 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     Process.sleep(1_500)
     refute File.exists?(sentinel)
     refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+  end
+
+  @tag skip: :os.type() != {:unix, :linux}
+  test "OS cleanup launcher failure returns a bounded diagnostic and preserves account evidence", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    Port.close(session.port)
+    assert :ok = AgentPause.record(:auth_required, %{profile: session.identity["profile"]})
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    evidence = File.read!(path)
+    bin = Path.join(ctx.root, "broken-launcher")
+    File.mkdir_p!(bin)
+    launcher = Path.join(bin, "timeout")
+    File.write!(launcher, "#!/missing-cleanup-interpreter\n")
+    File.chmod!(launcher, 0o755)
+    previous_path = System.fetch_env!("PATH")
+
+    try do
+      System.put_env("PATH", bin <> ":" <> previous_path)
+      assert System.find_executable("timeout") == launcher
+      # Real exec failure at an otherwise valid captured cleanup boundary.
+      assert {:error, :cleanup_unconfirmed} = Adapter.stop_session(session)
+      assert File.read!(path) == evidence
+      assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+    after
+      System.put_env("PATH", previous_path)
+      assert :ok = Adapter.stop_session(session)
+    end
   end
 
   test "captured owner loss cleanup failure reports correlation and uses normal retry", ctx do

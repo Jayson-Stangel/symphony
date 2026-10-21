@@ -121,7 +121,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     marker = Path.join(root, "claude-cleanup-unconfirmed")
     path = Path.join(root, "claude-pause.json")
 
-    for kind <- [:marker_only, :attributed_cleanup, :ambiguous_policy] do
+    for kind <- [:marker_only, :attributed_cleanup, :attributed_ownership, :ambiguous_policy] do
       File.write!(marker, "restart-required\n")
       File.rm(path)
       evidence = Jason.encode!(%{version: 1, kind: "policy_blocked", profile: String.duplicate("a", 64), phase: "waiting", resets_at: nil})
@@ -129,6 +129,10 @@ defmodule SymphonyElixir.AgentReadinessTest do
 
       if kind == :attributed_cleanup do
         File.write!(path, Jason.encode!(Map.merge(Jason.decode!(evidence), %{"code" => "cleanup_restart_required", "stage" => "cleanup"})))
+      end
+
+      if kind == :attributed_ownership do
+        File.write!(path, Jason.encode!(Map.merge(Jason.decode!(evidence), %{"code" => "native_ownership_unavailable", "stage" => "startup"})))
       end
 
       original = File.read(path)
