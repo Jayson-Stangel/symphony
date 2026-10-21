@@ -129,9 +129,10 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
   test "retained Claude cooldown does not delay a Codex failure retry", ctx do
     reset = System.system_time(:second) + 600
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: String.duplicate("a", 64), resets_at: reset})
     path = Path.join(Config.agent_state_root(), "claude-pause.json")
-    evidence = File.read!(path)
+    evidence = Jason.encode!(%{version: 1, kind: "quota_exhausted", profile: String.duplicate("a", 64), phase: "waiting", resets_at: reset})
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, evidence)
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [ctx.issue])
     quota_exit(ctx.server, ctx.issue, %{}, :fixture_transient_failure)
     retry = :sys.get_state(ctx.server).retry_attempts[ctx.issue.id]

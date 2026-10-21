@@ -88,9 +88,10 @@ defmodule SymphonyElixir.LinearTransportTest do
   test "Codex turns ignore retained Claude auth and future quota pauses without changing evidence", ctx do
     for kind <- [:auth_required, :quota_exhausted] do
       File.rm_rf!(Path.join(ctx.root, "state"))
-      assert :ok = AgentPause.record(kind, %{profile: String.duplicate("a", 64), resets_at: System.system_time(:second) + 600})
       path = Path.join(ctx.root, "state/claude-pause.json")
-      evidence = File.read!(path)
+      evidence = Jason.encode!(%{version: 1, kind: kind, profile: String.duplicate("a", 64), phase: "waiting", resets_at: System.system_time(:second) + 600})
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, evidence)
       configure_peer(ctx, "streaming", "query { viewer { id } }")
       assert {:ok, session} = Codex.start_session(ctx.workspace, [])
 

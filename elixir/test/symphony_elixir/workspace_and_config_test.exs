@@ -870,6 +870,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "provider-marked blocked issue is not dispatch-eligible" do
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -893,6 +894,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "dev@example.com")
 
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -917,6 +919,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -939,6 +942,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "provider-marked ready issue remains dispatch-eligible" do
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),

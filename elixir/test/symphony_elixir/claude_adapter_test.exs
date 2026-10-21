@@ -104,6 +104,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     workspace = Path.join(root, "workspaces/issue")
     File.mkdir_p!(workspace)
     previous = Application.fetch_env(:symphony_elixir, :agent_state_root)
+    previous_provider = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
     Application.put_env(:symphony_elixir, :agent_state_root, Path.join(root, "state"))
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(root, "workspaces"), tracker_kind: "memory")
 
@@ -111,6 +113,11 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       case previous do
         {:ok, value} -> Application.put_env(:symphony_elixir, :agent_state_root, value)
         :error -> Application.delete_env(:symphony_elixir, :agent_state_root)
+      end
+
+      case previous_provider do
+        {:ok, provider} -> Application.put_env(:symphony_elixir, :coding_agent, provider)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
       end
 
       File.rm_rf!(root)
@@ -904,8 +911,9 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   end
 
   test "selected Codex resumes despite retained Claude cleanup state", ctx do
-    assert :codex = Config.coding_agent()
     assert :ok = Adapter.record_unconfirmed_cleanup(String.duplicate("a", 64))
+    Application.put_env(:symphony_elixir, :coding_agent, :codex)
+    assert :codex = Config.coding_agent()
     pause_path = Path.join(ctx.root, "state/claude-pause.json")
     pause = File.read!(pause_path)
     retained = %{ready: false, provider: "claude", code: "cleanup_restart_required"}

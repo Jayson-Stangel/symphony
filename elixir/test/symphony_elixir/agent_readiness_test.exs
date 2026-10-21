@@ -115,13 +115,13 @@ defmodule SymphonyElixir.AgentReadinessTest do
   end
 
   test "Codex admission and resume ignore retained Claude pauses", ctx do
-    Application.put_env(:symphony_elixir, :coding_agent, :codex)
-
     for kind <- [:auth_required, :quota_exhausted] do
+      Application.put_env(:symphony_elixir, :coding_agent, :claude)
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert :ok = AgentPause.record(kind, %{profile: String.duplicate("a", 64), resets_at: System.system_time(:second) + 600})
       path = Path.join(ctx.root, "state/claude-pause.json")
       evidence = File.read!(path)
+      Application.put_env(:symphony_elixir, :coding_agent, :codex)
       {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe)
       assert %{ready: true, provider: "codex"} = Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.admission
       assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.pause == nil

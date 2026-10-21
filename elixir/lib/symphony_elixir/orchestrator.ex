@@ -279,7 +279,7 @@ defmodule SymphonyElixir.Orchestrator do
             agent_dispatch_ready?(state) ->
               handle_retry_issue(state, issue_id, attempt, metadata)
 
-            not state.draining and match?({:paused, %{"kind" => "quota_exhausted"}}, active_agent_pause()) ->
+            not state.draining and match?({:paused, %{"kind" => "quota_exhausted"}}, AgentPause.current()) ->
               {:noreply, schedule_issue_retry(state, issue_id, attempt, metadata)}
 
             true ->
@@ -367,12 +367,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_agent_down({:agent_pause, kind, details} = reason, state, issue_id, running_entry, session_id)
        when kind in [:quota_exhausted, "quota_exhausted"] do
-    if Config.coding_agent() == :claude, do: AgentPause.record(kind, details)
+    AgentPause.record(kind, details)
     retry_agent_down(state, issue_id, running_entry, session_id, reason)
   end
 
   defp handle_agent_down({:agent_pause, kind, details}, state, issue_id, _running_entry, _session_id) do
-    if Config.coding_agent() == :claude, do: AgentPause.record(kind, details)
+    AgentPause.record(kind, details)
     release_issue_claim(state, issue_id)
   end
 
@@ -552,23 +552,25 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pin_readiness(readiness, _expected), do: readiness
 
-  defp active_agent_pause do
-    if Config.coding_agent() == :claude, do: AgentPause.current(), else: :ready
-  end
-
   defp agent_dispatch_ready?(state), do: agent_admission(state).ready
 
   defp agent_admission(state) do
-    provider = to_string(Config.coding_agent())
-    profile = if provider == "codex", do: AgentPause.codex_profile(), else: state.readiness[:profile]
-    admission = %{ready: false, reason: nil, provider: provider, profile: profile, retry_at: nil}
+    readiness = state.readiness || %{}
+
+    admission = %{
+      ready: false,
+      reason: nil,
+      provider: readiness[:provider],
+      profile: readiness[:profile],
+      retry_at: nil
+    }
 
     cond do
       state.draining ->
         %{admission | reason: "draining"}
 
-      provider != "codex" and not Map.get(state.readiness || %{}, :ready, false) ->
-        %{admission | reason: state.readiness[:code] || "native_not_ready"}
+      not Map.get(readiness, :ready, false) ->
+        %{admission | reason: readiness[:code] || "native_not_ready"}
 
       true ->
         paused_admission(admission)
@@ -576,7 +578,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp paused_admission(admission) do
-    case active_agent_pause() do
+    case AgentPause.current() do
       :ready -> %{admission | ready: true}
       {:paused, value} -> %{admission | reason: value["kind"], retry_at: value["resets_at"]}
     end
@@ -1411,7 +1413,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp quota_retry_delay do
-    case active_agent_pause() do
+    case AgentPause.current() do
       {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}} ->
         max(reset * 1_000 - System.system_time(:millisecond), 0)
 
@@ -1959,7 +1961,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp resume_admission(%{reason: "quota_exhausted"}), do: :ok
   defp resume_admission(%{reason: reason}), do: {:error, reason}
 
-  defp recheck_agent_pause(:recheck, %{provider: "claude", profile: profile}, reconcile),
+  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile),
     do: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
 
   defp recheck_agent_pause(_action, _readiness, _reconcile), do: :ok
@@ -1987,7 +1989,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp public_agent_pause do
-    case active_agent_pause() do
+    case AgentPause.current() do
       :ready -> nil
       {status, value} -> Map.take(value, ["kind", "resets_at", "probe", "code", "stage"]) |> Map.put("status", status)
     end

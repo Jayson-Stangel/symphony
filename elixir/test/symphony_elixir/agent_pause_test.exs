@@ -7,6 +7,8 @@ defmodule SymphonyElixir.AgentPauseTest do
   setup do
     root = Path.join(System.tmp_dir!(), "symphony-pause-#{System.unique_integer([:positive])}")
     previous = Application.fetch_env(:symphony_elixir, :agent_state_root)
+    previous_provider = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
     Application.put_env(:symphony_elixir, :agent_state_root, root)
 
     on_exit(fn ->
@@ -15,10 +17,50 @@ defmodule SymphonyElixir.AgentPauseTest do
         :error -> Application.delete_env(:symphony_elixir, :agent_state_root)
       end
 
+      case previous_provider do
+        {:ok, provider} -> Application.put_env(:symphony_elixir, :coding_agent, provider)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+
       File.rm_rf!(root)
     end)
 
     %{root: root}
+  end
+
+  test "Codex pause entry points preserve Claude state and issue-local evidence", ctx do
+    Application.put_env(:symphony_elixir, :coding_agent, :codex)
+    assert :ready = AgentPause.current()
+    assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
+    assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile(), confirm_tools_reconciled: true)
+    refute File.exists?(ctx.root)
+
+    tools = Path.join(ctx.root, "claude-tools")
+    File.mkdir_p!(tools)
+    evidence_path = Path.join(tools, "one.json")
+    evidence = Jason.encode!(%{issue: "one", tool: "linear_graphql"})
+    File.write!(evidence_path, evidence)
+    path = Path.join(ctx.root, "claude-pause.json")
+
+    pauses = [
+      "not JSON",
+      Jason.encode!(%{version: 1, kind: "quota_exhausted", profile: @profile, phase: "waiting", resets_at: System.system_time(:second) + 600}),
+      Jason.encode!(%{version: 1, kind: "auth_required", profile: @profile, phase: "waiting", resets_at: nil, code: "unqualified_auth", stage: "startup"})
+    ]
+
+    for pause <- pauses do
+      File.write!(path, pause)
+      assert :ready = AgentPause.current()
+      assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
+      assert :ok = AgentPause.explicit_recheck(AgentPause.codex_profile(), confirm_tools_reconciled: true)
+      assert File.read!(path) == pause
+      assert File.read!(evidence_path) == evidence
+      assert AgentPause.recovery_notice("one") =~ "Legacy recovery evidence: 1"
+      assert AgentPause.recovery_notice("other") == ""
+      Application.put_env(:symphony_elixir, :coding_agent, :claude)
+      assert {:paused, _} = AgentPause.current()
+      Application.put_env(:symphony_elixir, :coding_agent, :codex)
+    end
   end
 
   test "safe startup causes survive a fresh reader and stronger winning pauses", ctx do

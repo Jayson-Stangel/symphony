@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentPause do
-  @moduledoc "Durable agent pause and unresolved tracker-call metadata in the project state volume."
+  @moduledoc "Claude account pauses and issue-local legacy tracker evidence in the project state volume."
 
   alias SymphonyElixir.Config
 
@@ -15,7 +15,7 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec current() :: :ready | {:paused, map()}
   def current do
-    read_pause()
+    if Config.coding_agent() == :claude, do: read_pause(), else: :ready
   end
 
   @doc "Legacy unresolved tracker calls are issue evidence, never a project dispatch gate."
@@ -60,13 +60,15 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec record(atom() | String.t(), map()) :: :ok | {:error, term()}
   def record(kind, details \\ %{}) do
+    if Config.coding_agent() == :claude, do: record_claude(kind, details), else: :ok
+  end
+
+  defp record_claude(kind, details) do
     kind = to_string(kind)
 
-    if kind in ["tool_outcome_uncertain", "protocol_error"] do
-      :ok
-    else
-      serialized(fn -> record_pause(kind, details) end)
-    end
+    if kind in ["tool_outcome_uncertain", "protocol_error"],
+      do: :ok,
+      else: serialized(fn -> record_pause(kind, details) end)
   end
 
   defp record_pause(kind, details) do
@@ -80,6 +82,10 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec explicit_recheck(String.t(), keyword()) :: :ok | {:error, term()}
   def explicit_recheck(profile, opts \\ []) do
+    if Config.coding_agent() == :claude, do: recheck_claude(profile, opts), else: :ok
+  end
+
+  defp recheck_claude(profile, opts) do
     serialized(fn ->
       with :ok <- recheck_identity(profile),
            :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
