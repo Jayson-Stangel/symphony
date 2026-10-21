@@ -28,7 +28,7 @@ async function main() {
   const binary = executable();
   const [command = 'inspect', ...args] = process.argv.slice(2);
   if (!['inspect', 'login', 'status', 'live', 'cancel'].includes(command)) throw new LabError('unknown_lab_command');
-  if (!['live', 'cancel'].includes(command) && args.length) throw new LabError('unexpected_arguments');
+  if (args.length) throw new LabError('unexpected_arguments');
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true, mode: 0o700 });
 
   if (command === 'inspect') {
@@ -55,7 +55,6 @@ async function main() {
     if (category !== 'subscription') process.exitCode = 1;
     return;
   }
-  if (args.length !== 1 || args[0] !== '--confirm-overages-disabled') throw new LabError('explicit_overage_confirmation_required');
   if (category !== 'subscription') throw new LabError('qualified_subscription_auth_required');
   // Fresh lab only: do not load user hooks, project settings, profiles or MCP files.
   for (const file of ['settings.json', 'settings.local.json', '.mcp.json', 'CLAUDE.md']) {

@@ -10,7 +10,6 @@ export const runtime = Object.freeze({ sdk: dependencies['@anthropic-ai/claude-a
   cli: dependencies['@anthropic-ai/claude-code'], policy: 1, protocol: 1 });
 export const home = '/home/claude';
 export const nativeConfig = `${home}/.claude`;
-export const attestationPath = '/etc/symphony/claude/attestation.json';
 
 export class RuntimeError extends Error {
   constructor(code) { super(code); this.name = 'RuntimeError'; }
@@ -75,13 +74,6 @@ export function checkSettings() {
   if (paths.some(path => existsSync(path))) throw new RuntimeError('unqualified_native_settings');
 }
 
-export function validateAttestation(value, profile, now = Date.now()) {
-  if (value?.version !== 1 || value.policy !== runtime.policy || value.profile !== profile
-    || value.overages_disabled !== true || typeof value.attested_at !== 'string') throw new RuntimeError('overage_attestation_required');
-  const time = Date.parse(value.attested_at);
-  if (!Number.isFinite(time) || time > now || now - time > 30 * 24 * 60 * 60 * 1000) throw new RuntimeError('overage_attestation_expired');
-}
-
 export function isReadOnlyMount(path, mountinfo) {
   const mounts = mountinfo.trim().split('\n').map(line => line.split(' '))
     .filter(fields => fields.length >= 6 && (fields[4] === '/' || path === fields[4] || path.startsWith(fields[4] + '/')))
@@ -97,20 +89,12 @@ export function validateContainer() {
     || !/^NoNewPrivs:\s+1$/m.test(status) || existsSync('/var/run/docker.sock') || !isReadOnlyMount('/', mounts)) throw new RuntimeError('container_profile_required');
 }
 
-export function readiness({ workspace, requireAttestation = true } = {}) {
+export function readiness({ workspace } = {}) {
   validateContainer();
   const env = approvedEnvironment(process.env);
   checkSettings();
   const binary = nativeExecutable();
   const identity = nativeIdentity(binary, env);
-  if (requireAttestation) {
-    if (!isReadOnlyMount(attestationPath, readFileSync('/proc/self/mountinfo', 'utf8'))) throw new RuntimeError('container_profile_required');
-    let value;
-    try { value = JSON.parse(readFileSync(attestationPath, 'utf8')); } catch { throw new RuntimeError('overage_attestation_required'); }
-    validateAttestation(value, identity.profile);
-    identity.overages_disabled_attested = true;
-    identity.attested_at = value.attested_at;
-  }
   if (workspace && (realpathSync(workspace) !== process.cwd() || !statSync(workspace).isDirectory())) throw new RuntimeError('workspace_identity_mismatch');
   return { env, binary, identity };
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCommand, classifyEvent, summarizeResult, usageTotals, assistantInputTokens } from '../protocol.mjs';
-import { approvedEnvironment, profileFromStatus, validateAttestation } from '../runtime.mjs';
+import { approvedEnvironment, profileFromStatus } from '../runtime.mjs';
 import { sameGroupGeneration } from '../processes.mjs';
 import { toolShape } from '../tools.mjs';
 
@@ -106,12 +106,7 @@ test('only native subscription identity produces an account fingerprint', () => 
   for (const patch of [{ authMethod: 'console' }, { loggedIn: false }, { email: null }, { subscriptionType: null }]) {
     assert.throws(() => profileFromStatus({ ...value, ...patch }));
   }
-  const now = Date.now();
-  const attestation = { version: 1, policy: 1, profile, overages_disabled: true, attested_at: new Date(now).toISOString() };
-  assert.doesNotThrow(() => validateAttestation(attestation, profile, now));
-  for (const patch of [{ profile: 'other' }, { policy: 2 }, { overages_disabled: false }, { attested_at: 'invalid' }]) {
-    assert.throws(() => validateAttestation({ ...attestation, ...patch }, profile, now));
-  }
+
 });
 
 test('environment allowlist strips tracker credentials and rejects competing inference credentials', () => {
@@ -150,15 +145,15 @@ test('existing REST schemas preserve unconstrained optional JSON request bodies'
   assert.deepEqual(validate({ method: 'PATCH', path: '/repos/owner/repo/issues/1', body: { nested: [null, true] } }).body, { nested: [null, true] });
 });
 
-// A read-only root does not make a nested writable policy bind safe.
-test('containment requires the effective root and policy mounts to be read-only', async () => {
+// Evaluate the effective mount containing the requested path.
+test('containment requires the effective root mount to be read-only', async () => {
   const { isReadOnlyMount } = await import('../runtime.mjs');
   const root = '1 0 0:1 / / ro,relatime - overlay overlay ro';
-  const policy = '2 1 0:2 / /etc/symphony/claude rw,relatime - tmpfs tmpfs rw';
+  const policy = '2 1 0:2 / /nested rw,relatime - tmpfs tmpfs rw';
   assert.equal(isReadOnlyMount('/', root), true);
   assert.equal(isReadOnlyMount('/', root.replace('ro,relatime', 'rw,relatime')), false);
-  assert.equal(isReadOnlyMount('/etc/symphony/claude/attestation.json', root + '\n' + policy), false);
-  assert.equal(isReadOnlyMount('/etc/symphony/claude/attestation.json', root + '\n' + policy.replace('rw,relatime', 'ro,relatime')), true);
+  assert.equal(isReadOnlyMount('/nested/file', root + '\n' + policy), false);
+  assert.equal(isReadOnlyMount('/nested/file', root + '\n' + policy.replace('rw,relatime', 'ro,relatime')), true);
   assert.equal(isReadOnlyMount('/', ''), false);
 });
 

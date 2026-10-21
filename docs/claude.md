@@ -22,18 +22,15 @@ target repository:
 ```sh
 symphony auth claude login
 # Complete native sign-in in the terminal; never paste its codes into a workpad.
-# Disable paid usage/overages in your Claude account, then explicitly attest:
-symphony auth claude attest --overages-disabled
 symphony auth claude check
 symphony runner doctor --agent claude
 symphony run --agent claude
 ```
 
 The account check and doctor make no model requests and do not start a listener.
-Attestation is an operator statement, expires after 30 days, and is bound to the
-native account fingerprint. It is not an automated billing guarantee. Confirm
-included-allowance usage in the account UI after a small pilot. Unexplained paid
-usage blocks rollout. No API-key or alternate-cloud fallback is configured.
+Billing-attestation files and expiry checks are not required. Native authentication
+and actual provider errors determine availability; no API-key or alternate-cloud
+fallback is configured. Account billing settings remain under the operator's control.
 
 Use a fine-grained repository-scoped GitHub credential in the existing project
 credentials file. The listener keeps tracker credentials; only its explicitly
@@ -52,7 +49,7 @@ and user/plugin MCP definitions. This does not enable those settings or MCP serv
 Managed/remote organizational policy and installed-plugin metadata remain an
 explicit unsupported-settings limitation (`unqualified_native_settings`); they
 are preserved rather than silently removed or overridden. Alternate inference
-credentials, unqualified runtime versions and expired policy metadata still block
+credentials and unqualified runtime versions still block
 readiness rather than selecting a different inference route.
 
 ## Workflow settings
@@ -163,7 +160,7 @@ is made. This does not promise immediate OS-process quiescence on owner loss.
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
-durable global turn gate. Native session admission still validates the attestation.
+durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Authentication and shared policy failures reported by actual native sessions still
 require explicit operator recovery. Older readiness failures and actual session
@@ -249,7 +246,6 @@ For native reauthentication with the same account:
 ```sh
 symphony update --pause-runner
 symphony auth claude login
-symphony auth claude attest --overages-disabled
 symphony update --agent claude
 symphony runner recheck
 ```

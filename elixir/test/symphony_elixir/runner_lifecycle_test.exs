@@ -77,8 +77,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
             done ;;
-          *"auth.mjs attest"*) printf '%s\\n' '{"version":1,"policy":1,"profile":"#{String.duplicate("a", 64)}","overages_disabled":true,"attested_at":"#{DateTime.utc_now() |> DateTime.to_iso8601()}"}' ;;
-          *"auth.mjs check"*) printf '%s\\n' '{"ready":true,"model_requests":0}' ;;
+          *"auth.mjs check"*)
+            [ "${FIXTURE_AUTH_FAIL:-false}" != true ] || exit 1
+            if [ -n "${FIXTURE_AUTH_JSON:-}" ]; then
+              printf '%s\\n' "$FIXTURE_AUTH_JSON"
+            else
+              printf '%s\\n' '{"ready":true,"profile":"#{String.duplicate("a", 64)}","model_requests":0}'
+            fi ;;
           *"/state/agent-upgrade-unresumed"*) touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining" ;;
         esac ;;
       exec)
@@ -166,7 +171,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
     assert {_, 0} = launch_args(ctx, ["run"], dev_env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], dev_env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], dev_env)
     curl = Path.join(ctx.root, "curl")
     File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
     File.chmod!(curl, 0o755)
@@ -193,7 +197,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert {_, 0} = launch_args(ctx, ["run"], env)
       File.write!(ctx.state <> ".agent", "<no value>")
       File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-      assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
       curl = Path.join(ctx.root, "curl")
       File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
       File.chmod!(curl, 0o755)
@@ -254,7 +257,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(ctx.state <> ".agent", "<no value>")
     File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
     curl = Path.join(ctx.root, "curl")
 
     File.write!(curl, """
@@ -300,7 +302,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
 
     File.write!(Path.join(ctx.root, "curl"), """
     #!/bin/sh
@@ -347,7 +348,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
     curl = Path.join(ctx.root, "curl")
 
     File.write!(curl, """
@@ -460,7 +460,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
     File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nexit 1\n")
     File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(ctx.root, "curl"), 0o755)
@@ -565,7 +564,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "development namespace separates container, storage, native login and image identities", ctx do
     dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", "claude-dev"}]
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], dev_env)
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude", "--port", "14030"], dev_env)
     calls = File.read!(ctx.log)
     assert calls =~ "symphony-claude-dev-service-"
@@ -628,7 +626,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "Claude selects only its project login and keeps selected Git secrets out of arguments", ctx do
     File.write!(Path.join(ctx.config, "projects/service.env"), "GH_TOKEN=git-secret-canary\n")
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"])
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude", "--port", "4111"])
     calls = File.read!(ctx.log)
     assert calls =~ "com.symphony.agent=claude"
@@ -644,9 +641,44 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
   end
 
+  test "Claude starts from native readiness without billing policy files and preserves account identity", ctx do
+    refute File.exists?(Path.join(ctx.config, "claude"))
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    refute File.exists?(Path.join(ctx.config, "claude"))
+    calls = File.read!(ctx.log)
+    assert calls =~ "auth.mjs\tcheck"
+    refute calls =~ "/etc/symphony/claude"
+    assert calls =~ "com.symphony.profile=#{String.duplicate("a", 64)}"
+
+    File.write!(ctx.log, "")
+    changed = Jason.encode!(%{ready: true, profile: String.duplicate("b", 64), model_requests: 0})
+    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"], [{"FIXTURE_AUTH_JSON", changed}])
+    assert message =~ "listener native profile differs"
+    calls = File.read!(ctx.log)
+    refute calls =~ "--detach"
+    refute calls =~ "stop\t"
+    refute calls =~ "\nrm\t"
+  end
+
+  test "invalid native identity cannot create a listener and retired attestation cannot reach Docker", ctx do
+    invalid = ["not-json", "[]", Jason.encode!(%{ready: false, profile: String.duplicate("a", 64)}), Jason.encode!(%{ready: true, profile: "secret-canary"}), String.duplicate("x", 4097)]
+
+    for value <- invalid do
+      assert {output, 1} = launch_args(ctx, ["run", "--agent", "claude"], [{"FIXTURE_AUTH_JSON", value}])
+      refute output =~ "secret-canary"
+      refute File.exists?(ctx.state)
+    end
+
+    assert {_, 1} = launch_args(ctx, ["run", "--agent", "claude"], [{"FIXTURE_AUTH_FAIL", "true"}])
+    refute File.exists?(ctx.state)
+    refute File.read!(ctx.log) =~ "--detach"
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"])
+    assert File.read!(ctx.log) == ""
+  end
+
   test "agent and image mismatches refuse reuse without stopping or replacing work", ctx do
     assert {_, 0} = launch(ctx, "start")
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"])
     File.write!(ctx.log, "")
     assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"])
     assert message =~ "listener agent differs"
@@ -666,7 +698,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute calls =~ "--detach"
     refute calls =~ "build\t"
     refute File.exists?(ctx.state)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"])
     File.write!(ctx.log, "")
     assert {_, 0} = launch_args(ctx, ["runner", "doctor", "--agent", "claude"])
     calls = File.read!(ctx.log)
@@ -679,7 +710,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "foreign native volumes and active profile removal fail before native mutation", ctx do
     assert {_, 1} = launch_args(ctx, ["auth", "claude", "login"], [{"FIXTURE_FOREIGN_VOLUME", "true"}])
     refute File.read!(ctx.log) =~ "auth.mjs\tlogin"
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"])
     File.write!(ctx.log, "")
     assert {message, 1} = launch_args(ctx, ["auth", "claude", "remove"], [{"FIXTURE_PROFILE_IN_USE", "active-container"}])
     assert message =~ "profile is in use"

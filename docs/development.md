@@ -75,8 +75,7 @@ From inside the disposable target clone:
 ```sh
 dev="$HOME/Repos/symphony-dev-workspace/bin/symphony-dev"
 "$dev" auth claude login
-# Finish the native login in this terminal. Disable paid usage/overages first.
-"$dev" auth claude attest --overages-disabled
+# Finish the native login in this terminal.
 "$dev" auth claude check
 "$dev" runner doctor --agent claude
 "$dev" run --agent claude

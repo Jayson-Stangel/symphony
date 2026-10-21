@@ -550,7 +550,7 @@ legacy auth/policy pause files still require explicit recheck after repair.
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
-durable global turn gate. Native session admission still validates the attestation.
+durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.

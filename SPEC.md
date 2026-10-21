@@ -2383,7 +2383,7 @@ bounded diagnostic version strings, rather than dependency literals.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.
-Native subscription authentication and a dated account-bound disabled-overages attestation gate dispatch without model probes.
+Native subscription authentication is checked without model probes. Billing-attestation files and expiry are not required.
 No API-key inference fallback is configured. Model-free readiness is an observation,
 not a durable account pause. A failed observation is refreshed automatically after
 repair, including while drained or paused. One supervised task performs the check
@@ -2404,7 +2404,7 @@ still require explicit recheck; they cannot safely be assumed to be observations
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
-durable global turn gate. Native session admission still validates the attestation.
+durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authentication and shared policy

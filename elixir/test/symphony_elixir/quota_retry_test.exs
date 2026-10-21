@@ -169,9 +169,7 @@ defmodule SymphonyElixir.QuotaRetryTest do
         protocol: 1,
         sdk: "fixture-sdk",
         cli: "fixture-cli",
-        policy: 1,
-        overages_disabled_attested: true,
-        attested_at: DateTime.to_iso8601(DateTime.utc_now())
+        policy: 1
       })
     )
 
