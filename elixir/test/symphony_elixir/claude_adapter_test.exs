@@ -848,7 +848,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     try do
       System.put_env("PATH", bin <> ":" <> previous_path)
       assert System.find_executable("timeout") == launcher
-      # Real exec failure at an otherwise valid captured cleanup boundary.
+      # Real launcher failure (including shell fallback) at a valid cleanup boundary.
       assert {:error, :cleanup_unconfirmed} = Adapter.stop_session(session)
       assert File.read!(path) == evidence
       assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()

@@ -390,24 +390,17 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp cleanup_owned(%{owned_native: [], helper_identity: nil}), do: :ok
 
   defp cleanup_owned(session) do
-    result =
-      try do
-        if File.regular?(session.cleanup) and is_binary(System.find_executable("timeout")) do
-          case System.cmd(System.find_executable("timeout"), ["--signal=KILL", "10s", session.node, session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
-                 env: Config.claude_cleanup_environment(),
-                 stderr_to_stdout: true
-               ) do
-            {_output, 0} -> :ok
-            _ -> {:error, :cleanup_unconfirmed}
-          end
-        else
-          {:error, :cleanup_unconfirmed}
-        end
-      rescue
+    if File.regular?(session.cleanup) and is_binary(System.find_executable("timeout")) do
+      case System.cmd(System.find_executable("timeout"), ["--signal=KILL", "10s", session.node, session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
+             env: Config.claude_cleanup_environment(),
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} -> :ok
         _ -> {:error, :cleanup_unconfirmed}
       end
-
-    result
+    else
+      {:error, :cleanup_unconfirmed}
+    end
   end
 
   defp await_stopped(port, until) do
