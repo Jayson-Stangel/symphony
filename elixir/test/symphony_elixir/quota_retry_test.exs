@@ -37,12 +37,7 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
     server = start_supervised!({Orchestrator, name: __MODULE__})
-    # Observe the actual initial cycle before publishing an eligible issue. A
-    # manually injected cycle can leave init's delayed cycle queued behind it.
-    await(fn ->
-      state = :sys.get_state(server)
-      not state.poll_check_in_progress and state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
-    end)
+    await_initial_poll(server)
 
     issue = %Issue{id: "quota-recovery", identifier: "JAY-625", title: "Quota recovery", state: "In Progress", dispatchable: true}
     %{server: server, issue: issue, root: root, turns: turns}
@@ -180,7 +175,7 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     stop_supervised!(Orchestrator)
     server = start_supervised!({Orchestrator, name: __MODULE__, readiness_opts: [node_path: node, helper_path: helper]})
-    poll(server)
+    await_initial_poll(server)
     %{ctx | server: server}
   end
 
@@ -211,6 +206,17 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     send(worker, :quota)
     await(fn -> Map.has_key?(:sys.get_state(server).retry_attempts, issue.id) end)
+  end
+
+  defp await_initial_poll(server) do
+    # Wait for readiness and the actual first cycle; a manual cycle can leave
+    # init's delayed poll queued and overwrite the fixture's injected worker.
+    await(fn ->
+      state = :sys.get_state(server)
+
+      state.readiness.ready and not state.poll_check_in_progress and
+        state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
+    end)
   end
 
   defp poll(server) do
