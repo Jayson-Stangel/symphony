@@ -16,7 +16,7 @@ test('protocol rejects versions, unknown options, oversized frames and stale sha
 
 test('start delegates nonblank model IDs to the native runtime without rewriting them', () => {
   const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
-    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+    config: { model: 'sonnet', max_turns: 20, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
   for (const model of ['sonnet', 'opus', 'haiku', 'fable',
     'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'future-native-model-99', 'opusplan', 'Opus']) {
     const command = { ...start, config: { ...start.config, model } };
@@ -29,7 +29,7 @@ test('start delegates nonblank model IDs to the native runtime without rewriting
 
 test('effort accepts SDK levels and leaves omitted effort unset', () => {
   const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
-    config: { model: 'claude-opus-5-5', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+    config: { model: 'claude-opus-5-5', max_turns: 20, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
   assert.ok(!Object.hasOwn(parseCommand(JSON.stringify(start)).config, 'effort'));
   for (const effort of [null, 'low', 'medium', 'high', 'xhigh', 'max']) {
     assert.equal(parseCommand(JSON.stringify({ ...start, config: { ...start.config, effort } })).config.effort, effort);
@@ -167,7 +167,7 @@ test('containment requires the effective root mount to be read-only', async () =
 
 test('skill transport bounds names, paths and count while the packaged plugin validates membership', () => {
   const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
-    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+    config: { model: 'sonnet', max_turns: 20, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
   const skills = { 'packaged-procedure': '/workspaces/issue/.codex/skills/local' };
   assert.deepEqual(parseCommand(JSON.stringify({ ...start, skills })).skills, skills);
   // Zod drops the JSON prototype key instead of installing it as an inherited selection.
@@ -176,5 +176,15 @@ test('skill transport bounds names, paths and count while the packaged plugin va
     { 'symphony-land': '' }, { 'symphony-land': 'x'.repeat(4097) },
     Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`procedure-${i}`, '/tmp/x']))]) {
     assert.throws(() => parseCommand(JSON.stringify({ ...start, skills: invalid })));
+  }
+});
+
+
+test('internal attempt allowance accepts the shared configuration without a helper ceiling', () => {
+  const command = { v: 1, type: 'start', session_id: 's', request_id: 'r', workspace: '/tmp/workspace',
+    config: { model: 'sonnet', max_turns: 129, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  assert.equal(parseCommand(JSON.stringify(command)).config.max_turns, 129);
+  for (const max_turns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, null]) {
+    assert.throws(() => parseCommand(JSON.stringify({ ...command, config: { ...command.config, max_turns } })));
   }
 });
