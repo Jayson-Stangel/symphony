@@ -2409,6 +2409,9 @@ Optional `claude.effort` selects low, medium, high, xhigh or max for new session
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.
 Native subscription authentication is checked without model probes. Billing-attestation files and expiry are not required.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 No API-key inference fallback is configured. Model-free readiness is an observation,
 not a durable account pause. A failed observation is refreshed automatically after
 repair, including while drained or paused. One supervised task performs the check

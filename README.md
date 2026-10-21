@@ -338,6 +338,9 @@ providers retain native organizational policy. Claude policy files do not create
 extra Symphony admission gate; native settings may configure permissions and routing.
 Symphony adds no API-key/cloud fallback and does not guarantee native request endpoints
 or billing from a subscription profile.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 Sonnet remains the default; nonblank model identifiers pass unchanged to the
 native runtime, which validates support. Reasoning effort is configurable.
 Terminal and web dashboards show the configured Claude effort.

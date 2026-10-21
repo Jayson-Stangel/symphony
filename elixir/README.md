@@ -601,6 +601,9 @@ canonical files, managed drop-ins and remote policy are not Symphony file-existe
 gates. Explicit user/project/local source isolation and strict MCP remain enabled.
 Native subscription checks do not guarantee request endpoints or billing, and Symphony
 configures no API-key/cloud fallback. Codex keeps its existing native policy behavior.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.

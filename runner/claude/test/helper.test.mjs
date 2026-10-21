@@ -119,6 +119,23 @@ test('Fable quota evidence cannot be downgraded by a later generic rate-limit er
   assert.equal(outcome.resets_at, 12345);
 });
 
+test('native allowed overage preserves successful completion and genuine errors retain precedence', async t => {
+  for (const [error, expected] of [[null, 'completed'], ['billing_error', 'policy_blocked'],
+    ['authentication_failed', 'auth_required']]) {
+    const ctx = await fixture(t);
+    const input = await turn(ctx);
+    for (const status of ['allowed', 'allowed_warning']) {
+      ctx.query.push({ type: 'rate_limit_event', rate_limit_info: {
+        status, overageStatus: status, isUsingOverage: true, rateLimitType: 'overage',
+      } });
+    }
+    if (error) ctx.query.push({ type: 'assistant', error });
+    result(ctx.query, input);
+    await tick();
+    assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, expected);
+  }
+});
+
 test('assistant text and stream EOF do not establish completion', async t => {
   const ctx = await fixture(t);
   await turn(ctx);
