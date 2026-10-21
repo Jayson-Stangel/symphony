@@ -14,8 +14,9 @@ description:
    `AGENTS.md` and integration policy. Preserve existing work; commit only intended
    changes or use an isolated worktree rather than stashing unrelated work.
 2. Establish the integration repository, remote and branch before merging:
-   - For an existing PR, inspect its actual base and head:
-     `gh pr view --json number,url,baseRefName,headRefName`.
+   - Locate an existing PR's URL from the ticket or a branch lookup on the
+     verified GitHub host/repository. Inspect that exact PR's base and head:
+     `gh pr view "$pr_url" --json number,url,baseRefName,headRefName`.
    - From the returned PR URL, set `pr_host`, `pr_repository` (`owner/repo`) and
      `pr_number`. Query that exact PR, then verify its base repository and branch
      against configured remotes; checkout-based API placeholders can name another

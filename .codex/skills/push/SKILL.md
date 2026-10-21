@@ -10,7 +10,7 @@ description:
 ## Prerequisites
 
 - `gh` CLI is installed and available in `PATH`.
-- `gh auth status` succeeds for GitHub operations in this repo.
+- `gh auth status` succeeds for operations on the verified GitHub host.
 
 ## Repository policy
 
@@ -35,10 +35,12 @@ missing Elixir tooling for a project that does not use it.
 
 ## Steps
 
-1. Inspect status, the current branch and remotes. Establish the target repository
-   and integration base from its `AGENTS.md`/integration policy and any existing
-   PR's actual base (`gh pr view --json number,url,baseRefName,headRefName`).
-   Verify the PR base repository against the remotes, as in `symphony-pull`.
+1. Inspect status, the current branch and remotes. Establish the target GitHub
+   host, repository and integration base from its `AGENTS.md`/integration policy
+   and any existing PR's actual base. Inspect an existing PR by its verified URL:
+   `gh pr view "$pr_url" --json number,url,baseRefName,headRefName`.
+   Verify the URL's host and base repository against the remotes, as in
+   `symphony-pull`. Retain that host for every subsequent CLI/API operation.
    Resolve policy/base mismatches before publishing; do not infer `main` or the
    remote default branch when no base is established. Symphony feature PRs target
    `dev`; its `main` promotion and stable rollout retain separate exact approvals.
@@ -102,15 +104,16 @@ git push -u origin HEAD
 git push --force-with-lease origin HEAD
 
 # Ensure a PR exists (create only if missing)
-# integration_repository and integration_base come from verified policy/PR metadata.
-# feature_repository is the verified source repository for the configured push remote.
+# integration_host, integration_repository (owner/repo) and integration_base come
+# from verified remote/policy/PR URL metadata, including the host on github.com.
+# feature_repository is the verified source owner/repo on that same GitHub host.
 # Inspect matching PRs; a failed lookup stops this procedure.
-gh pr list --repo "$integration_repository" --base "$integration_base" --head "$branch" --state all \
+gh pr list --repo "$integration_host/$integration_repository" --base "$integration_base" --head "$branch" --state all \
   --json number,state,baseRefName,headRepository,url
 # Select the verified source repository and base, excluding unrelated fork/base PRs.
 # Retain the number and state from that same verified result through every mutation.
 # The latest matching PR is first; no matching PR yields an empty row.
-pr_row=$(gh pr list --repo "$integration_repository" --base "$integration_base" --head "$branch" --state all \
+pr_row=$(gh pr list --repo "$integration_host/$integration_repository" --base "$integration_base" --head "$branch" --state all \
   --json number,state,headRepository \
   --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0] | select(. != null) | [.number, .state] | @tsv") || exit 1
 read -r pr_number pr_state <<< "$pr_row"
@@ -122,11 +125,11 @@ fi
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
 if [ -z "$pr_state" ]; then
-  pr_url=$(gh pr create --repo "$integration_repository" --base "$integration_base" --title "$pr_title") || exit 1
-  pr_number=$(gh pr view "$pr_url" --repo "$integration_repository" --json number -q .number) || exit 1
+  pr_url=$(gh pr create --repo "$integration_host/$integration_repository" --base "$integration_base" --title "$pr_title") || exit 1
+  pr_number=$(gh pr view "$pr_url" --repo "$integration_host/$integration_repository" --json number -q .number) || exit 1
 else
   # REST avoids deprecated Projects (classic) queries in older gh pr edit.
-  gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
+  gh api --hostname "$integration_host" --method PATCH "repos/$integration_repository/pulls/$pr_number" \
     -f title="$pr_title" --jq .html_url
 fi
 
@@ -135,20 +138,21 @@ fi
 # 1) draft the body and run the repo's documented body validator, if any
 # 2) publish the validated file via REST (preserves actual newlines)
 # 3) re-read the published title/body and compare with the current diff
-gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
+gh api --hostname "$integration_host" --method PATCH "repos/$integration_repository/pulls/$pr_number" \
   -F body=@/tmp/pr_body.md --jq .html_url
 
-gh pr view "$pr_number" --repo "$integration_repository" --json title,body
+gh pr view "$pr_number" --repo "$integration_host/$integration_repository" --json title,body
 
 # Show PR URL for the reply
-gh pr view "$pr_number" --repo "$integration_repository" --json url -q .url
+gh pr view "$pr_number" --repo "$integration_host/$integration_repository" --json url -q .url
 ```
 
 ## Notes
 
 - If a GitHub CLI command fails on deprecated `projectCards` / Projects
-  (classic), use explicit `gh pr view --json <needed-fields>` reads or the
-  equivalent `gh api` REST endpoint, then verify the result. This is a CLI/API
+  (classic), use explicit PR-number reads with the verified host-qualified
+  `--repo`, or the equivalent `gh api --hostname` REST endpoint, then verify
+  the result. This is a CLI/API
   compatibility failure, not a requirement to configure GitHub Projects or a
   repository dependency. Check `gh --version` inside the worker; the host's
   version does not establish the container's version. Do not silently ignore
