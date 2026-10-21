@@ -60,15 +60,15 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec record(atom() | String.t(), map()) :: :ok | {:error, term()}
   def record(kind, details \\ %{}) do
-    if Config.coding_agent() == :claude do
-      kind = to_string(kind)
+    if Config.coding_agent() == :claude, do: record_claude(kind, details), else: :ok
+  end
 
-      if kind in ["tool_outcome_uncertain", "protocol_error"],
-        do: :ok,
-        else: serialized(fn -> record_pause(kind, details) end)
-    else
-      :ok
-    end
+  defp record_claude(kind, details) do
+    kind = to_string(kind)
+
+    if kind in ["tool_outcome_uncertain", "protocol_error"],
+      do: :ok,
+      else: serialized(fn -> record_pause(kind, details) end)
   end
 
   defp record_pause(kind, details) do
@@ -82,16 +82,16 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec explicit_recheck(String.t(), keyword()) :: :ok | {:error, term()}
   def explicit_recheck(profile, opts \\ []) do
-    if Config.coding_agent() == :claude do
-      serialized(fn ->
-        with :ok <- recheck_identity(profile),
-             :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
-          recheck_pause(read_pause(), profile)
-        end
-      end)
-    else
-      :ok
-    end
+    if Config.coding_agent() == :claude, do: recheck_claude(profile, opts), else: :ok
+  end
+
+  defp recheck_claude(profile, opts) do
+    serialized(fn ->
+      with :ok <- recheck_identity(profile),
+           :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
+        recheck_pause(read_pause(), profile)
+      end
+    end)
   end
 
   @doc "Logical Codex tool-state namespace, not an account identity or authentication attestation."

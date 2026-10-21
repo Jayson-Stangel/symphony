@@ -556,7 +556,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp agent_admission(state) do
     readiness = state.readiness || %{}
-    admission = %{ready: false, reason: nil, provider: readiness[:provider], profile: readiness[:profile], retry_at: nil}
+    admission = %{
+      ready: false,
+      reason: nil,
+      provider: readiness[:provider],
+      profile: readiness[:profile],
+      retry_at: nil
+    }
 
     cond do
       state.draining ->
