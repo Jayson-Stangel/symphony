@@ -1,10 +1,10 @@
 defmodule SymphonyElixir.AgentReadiness do
-  @moduledoc "Model-free native-runtime readiness. Account billing remains operator attestation."
+  @moduledoc "Model-free native-runtime readiness."
 
   alias SymphonyElixir.Config
 
   @codes ~w(auth_required unqualified_auth unknown_auth_status unqualified_native_settings
-            overage_attestation_required overage_attestation_expired native_identity_mismatch
+            native_identity_mismatch
             runtime_version_mismatch sdk_version_mismatch invalid_tool_environment
             nonroot_profile_required container_profile_required runtime_unavailable)
 
@@ -52,10 +52,10 @@ defmodule SymphonyElixir.AgentReadiness do
     end
   end
 
-  defp interpret(0, %{"ready" => true, "protocol" => 1, "profile" => profile, "sdk" => sdk, "cli" => cli, "policy" => 1, "overages_disabled_attested" => true, "attested_at" => at})
-       when is_binary(profile) and is_binary(at) and is_binary(sdk) and byte_size(sdk) in 1..128 and
+  defp interpret(0, %{"ready" => true, "protocol" => 1, "profile" => profile, "sdk" => sdk, "cli" => cli, "policy" => 1})
+       when is_binary(profile) and is_binary(sdk) and byte_size(sdk) in 1..128 and
               is_binary(cli) and byte_size(cli) in 1..128 do
-    if Regex.match?(~r/^[a-f0-9]{64}$/, profile) and match?({:ok, _, _}, DateTime.from_iso8601(at)) do
+    if Regex.match?(~r/^[a-f0-9]{64}$/, profile) do
       %{
         ready: true,
         provider: "claude",
@@ -64,9 +64,7 @@ defmodule SymphonyElixir.AgentReadiness do
         cli: cli,
         protocol: 1,
         policy: 1,
-        local_policy_passed: true,
-        overages_disabled_attested: true,
-        attested_at: at
+        local_policy_passed: true
       }
     else
       blocked("runtime_unavailable")

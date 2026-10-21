@@ -339,7 +339,7 @@ native runtime, which validates support. Reasoning effort is configurable.
 Terminal and web dashboards show the configured Claude effort.
 The dashboard updates input tokens during Claude steps and confirms output tokens
 at turn completion; session totals include cached input and avoid duplicate tool blocks.
-It requires disabled-overage owner attestation, project-scoped credentials and
+It uses project-scoped credentials and
 model-free readiness checks. Both agents receive tracker errors and own recovery:
 read back uncertain writes before retrying, correct rejected requests, and contain
 unresolved failures to the affected issue. Tracker errors do not pause unrelated

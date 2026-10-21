@@ -36,9 +36,9 @@ import('node:fs').then(fs => {
   return { ...result, calls };
 }
 
-test('live without explicit overage confirmation fails before any Docker action', t => {
+test('unexpected live arguments fail before any Docker action', t => {
   for (const command of ['live', 'cancel']) {
-    const result = fixture(t, [command]);
+    const result = fixture(t, [command, '--unexpected']);
     assert.equal(result.status, 1);
     assert.deepEqual(result.calls, []);
   }
@@ -118,7 +118,7 @@ test('changed checkout inputs must build successfully before an old tagged image
   // The fake Docker runtime retains an old tag, but any failed build of this
   // changed checkout must stop before tag inspection, volume access or execution.
   for (const command of ['test', 'inspect', 'status', 'login', 'live', 'cancel']) {
-    const args = ['live', 'cancel'].includes(command) ? [command, '--confirm-overages-disabled'] : [command];
+    const args = [command];
     const failed = fixture(t, args, { LAB_BUILD_FAIL: '1' }, executable);
     assert.equal(failed.status, 1, failed.stderr);
     assert.equal(failed.calls.length, 1);
