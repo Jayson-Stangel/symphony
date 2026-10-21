@@ -32,11 +32,15 @@ bash -n lab
 
 `lab build` uses the parent production dependency context with a Dockerfile-specific
 allowlist; host dependency directories, credentials and other files are excluded.
-The fixed `:runtime` image tag is resolved to an immutable image ID for each invocation.
+Every qualification command first performs a cached build of these actual inputs
+and uses the immutable image ID returned by Docker, never a previously tagged
+image. A cold build or changed dependencies may require network access; unchanged
+inputs reuse Docker's cache. The `:runtime` tag is only a build alias.
 If upgrading from the old independent lab setup, remove obsolete local
 `qualification/node_modules` before local checks so Node uses the parent install.
 
-`test` and `inspect` have no network access. `status` invokes native auth status,
+The executed `test` and `inspect` containers have no network access (their cached
+build step may need network access). `status` invokes native auth status,
 never a model prompt, and prints only a normalized category. Logged-out status exits
 nonzero. No native credential files or raw status payloads are printed.
 
