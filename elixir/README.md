@@ -43,6 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+Captured sessions use their common adapter interrupt callback before worker
+termination and workspace removal. An interrupt error retains the worker, claim
+and workspace. An unpublished session keeps the existing task-only path, which
+must not be interpreted as confirmed native cleanup.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a
