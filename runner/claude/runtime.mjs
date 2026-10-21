@@ -82,10 +82,10 @@ export function nativeIdentity(binary, env) {
 
 export function checkSettings() {
   // User/project/local settings are excluded by query and native auth flags.
-  // Preserve organizational policy and unqualified installed-plugin limits.
+  // Home managed-settings and user plugin inventory are not enabled sources.
+  // Preserve canonical organizational policy and account-dependent remote state.
   const paths = [
-    `${nativeConfig}/managed-settings.json`, `${nativeConfig}/remote-settings.json`,
-    `${nativeConfig}/plugins/installed_plugins.json`, '/etc/claude-code/managed-settings.json',
+    `${nativeConfig}/remote-settings.json`, '/etc/claude-code/managed-settings.json',
     '/etc/claude-code/managed-mcp.json',
   ];
   if (paths.some(path => existsSync(path))) throw new RuntimeError('unqualified_native_settings');
