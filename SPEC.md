@@ -2446,9 +2446,12 @@ API only with native readiness, no drain and no retained pause.
 User/project/local native settings MUST be excluded consistently by coding
 sessions and native authentication probes/commands. Excluded files and project
 MCP configuration MUST NOT become file-existence admission gates. Managed/remote
-organizational policy and unqualified installed-plugin metadata remain preserved,
-explicit unsupported-settings limits until separately qualified; this does not
-silently override organizational policy or enable alternate inference routing.
+organizational policy remains preserved in its canonical Linux path and remote
+cache; enterprise MCP config remains incompatible with strict MCP startup. These
+remain explicit unsupported-settings limits until separately qualified. User
+plugin inventory and home-config managed-settings.json MUST NOT gate admission
+when excluded by the qualified native runtime. This does not silently override
+organizational policy or enable alternate inference routing.
 
 See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.
