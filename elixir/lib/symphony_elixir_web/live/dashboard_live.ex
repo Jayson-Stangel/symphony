@@ -53,18 +53,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+
           </div>
 
-          <div class="status-stack">
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
-          </div>
+            <%= if agent = Map.get(@payload, :agent) do %>
+              <div id="runner-identity" class="runner-identity" role="group" aria-label="Runner identity">
+                <div class="runner-agent"><span class="runner-label">Agent:</span> <strong><%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></strong></div>
+                <div class="runner-model"><span class="runner-label">Model:</span> <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model] do %><span class="runner-source">last session</span><% end %></div>
+                <div class="runner-model runner-effort"><span class="runner-label">Reasoning:</span> <strong><%= agent[:effort] || if(agent.provider in [:claude, "claude"], do: "Model default", else: "Runner default") %></strong><span class="runner-source">configured</span></div>
+                <span class="runner-state runner-state-current" data-ready={if agent.readiness[:ready] && !agent.draining && !agent.pause, do: "true", else: "false"}>
+                  <span class="runner-state-dot" aria-hidden="true"></span>
+                  <%= cond do %>
+                    <% agent.draining -> %>Draining
+                    <% agent.pause -> %><%= agent.pause["kind"] %>
+                    <% agent.readiness[:ready] -> %>Ready
+                    <% true -> %>Blocked
+                  <% end %>
+                </span>
+                <span class="runner-state runner-state-offline"><span class="runner-state-dot" aria-hidden="true"></span>Offline</span>
+              </div>
+            <% end %>
         </div>
       </header>
 
@@ -99,16 +107,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="metric-card">
             <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+            <p class="metric-value numeric"><%= token_total(@payload, :total_tokens) %></p>
             <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
+              In <%= token_total(@payload, :input_tokens) %> / Out <%= token_total(@payload, :output_tokens) %>
             </p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
+            <p class="metric-detail">Total agent runtime across completed and active sessions.</p>
           </article>
         </section>
 
@@ -150,7 +158,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Agent update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -201,8 +209,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        <span>Total: <%= token_total(@payload, :total_tokens, entry.tokens) %></span>
+                        <span class="muted">In <%= token_total(@payload, :input_tokens, entry.tokens) %> / Out <%= token_total(@payload, :output_tokens, entry.tokens) %></span>
                       </div>
                     </td>
                   </tr>
@@ -379,6 +387,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
+  end
+
+  defp token_total(payload, key) do
+    token_total(payload, key, payload.codex_totals)
+  end
+
+  defp token_total(payload, key, tokens) do
+    case Map.get(payload, :agent) do
+      %{usage_available: false} -> "unavailable"
+      _ -> format_int(tokens[key])
+    end
   end
 
   defp total_runtime_seconds(payload, now) do

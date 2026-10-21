@@ -1,19 +1,5 @@
-defmodule SymphonyElixir.CodexOnlyRuntimeTest do
+defmodule SymphonyElixir.DrainedRetryTest do
   use SymphonyElixir.TestSupport
-  alias SymphonyElixir.{CLI, Config.Schema}
-
-  test "unsupported inherited selection fails before starting any runtime" do
-    previous = System.get_env("SYMPHONY_CODING_AGENT")
-    on_exit(fn -> restore_env("SYMPHONY_CODING_AGENT", previous) end)
-    System.put_env("SYMPHONY_CODING_AGENT", "claude")
-    assert {:error, message} = CLI.evaluate([], %{})
-    assert message =~ "supports Codex only"
-
-    for config <- [%{"claude" => %{}}, %{"coding_agent" => "claude"}, %{claude: %{model: "sonnet"}}] do
-      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
-      assert message =~ "supports Codex only"
-    end
-  end
 
   test "a queued retry cannot dispatch after the updater drains" do
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])

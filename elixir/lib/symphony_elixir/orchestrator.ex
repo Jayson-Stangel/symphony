@@ -7,11 +7,12 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @readiness_interval_ms 30_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -33,7 +34,16 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :readiness,
+      :expected_profile,
+      :agent_model,
+      readiness_opts: [],
+      startup_cleanup_pending: true,
+      readiness_task: nil,
+      readiness_timer: nil,
+      readiness_control: nil,
       draining: false,
+      agent_usage_observed: false,
       task_supervisor: SymphonyElixir.TaskSupervisor,
       running: %{},
       completed: MapSet.new(),
@@ -58,28 +68,46 @@ defmodule SymphonyElixir.Orchestrator do
     case Config.settings() do
       {:ok, config} ->
         now_ms = System.monotonic_time(:millisecond)
+        readiness_opts = Keyword.get(opts, :readiness_opts, [])
+
+        readiness =
+          if Config.coding_agent() == :codex,
+            do: AgentReadiness.check(readiness_opts),
+            else: %{ready: false, provider: "claude", code: "checking"}
 
         state = %State{
           poll_interval_ms: config.polling.interval_ms,
-          max_concurrent_agents: config.agent.max_concurrent_agents,
+          max_concurrent_agents: Config.max_concurrent_agents(),
           next_poll_due_at_ms: now_ms,
           poll_check_in_progress: false,
           tick_timer_ref: nil,
           tick_token: nil,
+          readiness: readiness,
+          expected_profile: readiness[:profile],
+          readiness_opts: readiness_opts,
           draining: File.exists?(drain_path()),
           task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
           codex_totals: @empty_codex_totals,
           codex_rate_limits: nil
         }
 
-        if not state.draining, do: run_terminal_workspace_cleanup()
         state = schedule_tick(state, 0)
 
-        {:ok, state}
+        {:ok, state, {:continue, :check_readiness}}
 
       {:error, reason} ->
         {:stop, reason}
     end
+  end
+
+  @impl true
+  def handle_continue(:check_readiness, state), do: {:noreply, refresh_agent_readiness(state)}
+
+  @impl true
+  def terminate(_reason, state) do
+    cancel_readiness_timer(state)
+    if state.readiness_task, do: Task.Supervisor.terminate_child(state.task_supervisor, state.readiness_task.pid)
+    :ok
   end
 
   @impl true
@@ -128,6 +156,21 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  def handle_info({:refresh_agent_readiness, token}, %{readiness_timer: {_timer, token}} = state) do
+    {:noreply, refresh_agent_readiness(%{state | readiness_timer: nil})}
+  end
+
+  def handle_info({:refresh_agent_readiness, _token}, state), do: {:noreply, state}
+
+  def handle_info({ref, readiness}, %{readiness_task: %Task{ref: ref}} = state) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_readiness_check(state, readiness)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{readiness_task: %Task{ref: ref}} = state) do
+    {:noreply, finish_readiness_check(state, %{ready: false, provider: "claude", code: "runtime_unavailable"})}
+  end
+
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
@@ -137,16 +180,46 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
+        entry = Map.fetch!(running, issue_id)
 
-        state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
+        state =
+          cond do
+            Map.has_key?(entry, :cleanup_action) ->
+              {_entry, state} = pop_running_entry(state, issue_id)
+              finish_session_cleanup(state, issue_id, entry, reason)
 
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+            lost_owner_cleanup?(reason, entry) ->
+              begin_owner_loss_cleanup(state, issue_id, entry, reason)
+
+            true ->
+              {_entry, state} = pop_running_entry(state, issue_id)
+              state = record_session_completion_totals(state, entry)
+              finish_agent_down(state, issue_id, entry, reason)
+          end
 
         notify_dashboard()
         {:noreply, state}
+    end
+  end
+
+  def handle_info({:worker_agent_session, issue_id, session}, %{running: running} = state) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      %{cleanup_action: _} ->
+        {:noreply, state}
+
+      entry ->
+        model =
+          case session do
+            %{native: %{model: model}} -> model
+            _ -> nil
+          end
+
+        model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
+        notify_dashboard()
+        {:noreply, %{state | agent_model: model, running: Map.put(running, issue_id, Map.put(entry, :agent_session, session))}}
     end
   end
 
@@ -154,6 +227,9 @@ defmodule SymphonyElixir.Orchestrator do
       when is_binary(issue_id) and is_map(runtime_info) do
     case Map.get(running, issue_id) do
       nil ->
+        {:noreply, state}
+
+      %{cleanup_action: _} ->
         {:noreply, state}
 
       running_entry ->
@@ -175,6 +251,9 @@ defmodule SymphonyElixir.Orchestrator do
       nil ->
         {:noreply, state}
 
+      %{cleanup_action: _} ->
+        {:noreply, state}
+
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
 
@@ -186,17 +265,16 @@ defmodule SymphonyElixir.Orchestrator do
         case live_budget_blocker(updated_running_entry) do
           nil ->
             notify_dashboard()
-            {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+            usage_update? = update[:provider] == :claude and update[:event] == :token_usage_updated
+            observed = state.agent_usage_observed or usage_update?
+            {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry), agent_usage_observed: observed}}
 
           error ->
             Logger.warning(
               "Issue blocked by live Codex budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
             )
 
-            state =
-              state
-              |> record_session_completion_totals(updated_running_entry)
-              |> stop_and_block_issue(issue_id, updated_running_entry, error)
+            state = stop_and_block_issue(state, issue_id, updated_running_entry, error)
 
             notify_dashboard()
             {:noreply, state}
@@ -209,8 +287,20 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
-        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata)
-        :missing -> {:noreply, state}
+        {:ok, attempt, metadata, state} ->
+          cond do
+            agent_dispatch_ready?(state) and quota_retry_delay(state, metadata) == 0 ->
+              handle_retry_issue(state, issue_id, attempt, metadata)
+
+            not state.draining or quota_retry_delay(state, metadata) > 0 ->
+              {:noreply, schedule_issue_retry(state, issue_id, attempt, metadata)}
+
+            true ->
+              {:noreply, release_issue_claim(state, issue_id)}
+          end
+
+        :missing ->
+          {:noreply, state}
       end
 
     notify_dashboard()
@@ -223,6 +313,83 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  # Cleanup uses the existing task supervisor and running entry. Keep the claim
+  # and capacity until its DOWN, so another attempt cannot race native cleanup.
+  defp begin_session_cleanup(state, issue_id, entry, action, cleanup) do
+    if is_reference(entry[:ref]), do: Process.demonitor(entry.ref, [:flush])
+    task = Task.Supervisor.async_nolink(state.task_supervisor, cleanup)
+    entry = entry |> Map.put(:cleanup_owner_pid, entry[:pid]) |> Map.put(:pid, task.pid) |> Map.put(:ref, task.ref) |> Map.put(:cleanup_action, action)
+    %{state | running: Map.put(state.running, issue_id, entry)}
+  end
+
+  defp begin_owner_loss_cleanup(state, issue_id, entry, reason) do
+    begin_session_cleanup(state, issue_id, entry, {:down, reason}, fn ->
+      cleanup_lost_owner(reason, entry, issue_id)
+    end)
+  end
+
+  defp finish_session_cleanup(state, issue_id, entry, cleanup_reason) do
+    if cleanup_reason != :normal do
+      Logger.warning("Agent cleanup task exited issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} cleanup=cleanup_unconfirmed; retiring task")
+      terminate_task(entry.cleanup_owner_pid, state.task_supervisor)
+    end
+
+    # The running entry has been removed: move its elapsed time to completed
+    # totals exactly once, regardless of the final cancellation/retry outcome.
+    state = record_session_completion_totals(state, entry)
+
+    case entry.cleanup_action do
+      {:down, reason} ->
+        finish_agent_down(state, issue_id, entry, reason)
+
+      {:cancel, cleanup_workspace} ->
+        cleanup_stopped_workspace(cleanup_workspace, entry, entry.identifier)
+        state = release_issue_claim(state, issue_id)
+        {state, _coalesced} = queue_poll(state)
+        state
+
+      {:block, error} ->
+        block_issue_from_entry(state, issue_id, entry, error)
+
+      {:retry, attempt, metadata} ->
+        schedule_issue_retry(state, issue_id, attempt, metadata)
+    end
+  end
+
+  defp finish_agent_down(state, issue_id, entry, reason) do
+    session_id = running_entry_session_id(entry)
+    state = handle_agent_down(reason, state, issue_id, entry, session_id)
+    Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+    state
+  end
+
+  defp lost_owner_cleanup?(reason, %{agent_session: %{adapter: SymphonyElixir.Claude.Adapter}})
+       when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown), do: true
+
+  defp lost_owner_cleanup?(_reason, _entry), do: false
+
+  # Untrappable owner loss skips the worker's cleanup. Reuse its captured
+  # generation-checked session, never rediscover or broadly signal processes.
+  defp cleanup_lost_owner(reason, %{agent_session: %{adapter: SymphonyElixir.Claude.Adapter} = session} = entry, issue_id)
+       when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+    result =
+      try do
+        SymphonyElixir.CodingAgent.interrupt(session, :worker_owner_lost)
+      catch
+        _, _ -> {:error, :cleanup_unconfirmed}
+      end
+
+    if result != :ok do
+      Logger.warning(
+        "Agent owner-loss cleanup incomplete issue_id=#{issue_id} issue_identifier=#{Map.get(entry, :identifier)} session_id=#{running_entry_session_id(entry)} cleanup=cleanup_unconfirmed; using normal retry"
+      )
+    end
+
+    reason
+  end
+
+  defp cleanup_lost_owner(reason, _entry, _issue_id), do: reason
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
@@ -242,26 +409,62 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_agent_down({:max_turns_reached, details}, state, issue_id, running_entry, session_id) do
-    max_turns = max_turns_from_details(details)
-    error = "agent.max_turns reached with issue still active after #{max_turns} turns"
+  # AgentRunner confirms session cleanup before reporting these turn failures.
+  # Retry the attempt, never the tracker mutation; the next prompt requires readback.
+  defp handle_agent_down({:agent_pause, kind, _details} = reason, state, issue_id, running_entry, session_id)
+       when kind in [:tool_outcome_uncertain, :protocol_error, "tool_outcome_uncertain", "protocol_error"] do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
 
-    Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
+  defp handle_agent_down({:agent_pause, kind, details} = reason, state, issue_id, running_entry, session_id)
+       when kind in [:quota_exhausted, "quota_exhausted"] do
+    reset = details[:resets_at] || details["resets_at"]
+    reset = if is_integer(reset) and reset > System.system_time(:second), do: reset
 
-    block_issue_from_entry(state, issue_id, running_entry, error)
+    reason =
+      if reset do
+        case AgentPause.record(kind, details) do
+          :ok ->
+            reason
+
+          {:error, error} ->
+            Logger.error(
+              "Could not persist native quota cooldown issue_id=#{issue_id} state_root=#{Config.agent_state_root()} reason=#{inspect(error)}; repair state storage; running scheduler retains retry deadline, restart cannot recover an unwritten reset"
+            )
+
+            {:agent_pause, kind, Map.put(details, :state_write_error, error)}
+        end
+      else
+        reason
+      end
+
+    retry_agent_down(state, issue_id, running_entry, session_id, reason, %{quota_reset_at: reset})
+  end
+
+  defp handle_agent_down({:agent_pause, _kind, _details} = reason, state, issue_id, running_entry, session_id) do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
+
+  defp handle_agent_down({:agent_blocked, kind} = reason, state, issue_id, running_entry, session_id)
+       when kind in [:tool_outcome_uncertain, :protocol_error, :tracker_delivery_failed, "tool_outcome_uncertain", "protocol_error", "tracker_delivery_failed"] do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
+
+  defp handle_agent_down({:agent_blocked, kind}, state, issue_id, running_entry, _session_id) do
+    block_issue_from_entry(state, issue_id, running_entry, "coding agent blocked on this issue: #{kind}")
   end
 
   defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
+  end
+
+  defp retry_unless_input_required(state, issue_id, running_entry, session_id, reason) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, reason)
     else
       retry_agent_down(state, issue_id, running_entry, session_id, reason)
     end
   end
-
-  defp max_turns_from_details(%{max_turns: max_turns}) when is_integer(max_turns), do: max_turns
-  defp max_turns_from_details(%{"max_turns" => max_turns}) when is_integer(max_turns), do: max_turns
-  defp max_turns_from_details(_details), do: Config.settings!().agent.max_turns
 
   defp block_input_required_agent_down(state, issue_id, running_entry, session_id, reason) do
     error = blocker_error(running_entry, "agent exited: #{inspect(reason)}")
@@ -271,31 +474,44 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
-  defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
+  defp retry_agent_down(state, issue_id, running_entry, session_id, reason, metadata \\ %{}) do
     Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
-      identifier: running_entry.identifier,
-      issue_url: running_entry.issue.url,
-      error: "agent exited: #{inspect(reason)}",
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+    schedule_issue_retry(
+      state,
+      issue_id,
+      next_attempt,
+      Map.merge(metadata, %{
+        identifier: running_entry.identifier,
+        issue_url: running_entry.issue.url,
+        error: "agent exited: #{inspect(reason)}",
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    )
   end
 
-  defp maybe_dispatch(%State{draining: true} = state), do: reconcile_running_issues(state)
-
   defp maybe_dispatch(%State{} = state) do
+    if agent_dispatch_ready?(state) do
+      maybe_dispatch_ready(state)
+    else
+      if map_size(state.running) > 0, do: reconcile_running_issues(state), else: state
+    end
+  end
+
+  defp maybe_dispatch_ready(%State{} = state) do
     state =
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    validation = Config.validate!()
+    state = if validation == :ok, do: cleanup_startup_workspaces(state), else: state
+
+    with :ok <- validation,
          {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
-      state = cleanup_terminal_issues(state, issues)
       state = refresh_tracker_blocked(state, issues)
       if available_slots(state) > 0, do: choose_issues(issues, state), else: state
     else
@@ -339,29 +555,125 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp observed_issue_states do
-    tracker = Config.settings!().tracker
-    # SSH deployments retain their existing startup/claimed-issue cleanup. A
-    # recurring sweep of all terminal history would repeatedly contact every
-    # remote host, even for checkouts that were already removed.
-    terminal_states = if Config.settings!().worker.ssh_hosts == [], do: tracker.terminal_states, else: []
-    Enum.uniq(tracker.active_states ++ tracker.blocked_states ++ terminal_states)
+  defp refresh_agent_readiness(%{readiness_task: %Task{}} = state), do: state
+
+  defp refresh_agent_readiness(state) do
+    if Config.coding_agent() == :claude do
+      cancel_readiness_timer(state)
+      opts = state.readiness_opts
+      task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> AgentReadiness.check(opts) end)
+      %{state | readiness_task: task, readiness_timer: nil}
+    else
+      state
+    end
   end
 
-  defp cleanup_terminal_issues(state, issues) do
-    terminal_states = terminal_state_set()
+  defp finish_readiness_check(%{readiness_control: {from, :recheck_after_readiness, reconcile}} = state, _readiness) do
+    state = %{state | readiness_task: nil, readiness_control: {from, :recheck, reconcile}}
+    refresh_agent_readiness(state)
+  end
 
-    Enum.reduce(issues, state, fn issue, state ->
-      if terminal_issue_state?(issue.state, terminal_states) do
-        # Stop any worker before deleting its checkout, including a state change
-        # observed after the running-issue reconciliation earlier in this tick.
-        state = terminate_running_issue(state, issue.id, true)
-        cleanup_issue_workspace(issue)
-        state
-      else
-        state
+  defp finish_readiness_check(state, readiness) do
+    previous_admission = agent_admission(state)
+    control_pending = not is_nil(state.readiness_control)
+
+    readiness =
+      cond do
+        Config.coding_agent() == :codex -> AgentReadiness.check()
+        match?({_, :recheck, _}, state.readiness_control) -> readiness
+        true -> pin_readiness(readiness, state.expected_profile)
       end
-    end)
+
+    token = make_ref()
+    timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
+
+    expected_profile =
+      if control_pending do
+        state.expected_profile
+      else
+        state.expected_profile || readiness[:profile]
+      end
+
+    state = %{
+      state
+      | readiness: readiness,
+        readiness_task: nil,
+        readiness_timer: {timer, token},
+        expected_profile: expected_profile
+    }
+
+    state = finish_readiness_control(state)
+    state = %{state | readiness: pin_readiness(state.readiness, state.expected_profile)}
+    notify_dashboard()
+
+    if control_pending or previous_admission != agent_admission(state) do
+      {state, _coalesced} = queue_poll(state)
+      state
+    else
+      state
+    end
+  end
+
+  defp finish_readiness_control(%{readiness_control: nil} = state), do: state
+
+  defp finish_readiness_control(%{readiness_control: {from, action, reconcile}} = state) do
+    {:reply, reply, state} = resume_agent(%{state | readiness_control: nil}, action, reconcile)
+    GenServer.reply(from, reply)
+    state
+  end
+
+  defp cancel_readiness_timer(%{readiness_timer: {timer, _token}}), do: Process.cancel_timer(timer)
+  defp cancel_readiness_timer(_state), do: :ok
+
+  defp cancel_readiness_control(%{readiness_control: nil} = state), do: state
+
+  defp cancel_readiness_control(%{readiness_control: {from, _action, _reconcile}} = state) do
+    GenServer.reply(from, {:error, :agent_drained})
+    %{state | readiness_control: nil}
+  end
+
+  defp pin_readiness(%{ready: true, provider: "claude", profile: profile} = readiness, expected)
+       when not is_nil(expected) and profile != expected do
+    %{readiness | ready: false} |> Map.put(:code, "native_identity_mismatch")
+  end
+
+  defp pin_readiness(readiness, _expected), do: readiness
+
+  defp agent_dispatch_ready?(state), do: agent_admission(state).ready
+
+  defp agent_admission(state) do
+    readiness = state.readiness || %{}
+
+    admission = %{
+      ready: false,
+      reason: nil,
+      provider: readiness[:provider],
+      profile: readiness[:profile],
+      retry_at: nil
+    }
+
+    cond do
+      state.draining ->
+        %{admission | reason: "draining"}
+
+      not Map.get(readiness, :ready, false) ->
+        %{admission | reason: readiness[:code] || "native_not_ready"}
+
+      true ->
+        paused_admission(admission, state)
+    end
+  end
+
+  defp paused_admission(admission, state) do
+    case current_agent_pause(state) do
+      :ready -> %{admission | ready: true}
+      {:paused, value} -> %{admission | reason: value["kind"], retry_at: value["resets_at"]}
+    end
+  end
+
+  defp observed_issue_states do
+    tracker = Config.settings!().tracker
+    Enum.uniq(tracker.active_states ++ tracker.blocked_states)
   end
 
   defp refresh_tracker_blocked(state, issues) do
@@ -493,12 +805,12 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, true)
+        terminate_running_issue(state, issue.id, true, :issue_state_change)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :issue_state_change)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -506,7 +818,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :issue_state_change)
     end
   end
 
@@ -621,27 +933,32 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp cleanup_stopped_workspace(true, entry, identifier),
+    do: cleanup_issue_workspace(Map.get(entry, :issue, identifier), entry)
+
+  defp cleanup_stopped_workspace(false, _entry, _identifier), do: :ok
+
+  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace, reason \\ :scheduler_stop) do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
 
-      %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
+      %{cleanup_action: action} = entry ->
+        remove_workspace = cleanup_workspace or action == {:cancel, true}
+        entry = Map.put(entry, :cleanup_action, {:cancel, remove_workspace})
+        %{state | running: Map.put(state.running, issue_id, entry)}
+
+      %{agent_session: %{adapter: _, native: _}} = entry ->
+        begin_session_cleanup(state, issue_id, entry, {:cancel, cleanup_workspace}, fn ->
+          stop_running_task(issue_id, entry, state.task_supervisor, reason)
+        end)
+
+      %{pid: _, ref: _, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
-
-        stop_running_task(pid, ref, state.task_supervisor)
-
-        if cleanup_workspace do
-          cleanup_issue_workspace(Map.get(running_entry, :issue, identifier), running_entry)
-        end
-
-        %{
-          state
-          | running: Map.delete(state.running, issue_id),
-            claimed: MapSet.delete(state.claimed, issue_id),
-            blocked: Map.delete(state.blocked, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
-        }
+        stop_running_task(issue_id, running_entry, state.task_supervisor, reason)
+        cleanup_stopped_workspace(cleanup_workspace, running_entry, identifier)
+        {_entry, state} = pop_running_entry(state, issue_id)
+        release_issue_claim(state, issue_id)
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -649,7 +966,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.settings!().codex.stall_timeout_ms
+    timeout_ms = Config.agent_stall_timeout_ms()
 
     cond do
       timeout_ms <= 0 ->
@@ -668,7 +985,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) do
+    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :cleanup_action) do
       state
     else
       restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
@@ -688,7 +1005,6 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
 
         state
-        |> record_session_completion_totals(running_entry)
         |> stop_and_block_issue(issue_id, running_entry, error)
       else
         Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
@@ -697,7 +1013,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> terminate_running_issue(issue_id, false)
-        |> schedule_issue_retry(issue_id, next_attempt, %{
+        |> schedule_retry_after_stop(issue_id, next_attempt, %{
           identifier: identifier,
           issue_url: running_entry.issue.url,
           error: "stalled for #{elapsed_ms}ms without codex activity"
@@ -721,7 +1037,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    Map.get(running_entry, :last_agent_activity_at, Map.get(running_entry, :last_codex_timestamp)) ||
+      Map.get(running_entry, :started_at)
   end
 
   defp last_activity_timestamp(_running_entry), do: nil
@@ -732,8 +1049,6 @@ defmodule SymphonyElixir.Orchestrator do
       codex_message_method(Map.get(running_entry, :last_codex_message)) ==
         "mcpServer/elicitation/request"
   end
-
-  defp input_required_blocker?(_running_entry), do: false
 
   defp input_required_completion_outcome(completion) when is_map(completion) do
     outcome = Map.get(completion, :outcome) || Map.get(completion, "outcome")
@@ -758,6 +1073,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_input_required_outcome(_outcome), do: nil
 
   defp live_budget_blocker(running_entry) when is_map(running_entry) do
+    if Config.coding_agent() == :claude, do: nil, else: codex_live_budget_blocker(running_entry)
+  end
+
+  defp codex_live_budget_blocker(running_entry) do
     codex = Config.settings!().codex
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
@@ -785,8 +1104,6 @@ defmodule SymphonyElixir.Orchestrator do
       codex_message_blocker_error(Map.get(running_entry, :last_codex_message)) ||
       fallback
   end
-
-  defp blocker_error(_running_entry, fallback), do: fallback
 
   defp codex_event_blocker_error(:turn_input_required), do: "codex turn requires operator input"
   defp codex_event_blocker_error(:approval_required), do: "codex turn requires approval"
@@ -824,26 +1141,44 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid, _task_supervisor), do: :ok
 
-  defp stop_running_task(pid, ref, task_supervisor) do
-    if is_pid(pid) do
-      terminate_task(pid, task_supervisor)
+  defp stop_running_task(issue_id, entry, task_supervisor, reason \\ :scheduler_stop) do
+    pid = Map.get(entry, :pid)
+    ref = Map.get(entry, :ref)
+    session = Map.get(entry, :agent_session)
+
+    result =
+      try do
+        case session do
+          %{adapter: _, native: _} -> SymphonyElixir.CodingAgent.interrupt(session, reason)
+          _ -> :ok
+        end
+      catch
+        _, _ -> {:error, :cleanup_unconfirmed}
+      end
+
+    if result != :ok do
+      Logger.warning(
+        "Agent interrupt cleanup incomplete issue_id=#{issue_id} issue_identifier=#{Map.get(entry, :identifier, issue_id)} session_id=#{running_entry_session_id(entry)} task_pid=#{inspect(pid)} cleanup=cleanup_unconfirmed; retiring task"
+      )
     end
 
-    if is_reference(ref) do
-      Process.demonitor(ref, [:flush])
-    end
-
+    if is_pid(pid), do: terminate_task(pid, task_supervisor)
+    if is_reference(ref), do: Process.demonitor(ref, [:flush])
     :ok
   end
 
   defp stop_and_block_issue(%State{} = state, issue_id, running_entry, error) do
-    stop_running_task(
-      Map.get(running_entry, :pid),
-      Map.get(running_entry, :ref),
-      state.task_supervisor
-    )
+    case running_entry do
+      %{agent_session: %{adapter: _, native: _}} ->
+        begin_session_cleanup(state, issue_id, running_entry, {:block, error}, fn ->
+          stop_running_task(issue_id, running_entry, state.task_supervisor)
+        end)
 
-    block_issue_from_entry(state, issue_id, running_entry, error)
+      _ ->
+        stop_running_task(issue_id, running_entry, state.task_supervisor)
+        state = record_session_completion_totals(state, running_entry)
+        block_issue_from_entry(state, issue_id, running_entry, error)
+    end
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
@@ -1047,8 +1382,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    expected_profile = state.expected_profile
+
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, expected_profile: expected_profile)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1127,11 +1464,24 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  # Only the stall path selects retry immediately after starting cancellation,
+  # within one callback. Later tracker reconciliation can replace this outcome.
+  defp schedule_retry_after_stop(state, issue_id, attempt, metadata) do
+    case Map.get(state.running, issue_id) do
+      %{cleanup_action: {:cancel, false}} = entry ->
+        entry = Map.put(entry, :cleanup_action, {:retry, attempt, metadata})
+        %{state | running: Map.put(state.running, issue_id, entry)}
+
+      _ ->
+        schedule_issue_retry(state, issue_id, attempt, metadata)
+    end
+  end
+
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = retry_delay(next_attempt, metadata)
+    delay_ms = max(retry_delay(next_attempt, metadata), quota_retry_delay(state, metadata))
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
@@ -1163,9 +1513,47 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            quota_reset_at: metadata[:quota_reset_at]
           })
     }
+  end
+
+  # Native quota belongs to the existing attempt retry outcome. Keep its deadline
+  # even when the optional restart record cannot be written; no separate latch or
+  # persistence owner is needed. Unknown resets never replace a known deadline.
+  defp quota_retry_delay(state, metadata) do
+    reset = max(quota_reset_at(state), metadata[:quota_reset_at] || 0)
+    max(reset * 1_000 - System.system_time(:millisecond), 0)
+  end
+
+  defp quota_reset_at(state) do
+    if Config.coding_agent() == :claude do
+      stored =
+        case AgentPause.current() do
+          {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}} when is_integer(reset) -> reset
+          _ -> 0
+        end
+
+      Enum.reduce(state.retry_attempts, stored, fn {_id, retry}, reset -> max(reset, retry[:quota_reset_at] || 0) end)
+    else
+      0
+    end
+  end
+
+  defp current_agent_pause(state) do
+    reset = quota_reset_at(state)
+
+    case AgentPause.current() do
+      {:paused, %{"kind" => kind}} = pause when kind != "quota_exhausted" ->
+        pause
+
+      _ when reset > 0 ->
+        if reset > System.system_time(:second), do: {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}}, else: :ready
+
+      pause ->
+        pause
+    end
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
@@ -1176,7 +1564,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          quota_reset_at: Map.get(retry_entry, :quota_reset_at)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1185,9 +1574,6 @@ defmodule SymphonyElixir.Orchestrator do
         :missing
     end
   end
-
-  defp handle_retry_issue(%State{draining: true} = state, issue_id, _attempt, _metadata),
-    do: {:noreply, release_issue_claim(state, issue_id)}
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
     case Tracker.fetch_issues_by_ids([issue_id]) do
@@ -1256,21 +1642,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_issue_or_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{} = issue ->
-            cleanup_issue_workspace(issue)
+  defp cleanup_startup_workspaces(%State{startup_cleanup_pending: true} = state) do
+    state =
+      case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+        {:ok, issues} ->
+          cleanup_startup_issues(issues, state)
 
-          _ ->
-            :ok
-        end)
+        {:error, reason} ->
+          Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+          state
+      end
 
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+    %{state | startup_cleanup_pending: false}
+  end
+
+  defp cleanup_startup_workspaces(state), do: state
+
+  defp cleanup_startup_issues(issues, state) do
+    Enum.reduce(issues, state, fn
+      %Issue{} = issue, state ->
+        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
+        unless Map.has_key?(state.running, issue.id), do: cleanup_issue_workspace(issue)
+        state
+
+      _, state ->
+        state
+    end)
   end
 
   defp notify_dashboard do
@@ -1466,11 +1863,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp available_slots(%State{} = state) do
-    max(
-      (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
-        map_size(state.running),
+    if agent_dispatch_ready?(state) do
+      max((state.max_concurrent_agents || Config.max_concurrent_agents()) - map_size(state.running), 0)
+    else
       0
-    )
+    end
   end
 
   @spec request_refresh() :: map() | :unavailable
@@ -1575,9 +1972,34 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    settings = Config.settings!()
+
+    configured_model =
+      if Config.coding_agent() == :claude, do: settings.claude.model, else: settings.codex.model
+
+    configured_effort =
+      if Config.coding_agent() == :claude do
+        settings.claude.effort
+      else
+        settings.codex.reasoning_effort
+      end
+
     {:reply,
      %{
-       agent: %{provider: :codex, readiness: %{provider: "codex", ready: true}, draining: state.draining, pause: nil},
+       agent: %{
+         provider: Config.coding_agent(),
+         execution: settings.execution,
+         max_concurrent_agents: state.max_concurrent_agents,
+         model: configured_model || state.agent_model,
+         effort: configured_effort,
+         model_source: if(configured_model, do: "configured", else: "last_session"),
+         readiness: state.readiness,
+         admission: agent_admission(state),
+         draining: state.draining,
+         pause: public_agent_pause(state),
+         usage_available: Config.coding_agent() == :codex or state.agent_usage_observed,
+         totals: agent_usage_totals(state)
+       },
        running: running,
        retrying: retrying,
        blocked: blocked,
@@ -1591,35 +2013,28 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
-  def handle_call({:agent_control, :drain, _reconcile}, _from, state) do
-    with :ok <- File.mkdir_p(Config.agent_state_root()),
-         :ok <- File.write(drain_path(), "draining\n", [:sync]) do
-      {:reply, {:ok, %{draining: true, running: map_size(state.running)}}, %{state | draining: true}}
-    else
-      _ -> {:reply, {:error, :state_write_failed}, state}
+  def handle_call({:agent_control, action, reconcile}, from, state) do
+    case action do
+      :drain ->
+        with :ok <- File.mkdir_p(Config.agent_state_root()),
+             :ok <- File.write(drain_path(), "draining\n", [:sync]) do
+          state = cancel_readiness_control(%{state | draining: true})
+          {:reply, {:ok, %{draining: true, running: map_size(state.running)}}, state}
+        else
+          _ -> {:reply, {:error, :state_write_failed}, state}
+        end
+
+      action when action in [:resume, :recheck] ->
+        request_agent_resume(state, action, reconcile, from)
+
+      _ ->
+        {:reply, {:error, :invalid_action}, state}
     end
   end
-
-  def handle_call({:agent_control, action, _reconcile}, _from, state) when action in [:resume, :recheck] do
-    if map_size(state.running) == 0 do
-      with :ok <- remove_drain_marker("agent-upgrade-unresumed"),
-           :ok <- remove_drain_marker("agent-draining") do
-        {:reply, {:ok, %{draining: false}}, schedule_tick(%{state | draining: false}, 0)}
-      else
-        _ -> {:reply, {:error, :state_write_failed}, state}
-      end
-    else
-      {:reply, {:error, :workers_active}, state}
-    end
-  end
-
-  def handle_call({:agent_control, _action, _reconcile}, _from, state), do: {:reply, {:error, :invalid_action}, state}
 
   def handle_call(:request_refresh, _from, state) do
-    now_ms = System.monotonic_time(:millisecond)
-    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
-    coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    state = refresh_agent_readiness(state)
+    {state, coalesced} = queue_poll(state)
 
     {:reply,
      %{
@@ -1630,13 +2045,94 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  defp request_agent_resume(%{running: running} = state, _action, _reconcile, _from) when map_size(running) != 0,
+    do: {:reply, {:error, :workers_active}, state}
+
+  defp request_agent_resume(%{readiness_control: control} = state, _action, _reconcile, _from) when not is_nil(control),
+    do: {:reply, {:error, :readiness_check_in_progress}, state}
+
+  defp request_agent_resume(state, action, reconcile, from) do
+    if Config.coding_agent() == :codex do
+      resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
+    else
+      action = if action == :recheck and not is_nil(state.readiness_task), do: :recheck_after_readiness, else: action
+      readiness = %{ready: false, provider: "claude", code: "checking"}
+      state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
+      {:noreply, refresh_agent_readiness(state)}
+    end
+  end
+
+  defp resume_agent(%{running: running} = state, _action, _reconcile) when map_size(running) != 0,
+    do: {:reply, {:error, :workers_active}, state}
+
+  defp resume_agent(state, action, reconcile) do
+    readiness = state.readiness
+
+    with %{ready: true} <- readiness,
+         :ok <- recheck_agent_pause(action, readiness, reconcile, state),
+         admission = agent_admission(%{state | readiness: readiness, draining: false}),
+         :ok <- resume_admission(admission),
+         :ok <- remove_drain() do
+      expected_profile =
+        if action == :recheck do
+          readiness[:profile]
+        else
+          state.expected_profile || readiness[:profile]
+        end
+
+      state = %{
+        state
+        | draining: false,
+          readiness: readiness,
+          expected_profile: expected_profile
+      }
+
+      {state, _coalesced} = queue_poll(state)
+      {:reply, {:ok, %{draining: false, admission: admission}}, state}
+    else
+      %{ready: false} -> {:reply, {:error, readiness[:code] || "native_not_ready"}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp resume_admission(%{ready: true}), do: :ok
+  defp resume_admission(%{reason: "quota_exhausted"}), do: :ok
+  defp resume_admission(%{reason: reason}), do: {:error, reason}
+
+  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile, state) do
+    if quota_retry_delay(state, %{}) > 0,
+      do: {:error, :reset_not_due},
+      else: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
+  end
+
+  defp recheck_agent_pause(_action, _readiness, _reconcile, _state), do: :ok
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
+
+  defp remove_drain do
+    with :ok <- remove_drain_marker("agent-upgrade-unresumed"),
+         :ok <- remove_drain_marker("agent-draining") do
+      :ok
+    else
+      _ -> {:error, :state_write_failed}
+    end
+  end
 
   defp remove_drain_marker(name) do
     case File.rm(Path.join(Config.agent_state_root(), name)) do
       :ok -> :ok
       {:error, :enoent} -> :ok
       error -> error
+    end
+  end
+
+  defp agent_usage_totals(state) do
+    if Config.coding_agent() == :codex or state.agent_usage_observed, do: state.codex_totals
+  end
+
+  defp public_agent_pause(state) do
+    case current_agent_pause(state) do
+      :ready -> nil
+      {status, value} -> Map.take(value, ["kind", "resets_at", "probe", "code", "stage"]) |> Map.put("status", status)
     end
   end
 
@@ -1658,7 +2154,7 @@ defmodule SymphonyElixir.Orchestrator do
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     {
-      Map.merge(running_entry, %{
+      Map.merge(activity_entry(running_entry, update), %{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
@@ -1675,6 +2171,15 @@ defmodule SymphonyElixir.Orchestrator do
       token_delta
     }
   end
+
+  defp activity_entry(entry, %{provider: :claude} = update) do
+    # Liveness remains visible in last_codex_timestamp. Status/usage notifications
+    # cannot extend a Claude attempt without actual assistant activity.
+    timestamp = if update[:event] == :session_started or update[:productive] == true, do: update.timestamp, else: Map.get(entry, :last_agent_activity_at)
+    Map.put(entry, :last_agent_activity_at, timestamp)
+  end
+
+  defp activity_entry(entry, _update), do: entry
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
@@ -1718,6 +2223,14 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp queue_poll(state) do
+    now_ms = System.monotonic_time(:millisecond)
+    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
+    coalesced = state.poll_check_in_progress == true or already_due?
+    state = if coalesced, do: state, else: schedule_tick(state, 0)
+    {state, coalesced}
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
@@ -1768,15 +2281,13 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | codex_totals: codex_totals}
   end
 
-  defp record_session_completion_totals(state, _running_entry), do: state
-
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
 
     %{
       state
       | poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents
+        max_concurrent_agents: Config.max_concurrent_agents()
     }
   end
 

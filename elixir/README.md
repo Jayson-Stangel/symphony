@@ -1,10 +1,10 @@
 # Symphony Elixir
 
-The workflow template requires workers to publish generated validation artifacts
-to the Linear issue, link them in the existing workpad, and verify those links
-before handoff or completion. Evidence must come from actual validation of the
-stated revision and be inspected before it is cited. Existing project workflows
-must adopt `Evidence publication (required)` explicitly; updates preserve them.
+The workflow template asks workers to record actual validation results and durable
+acceptance evidence. Publish artifacts needed for review or explicitly required by
+the repository/ticket; temporary logs do not all require upload. Evidence must match
+the stated revision and remain accessible after workspace cleanup. Existing project
+workflows are preserved; adopt `Evidence for review` deliberately when changing policy.
 
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
@@ -33,11 +33,67 @@ Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud se
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
 
+Codex and Claude return tracker errors to the agent, following the original Codex
+recovery flow. The agent reads back uncertain writes before retrying and corrects
+rejected requests. Lost delivery, malformed turn frames, unexpected EOF and helper
+timeouts retry the affected attempt with backoff after bounded cleanup. Every
+initial/retry prompt requires tracker readback before uncertain writes; Symphony
+never automatically replays a mutation. Explicit input/permission and actual
+authentication/policy stops retain their behavior. Transient startup failure keeps
+its retry classification even when the bounded correlated cleanup acknowledgement
+is missing. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+use the same retry path. Only exact attributed historical pre-hello transport
+pauses are ignored read-only; ambiguous policy evidence remains gated. Captured
+sessions use the common adapter interrupt callback before
+Task retirement and workspace reconciliation. A callback error is logged and does
+not retain an eternal worker/claim. An unpublished session retains Task-only
+recovery without a native cleanup proof.
+Safe optional pause `code` and `stage` fields explain actual startup pauses across
+restarts. Legacy attributed cleanup stops are ignored read-only; untagged policy
+records retain the normal fresh healthy explicit recheck path. Old markers are
+ignored/preserved, and unknown historical causes are not reconstructed. Resume/recheck responses distinguish readiness,
+account pause, recheck refusal and state-write failure using bounded error codes.
+Recoverable native EOF, event failure, turn timeout and local transport failures
+carry fixed safe causes through existing worker and retry logs with issue/session
+correlation. They do not create a pause or change retry/cleanup policy. After a
+scheduler restart, transient turn causes depend on existing log retention; they
+are not new durable runner state. Unknown optional wire codes retain the generic
+protocol failure.
+The existing attempt Task owns normal cleanup once. Both successful and failed
+cleanup preserve the exact original result or exception; bounded diagnostics keep
+primary and cleanup causes separate with issue/session correlation. Claude fallback
+cleanup has a 10-second GNU timeout. Captured-session cancellation and owner-loss
+cleanup run on the existing task supervisor while the scheduler remains responsive.
+The issue keeps its claim and shared capacity until cleanup completes; tracker
+cancellation can supersede pending retry without duplicating cleanup. Captured
+killed/shutdown/epipe owner loss uses existing generation checks before retry. Cleanup uncertainty has no global
+readiness/dispatch latch and never requires container replacement by itself.
+Detached native/shell descendants may survive, particularly before ownership
+publication. This baseline recovery limit is explicit; no guardian/registry or
+new supervision architecture attempts to prove universal quiescence.
+
+Claude's excluded user/project/local settings and project MCP files do not block
+startup. Native auth commands use the same disabled settings sources as coding
+sessions; ignored user plugin inventory and home-config managed-settings do not
+block readiness. Canonical managed policy, remote cache and enterprise MCP config
+retain the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
+Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
+in the existing project credentials env file. Unselected ambient variables are
+stripped; tracker secrets and native inference/runtime selectors cannot be selected.
+See [project tool credentials](../docs/claude.md#project-tool-credentials).
+
+See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
+correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
+execution certainty. Existing issue-local legacy notices preserve old evidence
+without gating dispatch; no new intent files or automatic purge are introduced.
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
-Successful polls also clean retained local terminal workspaces that no longer have a
-running agent, such as a ticket completed after human review. Startup performs
-the same terminal cleanup; failed tracker reads preserve retained checkouts.
+Ordinary polls query active and blocked candidates without fetching completed history.
+Like upstream, startup attempts terminal cleanup once, when native readiness and
+drain state first permit admission. Unclaimed workspaces completed after human
+review remain until the next startup; failed tracker reads preserve checkouts.
+Readiness recovery and workflow reload do not repeat the startup sweep.
 
 The container launcher mounts persistent repository-specific volumes at
 `/workspaces` and `/var/lib/symphony`. Restart recovery uses the tracker and
@@ -50,9 +106,24 @@ and repair that checkout before removing the marker, or remove the partial
 checkout and marker to allow a fresh bootstrap. Arbitrary setup hooks are not
 automatically replayed against partial contents. Normal hook failures still
 remove new partial workspaces so a later attempt can retry.
+For local clone-only setup, prefer `workspace.clone_url: "https://github.com/owner/repo.git"`
+without `hooks.after_create`. Git clones into an exclusively owned random directory
+under `workspace.root/.symphony/clones`, then renames the completed checkout into
+place. Existing workspaces are reused, including edits. An interrupted unpublished
+clone does not block a fresh attempt. Its stage is retained rather than replayed or
+deleted; inspect and remove abandoned stages only when no bootstrap process is
+using them. Normal clone failures remove their own stage; timed-out clones retain
+it because a native child may still be exiting. Errors omit the URL and Git output
+to avoid exposing credentials. Git credentials should use the existing credential
+helper rather than embedded URL secrets. `hooks.timeout_ms` bounds waiting for Git.
+This option supports local workers only and cannot be combined with `after_create`;
+SSH and arbitrary setup hooks continue using their existing lifecycle. Existing
+workflows are not automatically migrated. Publication assumes one listener owns
+each workspace root, as with existing workspace creation.
+
 `.symphony` is reserved for local workspace metadata; an issue with that exact
-identifier receives a hashed workspace key. SSH deployments retain their existing
-startup and claimed-issue cleanup behavior without polling all terminal history.
+identifier receives a hashed workspace key. Both local and SSH deployments use startup and targeted claimed-issue cleanup
+without polling all terminal history.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
@@ -63,11 +134,11 @@ For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create
 tracker. These states must not overlap active or terminal states. Symphony polls them alongside
 active work and shows matching issues in the dashboard and JSON API, including after a restart.
 Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
-`Human Review` is reserved for validated work with an attached PR whose automated review has
-completed for the latest commit and whose actionable findings are resolved. Pending automated
-review and feedback fixes remain `In Progress` (or `Rework` during a rework attempt); green CI or
-an empty comment list alone does not authorize handoff. See the automated PR review gate in
-[`WORKFLOW.md`](WORKFLOW.md). Move an unblocked issue back to
+`Human Review` holds validated PRs awaiting human assessment. Record available feedback
+and pending external reviews, then end the worker turn. Required repository checks,
+reviews and human approval remain merge obligations; optional bot latency is not a
+reason to occupy a coding worker. See Review handoff in [`WORKFLOW.md`](WORKFLOW.md).
+Move an unblocked issue back to
 `Todo`, `In Progress`, or `Rework` to resume it. Restored rows have no session history or known
 blocked timestamp. `blocked_states` defaults to `[]`, can be disabled with `[]`, and reloads dynamically.
 Tracker read failures preserve the last successful blocked view until polling recovers.
@@ -190,6 +261,26 @@ Notes:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
+- Optional `codex.model` and `codex.reasoning_effort` select a model and reasoning
+  level for new sessions. For example:
+
+  ```yaml
+  codex:
+    command: codex app-server
+    model: gpt-5.5
+    reasoning_effort: xhigh
+  ```
+
+  Explicit fields override native command/config defaults for the new thread.
+  Omit them or use `null` to preserve the runner's defaults and existing command
+  flags. Model IDs and effort names are nonblank strings, validated for support
+  by the installed Codex app-server and account; available effort levels vary
+  by model and client (for example `low`, `medium`, `high`, `xhigh`, `max`, `ultra`).
+  Symphony sends `model` and `config.model_reasoning_effort` on `thread/start`.
+  [Codex configuration reference](https://developers.openai.com/codex/config-reference)
+  and [app-server protocol](https://developers.openai.com/codex/app-server) define
+  the native contract. Reload applies changes to new sessions; existing threads
+  retain their selected model and reasoning effort.
 - `codex.turn_timeout_ms` is the maximum silence interval while a turn is streaming. Each
   app-server update resets it; it is not a total turn runtime cap.
 - Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
@@ -200,8 +291,14 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+  Reaching this per-attempt allowance closes the native session normally and schedules the existing
+  continuation check in the retained workspace; it does not block the issue. Both providers use this
+  behavior. Claude helper replay history uses this same captured attempt allowance, with no
+  separate input ceiling; workflow reloads apply to the next attempt. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
+  session; it does not permanently block active work or reuse the exhausted session. Tracker state
+  and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
@@ -210,6 +307,9 @@ Notes:
 - `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
   run. When the count reaches this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.
+  Generated and sample workflows leave both live circuit breakers disabled. Existing project
+  workflows keep any explicitly configured limits; remove them or set them to `0` to use ordinary
+  continuation behavior. Symphony does not rewrite existing project policy on update.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -347,6 +447,31 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+`/api/v1/state` also exposes `agent.execution.mode`, `requested` and `effective`
+for the selected runtime's execution environment. These show workspace root,
+server host, SSH host count and categorical Codex approval/sandbox settings.
+Arbitrary policy-map contents and tracker credentials are excluded; custom values
+are represented as `custom`, and an implicit turn sandbox as `default`.
+Container settings retain `/workspaces`, `0.0.0.0` and the existing Codex
+container sandbox/approval bindings. Requested nonempty `worker.ssh_hosts` is
+unsupported inside a container and is rejected before transformation for either
+provider. Native Codex SSH support is unchanged; native Claude SSH remains
+unsupported. A rejected reload retains the previous effective settings and their
+requested/effective snapshot together. Container bindings are also logged on
+successful settings load. This metadata is computed internally, not a workflow
+option or a second configuration store.
+
+Both the web and terminal dashboards show the selected coding agent and model
+near the top, including while idle. Claude displays its configured model alias
+or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.
+Codex displays `codex.model` when explicitly configured; otherwise it displays
+the model returned by its most recent session startup, labelled “last session”.
+Before either is available it shows “Not yet reported”. Codex reasoning shows
+`codex.reasoning_effort` or “Runner default”; Symphony does not guess values from
+command flags or native account configuration.
+The JSON state API includes `agent.model`, `agent.model_source` (`configured`
+or `last_session`), and configured `agent.effort` (null for native defaults). Reported Codex identity resets when the runner restarts.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
@@ -447,3 +572,163 @@ you.
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
+
+## Selecting Claude
+
+`bin/symphony --agent codex|claude` selects one startup-owned coding provider;
+Codex is the default. Claude runs only in its qualified nonroot container image.
+Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
+accepts bounded nonblank model identifiers unchanged; the native runtime validates
+support rather than a second model allowlist. Optional
+`claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
+omit it for the model default. Both dashboards show the configured reasoning
+level. See [the Claude runner contract](../docs/claude.md)
+for native sign-in, closed `claude` settings, shared scheduler concurrency, quota cooldowns,
+tracker-side-effect recovery and updater-owned provider/image transitions.
+SDK/CLI pins have one owner in `runner/claude/package.json` and its lock, also
+used by the qualification lab. Node verifies the installed runtime. Elixir checks
+protocol/policy compatibility and bounded version diagnostics without duplicating
+dependency pins; compatible upgrades preserve the same protocol contract.
+The state API adds an `agent` object while retaining existing token fields.
+Model-free Claude readiness runs in one supervised task at startup, on explicit
+refresh/control, and every 30 seconds after completion. Failed observations recover
+automatically after repair; they are not persisted as account pauses. Snapshots,
+drain and worker exits remain responsive during native checks.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress. GNU timeout bounds
+the external check group to 35 seconds, including after task/scheduler loss; an old
+OS check may briefly overlap restart until that deadline. Legacy runtime pauses,
+quota cooldowns, drain and cleanup safety remain enforced. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is ignored read-only as a proven pre-input observation. Profiled auth, policy, malformed and diagnostic-bearing legacy files retain their existing recovery requirements.
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission validates the current native login without a billing attestation.
+New native auth/policy failures retain their causes through ordinary retry, without
+new durable stops. Only reliable quota resets are persisted by the scheduler;
+write failures retain the native cause and storage repair diagnostic in existing
+retry metadata, which enforces the running-process cooldown. Unwritten resets
+cannot survive restart. See the [recovery contract](../docs/claude.md) for limits.
+
+Native Claude Code owns organizational settings and their permission/routing behavior;
+canonical files, managed drop-ins and remote policy are not Symphony file-existence
+gates. Explicit user/project/local source isolation and strict MCP remain enabled.
+Native subscription checks do not guarantee request endpoints or billing, and Symphony
+configures no API-key/cloud fallback. Codex keeps its existing native policy behavior.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
+
+Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
+`provider`, `profile`, and optional `retry_at`), including drain and account pauses.
+Resume refuses retained Claude authentication/policy pauses; use explicit recheck
+after repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+ A retained quota cooldown resumes polling with `admission.ready=false`
+and its reset time. The updater reports this as intentionally paused, never as
+operational. Codex ignores retained Claude pause files and leaves their evidence
+untouched when switching providers.
+
+Development updater retries refresh stale pending images from the current checkout,
+preserving the rollback container until the replacement passes readiness. See
+[development updates](../docs/development.md#refresh-the-development-build).
+
+Project configuration, container and transition names use the same normalized repository hash
+identity already used by retained storage volumes. Basename-era installations migrate only
+through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
+namespace). Migration preserves volume names, credential bytes, workflow files and pending
+rollback evidence; it requires an owned retained container and refuses mixed or foreign
+resources. See the [installation migration procedure](../README.md) for credentials without
+verifiable ownership. Codex native login remains namespace-shared; Claude login stays scoped
+to the unchanged repository storage identity.
+
+The journal retains transition intent and rollback evidence; selected runner
+metadata is written atomically from the verified container during completion
+and recovery, including an interrupted container creation or rollback.
+Retrying an update starts an exactly verified stopped candidate after confirming the
+retained source is inactive and matches the journal. It retains the same image, mounts,
+native login and persistent markers, and must pass current admission before completion.
+Official runner mutations and updater controls share runner ownership even across
+configuration overrides; competing mutations refuse while status and logs remain readable.
+Before starting a target or stopped rollback source, the updater restores exclusive
+workspace/state volume ownership to Claude UID11001 or Codex UID0. Ownership-only
+rollback retains cleanup uncertainty and the existing drain markers.
+
+Development verification now also requires Node 24.18.0 (included in mise.toml).
+`make setup` installs only the Elixir dependencies. For Claude development, run
+`make claude-setup` to install the locked helper dependencies without install scripts.
+`make all` installs those optional dependencies explicitly and runs the full quality
+gate, including credential-free Node protocol/process tests. Native process
+ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
+
+Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
+The agent owns outcome reconciliation. Legacy unresolved-call files remain evidence
+for the matching issue's recovery prompt, without blocking dispatch. Authentication and shared policy
+failures still pause the runner. Quota exhaustion uses existing retries with bounded
+backoff and respects reliable reset times; it recovers without manual recheck. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+and [recovery](../docs/claude.md#pauses-and-recovery).
+
+## Claude token observability
+
+Claude reports input tokens during assistant steps, including cached input;
+output tokens update at turn completion. Cumulative result totals reconcile
+live counts without counting earlier turns twice. The dashboard shows
+`unavailable` until usage is reported. See [the Claude runtime contract](../docs/claude.md#runtime-contract).
+
+Claude progress displays fixed, privacy-preserving activity descriptions in both
+dashboards, with a waiting fallback when details are missing. Liveness timestamps
+can update without resetting stall detection; only new assistant content or
+session startup advances Claude's activity clock. See
+[progress and stall detection](../docs/claude.md#progress-and-stall-detection).
+
+Credential-free Linux packaging verification runs in CI using the production Claude
+image and entrypoint. To repeat it locally with Docker:
+
+```bash
+docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
+bash runner/claude/smoke.sh symphony-claude-smoke
+```
+
+The smoke uses a disposable nonroot container, empty memory tracker and disabled
+network. It checks HTTP state with the expected missing-auth gate, Linux owned
+subprocess cleanup, and TERM shutdown without a forced kill. The current CLI
+returns exit 1 for supervisor shutdown; the smoke accepts that convention or exit 0.
+It mounts no host credentials and makes no model requests. This proves packaging and process behavior; authenticated native
+sessions and updater transition/rollback acceptance require separate evidence.
+
+Both coding providers use the existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
+one-worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured parallel work immediately, without a model-turn lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only; historical auth/policy pauses still require explicit recheck; new native failures use ordinary scheduler backoff.
+Legacy positive `claude.max_concurrent_agents` values remain
+accepted but are ignored; migrate the desired limit into the `agent` section.
+Changing limits affects new dispatch; existing sessions keep their ownership and
+may temporarily exceed a reduced limit until they finish. The state API reports
+the effective global setting as `agent.max_concurrent_agents`.
+
+Installed updater recovery follows the launcher contract in the root README. A clean local
+`main` must track a configured remote's `main`; `--config-dir` also selects derived runner
+storage unless `SYMPHONY_RUNNER_HOME` is explicit. Transition exclusion uses a stable advisory
+regular file at the original lock pathname, excluding older mkdir-based launchers. Process
+exit releases its lock, including crashes. Unknown legacy ownerless lock
+directories require operator inspection; a proven-dead legacy owner can be retired on retry.
+
+Every installed update repeats idempotent setup, even when source is already current, so
+retry completes an interrupted setup. Source/runner updates reload the newly installed
+launcher against the exact fetched revision before transitioning; completion never refetches.
+
+Installed source updates hold checkout ownership in Git metadata across fetch, exec handoff,
+installation, setup and transition. The inherited source descriptor remains separate from
+per-project transition ownership; competing updated updaters refuse before changing source.
+Already-running older launchers and manual Git operations do not honor this ownership.
+Finish older calls before source-only adoption. Development-runner operations keep their
+existing isolated-checkout and per-project behavior.

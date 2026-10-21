@@ -261,7 +261,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     state_payload = json_response(conn, 200)
 
     assert state_payload == %{
-             "agent" => nil,
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
              "running" => [
@@ -464,9 +463,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".runner-state-current"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-current"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .runner-state-offline"
     assert dashboard_css =~ "text-decoration-thickness: 1px"
 
     favicon_conn = get(build_conn(), "/favicon.png")
@@ -514,7 +513,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = static_snapshot()
+    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", effort: nil, model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil})
 
     {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
@@ -532,6 +531,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert has_element?(view, "#runner-identity", "Agent: Claude Code")
+    assert has_element?(view, "#runner-identity", "Model: sonnet")
+    assert has_element?(view, ".runner-effort", "Model default")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == nil
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -542,16 +545,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
+    refute has_element?(view, ".status-badge-live")
+    assert has_element?(view, "#runner-identity .runner-state-offline", "Offline")
     assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Agent update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert has_element?(view, "#runner-identity .runner-state-current[data-ready=true]", "Ready")
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -585,7 +587,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       ])
 
     :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, updated_snapshot)
+      Keyword.put(state, :snapshot, put_in(updated_snapshot.agent.effort, "high"))
     end)
 
     StatusDashboard.notify_update()
@@ -595,6 +597,47 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     refute render(view) =~ "javascript:alert"
+    assert has_element?(view, ".runner-effort", "high")
+    assert has_element?(view, ".runner-effort", "configured")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == "high"
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: nil, model_source: "last_session"}))
+    end)
+
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "#runner-identity", "Agent: Codex")
+    assert has_element?(view, ".runner-effort", "Runner default")
+    assert has_element?(view, "#runner-identity", "Not yet reported")
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, Map.put(snapshot, :agent, %{snapshot.agent | provider: :codex, model: "gpt-example", effort: "xhigh", model_source: "last_session"}))
+    end)
+
+    send(view.pid, :observability_updated)
+    assert has_element?(view, "#runner-identity", "Model: gpt-example")
+    assert has_element?(view, "#runner-identity", "last session")
+    assert has_element?(view, ".runner-effort", "xhigh")
+    assert json_response(get(build_conn(), "/api/v1/state"), 200)["agent"]["effort"] == "xhigh"
+  end
+
+  test "Claude token cells stay unavailable until reported usage reaches the dashboard" do
+    name = Module.concat(__MODULE__, :ClaudeUsageOrchestrator)
+    snapshot = Map.put(static_snapshot(), :agent, %{provider: :claude, model: "sonnet", model_source: "configured", readiness: %{ready: true}, draining: false, pause: nil, usage_available: false})
+    {:ok, pid} = StaticOrchestrator.start_link(name: name, snapshot: snapshot)
+    start_test_endpoint(orchestrator: name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+    assert has_element?(view, ".metric-grid", "In unavailable / Out unavailable")
+    assert has_element?(view, ".data-table-running .token-stack", "Total: unavailable")
+
+    :sys.replace_state(pid, fn state ->
+      Keyword.put(state, :snapshot, put_in(snapshot, [:agent, :usage_available], true))
+    end)
+
+    send(view.pid, :observability_updated)
+    refute render(view) =~ "Total: unavailable"
+    assert has_element?(view, ".data-table-running .token-stack", "Total:")
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do

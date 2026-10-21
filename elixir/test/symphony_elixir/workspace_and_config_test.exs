@@ -22,6 +22,95 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
   end
 
+  test "container bindings expose safe requested and effective values for both providers" do
+    previous_container = System.get_env("SYMPHONY_CONTAINERIZED")
+    previous_agent = Application.fetch_env(:symphony_elixir, :coding_agent)
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_CONTAINERIZED", previous_container)
+
+      case previous_agent do
+        {:ok, agent} -> Application.put_env(:symphony_elixir, :coding_agent, agent)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
+    config = %{
+      "tracker" => %{"kind" => "memory", "api_key" => "secret-canary"},
+      "workspace" => %{"root" => "/requested/workspaces"},
+      "server" => %{"host" => "127.0.0.2"},
+      "codex" => %{
+        "approval_policy" => %{"arbitrary" => "secret-canary"},
+        "thread_sandbox" => "secret-canary",
+        "turn_sandbox_policy" => %{"type" => "workspaceWrite", "arbitrary" => "secret-canary"}
+      }
+    }
+
+    for provider <- [:codex, :claude] do
+      Application.put_env(:symphony_elixir, :coding_agent, provider)
+      System.delete_env("SYMPHONY_CONTAINERIZED")
+      assert {:ok, native} = Schema.parse(config)
+      assert native.execution.mode == "native"
+      assert native.execution.requested == native.execution.effective
+      assert native.worker.ssh_hosts == []
+      refute inspect(native.execution) =~ "secret-canary"
+
+      System.put_env("SYMPHONY_CONTAINERIZED", "1")
+      assert {:ok, settings} = Schema.parse(config)
+      assert settings.execution.mode == "container"
+      assert settings.execution.requested.workspace_root == "/requested/workspaces"
+      assert settings.execution.effective.workspace_root == "/workspaces"
+      assert settings.execution.requested.server_host == "127.0.0.2"
+      assert settings.execution.effective.server_host == "0.0.0.0"
+      assert settings.execution.requested.codex.approval_policy == "custom"
+      assert settings.execution.requested.codex.thread_sandbox == "custom"
+      assert settings.execution.requested.codex.turn_sandbox_type == "workspaceWrite"
+
+      assert settings.execution.effective.codex == %{
+               approval_policy: "never",
+               thread_sandbox: "danger-full-access",
+               turn_sandbox_type: "dangerFullAccess"
+             }
+
+      refute inspect(settings.execution) =~ "secret-canary"
+      assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+
+      requested_ssh = Map.put(config, "worker", %{"ssh_hosts" => ["ssh.example"]})
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(requested_ssh)
+      assert message =~ "ssh_hosts are unsupported in container execution"
+      System.delete_env("SYMPHONY_CONTAINERIZED")
+      assert {:ok, native_ssh} = Schema.parse(requested_ssh)
+      assert native_ssh.worker.ssh_hosts == ["ssh.example"]
+    end
+  end
+
+  test "rejected container reload keeps the effective settings and visible bindings together" do
+    previous = System.get_env("SYMPHONY_CONTAINERIZED")
+    on_exit(fn -> restore_env("SYMPHONY_CONTAINERIZED", previous) end)
+    System.put_env("SYMPHONY_CONTAINERIZED", "1")
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: "/requested/first")
+    assert :ok = WorkflowStore.force_reload()
+    before = Config.settings!()
+    assert before.execution.requested.workspace_root == "/requested/first"
+    assert before.workspace.root == "/workspaces"
+    name = Module.concat(__MODULE__, :ContainerBindings)
+    start_supervised!({Orchestrator, name: name})
+    payload = SymphonyElixirWeb.Presenter.state_payload(name, 5_000)
+    assert payload.agent.execution == before.execution
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: "/requested/rejected", worker_ssh_hosts: ["ssh.example"])
+    assert {:error, {:invalid_workflow_config, _}} = WorkflowStore.force_reload()
+    after_rejection = Config.settings!()
+    assert after_rejection.execution == before.execution
+    assert after_rejection.workspace.root == before.workspace.root
+    assert SymphonyElixirWeb.Presenter.state_payload(name, 5_000).agent.execution == before.execution
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: "/requested/accepted")
+    assert :ok = WorkflowStore.force_reload()
+    assert Config.settings!().execution.requested.workspace_root == "/requested/accepted"
+    assert Config.settings!().workspace.root == "/workspaces"
+  end
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
@@ -781,6 +870,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "provider-marked blocked issue is not dispatch-eligible" do
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -804,6 +894,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "dev@example.com")
 
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -828,6 +919,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
@@ -850,6 +942,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "provider-marked ready issue remains dispatch-eligible" do
     state = %Orchestrator.State{
+      readiness: SymphonyElixir.AgentReadiness.check(),
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),

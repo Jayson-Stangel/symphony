@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.LinearTransportTest do
   use SymphonyElixir.TestSupport
-  alias SymphonyElixir.Linear.AgentTool
+  alias SymphonyElixir.{AgentPause, CodingAgent.Codex, Linear.AgentTool}
 
   setup do
     root = Path.join(System.tmp_dir!(), "symphony-linear-transport-#{System.unique_integer([:positive])}")
@@ -21,64 +21,87 @@ defmodule SymphonyElixir.LinearTransportTest do
     %{root: root, workspace: workspace, issue: %Issue{id: "linear-issue", identifier: "PROBE-1", title: "Linear outcome"}}
   end
 
-  test "Codex receives Linear mutation failures once per call without an account pause", ctx do
-    query = "mutation { attachmentLinkGitHubPR(issueId: \"one\", url: \"https://github.com/example/repo/pull/132\") { success } }"
-
-    for mode <- ["startup", "streaming"] do
+  test "Codex receives correctable read and mutation request errors in startup and streaming paths", ctx do
+    for mode <- ["startup", "streaming"], query <- ["query { viewer { id } }", "mutation { rejected } "] do
       trace = configure_peer(ctx, mode, query)
       Process.put(:linear_calls, 0)
 
-      executor = fn "linear_graphql", args ->
+      executor = fn "linear_graphql", arguments ->
         count = Process.get(:linear_calls)
         Process.put(:linear_calls, count + 1)
+        response = if count == 0, do: %{"errors" => [%{"message" => "Unknown field rejected"}]}, else: %{"data" => %{"issue" => %{"id" => "one", "title" => "probe"}}}
+        AgentTool.execute("linear_graphql", arguments, linear_client: fn _, _, _ -> {:ok, response} end)
+      end
 
+      assert {:ok, _} = AppServer.run(ctx.workspace, "probe", ctx.issue, tool_executor: executor)
+      replies = trace |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1) |> Enum.filter(&(&1["id"] in [101, 102]))
+      assert [%{"result" => %{"success" => false}}, %{"result" => %{"success" => true}}] = replies
+      assert Enum.all?(replies, &(Map.keys(&1["result"]) |> Enum.sort() == ["contentItems", "output", "success"]))
+      assert :ready = AgentPause.current()
+    end
+  end
+
+  test "Codex sees uncertain write errors and reads back in the same turn", ctx do
+    for mode <- ["startup", "streaming"] do
+      trace = configure_peer(ctx, mode, "mutation { issueUpdate(id: \"one\", input: {title: \"probe\"}) {success} }")
+
+      executor = fn "linear_graphql", args ->
         response =
-          if count == 0 do
-            %{"data" => nil, "errors" => [%{"message" => "invalid attachment", "extensions" => %{"code" => "INPUT_ERROR"}}]}
-          else
-            %{"data" => %{"attachmentLinkGitHubPR" => %{"success" => true}}}
-          end
+          if String.starts_with?(args["query"], "mutation"),
+            do: %{"data" => %{"issueUpdate" => nil}, "errors" => [%{"message" => "partial write"}]},
+            else: %{"data" => %{"issue" => %{"id" => "one", "title" => "probe"}}}
 
         AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, response} end)
       end
 
-      assert {:ok, session} = AppServer.start_session(ctx.workspace)
-
-      try do
-        assert {:ok, _} = AppServer.run_turn(session, "probe", ctx.issue, tool_executor: executor)
-      after
-        AppServer.stop_session(session)
-      end
-
+      assert {:ok, _} = AppServer.run(ctx.workspace, "probe", ctx.issue, tool_executor: executor)
       replies = trace |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1) |> Enum.filter(&(&1["id"] in [101, 102]))
-      assert [%{"result" => %{"success" => false} = rejected}, %{"result" => %{"success" => true}}] = replies
-      assert Jason.decode!(rejected["output"])["errors"] |> hd() |> get_in(["extensions", "code"]) == "INPUT_ERROR"
-      assert Enum.all?(replies, &(Map.keys(&1["result"]) |> Enum.sort() == ["contentItems", "output", "success"]))
-      assert Process.get(:linear_calls) == 2
-      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+      assert [%{"result" => %{"success" => false, "output" => error}}, %{"result" => %{"success" => true}}] = replies
+      assert error =~ "partial write"
+      assert %{"errors" => [%{"message" => "partial write"}]} = Jason.decode!(error)
+      assert :ready = AgentPause.current()
       assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
     end
   end
 
-  test "Codex can run with retained legacy pause metadata without deleting reconciliation evidence", ctx do
-    configure_peer(ctx, "streaming", "query { viewer { id } }")
-    marker = Path.join(ctx.root, "state/claude-tools/legacy-write.json")
-    File.mkdir_p!(Path.dirname(marker))
-    original = Jason.encode!(%{version: 1, issue: ctx.issue.id, tool: "linear_graphql"})
-    File.write!(marker, original)
-    File.write!(Path.join(ctx.root, "state/claude-pause.json"), Jason.encode!(%{kind: "tool_outcome_uncertain"}))
+  test "Codex lost reply blocks only the affected issue", ctx do
+    configure_peer(ctx, "streaming", "mutation { write }")
     assert {:ok, session} = AppServer.start_session(ctx.workspace)
 
-    try do
-      executor = fn "linear_graphql", args ->
-        AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, %{"data" => %{}}} end)
-      end
+    executor = fn "linear_graphql", args ->
+      result = AgentTool.execute("linear_graphql", args, linear_client: fn _, _, _ -> {:ok, %{"data" => %{}}} end)
+      Port.close(session.port)
+      result
+    end
 
-      assert {:ok, _} = AppServer.run_turn(session, "probe", ctx.issue, tool_executor: executor)
-      assert File.read!(marker) == original
-      assert Jason.decode!(File.read!(Path.join(ctx.root, "state/claude-pause.json")))["kind"] == "tool_outcome_uncertain"
+    try do
+      assert {:error, {:agent_blocked, :tracker_delivery_failed}} = Codex.run_turn(session, "probe", ctx.issue, tool_executor: executor)
+      assert :ready = AgentPause.current()
+      other_issue = %{ctx.issue | id: "other-issue", identifier: "PROBE-2"}
+      configure_peer(ctx, "streaming", "query { viewer { id } }")
+      assert {:ok, _} = AppServer.run(ctx.workspace, "other issue", other_issue, tool_executor: fn _, _ -> %{"success" => true, "output" => "readback"} end)
     after
       AppServer.stop_session(session)
+    end
+  end
+
+  test "Codex turns ignore retained Claude auth and future quota pauses without changing evidence", ctx do
+    for kind <- [:auth_required, :quota_exhausted] do
+      File.rm_rf!(Path.join(ctx.root, "state"))
+      path = Path.join(ctx.root, "state/claude-pause.json")
+      evidence = Jason.encode!(%{version: 1, kind: kind, profile: String.duplicate("a", 64), phase: "waiting", resets_at: System.system_time(:second) + 600})
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, evidence)
+      configure_peer(ctx, "streaming", "query { viewer { id } }")
+      assert {:ok, session} = Codex.start_session(ctx.workspace, [])
+
+      try do
+        assert {:ok, _} = Codex.run_turn(session, "probe", ctx.issue, tool_executor: fn _, _ -> %{"success" => true, "output" => "readback"} end)
+      after
+        Codex.stop_session(session)
+      end
+
+      assert File.read!(path) == evidence
     end
   end
 

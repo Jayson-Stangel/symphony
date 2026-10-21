@@ -1,0 +1,34 @@
+name: claude-smoke
+
+on:
+  pull_request:
+    paths:
+      - scripts/symphony
+      - runner/**
+      - elixir/**
+      - .codex/skills/**
+      - .github/workflows/claude-smoke.yml
+  push:
+    branches: [dev, main]
+    paths:
+      - scripts/symphony
+      - runner/**
+      - elixir/**
+      - .codex/skills/**
+      - .github/workflows/claude-smoke.yml
+
+jobs:
+  listener-and-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build production Claude image
+        run: docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
+      - name: Verify credential-free listener and owned subprocess cleanup
+        run: bash runner/claude/smoke.sh symphony-claude-smoke
+      - name: Build production Codex image using shared layers
+        run: docker build --target codex -f runner/Dockerfile -t symphony-codex-smoke .
+      - name: Verify isolated updater, rollback and project identity lifecycle
+        run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke

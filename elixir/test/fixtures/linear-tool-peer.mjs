@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 const [mode, query, trace] = process.argv.slice(2);
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 let calls = 0;
-const call = () => send({ id: ++calls + 100, method: 'item/tool/call', params: { tool: 'linear_graphql', arguments: { query } } });
+const call = () => send({ id: ++calls + 100, method: 'item/tool/call', params: { tool: 'linear_graphql', arguments: { query: calls === 1 ? query : 'query { issue(id: "one") { id title } }' } } });
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   appendFileSync(trace, line + '\n');

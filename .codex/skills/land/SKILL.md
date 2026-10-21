@@ -1,228 +1,77 @@
 ---
 name: symphony-land
 description:
-  Land a pull request for a Symphony-managed task by monitoring conflicts,
-  resolving them, waiting for checks, and squash-merging when green.
+  Land an approved Symphony-managed pull request after verifying the target
+  repository's required validation and reviews.
 ---
 
 # Land
 
-## Goals
+Use this skill when the operator approves merging. Follow the target repository's
+AGENTS.md, ticket and approval boundaries; approval for one branch or environment
+does not authorize another.
 
-- Ensure the PR is conflict-free with main.
-- Keep CI green and fix failures when they occur.
-- Squash-merge the PR once checks pass.
-- Do not yield to the user until the PR is merged; keep the watcher loop running
-  unless blocked.
-- No need to delete remote branches after merge; the repo auto-deletes head
-  branches.
+## Verify the current PR
 
-## Preconditions
+1. Read the issue, its workpad and current repository instructions. Recover the
+   pending merge obligations recorded at handoff: required checks, required
+   reviewers, acceptance evidence and operator approval. Reconcile them with the
+   repository's current requirements rather than treating the workpad as authority
+   to waive a requirement.
+2. Locate the PR and inspect its current head, actual base branch, mergeability,
+   checks, review requests, submitted reviews and available feedback. Use the
+   actual base branch for synchronization; do not assume main.
+3. If changes or conflict resolution are necessary, preserve existing work,
+   follow the repository's commit/push instructions and rerun affected required
+   validation. Reassess evidence against the resulting head.
+4. Address actionable review feedback or explicitly explain a justified deferral
+   within the authorized scope. Unresolved correctness findings prevent merge.
 
-- `gh` CLI is authenticated.
-- You are on the PR branch with a clean working tree.
+Useful snapshots (these do not independently establish permission to merge):
 
-## Steps
-
-1. Locate the PR for the current branch.
-2. Confirm the target repository's required validation is green locally before
-   any push. Discover commands and tools from its instructions and ticket;
-   Symphony's Elixir build and PR-body checks are not shared prerequisites.
-3. If the working tree has uncommitted changes, commit with `symphony-commit`
-   and push with `symphony-push` before proceeding.
-4. Check mergeability and conflicts against main.
-5. If conflicts exist, use `symphony-pull` to fetch/merge `origin/main` and
-   resolve conflicts, then use `symphony-push` to publish the updated branch.
-6. Ensure Codex review comments (if present) are acknowledged and any required
-   fixes are handled before merging.
-7. Watch checks until complete.
-8. If checks fail, pull logs, fix the issue, commit with `symphony-commit`,
-   push with `symphony-push`, and re-run checks.
-9. When all checks are green and review feedback is addressed, squash-merge and
-   delete the branch using the PR title/body for the merge subject/body.
-10. **Context guard:** Before implementing review feedback, confirm it does not
-    conflict with the user’s stated intent or task context. If it conflicts,
-    respond inline with a justification and ask the user before changing code.
-11. **Pushback template:** When disagreeing, reply inline with: acknowledge +
-    rationale + offer alternative.
-12. **Ambiguity gate:** When ambiguity blocks progress, use the clarification
-    flow (assign PR to current GH user, mention them, wait for response). Do not
-    implement until ambiguity is resolved.
-    - If you are confident you know better than the reviewer, you may proceed
-      without asking the user, but reply inline with your rationale.
-13. **Per-comment mode:** For each review comment, choose one of: accept,
-    clarify, or push back. Reply inline (or in the issue thread for Codex
-    reviews) stating the mode before changing code.
-14. **Reply before change:** Always respond with intended action before pushing
-    code changes (inline for review comments, issue thread for Codex reviews).
-
-## Commands
-
-```
-# Ensure branch and PR context
-branch=$(git branch --show-current)
-pr_number=$(gh pr view --json number -q .number)
-pr_title=$(gh pr view --json title -q .title)
-pr_body=$(gh pr view --json body -q .body)
-
-# Check mergeability and conflicts
-mergeable=$(gh pr view --json mergeable -q .mergeable)
-
-if [ "$mergeable" = "CONFLICTING" ]; then
-  # Run symphony-pull to handle fetch + merge + conflict resolution.
-  # Then run symphony-push to publish the updated branch.
-fi
-
-# Preferred: use the Async Watch Helper below. The manual loop is a fallback
-# when Python cannot run or the helper script is unavailable.
-# Wait for review feedback: Codex reviews arrive as issue comments that start
-# with "## Codex Review — <persona>". Treat them like reviewer feedback: reply
-# with a `[codex]` issue comment acknowledging the findings and whether you're
-# addressing or deferring them.
-while true; do
-  gh api repos/{owner}/{repo}/issues/"$pr_number"/comments \
-    --jq '.[] | select(.body | startswith("## Codex Review")) | .id' | rg -q '.' \
-    && break
-  sleep 10
-done
-
-# Watch checks
-if ! gh pr checks --watch; then
-  gh pr checks
-  # Identify failing run and inspect logs
-  # gh run list --branch "$branch"
-  # gh run view <run-id> --log
-  exit 1
-fi
-
-# Squash-merge (remote branches auto-delete on merge in this repo)
-gh pr merge --squash --subject "$pr_title" --body "$pr_body"
+```bash
+gh pr view --json number,url,baseRefName,headRefOid,mergeable,reviewDecision,reviewRequests,reviews,statusCheckRollup
+gh pr checks
+gh pr checks --required
+gh api repos/{owner}/{repo}/pulls/{number}/comments
 ```
 
-## Async Watch Helper
+`--required` reports GitHub branch-protection requirements only. Also verify the
+commands/checks required by AGENTS.md and the ticket, even when GitHub lists no
+required checks. If requirement discovery fails, record the missing fact and
+return to Human Review rather than assuming there are no obligations. Inspect the
+relevant run and its head revision; an empty list is neither a failure nor proof that repository-required validation passed.
+Optional checks may be reported without delaying handoff or merge unless their
+results reveal an unresolved correctness problem.
 
-Preferred: use the asyncio watcher to monitor review comments, CI, and head
-updates in parallel:
+## Enforce pending review obligations
 
-```
-skill_dir="${SYMPHONY_SKILLS_ROOT:-.codex/skills}/symphony-land"
-[ -d "$skill_dir" ] || skill_dir="${CODEX_HOME:-$HOME/.codex}/skills/symphony-land"
-python3 "$skill_dir/land_watch.py"
-```
+For each required reviewer or review process, verify that the required review
+actually completed and its feedback was addressed on the applicable head. A
+pending review request, empty comments, or GitHub's overall review decision does
+not satisfy a separately required review. Follow the repository's policy on
+whether an earlier review remains valid after a change. Do not require every
+installed bot to review unless the repository or ticket requires it.
 
-Exit codes:
+Moving the issue to Merging supplies the operator's merge approval only; it does
+not waive required external reviews or validation. If an external required check
+or review remains pending, record the exact obligation, source of the requirement
+and current head in the existing workpad, return the issue to Human Review and
+end the turn. The operator can resume Merging when the obligation is satisfied.
+Use Blocked for an actual external failure requiring intervention, not ordinary
+review or CI latency. Do not occupy a worker with a polling loop or use the legacy
+all-check `land_watch.py` helper as a merge gate.
 
-- 2: Review comments detected (address feedback)
-- 3: CI checks failed
-- 4: PR head updated (autofix commit detected)
+## Merge and verify
 
-## Failure Handling
+Immediately before merging, refresh the PR head and required evidence. If the
+head changed, reassess validation and reviews; do not merge using stale evidence.
+Merge only when required checks and reviews are satisfied, actionable feedback
+is resolved, the PR is conflict-free and the exact action is authorized. Respect
+repository rules on merge method and branch deletion. Do not enable auto-merge
+as a substitute for requirements that GitHub branch protection does not enforce.
 
-- If checks fail, pull details with `gh pr checks` and `gh run view --log`, then
-  fix locally, commit with `symphony-commit`, push with `symphony-push`, and
-  re-run the watch.
-- Use judgment to identify flaky failures. If a failure is a flake (e.g., a
-  timeout on only one platform), you may proceed without fixing it.
-- If CI pushes an auto-fix commit (authored by GitHub Actions), it does not
-  trigger a fresh CI run. Detect the updated PR head, pull locally, merge
-  `origin/main` if needed, add a real author commit, and force-push to retrigger
-  CI, then restart the checks loop.
-- If all jobs fail with corrupted pnpm lockfile errors on the merge commit, the
-  remediation is to fetch latest `origin/main`, merge, force-push, and rerun CI.
-- If mergeability is `UNKNOWN`, wait and re-check.
-- Do not merge while review comments (human or Codex review) are outstanding.
-- Codex review jobs retry on failure and are non-blocking; use the presence of
-  `## Codex Review — <persona>` issue comments (not job status) as the signal
-  that review feedback is available.
-- Do not enable auto-merge; this repo has no required checks so auto-merge can
-  skip tests.
-- If the remote PR branch advanced due to your own prior force-push or merge,
-  avoid redundant merges; re-run the formatter locally if needed and
-  `git push --force-with-lease`.
-
-## Review Handling
-
-- Codex reviews now arrive as issue comments posted by GitHub Actions. They
-  start with `## Codex Review — <persona>` and include the reviewer’s
-  methodology + guardrails used. Treat these as feedback that must be
-  acknowledged before merge.
-- Human review comments are blocking and must be addressed (responded to and
-  resolved) before requesting a new review or merging.
-- If multiple reviewers comment in the same thread, respond to each comment
-  (batching is fine) before closing the thread.
-- Fetch review comments via `gh api` and reply with a prefixed comment.
-- Use review comment endpoints (not issue comments) to find inline feedback:
-  - List PR review comments:
-    ```
-    gh api repos/{owner}/{repo}/pulls/<pr_number>/comments
-    ```
-  - PR issue comments (top-level discussion):
-    ```
-    gh api repos/{owner}/{repo}/issues/<pr_number>/comments
-    ```
-  - Reply to a specific review comment:
-    ```
-    gh api -X POST /repos/{owner}/{repo}/pulls/<pr_number>/comments \
-      -f body='[codex] <response>' -F in_reply_to=<comment_id>
-    ```
-- `in_reply_to` must be the numeric review comment id (e.g., `2710521800`), not
-  the GraphQL node id (e.g., `PRRC_...`), and the endpoint must include the PR
-  number (`/pulls/<pr_number>/comments`).
-- If GraphQL review reply mutation is forbidden, use REST.
-- A 404 on reply typically means the wrong endpoint (missing PR number) or
-  insufficient scope; verify by listing comments first.
-- All GitHub comments generated by this agent must be prefixed with `[codex]`.
-- For Codex review issue comments, reply in the issue thread (not a review
-  thread) with `[codex]` and state whether you will address the feedback now or
-  defer it (include rationale).
-- If feedback requires changes:
-  - For inline review comments (human), reply with intended fixes
-    (`[codex] ...`) **as an inline reply to the original review comment** using
-    the review comment endpoint and `in_reply_to` (do not use issue comments for
-    this).
-  - Implement fixes, commit, push.
-  - Reply with the fix details and commit sha (`[codex] ...`) in the same place
-    you acknowledged the feedback (issue comment for Codex reviews, inline reply
-    for review comments).
-  - The land watcher treats Codex review issue comments as unresolved until a
-    newer `[codex]` issue comment is posted acknowledging the findings.
-- Only request a new Codex review when you need a rerun (e.g., after new
-  commits). Do not request one without changes since the last review.
-  - Before requesting a new Codex review, re-run the land watcher and ensure
-    there are zero outstanding review comments (all have `[codex]` inline
-    replies).
-  - After pushing new commits, the Codex review workflow will rerun on PR
-    synchronization (or you can re-run the workflow manually). Post a concise
-    root-level summary comment so reviewers have the latest delta:
-    ```
-    [codex] Changes since last review:
-    - <short bullets of deltas>
-    Commits: <sha>, <sha>
-    Tests: <commands run>
-    ```
-  - Only request a new review if there is at least one new commit since the
-    previous request.
-  - Wait for the next Codex review comment before merging.
-
-## Scope + PR Metadata
-
-- The PR title and description should reflect the full scope of the change, not
-  just the most recent fix.
-- If review feedback expands scope, decide whether to include it now or defer
-  it. You can accept, defer, or decline feedback. If deferring or declining,
-  call it out in the root-level `[codex]` update with a brief reason (e.g.,
-  out-of-scope, conflicts with intent, unnecessary).
-- Correctness issues raised in review comments should be addressed. If you plan
-  to defer or decline a correctness concern, validate first and explain why the
-  concern does not apply.
-- Classify each review comment as one of: correctness, design, style,
-  clarification, scope.
-- For correctness feedback, provide concrete validation (test, log, or
-  reasoning) before closing it.
-- When accepting feedback, include a one-line rationale in the root-level
-  update.
-- When declining feedback, offer a brief alternative or follow-up trigger.
-- Prefer a single consolidated "review addressed" root-level comment after a
-  batch of fixes instead of many small updates.
-- For doc feedback, confirm the doc change matches behavior (no doc-only edits
-  to appease review).
+Use the repository's approved merge command or connector, verify that the PR
+merged into the intended base, then record the merged revision and completed
+obligations in the existing workpad and move the issue to Done. If merging fails,
+inspect the reason; do not bypass checks or rewrite published history.

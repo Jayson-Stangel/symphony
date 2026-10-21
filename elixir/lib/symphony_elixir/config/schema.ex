@@ -132,12 +132,15 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      field(:clone_url, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:root], empty_values: [])
+      |> cast(attrs, [:root, :clone_url], empty_values: [])
+      |> update_change(:clone_url, fn value -> if is_binary(value) and String.trim(value) == "", do: nil, else: value end)
+      |> validate_format(:clone_url, ~r/^[^\x00\r\n]+$/)
     end
   end
 
@@ -199,6 +202,8 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:model, :string)
+      field(:reasoning_effort, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -226,6 +231,8 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :model,
+          :reasoning_effort,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -238,6 +245,10 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_required([:command])
+      |> validate_length(:model, min: 1, max: 256)
+      |> validate_format(:model, ~r/\S/)
+      |> validate_length(:reasoning_effort, min: 1, max: 64)
+      |> validate_format(:reasoning_effort, ~r/\S/)
       |> validate_change(:command, fn :command, command ->
         if command != "" and String.trim(command) == "" do
           [command: "can't be blank"]
@@ -250,6 +261,57 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:live_max_total_tokens, greater_than_or_equal_to: 0)
       |> validate_number(:live_max_turns, greater_than_or_equal_to: 0)
+    end
+  end
+
+  defmodule Claude do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    @fields [
+      :model,
+      :effort,
+      :max_concurrent_agents,
+      :max_agentic_turns,
+      :read_timeout_ms,
+      :turn_timeout_ms,
+      :stall_timeout_ms
+    ]
+
+    embedded_schema do
+      field(:model, :string, default: "sonnet")
+      field(:effort, :string)
+      # Deprecated input for existing workflows; agent settings own concurrency.
+      field(:max_concurrent_agents, :integer)
+      field(:max_agentic_turns, :integer, default: 50)
+      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      changeset =
+        schema
+        |> cast(attrs, @fields, empty_values: [])
+        |> validate_length(:model, min: 1, max: 256)
+        |> validate_format(:model, ~r/(*UCP)\S/u)
+        |> validate_inclusion(:effort, ~w(low medium high xhigh max))
+        |> validate_number(:max_concurrent_agents, greater_than: 0)
+        |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
+        |> validate_number(:read_timeout_ms, greater_than: 0, less_than_or_equal_to: 60_000)
+        |> validate_number(:turn_timeout_ms, greater_than: 0, less_than_or_equal_to: 3_600_000)
+        |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+
+      allowed = Enum.map(@fields, &Atom.to_string/1)
+
+      if Enum.any?(Map.keys(attrs), &(&1 not in allowed)) do
+        add_error(changeset, :model, "unsupported Claude setting; authentication and billing policy are native-owned")
+      else
+        changeset
+      end
     end
   end
 
@@ -316,12 +378,14 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   embedded_schema do
+    field(:execution, :map, virtual: true, default: %{})
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:claude, Claude, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -329,17 +393,8 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config = normalize_keys(config)
-
-    if not Map.has_key?(config, "claude") and config["coding_agent"] in [nil, "codex"] do
-      parse_codex(config)
-    else
-      {:error, {:invalid_workflow_config, "This production build supports Codex only; remove alternative-provider configuration."}}
-    end
-  end
-
-  defp parse_codex(config) do
     config
+    |> normalize_keys()
     |> drop_nil_values()
     |> changeset()
     |> apply_action(:validate)
@@ -425,9 +480,38 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:claude, with: &Claude.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> validate_clone_configuration()
+    |> validate_container_execution()
+  end
+
+  defp validate_container_execution(changeset) do
+    if changeset.valid? and System.get_env("SYMPHONY_CONTAINERIZED") == "1" and
+         get_field(changeset, :worker).ssh_hosts != [] do
+      add_error(changeset, :worker, "ssh_hosts are unsupported in container execution")
+    else
+      changeset
+    end
+  end
+
+  defp validate_clone_configuration(changeset) do
+    if changeset.valid? and match?(%Workspace{clone_url: url} when is_binary(url), get_field(changeset, :workspace)) do
+      cond do
+        get_field(changeset, :hooks).after_create not in [nil, ""] ->
+          add_error(changeset, :workspace, "clone_url cannot be combined with hooks.after_create")
+
+        get_field(changeset, :worker).ssh_hosts != [] ->
+          add_error(changeset, :workspace, "clone_url supports local workspaces only")
+
+        true ->
+          changeset
+      end
+    else
+      changeset
+    end
   end
 
   defp finalize_settings(settings) do
@@ -495,33 +579,59 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    settings
-    |> Map.put(:tracker, tracker)
-    |> Map.put(:workspace, workspace)
-    |> Map.put(:codex, codex)
-    |> apply_container_overrides()
+    requested =
+      settings
+      |> Map.put(:tracker, tracker)
+      |> Map.put(:workspace, workspace)
+      |> Map.put(:codex, codex)
+
+    containerized = System.get_env("SYMPHONY_CONTAINERIZED") == "1"
+    effective = apply_container_overrides(requested, containerized)
+    %{effective | execution: execution_bindings(requested, effective, containerized)}
   end
 
-  defp apply_container_overrides(settings) do
-    case System.get_env("SYMPHONY_CONTAINERIZED") do
-      "1" ->
-        %{
-          settings
-          | worker: %{settings.worker | ssh_hosts: []},
-            workspace: %{settings.workspace | root: "/workspaces"},
-            server: %{settings.server | host: "0.0.0.0"},
-            codex: %{
-              settings.codex
-              | approval_policy: "never",
-                thread_sandbox: "danger-full-access",
-                turn_sandbox_policy: %{"type" => "dangerFullAccess"}
-            }
+  defp execution_bindings(requested, effective, containerized) do
+    %{
+      mode: if(containerized, do: "container", else: "native"),
+      requested: execution_values(requested),
+      effective: execution_values(effective)
+    }
+  end
+
+  defp execution_values(settings) do
+    %{
+      workspace_root: settings.workspace.root,
+      server_host: settings.server.host,
+      ssh_host_count: length(settings.worker.ssh_hosts),
+      codex: %{
+        approval_policy: approval_category(settings.codex.approval_policy),
+        thread_sandbox: execution_category(settings.codex.thread_sandbox, ~w(read-only workspace-write danger-full-access)),
+        turn_sandbox_type: turn_sandbox_category(settings.codex.turn_sandbox_policy)
+      }
+    }
+  end
+
+  defp approval_category(%{"reject" => _}), do: "reject"
+  defp approval_category(value), do: execution_category(value, ~w(untrusted on-failure on-request never))
+  defp turn_sandbox_category(nil), do: "default"
+  defp turn_sandbox_category(value), do: execution_category(value["type"], ~w(readOnly workspaceWrite dangerFullAccess externalSandbox))
+  defp execution_category(value, allowed), do: if(value in allowed, do: value, else: "custom")
+
+  defp apply_container_overrides(settings, true) do
+    %{
+      settings
+      | workspace: %{settings.workspace | root: "/workspaces"},
+        server: %{settings.server | host: "0.0.0.0"},
+        codex: %{
+          settings.codex
+          | approval_policy: "never",
+            thread_sandbox: "danger-full-access",
+            turn_sandbox_policy: %{"type" => "dangerFullAccess"}
         }
-
-      _ ->
-        settings
-    end
+    }
   end
+
+  defp apply_container_overrides(settings, false), do: settings
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

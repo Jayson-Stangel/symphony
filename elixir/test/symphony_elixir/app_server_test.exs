@@ -1,6 +1,91 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "session captures the model reported by thread startup" do
+    root = Path.join(System.tmp_dir!(), "symphony-model-#{System.unique_integer([:positive])}")
+    workspace = Path.join(root, "workspaces/issue")
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(root) end)
+    binary = Path.join(root, "fake-codex")
+
+    File.write!(binary, """
+    #!/bin/sh
+    while IFS= read -r line; do
+      case "$line" in
+        *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+        *'"method":"thread/start"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"model-thread"},"model":"gpt-example"}}' ;;
+      esac
+    done
+    """)
+
+    File.chmod!(binary, 0o755)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(root, "workspaces"), codex_command: binary)
+    assert {:ok, session} = AppServer.start_session(workspace)
+    assert session.model == "gpt-example"
+    AppServer.stop_session(session)
+  end
+
+  test "Codex thread options override native defaults only when explicitly configured" do
+    root = Path.join(System.tmp_dir!(), "symphony-model-options-#{System.unique_integer([:positive])}")
+    workspace = Path.join(root, "workspaces/issue")
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(root) end)
+    binary = Path.join(root, "fake-codex")
+    trace = Path.join(root, "trace.jsonl")
+
+    File.write!(binary, """
+    #!/bin/sh
+    while IFS= read -r line; do
+      printf '%s\\n' "$line" >> '#{trace}'
+      case "$line" in
+        *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+        *'"method":"thread/start"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"model-thread"},"model":"resolved-model"}}' ;;
+        *'"method":"turn/start"'*)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-one"}}}' '{"method":"turn/completed"}' ;;
+      esac
+    done
+    """)
+
+    File.chmod!(binary, 0o755)
+    issue = %Issue{id: "model-options", identifier: "MODEL-1", title: "Model options"}
+
+    for {model, effort} <- [{nil, nil}, {"custom-model", nil}, {nil, "ultra"}, {"custom-model", "xhigh"}] do
+      File.write!(trace, "")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: Path.join(root, "workspaces"),
+        codex_command: "#{binary} --config model=native-default",
+        codex_model: model,
+        codex_reasoning_effort: effort
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+
+      try do
+        # Reloading the workflow must not rewrite an already-started thread's settings.
+        write_workflow_file!(Workflow.workflow_file_path(), codex_model: "next-model", codex_reasoning_effort: "low")
+        assert {:ok, _} = AppServer.run_turn(session, "First", issue)
+        assert {:ok, _} = AppServer.run_turn(session, "Continue", issue)
+        requests = trace |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1)
+        start = Enum.find(requests, &(&1["method"] == "thread/start"))["params"]
+
+        if model, do: assert(start["model"] == model), else: refute(Map.has_key?(start, "model"))
+
+        if effort do
+          assert start["config"] == %{"model_reasoning_effort" => effort}
+        else
+          refute Map.has_key?(start, "config")
+        end
+
+        turns = Enum.filter(requests, &(&1["method"] == "turn/start"))
+        assert length(turns) == 2
+        assert Enum.all?(turns, &(not Map.has_key?(&1["params"], "model") and not Map.has_key?(&1["params"], "effort")))
+      after
+        AppServer.stop_session(session)
+      end
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -288,26 +373,21 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
-
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
+      while IFS= read -r line; do
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
             ;;
-          3)
+          *'"method":"turn/start"'*)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
             printf '%s\\n' '{"method":"thread/status/changed","params":{"threadId":"thread-1002","status":{"type":"idle"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
           *)
-            exit 0
             ;;
         esac
       done
@@ -359,26 +439,21 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
-
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
+      while IFS= read -r line; do
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1003"}}}'
             ;;
-          3)
+          *'"method":"turn/start"'*)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1003"}}}'
             printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"msg_1003","type":"agentMessage","phase":"commentary","status":"completed"}}}'
             printf '%s\\n' '{"method":"turn/failed","params":{"error":"review probe failed"}}'
             exit 0
             ;;
           *)
-            exit 0
             ;;
         esac
       done
@@ -1841,7 +1916,9 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "/remote/workspaces",
-        codex_command: "fake-remote-codex app-server"
+        codex_command: "fake-remote-codex app-server",
+        codex_model: "remote-model",
+        codex_reasoning_effort: "high"
       )
 
       issue = %Issue{
@@ -1889,6 +1966,8 @@ defmodule SymphonyElixir.AppServerTest do
                  |> Jason.decode!()
                  |> then(fn payload ->
                    payload["method"] == "thread/start" &&
+                     get_in(payload, ["params", "model"]) == "remote-model" &&
+                     get_in(payload, ["params", "config", "model_reasoning_effort"]) == "high" &&
                      get_in(payload, ["params", "cwd"]) == remote_workspace
                  end)
                else

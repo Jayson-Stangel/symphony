@@ -3,12 +3,13 @@ defmodule SymphonyElixir.Linear.AgentTool do
   Provider-native Linear tool exposed to Codex app-server turns.
   """
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Linear.{Client, Operation}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
-  File-storage URLs returned in the response are signed for five minutes for evidence verification.
+  File-storage URLs returned in the response are signed for five minutes so artifacts
+  can be downloaded and verified without exposing the Linear API key.
   """
   @linear_graphql_input_schema %{
     "type" => "object",
@@ -58,13 +59,34 @@ defmodule SymphonyElixir.Linear.AgentTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
     client_opts = opts |> Keyword.take([:tracker_settings]) |> Keyword.put(:sign_file_urls, true)
 
-    with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
-         {:ok, response} <- linear_client.(query, variables, client_opts) do
-      graphql_response(response)
-    else
+    case normalize_linear_graphql_arguments(arguments) do
+      {:ok, query, variables} ->
+        execution_response(linear_client.(query, variables, client_opts))
+
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
+        |> execution("local_validation", %{})
     end
+  end
+
+  defp execution_response({:ok, response}) do
+    result = graphql_response(response)
+    metadata = %{"http_status" => 200, "graphql_codes" => Operation.error_codes(response)}
+    execution(result, if(result["success"], do: "response", else: "graphql_error"), metadata)
+  end
+
+  defp execution_response({:error, reason}) do
+    {category, details} = failure_details(reason)
+    failure_response(tool_error_payload(reason)) |> execution(category, details)
+  end
+
+  defp failure_details(:missing_linear_api_token), do: {"missing_auth", %{}}
+  defp failure_details({:linear_api_request, :missing_linear_api_token}), do: failure_details(:missing_linear_api_token)
+  defp failure_details({:linear_api_status, status}), do: {"http_error", %{"http_status" => status}}
+  defp failure_details(reason), do: {"transport_error", %{"transport_reason" => Operation.transport_reason(reason)}}
+
+  defp execution(result, reason, metadata) do
+    Map.put(result, "execution", Map.put(metadata, "reason", reason))
   end
 
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do

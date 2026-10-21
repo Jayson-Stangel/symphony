@@ -1,11 +1,10 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single tracker work item in its workspace with Codex.
+  Executes a single tracker work item in its workspace with the selected coding agent.
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{CodingAgent, Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -29,8 +28,10 @@ defmodule SymphonyElixir.AgentRunner do
       :ok ->
         :ok
 
-      {:error, {:max_turns_reached, _details} = reason} ->
-        Logger.error("Agent run failed closed for #{issue_context(issue)}: #{inspect(reason)}")
+      {:error, {:agent_pause, _kind, _details} = reason} ->
+        exit(reason)
+
+      {:error, {:agent_blocked, _kind} = reason} ->
         exit(reason)
 
       {:error, reason} ->
@@ -89,64 +90,125 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_codex_turns(workspace, issue, recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
-      try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
-      after
-        AppServer.stop_session(session)
+    session_opts = [max_turns: max_turns, worker_host: worker_host, expected_profile: Keyword.get(opts, :expected_profile)]
+
+    session_opts =
+      case Keyword.fetch(opts, :coding_agent_adapter) do
+        {:ok, adapter} -> Keyword.put(session_opts, :adapter, adapter)
+        :error -> session_opts
       end
+
+    with {:ok, session} <- CodingAgent.start_session(workspace, session_opts) do
+      if is_pid(recipient), do: send(recipient, {:worker_agent_session, issue.id, session})
+
+      outcome =
+        try do
+          result = do_run_codex_turns(session, workspace, issue, recipient, opts, issue_state_fetcher, 1, max_turns)
+          {:returned, result}
+        catch
+          kind, reason -> {:raised, kind, reason, __STACKTRACE__}
+        end
+
+      cleanup =
+        try do
+          CodingAgent.stop_session(session)
+        catch
+          _, _ -> {:error, :cleanup_failed}
+        end
+
+      finish_attempt(issue, session, outcome, cleanup)
     end
   end
+
+  defp finish_attempt(_issue, _session, {:returned, result}, :ok), do: result
+  defp finish_attempt(_issue, _session, {:raised, kind, reason, stack}, :ok), do: :erlang.raise(kind, reason, stack)
+
+  defp finish_attempt(issue, session, outcome, cleanup) do
+    Logger.warning(
+      "Agent cleanup incomplete for #{issue_context(issue)} session_id=#{attempt_session_id(session)} primary=#{inspect(outcome_cause(outcome))} cleanup=#{inspect(cleanup_cause(cleanup))}; returning original outcome"
+    )
+
+    finish_attempt(issue, session, outcome, :ok)
+  end
+
+  defp attempt_session_id(%{native: %{id: id}}), do: safe_session_id(id)
+  defp attempt_session_id(%{native: %{thread_id: id}}), do: safe_session_id(id)
+  defp attempt_session_id(_session), do: "n/a"
+
+  defp safe_session_id(id) when is_binary(id) and byte_size(id) <= 128 do
+    if Regex.match?(~r/^[A-Za-z0-9_-]+$/, id), do: id, else: "n/a"
+  end
+
+  defp safe_session_id(_id), do: "n/a"
+
+  defp outcome_cause({:returned, :ok}), do: :completed
+  defp outcome_cause({:returned, {:error, {:agent_blocked, kind}}}), do: {:agent_blocked, native_cause(kind)}
+  defp outcome_cause({:returned, {:error, {:agent_pause, kind, _}}}), do: {:agent_pause, native_cause(kind)}
+  defp outcome_cause({:returned, {:error, reason}}) when is_atom(reason), do: reason
+  defp outcome_cause({:returned, {:error, reason}}) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp outcome_cause({:raised, kind, %{__struct__: exception}, _stack}) when is_atom(exception), do: {kind, exception}
+  defp outcome_cause({:raised, kind, _reason, _stack}), do: kind
+  defp outcome_cause(_outcome), do: :unknown
+
+  defp native_cause(kind) do
+    Enum.find([:auth_required, :quota_exhausted, :policy_blocked, :protocol_error, :tool_outcome_uncertain, :tracker_delivery_failed], :unknown, &(kind == &1 or kind == Atom.to_string(&1)))
+  end
+
+  defp cleanup_cause({:error, :cleanup_unconfirmed}), do: :cleanup_unconfirmed
+  defp cleanup_cause(_cleanup), do: :cleanup_failed
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
-    with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
-             issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
-           ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+    case CodingAgent.run_turn(
+           app_session,
+           prompt,
+           issue,
+           on_message: codex_message_handler(codex_update_recipient, issue)
+         ) do
+      {:ok, turn_session} ->
+        Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_codex_turns(
+              app_session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          {:error,
-           {:max_turns_reached,
-            %{
-              issue_id: refreshed_issue.id,
-              identifier: refreshed_issue.identifier,
-              max_turns: max_turns,
-              workspace: workspace
-            }}}
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, :agent_turn_limit} ->
+        Logger.info(
+          "Native turn allowance reached for #{issue_context(issue)} session_id=#{attempt_session_id(app_session)} cause=agent_turn_limit turn=#{turn_number}/#{max_turns}; closing session for active-state continuation"
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -156,7 +218,7 @@ defmodule SymphonyElixir.AgentRunner do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the tracker work item is still in an active state.
+    - The previous coding-agent turn completed normally, but the tracker work item is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.

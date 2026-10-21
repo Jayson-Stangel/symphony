@@ -1,32 +1,172 @@
-# Codex runner updates
+# Dedicated development workspace
 
-Develop in an isolated checkout and runner namespace. Set
-`SYMPHONY_RUNNER_NAMESPACE` to keep development containers, workspaces, state,
-and authentication separate from production. This build supports Codex only;
-`--agent codex` remains available for existing scripts. Claude configuration and
-other provider selections fail before dispatch.
+Keep the installed `symphony` command and its stable checkout unchanged. Use a
+separate clone of `dev`, an explicit development command, separate configuration,
+a Docker resource namespace and a separate loopback port. A different checkout
+or configuration directory alone does not isolate Docker resources.
 
-The launcher retains the existing container labels, metadata, storage identities,
-transition journal, immutable image verification, and updater ownership checks.
-`update --development-runner --agent codex` refreshes an isolated Codex runner.
-A running legacy listener without the drain API must finish active work and be
-paused explicitly with `update --pause-runner` before replacement. The updater
-refuses unknown ownership or inconsistent metadata and retains the prior runner
-for rollback if candidate startup fails.
+Prerequisites: Docker running, Git, Bash, curl and Python 3. Native Claude login
+is interactive. The container builds its own pinned runtime; host Symphony setup
+and global command/skill installation are unnecessary.
 
-Drain state persists across restarts. A replacement runner starts drained and
-cannot dispatch until the updater verifies readiness and resumes it. Resume
-requires zero active workers. Legacy provider pause and write-intent files are
-retained as opaque evidence; this Codex-only runtime does not interpret them.
-Review tracker and remote write state before an approved rollout because active
-issues can become eligible again when the new runtime starts.
+## Create the workspace
 
-The shared tool write classification and global pause policy are removed. Codex
-receives the Linear tool's ordinary success/failure response, including GraphQL
-errors. Symphony does not automatically retry Linear HTTP requests. A model may
-issue a fresh request after a failure, as in the original Codex implementation.
-Redacted operation diagnostics and signed evidence asset URLs remain available.
+Choose a new directory; do not overwrite an existing checkout. Replace the remote
+with your intended upstream if necessary:
 
-Approval to merge into dev does not authorize promotion to main or deployment.
-Any production change requires approval of its exact PR inventory, and stable
-rollout requires separate explicit authorization. This document does not grant it.
+```sh
+workspace="$HOME/Repos/symphony-dev-workspace"
+mkdir "$workspace"
+git clone --branch dev https://github.com/Jayson-Stangel/symphony.git "$workspace/source"
+git -C "$workspace/source" switch -c codex/claude-dev-workspace
+mkdir -p "$workspace/bin" "$workspace/config/projects" "$workspace/config/runners"
+chmod 700 "$workspace/config" "$workspace/config/projects" "$workspace/config/runners"
+cat > "$workspace/bin/symphony-dev" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export SYMPHONY_HOME="$workspace/source"
+export SYMPHONY_CONFIG_HOME="$workspace/config"
+export SYMPHONY_RUNNER_HOME="$workspace/config/runners"
+export SYMPHONY_BIN_DIR="$workspace/bin"
+export SYMPHONY_SKILLS_DIR="$workspace/skills"
+export SYMPHONY_RUNNER_NAMESPACE=claude-dev
+export SYMPHONY_CODEX_AUTH_VOLUME=symphony-claude-dev-codex-auth
+unset SYMPHONY_RUNNER_IMAGE
+case "${1:-}" in
+  update)
+    shift
+    exec "$SYMPHONY_HOME/scripts/symphony" update --development-runner "$@" ;;
+  run)
+    shift
+    for arg in "$@"; do
+      [ "$arg" != --host ] || { echo 'Use the isolated development container' >&2; exit 1; }
+    done
+    exec "$SYMPHONY_HOME/scripts/symphony" run --port 14030 "$@" ;;
+  auth|runner|--version|--help|-h)
+    exec "$SYMPHONY_HOME/scripts/symphony" "$@" ;;
+  *) echo 'Use: symphony-dev auth|run|runner|update|--version|--help' >&2; exit 1 ;;
+esac
+SH
+chmod 755 "$workspace/bin/symphony-dev"
+"$workspace/bin/symphony-dev" --version
+```
+
+Use a unique namespace and port for each additional development workspace. Do
+not export these development variables globally or run the stable updater from
+this wrapper. The ordinary global `symphony` command remains the stable command.
+
+## Prepare a disposable target repository
+
+Clone a private disposable target under `projects/` and provide its test
+`WORKFLOW.md`. Restrict its tracker scope and hooks to that repository. Keep
+production trackers and production repository credentials out of this workspace.
+The tracker operates on the remote service: a second local clone does not
+isolate issues, comments or pull requests.
+
+Credentials use `config/projects/<repository-identity>.env`: the basename plus
+Symphony's existing hash of the normalized `origin` URL. `init` and a missing-credentials
+`run` message report the exact path, including configuration overrides. The development
+wrapper deliberately omits `init`; derive the same identity read-only from its source,
+from inside the disposable target clone:
+
+```sh
+repository_identity=$(bash -c 'source "$1/scripts/symphony" --help >/dev/null; project_id "$(repo_root)"' identity "$workspace/source")
+credentials="$workspace/config/projects/$repository_identity.env"
+printf '%s\n' "$credentials"
+```
+
+Save a fine-grained token restricted to that disposable repository in that file,
+with `GITHUB_TOKEN=...`. Grant Contents,
+Issues and Pull requests read/write for a GitHub issue pilot. Set file mode 600.
+Never paste the token into chat, commit it, or use the broad host GitHub login as
+the worker credential.
+
+From inside the disposable target clone:
+
+```sh
+dev="$HOME/Repos/symphony-dev-workspace/bin/symphony-dev"
+"$dev" auth claude login
+# Finish the native login in this terminal.
+"$dev" auth claude check
+"$dev" runner doctor --agent claude
+"$dev" run --agent claude
+```
+
+The first login builds the namespaced development image. Login is separate from
+host Claude, the qualification lab, and stable; it does not copy credentials.
+Check/doctor make zero model requests. `run` polls the configured tracker and can
+dispatch open work immediately. Start with one small disposable issue. Visit
+<http://127.0.0.1:14030>, inspect provider/readiness, and verify the workpad, tests
+and test PR. Confirm included allowance and no paid usage in the account UI.
+
+To finish a test without accepting more work:
+
+```sh
+"$dev" runner drain
+# Wait for the dashboard to show zero running workers, then:
+"$dev" runner stop
+```
+
+Stop retains the qualified container, workspaces, state, logs and native login.
+Use the same development command for status/logs/recovery. Never stop or remove
+containers by a broad name filter.
+
+## Refresh the development build
+
+Preserve local edits. Inspect status and divergence before integrating upstream:
+
+```sh
+git -C "$HOME/Repos/symphony-dev-workspace/source" status --short
+git -C "$HOME/Repos/symphony-dev-workspace/source" fetch origin dev
+git -C "$HOME/Repos/symphony-dev-workspace/source" merge --ff-only origin/dev
+# From the disposable target clone, with an existing development runner:
+"$dev" update --agent claude
+```
+
+The wrapper supplies `--development-runner`. This requires a nonempty namespace
+and uses the current development source without fetching `main`, changing global
+links or running host setup. It builds a revision-tagged namespaced candidate,
+preflights it, drains active work, retains the prior container, and resumes only
+after readiness succeeds. On a retry, development mode rebuilds and preflights
+from the current checkout. If its image differs from the pending candidate, the
+updater verifies ownership, drains/stops that candidate, and replaces it while
+retaining the original rollback source and volumes. It commits the new image
+identity atomically before starting it, so an interrupted refresh can be retried.
+A failed build or preflight leaves the pending candidate unchanged; a failed new
+candidate keeps the rollback source available. No temporary workflow/model
+changes are needed to escape a stale development candidate. Stable update
+recovery continues to use its recorded image. `runner status` identifies
+restarting containers explicitly instead of reporting them as running.
+A stopped source is supported. A fresh project uses
+`run` instead. If the updater refuses, inspect the reported condition; do not
+delete metadata or force-replace active work. For a retained failed transition:
+
+```sh
+"$dev" update --rollback-runner
+```
+
+Stable deployment remains a separate reviewed `dev` → `main` promotion followed
+by the installed global `symphony update` command.
+
+## Opt-in updater lifecycle proof
+
+From a separate development checkout, prepare both production images explicitly:
+
+```sh
+docker build --file runner/Dockerfile --target codex -t updater-proof:codex .
+docker build --file runner/Dockerfile --target claude -t updater-proof:claude .
+python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
+```
+
+This optional script uses the actual application, entrypoints, Docker mounts,
+HTTP drain/resume and update/rollback metadata in an empty Memory project. It
+checks interrupted creation, interrupted rollback, cleanup recovery and retained
+committed, edited, untracked and state files. It records physical mounts and UID.
+Only Codex login-status and selection of prepared image variants are test peers;
+Claude's fresh-volume missing-auth refusal uses its actual native check. The
+prepared images remain unchanged; temporary containers, volumes and image tags
+use a unique development namespace and are removed. Local diagnostic files are
+retained in the printed temporary directory. No stable command, host login mount,
+native positive authentication or model request is used. Successful mixed-provider
+UID migration and authenticated inference remain separate qualification.

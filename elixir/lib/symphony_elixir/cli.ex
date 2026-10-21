@@ -6,10 +6,11 @@ defmodule SymphonyElixir.CLI do
   alias SymphonyElixir.LogFile
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
+  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, agent: [:string, :keep]]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
+          optional(:set_coding_agent) => (:codex | :claude -> :ok),
           file_regular?: (String.t() -> boolean()),
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
@@ -37,17 +38,10 @@ defmodule SymphonyElixir.CLI do
 
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
-    if System.get_env("SYMPHONY_CODING_AGENT") in [nil, "codex"] do
-      evaluate_codex(args, deps)
-    else
-      {:error, "This production build supports Codex only; remove SYMPHONY_CODING_AGENT."}
-    end
-  end
-
-  defp evaluate_codex(args, deps) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
+             :ok <- maybe_set_coding_agent(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(Path.expand("WORKFLOW.md"), deps)
@@ -55,6 +49,7 @@ defmodule SymphonyElixir.CLI do
 
       {opts, [workflow_path], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
+             :ok <- maybe_set_coding_agent(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
           run(workflow_path, deps)
@@ -86,18 +81,41 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--agent codex|claude] [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md]"
   end
 
   @spec runtime_deps() :: deps()
   defp runtime_deps(ensure_all_started \\ fn -> Application.ensure_all_started(:symphony_elixir) end) do
     %{
       file_regular?: &File.regular?/1,
+      set_coding_agent: &set_coding_agent/1,
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
       ensure_all_started: ensure_all_started
     }
+  end
+
+  defp maybe_set_coding_agent(opts, deps) do
+    provider =
+      case Keyword.get_values(opts, :agent) do
+        [] -> :codex
+        ["codex"] -> :codex
+        ["claude"] -> :claude
+        _ -> :invalid
+      end
+
+    if provider == :invalid do
+      {:error, usage_message()}
+    else
+      setter = Map.get(deps, :set_coding_agent, fn _provider -> :ok end)
+      setter.(provider)
+    end
+  end
+
+  defp set_coding_agent(provider) do
+    Application.put_env(:symphony_elixir, :coding_agent, provider)
+    :ok
   end
 
   defp maybe_set_logs_root(opts, deps) do

@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Workspace do
   @moduledoc """
-  Creates isolated per-issue workspaces for parallel Codex agents.
+  Creates isolated per-issue workspaces for coding agents.
   """
 
   require Logger
@@ -9,6 +9,48 @@ defmodule SymphonyElixir.Workspace do
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
   @type worker_host :: String.t() | nil
+
+  @spec validate_agent_cwd(Path.t(), worker_host()) :: {:ok, Path.t()} | {:error, term()}
+  def validate_agent_cwd(workspace, worker_host \\ nil)
+
+  @spec validate_agent_cwd(Path.t(), worker_host()) :: {:ok, Path.t()} | {:error, term()}
+  def validate_agent_cwd(workspace, nil) when is_binary(workspace) do
+    expanded_workspace = Path.expand(workspace)
+    expanded_root = Config.local_workspace_root()
+
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
+         {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
+      cond do
+        canonical_workspace == canonical_root ->
+          {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
+
+        String.starts_with?(canonical_workspace <> "/", canonical_root <> "/") ->
+          {:ok, canonical_workspace}
+
+        String.starts_with?(expanded_workspace <> "/", expanded_root <> "/") ->
+          {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, canonical_root}}
+
+        true ->
+          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, canonical_root}}
+      end
+    else
+      {:error, {:path_canonicalize_failed, path, reason}} ->
+        {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
+    end
+  end
+
+  def validate_agent_cwd(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    cond do
+      String.trim(workspace) == "" ->
+        {:error, {:invalid_workspace_cwd, :empty_remote_workspace, worker_host}}
+
+      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
+        {:error, {:invalid_workspace_cwd, :invalid_remote_workspace, worker_host, workspace}}
+
+      true ->
+        {:ok, workspace}
+    end
+  end
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -45,6 +87,9 @@ defmodule SymphonyElixir.Workspace do
 
       File.dir?(workspace) ->
         {:ok, workspace, false}
+
+      Config.settings!().workspace.clone_url != nil ->
+        clone_workspace(workspace)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -85,6 +130,65 @@ defmodule SymphonyElixir.Workspace do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp clone_workspace(workspace) do
+    # Each attempt owns only its unique unpublished stage. Interrupted attempts
+    # are never reused or removed by another attempt.
+    stage = Path.join([Path.dirname(workspace), ".symphony", "clones", Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)])
+
+    with :ok <- validate_workspace_path(stage, nil),
+         :ok <- File.mkdir_p(Path.dirname(stage)),
+         :ok <- File.mkdir(stage) do
+      result =
+        with :ok <- run_clone(stage, workspace),
+             :ok <- validate_workspace_path(workspace, nil),
+             :ok <- validate_workspace_path(stage, nil) do
+          publish_clone(stage, workspace)
+        end
+
+      # A timed out native command may still be exiting. Preserve its unique
+      # unpublished stage, just as on owner interruption; no retry reuses it.
+      cleanup_clone_stage(stage, result)
+      result
+    end
+  end
+
+  defp cleanup_clone_stage(_stage, {:error, {:workspace_clone_timeout, _, _}}), do: :ok
+
+  defp cleanup_clone_stage(stage, _result) do
+    if validate_workspace_path(stage, nil) == :ok, do: File.rm_rf(stage)
+  end
+
+  defp run_clone(stage, workspace) do
+    url = Config.settings!().workspace.clone_url
+    timeout_ms = Config.settings!().hooks.timeout_ms
+    task = Task.async(fn -> System.cmd("git", ["clone", "--depth", "1", "--", url, stage], stderr_to_stdout: true) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {_output, status}} -> {:error, {:workspace_clone_failed, workspace, status}}
+      _ -> {:error, {:workspace_clone_timeout, workspace, timeout_ms}}
+    end
+  end
+
+  defp publish_clone(stage, workspace) do
+    cond do
+      File.exists?(bootstrap_marker(workspace)) ->
+        {:error, {:workspace_bootstrap_interrupted, workspace}}
+
+      File.dir?(workspace) ->
+        {:ok, workspace, false}
+
+      File.exists?(workspace) ->
+        {:error, {:workspace_clone_destination_exists, workspace}}
+
+      true ->
+        case File.rename(stage, workspace) do
+          :ok -> {:ok, workspace, false}
+          {:error, reason} -> {:error, {:workspace_clone_publish_failed, workspace, reason}}
+        end
     end
   end
 

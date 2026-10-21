@@ -1,15 +1,21 @@
 defmodule SymphonyElixir.Linear.Operation do
-  @moduledoc "Conservative operation classification from a parsed GraphQL document."
+  @moduledoc "Redacted request fingerprints and allowlisted diagnostic codes; no execution inference."
 
-  alias Absinthe.Language.Source
-  alias Absinthe.Phase.Parse
-
-  @codes ~w(INPUT_ERROR BAD_USER_INPUT GRAPHQL_VALIDATION_FAILED GRAPHQL_PARSE_FAILED AUTHENTICATION_ERROR AUTHORIZATION_ERROR RATELIMITED RATE_LIMITED INTERNAL_SERVER_ERROR)
+  @codes ~w(INVALID_INPUT INPUT_ERROR BAD_USER_INPUT GRAPHQL_VALIDATION_FAILED GRAPHQL_PARSE_FAILED AUTHENTICATION_ERROR AUTHORIZATION_ERROR RATELIMITED RATE_LIMITED INTERNAL_SERVER_ERROR)
   @transport_reasons ~w(timeout closed econnrefused econnreset nxdomain enetunreach ehostunreach)a
 
   @spec error_codes(term()) :: [String.t()]
   def error_codes(%{"errors" => errors}) when is_list(errors) do
-    for(%{"extensions" => %{"code" => code}} <- errors, code in @codes, do: code)
+    errors
+    |> Enum.map(fn
+      %{"extensions" => %{"code" => code}} -> code
+      _ -> nil
+    end)
+    |> error_codes()
+  end
+
+  def error_codes(codes) when is_list(codes) do
+    for(code <- codes, code in @codes, do: code)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -28,31 +34,13 @@ defmodule SymphonyElixir.Linear.Operation do
 
     if is_binary(query) and String.trim(query) != "" do
       query = String.trim(query)
-      %{"operation" => kind(query), "document_sha256" => Base.encode16(:crypto.hash(:sha256, query), case: :lower)}
+      %{"document_sha256" => Base.encode16(:crypto.hash(:sha256, query), case: :lower)}
     else
-      %{"operation" => "local"}
+      %{}
     end
   end
 
   defp query(value) when is_binary(value), do: value
   defp query(value) when is_map(value), do: Map.get(value, "query") || Map.get(value, :query)
   defp query(_value), do: nil
-
-  defp kind(query) do
-    case Parse.run(%Source{body: query}, token_limit: 20_000) do
-      {:ok, %{input: %{definitions: definitions}}} -> operation_kind(definitions)
-      _ -> "unknown"
-    end
-  end
-
-  defp operation_kind(definitions) do
-    operations = for %Absinthe.Language.OperationDefinition{operation: operation} <- definitions, do: operation
-
-    case Enum.uniq(operations) do
-      [:query] -> "query"
-      [:mutation] -> "mutation"
-      [:subscription] -> "subscription"
-      _ -> "unknown"
-    end
-  end
 end

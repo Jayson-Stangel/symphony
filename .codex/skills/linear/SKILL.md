@@ -339,11 +339,12 @@ query IssueFieldArgs {
 
 ### Attach generated evidence to the issue
 
-Apply this to every generated screenshot, recording, report, log, or other
-review artifact. Inspect the file for secrets/private data first and sanitize
-when needed. A local path or an upload on the PR alone is not delivered evidence.
-A verified sanitized replacement satisfies the gate for an unsafe original.
-Record the substitution without revealing removed data; never upload the unsafe original.
+Use this procedure when the workflow, target repository or ticket requires a
+Linear-hosted artifact, or when it is needed for review. Do not upload every
+temporary log by default. Other durable evidence links may satisfy the target's
+requirements; a local path is not delivered evidence when reviewers need the file.
+Inspect artifacts for secrets/private data and sanitize when needed. Record any
+substitution without revealing removed data; never upload an unsafe original.
 
 Do this in four steps:
 
@@ -416,3 +417,18 @@ mutation FileUpload(
 - Do not introduce new raw-token shell helpers for GraphQL access.
 - If you need shell work for uploads, only use it for signed upload URLs
   returned by `fileUpload`; those URLs already carry the needed authorization.
+
+## Recover failed and uncertain writes
+
+Read the tool error and correct the request using schema discovery. Before
+retrying any failed or interrupted mutation, read back all affected targets.
+An error response does not prove rollback; an acknowledged response does not
+prove the intended effect. If a comment, attachment or state change already
+exists, continue without duplicating it. Reconcile partial or multi-object
+mutations target by target instead of replaying the whole mutation.
+
+Use bounded correction/read attempts. If the outcome stays unresolved, avoid
+that write and dependent writes, retain the evidence in the available workpad
+(locally if necessary), and continue safe independent work. Block only the
+current issue when remaining required work depends on the outcome. Never clear
+runner pause files, change credentials, or blindly repeat a mutation to recover.

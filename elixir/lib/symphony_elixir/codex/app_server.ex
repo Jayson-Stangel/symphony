@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, Config, SSH, ToolCall, Workspace}
 
   @initialize_id 1
   @thread_start_id 2
@@ -19,6 +19,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
           thread_id: String.t(),
+          model: String.t() | nil,
           workspace: Path.t(),
           worker_host: String.t() | nil,
           dynamic_tool_binding: map()
@@ -40,12 +41,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
     dynamic_tool_binding = DynamicTool.bind()
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
+    with {:ok, expanded_workspace} <- Workspace.validate_agent_cwd(workspace, worker_host),
          {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id} <-
+           {:ok, thread_id, model} <-
              do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
         {:ok,
          %{
@@ -56,6 +57,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
            thread_id: thread_id,
+           model: model,
            workspace: expanded_workspace,
            worker_host: worker_host,
            dynamic_tool_binding: dynamic_tool_binding
@@ -86,10 +88,32 @@ defmodule SymphonyElixir.Codex.AppServer do
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
-    tool_executor =
+    executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
       end)
+
+    tool_executor = fn
+      "linear_graphql" = tool, arguments ->
+        {:symphony_tool,
+         ToolCall.run(
+           fn ->
+             result = executor.(tool, arguments)
+             if is_map(result), do: Map.merge(result, normalize_dynamic_tool_result(result)), else: result
+           end,
+           tool,
+           arguments,
+           issue_id: issue.id,
+           issue_identifier: issue.identifier,
+           thread_id: thread_id,
+           tool_id: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+           provider: :codex,
+           profile: AgentPause.codex_profile()
+         )}
+
+      tool, arguments ->
+        executor.(tool, arguments)
+    end
 
     case start_turn(
            port,
@@ -157,48 +181,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
-  end
-
-  defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
-    expanded_workspace = Path.expand(workspace)
-    expanded_root = Config.local_workspace_root()
-    expanded_root_prefix = expanded_root <> "/"
-
-    with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
-         {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
-      canonical_root_prefix = canonical_root <> "/"
-
-      cond do
-        canonical_workspace == canonical_root ->
-          {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
-
-        String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
-          {:ok, canonical_workspace}
-
-        String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
-          {:error, {:invalid_workspace_cwd, :symlink_escape, expanded_workspace, canonical_root}}
-
-        true ->
-          {:error, {:invalid_workspace_cwd, :outside_workspace_root, canonical_workspace, canonical_root}}
-      end
-    else
-      {:error, {:path_canonicalize_failed, path, reason}} ->
-        {:error, {:invalid_workspace_cwd, :path_unreadable, path, reason}}
-    end
-  end
-
-  defp validate_workspace_cwd(workspace, worker_host)
-       when is_binary(workspace) and is_binary(worker_host) do
-    cond do
-      String.trim(workspace) == "" ->
-        {:error, {:invalid_workspace_cwd, :empty_remote_workspace, worker_host}}
-
-      String.contains?(workspace, ["\n", "\r", <<0>>]) ->
-        {:error, {:invalid_workspace_cwd, :invalid_remote_workspace, worker_host, workspace}}
-
-      true ->
-        {:ok, workspace}
-    end
   end
 
   defp start_port(workspace, nil, dynamic_tool_binding) do
@@ -326,30 +308,40 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_thread(
          port,
          workspace,
-         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
+         %{approval_policy: approval_policy, thread_sandbox: thread_sandbox} = session_policies,
          dynamic_tool_binding
        ) do
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
-      "params" => %{
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => dynamic_tool_binding.tool_specs
-      }
+      "params" =>
+        %{
+          "approvalPolicy" => approval_policy,
+          "sandbox" => thread_sandbox,
+          "cwd" => workspace,
+          "dynamicTools" => dynamic_tool_binding.tool_specs
+        }
+        |> Map.merge(thread_model_options(session_policies))
     })
 
     case await_response(port, @thread_start_id) do
-      {:ok, %{"thread" => thread_payload}} ->
+      {:ok, %{"thread" => thread_payload} = result} ->
         case thread_payload do
-          %{"id" => thread_id} -> {:ok, thread_id}
+          %{"id" => thread_id} -> {:ok, thread_id, Map.get(result, "model")}
           _ -> {:error, {:invalid_thread_payload, thread_payload}}
         end
 
       other ->
         other
     end
+  end
+
+  defp thread_model_options(settings) do
+    %{
+      "model" => settings.model,
+      "config" => if(settings.reasoning_effort, do: %{"model_reasoning_effort" => settings.reasoning_effort})
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
@@ -540,6 +532,9 @@ defmodule SymphonyElixir.Codex.AppServer do
            tool_executor,
            auto_approve_requests
          ) do
+      {:tool_failure, kind} ->
+        {:error, {:agent_blocked, kind}}
+
       :input_required ->
         emit_message(
           on_message,
@@ -625,26 +620,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     tool_name = tool_call_name(params)
     arguments = tool_call_arguments(params)
 
-    result =
-      tool_name
-      |> tool_executor.(arguments)
-      |> normalize_dynamic_tool_result()
+    case tool_executor.(tool_name, arguments) do
+      {:symphony_tool, {:ok, result, context}} ->
+        deliver_tool_result(port, id, result, context, tool_name, payload, payload_string, on_message, metadata)
 
-    send_message(port, %{
-      "id" => id,
-      "result" => result
-    })
-
-    event =
-      case result do
-        %{"success" => true} -> :tool_call_completed
-        _ when is_nil(tool_name) -> :unsupported_tool_call
-        _ -> :tool_call_failed
-      end
-
-    emit_message(on_message, event, %{payload: payload, raw: payload_string}, metadata)
-
-    :approved
+      result ->
+        deliver_tool_result(port, id, result, nil, tool_name, payload, payload_string, on_message, metadata)
+    end
   end
 
   defp maybe_handle_approval_request(
@@ -748,6 +730,41 @@ defmodule SymphonyElixir.Codex.AppServer do
     :unhandled
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp deliver_tool_result(port, id, result, context, tool_name, payload, payload_string, on_message, metadata) do
+    result = normalize_dynamic_tool_result(result)
+
+    with true <- send_tool_reply(port, id, result, context),
+         :ok <- if(context, do: ToolCall.accept(context), else: :ok) do
+      event =
+        cond do
+          result["success"] -> :tool_call_completed
+          is_nil(tool_name) -> :unsupported_tool_call
+          true -> :tool_call_failed
+        end
+
+      emit_message(on_message, event, %{payload: payload, raw: payload_string}, metadata)
+      :approved
+    else
+      {:tool_failure, _} = failure ->
+        failure
+    end
+  end
+
+  defp send_tool_reply(port, id, result, context) do
+    send_message(port, %{"id" => id, "result" => result})
+  rescue
+    error in ArgumentError ->
+      if context do
+        {:error, kind, _context} = ToolCall.fail(context, "reply_failed")
+        tool_failure(kind)
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp tool_failure(kind), do: {:tool_failure, kind}
+
   defp normalize_dynamic_tool_result(%{"success" => success} = result) when is_boolean(success) do
     output =
       case Map.get(result, "output") do
@@ -762,6 +779,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       end
 
     result
+    |> Map.take(["success", "output", "contentItems"])
     |> Map.put("output", output)
     |> Map.put("contentItems", content_items)
   end
@@ -1090,6 +1108,9 @@ defmodule SymphonyElixir.Codex.AppServer do
           tool_executor,
           auto_approve_requests
         )
+
+      {:tool_failure, kind} ->
+        {:error, {:agent_blocked, kind}}
 
       :input_required ->
         emit_message(on_message, :turn_input_required, %{payload: payload, raw: payload_string}, response_metadata)

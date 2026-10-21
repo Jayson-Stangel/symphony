@@ -460,7 +460,9 @@ Fields:
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
 - `max_turns` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session.
+  - Limits the number of coding-agent turns within one worker session, for both providers.
+  - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
+    continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
@@ -486,6 +488,12 @@ fields locally if they want stricter startup checks.
   - Default: `codex app-server`
   - The runtime launches this command via `bash -lc` in the workspace directory.
   - The launched process MUST speak a compatible app-server protocol over stdio.
+- `model` (optional nonblank string)
+  - Sent as `thread/start.model`; omitted/null preserves native runner configuration.
+- `reasoning_effort` (optional nonblank string)
+  - Sent as `thread/start.config.model_reasoning_effort` for the new session.
+  - Omitted/null preserves native runner configuration. Codex validates model/effort support.
+  - Workflow reload changes new sessions; an existing thread retains its original settings.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default: implementation-defined.
 - `thread_sandbox` (Codex `SandboxMode` value)
@@ -635,6 +643,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.terminal_states`: list of provider-native state names, adapter-defined default
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `workspace.clone_url`: optional local clone-only bootstrap; mutually exclusive with
+  `hooks.after_create` and SSH workers. Clone into a unique owned unpublished stage
+  below `.symphony/clones`, then atomically rename success into the workspace. Reuse
+  existing destinations. Interrupted or timed-out unpublished stages are retained
+  and do not block a fresh attempt; arbitrary setup hooks are never inferred or replayed.
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -651,8 +664,23 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
-- `codex.live_max_total_tokens`: integer, default implementation-defined
-- `codex.live_max_turns`: integer, default implementation-defined
+- `codex.live_max_total_tokens`: integer, default `0` (disabled)
+- `codex.live_max_turns`: integer, default `0` (disabled)
+
+### Container Execution Bindings
+
+When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
+server bind address and Codex container permission bindings. Requested nonempty
+SSH hosts MUST be rejected before normalization removes unsupported values.
+Native execution behavior is unchanged.
+
+The finalized settings carry an internal requested/effective execution projection,
+updated atomically with the existing last-known-good workflow settings and exposed
+as `agent.execution` in state snapshots. It contains only workspace root, server
+host, SSH host count and categorical Codex approval/sandbox values; arbitrary map
+contents and credentials MUST NOT be copied. Invalid reloads retain both the prior
+bindings and their projection. This is observational metadata, not a new workflow
+profile, registry or mutable configuration source.
 
 ## 7. Orchestration State Machine
 
@@ -753,9 +781,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
-- Successful polls also clean retained local terminal workspaces after stopping any associated worker,
-  including issues completed while unclaimed or after a failed startup tracker read. Tracker
-  failures MUST NOT cause retained workspaces to be deleted.
+- Ordinary dispatch MUST NOT fetch terminal history. Unclaimed workspaces completed after
+  human review remain until startup cleanup on the next restart, as in upstream.
+  Tracker failures MUST NOT cause retained workspaces to be deleted.
 - Container deployments SHOULD retain workspace storage across container replacement by default.
   Recovery reuses existing checkouts and current tracker state; exact agent conversation or
   in-memory retry restoration is not required. Interrupted workspace bootstrap MUST NOT be
@@ -765,8 +793,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 ### 8.1 Poll Loop
 
-At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+At startup, the service validates config and schedules an immediate tick, then repeats
+every `polling.interval_ms`. Startup cleanup runs once on the first admitted poll, after
+readiness and drain state permit work; subsequent readiness recovery and reload do not repeat it.
 
 The effective poll interval SHOULD be updated when workflow config changes are re-applied.
 
@@ -774,8 +803,8 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch observed issues from tracker using active, blocked, and terminal states; clean terminal
-   workspaces only after stopping their workers.
+3. On the first admitted poll only, attempt startup terminal cleanup. Fetch ordinary
+   observed issues using active and blocked states, independently of completed history.
 4. Sort issues by dispatch priority.
 5. Dispatch eligible issues while slots remain.
 6. Notify observability/status consumers of state changes.
@@ -872,11 +901,13 @@ Part B: Tracker state refresh
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
-When the service starts:
+On the first admitted poll after the service starts (deferred while unready or drained):
 
 1. Query tracker for issues in terminal states.
-2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+2. For each returned issue identifier, stop any associated worker before removing its
+   workspace; retain the checkout if stopping fails.
+3. If the terminal-issues fetch fails, log a warning, delete nothing and continue.
+   This one startup attempt is not repeated by ordinary polls, reload or readiness recovery.
 
 This prevents stale terminal workspaces from accumulating after restarts.
 
@@ -1148,6 +1179,13 @@ Optional provider-native agent tool extension:
   provider and client documentation when identifying credential names and aliases, as these can
   change over time. Literal credentials in a repo-owned `WORKFLOW.md` remain readable to a child
   with workspace access and SHOULD NOT be used when this isolation matters.
+- Explicit project-tool environment selection MAY forward credentials needed by repository tools.
+  Ambient inference variables MUST NOT become admission gates or automatic provider selection.
+  The Claude helper MUST validate selected names at one native environment boundary, exclude
+  tracker-secret names from the captured adapter binding and reserve identity, inference and
+  runtime/preload selectors. Transport selected values as data rather than helper startup variables.
+  Invalid selection diagnostics MUST NOT include values; cleanup MUST NOT receive the selection.
+  Existing project credential files and selected Git forwarding remain the source of operator intent.
 - Unsupported tool names MUST return a structured failure result using the targeted protocol and
   continue the session.
 - Each adapter that ships tools MUST document:
@@ -2351,3 +2389,288 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+
+## Optional Claude runtime extension
+
+The Elixir implementation can select one coding provider at startup. Codex is
+the default and keeps the app-server contract above. The qualified Claude
+container profile uses a pinned native SDK helper through a bounded versioned
+stdio protocol; OTP retains workspace, continuation, tracker binding and
+scheduling authority. Selection survives workflow reload. Both providers use the
+configured global and per-state concurrency limits, with Sonnet as Claude default.
+Workflow and helper validation accept nonblank model identifiers up to 256
+characters unchanged. Native runtime support validation owns the model catalog;
+wrapper model allowlists MUST NOT duplicate it. SDK/CLI pins are owned by the
+production npm manifest/lock and reused by qualification. Node checks installed
+dependencies against those pins. Elixir checks protocol/policy version 1 and
+bounded diagnostic version strings, rather than dependency literals.
+Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
+omission preserves the model default. Terminal and web dashboards expose the
+configured effort, also available as `agent.effort` in the state API.
+Native subscription authentication is checked without model probes. Billing-attestation files and expiry are not required.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing and authentication failures end the attempt; explicit permission/input stops remain issue-blocked.
+No API-key inference fallback is configured. Model-free readiness is an observation,
+not a durable account pause. A failed observation is refreshed automatically after
+repair, including while drained or paused. One supervised task performs the check
+at startup, on explicit refresh/resume/recheck and every 30 seconds after completion.
+The scheduler remains responsive to snapshots, drain and worker exits. GNU timeout
+bounds each external check process group to 35 seconds; native version/auth calls
+retain their individual 15-second limits. Task or scheduler exit may leave a
+model-free OS check running only until that deadline; restart may briefly overlap
+that old bounded check. No inference occurs in readiness checks. The last completed
+observation is used between checks; pending explicit controls block admission.
+Unchanged health observations preserve the configured tracker poll cadence.
+Admission transitions and explicit controls request prompt reconciliation,
+coalescing with any poll cycle already in progress.
+Drain cancels a waiting resume/recheck, and late results cannot undrain or replace a pinned
+account.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+ Only the exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is a proven pre-input observation and is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their existing recovery requirements.
+
+Model-free readiness observations govern new admission. Existing native sessions
+retain their captured startup identity/configuration and actual runtime auth/policy
+stops; an unhealthy observation does not introduce cross-worker cancellation or a
+durable global turn gate. Native session admission validates the current native login without a billing attestation.
+
+Native terminal results must correlate to the current input; text, malformed
+frames or partial EOF cannot complete a turn. Authentication and shared policy
+failures use ordinary scheduler retry without new project pauses. Temporary quota failures use the existing scheduler
+retry lifecycle and bounded backoff, extended to a reliable provider reset time
+when supplied. Quota cooldowns expire automatically; unknown resets use backoff.
+Native authentication and shared policy failures end the attempt and use existing
+scheduler backoff, without writing new account-pause files. Retry diagnostics preserve
+the original native cause. Native readiness still governs admission; a not-ready
+observation retains queued attempt history. Explicit permission/input stops remain
+issue-blocked. Historical auth/policy files retain explicit recheck requirements.
+
+Only reliable future quota resets are persisted for restart cooldown, by the scheduler.
+The adapter returns outcomes without writing pause state. If the write fails, logs
+identify the state path and repair action; retry diagnostics retain both the quota
+cause and filesystem error. Existing retry metadata keeps admission and retries delayed
+until the latest observed reset, through drain/resume and pending tracker state changes.
+A queued retry consumes no running-worker capacity. Repaired storage lets the next
+native quota outcome persist normally. An unwritten reset cannot survive scheduler
+restart: model-free readiness does not attest quota availability, and the next native
+outcome establishes any renewed cooldown. There is no fallback store or universal latch.
+
+No durable consumed-quota-probe gate survives handoff, interruption or restart.
+Legacy consumed probes and expired/unknown quota records do not block dispatch.
+Tracker errors are issue-scoped; the agent owns tracker reconciliation. Established
+session protocol errors, unexpected EOF, helper timeouts and tracker delivery
+failures use ordinary scheduler backoff after bounded cleanup in the retained
+workspace. The runner MUST NOT replay tracker mutations; each attempt requires
+live target readback before uncertain writes. Explicit input/permission, actual
+auth/policy/schema/identity stops retain their own behavior. Claude native SDK
+turn-allowance exhaustion MUST close the exhausted session and return normally
+through shared scheduler continuation; a fresh live tracker read and dispatch
+limits govern session renewal in the retained workspace. It MUST NOT create a
+permanent issue block or reuse the exhausted session.
+Recognized explicit model-free readiness failures before hello use startup retry
+without a durable pause; unknown explicit readiness errors retain their existing
+classification. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+MUST use ordinary retry rather than a durable policy pause, preserving fixed
+failure categories and the OS helper exit status. Exact attributable
+historical pre-hello transport pause records MAY be ignored without deleting
+their evidence; ambiguous policy records MUST retain explicit recheck.
+Transient startup protocol/native initialization failures
+attempt a correlated bounded stop, then retain their original retry classification
+even when cleanup acknowledgement is missing or foreign. Missing/invalid captured
+ownership metadata aborts startup and uses normal retry, never a global pause;
+expected account/profile mismatch remains an independent policy stop.
+
+The existing attempt task owns normal cleanup once. Scheduler cancellation MUST
+attempt the captured session's common interrupt callback before retiring the Task
+and reconciling its claim/workspace. Captured-session native interrupt and ordinary
+Task retirement run in an existing supervised Task, outside the scheduler callback.
+Abnormal cleanup-task exit falls back to existing bounded Task-only retirement. The running
+entry retains its claim and capacity until cleanup finishes; concurrent retirements
+remain independent, and repeated tracker reconciliation updates the pending outcome
+without starting another cleanup. Terminal tracker state supersedes pending retry.
+Scheduler snapshots, controls, readiness and sibling DOWN handling remain responsive.
+Callback error or exception MUST NOT retain an eternal worker/claim. Bounded cleanup
+failure is a diagnostic, not a global pause,
+readiness refusal or mandatory-container-replacement requirement. Exact primary
+returns/exceptions survive cleanup failure; bounded primary and cleanup causes
+are logged separately with available issue/session correlation. Captured
+killed/shutdown/linked-Port `:epipe` owner loss reuses generation-checked fallback
+cleanup before ordinary retry. The fallback command and its own process group have
+a ten-second GNU timeout. Unknown ownership before publication keeps the existing
+Task-only recovery path. Neither timeout nor Task exit proves all detached native
+or shell descendants have exited: baseline recovery intentionally accepts that
+limit without a new watchdog, registry, native wrapper or supervision service.
+
+Drain remains durable, account identity remains pinned, and actual auth/quota/policy
+pauses remain independent of cleanup. Retired `claude-cleanup-unconfirmed` files
+MUST be ignored without deleting bytes; uniquely attributed `policy_blocked`
+records with code `cleanup_restart_required` and stage `cleanup` are ignored
+read-only. Known legacy `native_ownership_unavailable`/`startup` policy records are
+also retired read-only. Untagged policy records are ambiguous with real native policy and retain
+the existing fresh healthy explicit recheck path, never mandatory replacement
+solely because an old marker exists. A retired cleanup tag does not prove that no
+older real pause was overwritten; unknown historical causes cannot be reconstructed.
+Public
+state adds provider/readiness/pause fields without removing legacy token fields.
+Pause records MAY expose optional allowlisted `code`/`stage` diagnostics for
+actual startup pauses. Retired attributed cleanup diagnostics are interpreted only
+for the read-only migration above. Invalid or missing diagnostic metadata MUST NOT
+change pause validity, priority, cooldown or recovery behavior. The effective
+winning pause retains its own diagnostic metadata; legacy records acquire no
+invented cause. Controls MUST preserve bounded readiness/admission refusal causes
+and distinguish recheck refusal from durable-state write failure. Raw provider
+text, prompts, credentials and stderr MUST NOT be persisted as diagnostic causes.
+Recoverable turn results MAY include a fixed diagnostic code for native EOF,
+event failure or turn timeout while retaining the existing outcome. The adapter
+MUST normalize optional codes and locally known transport failures to bounded
+causes; unknown or absent codes retain the generic failure. Existing issue/session
+and request correlation MUST reach worker/retry logs without provider text.
+Recoverable turn diagnostics MUST NOT create durable pause state or change cleanup,
+acknowledgement, input-required precedence or retry policy. After a process restart,
+these transient causes remain available only through existing retained operational
+logs. Historical pause files preserve their previously recorded bounded diagnostics.
+The orchestrator's admission result is authoritative for dispatch, status and
+resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
+neither reads nor modifies Claude pause evidence, including retry-delay decisions.
+Resume refuses retained authentication/policy pauses until explicit repair/recheck.
+A retained quota cooldown may resume polling while admission remains false;
+updater completion must explicitly report this intentional pause rather than claim
+operational dispatch. New candidates must prove admission, not only native readiness
+or successful HTTP resume. Verified rollback sources may use their pre-admission
+API only with native readiness, no drain and no retained pause.
+User/project/local native settings MUST be excluded consistently by coding
+sessions and native authentication probes/commands. Excluded files and project
+MCP configuration MUST NOT become file-existence admission gates. Managed/remote
+organizational policy MUST remain native-owned, including canonical Linux files,
+managed drop-ins and account/trust-dependent remote settings. Symphony MUST NOT
+reject organizational policy by file existence or implement a second settings/routing
+resolver. Native permission rules and native strict-MCP incompatibility errors apply.
+Model-free runtime/auth readiness MUST NOT be represented as full native policy or
+session compatibility. Native initialization incompatibility uses bounded startup
+diagnostics and ordinary capped scheduler retry;
+it MUST NOT create a new organizational-policy file gate or persistent policy latch.
+User plugin inventory and home-config managed-settings.json MUST NOT gate admission
+when excluded by the qualified native runtime. Native subscription login and explicit
+session configuration remain validated; Symphony configures no API-key/cloud fallback.
+Native organizational settings may configure credentials, endpoints, hooks and routing.
+A subscription profile or provider label MUST NOT be represented as an endpoint or
+billing guarantee. Codex retains its existing native policy behavior.
+
+See docs/claude.md for the closed configuration, isolation assumptions and
+qualified transition contract.
+
+Expected scheduler cancellation when an issue leaves active states must not
+create a helper protocol failure. A healthy explicit operator recheck clears the recovered auth/policy pause before normal dispatch, without a turn-completion lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only. Quota recovery likewise requires no turn-completion handshake.
+
+Tracker recovery applies to both Codex and Claude and follows the original Codex
+model: deliver errors and partial results to the agent rather than withholding
+uncertain outcomes. Normalize raised, malformed or oversized results into bounded
+tool failures. No mutation is automatically replayed. Every initial/retry prompt
+instructs the agent to inspect live target state before retrying writes, reconcile
+partial mutations target by target, and avoid duplicate creates. It may continue
+safe independent work while an outcome is unresolved, blocking only its issue
+when remaining required work depends on that outcome. Custom workflow prompts
+receive the same runtime recovery guidance.
+
+New tracker calls do not create global intent gates. Existing unresolved-call
+records remain recovery evidence in the matching issue's prompt. Legacy tracker
+uncertainty and worker protocol pauses must not block other issues or mask later
+account-wide auth/quota/policy failures. Redacted logs retain document hashes,
+provider, correlation IDs, delivery phase, response/delivery reason, status/code
+and timing without query text or credentials. Execution certainty, GraphQL
+operation kind and request-versus-execution error categories are not inferred. The bounded issue-local legacy notice remains compatibility for existing
+volumes until evidence-preserving retirement; no new intent writer or automatic
+evidence deletion is introduced. Delivery acknowledgement is not proof
+of outcome reconciliation. Restart recovery reads live tracker state.
+
+Development runner updates may refresh a pending candidate from the current
+checkout after building and preflighting it. Refresh must verify ownership and
+image identity, drain/stop the previous candidate before replacement, retain the
+rollback source and volumes until readiness succeeds, and persist the replacement
+image atomically before starting it. Interrupted refreshes must remain retryable.
+Stable update recovery retains its recorded candidate image.
+Installed updates MUST repeat idempotent installation and setup even when Git is already
+current, so retry completes failed setup without persistent completion state. After the
+source fast-forward, combined source/runner updates MUST reload the newly installed
+implementation at that exact revision, preserving resolved paths and transition target.
+Completion MUST NOT fetch again or mix old transition functions with new runner sources.
+Official runner mutations MUST share advisory ownership by runner identity, including
+start, stop, drain, resume, recheck and updater pause, transition and rollback. Configuration
+path overrides MUST NOT allow two owners of the same runtime runner. Nested updater
+operations reuse their held ownership. Competing mutations refuse before container or
+control changes; read-only commands and unrelated projects remain concurrent. The original
+configuration-local updater lock remains for compatibility with older launchers.
+
+An update retry with a stopped retained candidate MUST verify its provider, image,
+storage, mounts and port, and the inactive retained source's journal identity before
+starting that container. Preserve its image, volumes, authentication and persistent markers;
+current admission checks still gate completion and removal of rollback evidence.
+
+Cooperating installed source updaters sharing a checkout MUST hold one process-held advisory
+ownership from before fetch through exec handoff, install/setup and any selected transition.
+The source lock inode lives in Git metadata and uses a descriptor separate from project
+transition ownership. Handoff MUST retain the same open description and validate its owned,
+regular, single-link inode and existing exclusive ownership without reopening it. Internal
+completion without held source ownership MUST refuse. Competing source-only or different-
+project updates MUST refuse before mutating source. Process/child exit releases ownership
+without completion state. Older callers and manual Git operations do not participate in
+this ownership; exact-revision checks remain required and source-only adoption requires
+finishing older calls. Non-mutating pause/rollback and isolated development-runner behavior
+remain unchanged.
+Installed source updates MUST validate the configured remote and upstream merge ref
+`refs/heads/main` before fetching or installing; a local branch name alone is insufficient.
+Local HEAD MUST be an ancestor of or equal to fetched remote main before installation;
+otherwise retain the local commits and refuse without resetting the source.
+Runner storage derives from the selected config directory after CLI options are resolved,
+unless an explicit runner-home override is present. Runner transition exclusion uses a
+stable regular-file advisory lock inode at the original legacy lock pathname, held through
+the updater and its in-flight commands. Older mkdir-based launchers MUST be excluded in
+both acquisition orders. Retiring a proven-dead legacy directory MUST preserve a newly
+acquired replacement directory and its owner. Crashes
+release it without separately published owner metadata. Unknown legacy ownerless locks
+remain refused; only a provably absent legacy owner may be retired on ordinary retry.
+Selected runner metadata is a derived cache, not transition authority. Successful
+update/recovery and rollback MUST atomically record the verified selected
+container image, provider, native profile and port before completing the journal.
+A candidate created before metadata publication MUST remain recoverable without
+trusting stale cached identity. Existing journal intent and verified rollback
+source evidence remain authoritative until transition completion.
+Before starting a target or a stopped retained rollback source, restore its
+exclusive workspace/state volume ownership: Claude UID/GID11001, Codex UID/GID0.
+The actual retained container/image determines rollback identity; cached target
+intent does not. Ownership mutation MUST refuse active volume users and an active
+retained source. Interrupted preparation leaves the stopped source and journal
+retryable. New-candidate preparation writes drain/unresumed markers before chown.
+Ownership-only rollback MUST preserve cleanup uncertainty and marker semantics;
+it MUST NOT add Git trust exceptions or clear uncertainty merely to restore UID.
+
+### Provider-owned pause isolation
+
+The pause boundary MUST return ready/no-op for Codex before reading, normalizing,
+writing or reconciling Claude pause state. Shared scheduler admission consumes
+normalized readiness provider/profile/ready fields rather than a separate
+provider-specific bypass. Claude account pauses retain their existing semantics.
+Issue-local legacy tracker recovery evidence remains available to either provider;
+it is not a project dispatch gate.
+
+### Shared provider concurrency
+
+Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
+`agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
+additional Claude worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured capacity immediately; new native failures use existing scheduler backoff and native readiness. Quota cooldown expiry restores normal configured capacity.
+The deprecated positive
+`claude.max_concurrent_agents` input is accepted for existing workflow compatibility
+but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.
+Reloaded limits govern new starts without terminating existing sessions. The state
+API reports the effective global setting as `agent.max_concurrent_agents`.

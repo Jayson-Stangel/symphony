@@ -1,3 +1,9 @@
+FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS claude-deps
+WORKDIR /opt/symphony/claude
+COPY runner/claude/package.json runner/claude/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
+COPY runner/claude/*.mjs ./
+
 FROM elixir:1.19@sha256:db1cbca0b49e26e65dd804c75f27ec5f01835f1d29f8b8e4cc8a51f01f986f9f AS browser-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && gh --version \
   && rm -rf /var/lib/apt/lists/*
 
-# Keep browser tools readable by isolated browser test users.
+# Keep browser binaries shared across the root Codex and non-root Claude users.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/symphony/ms-playwright
 WORKDIR /opt/symphony/browser
 COPY runner/browser/package.json runner/browser/package-lock.json ./
@@ -25,13 +31,11 @@ RUN npm ci --ignore-scripts --no-audit --no-fund \
 COPY runner/browser/smoke.cjs ./
 RUN node smoke.cjs
 
-FROM browser-tools AS codex
-LABEL com.symphony.agent=codex
-RUN npm install --global @openai/codex@latest
-
+FROM browser-tools AS common
 WORKDIR /opt/symphony/elixir
 COPY elixir/mix.exs elixir/mix.lock ./
-RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod
+RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod \
+  && MIX_ENV=prod mix deps.compile
 COPY elixir ./
 RUN MIX_ENV=prod mix escript.build
 
@@ -43,3 +47,48 @@ RUN chmod 755 /usr/local/bin/symphony-runner
 EXPOSE 4010
 
 ENTRYPOINT ["/usr/local/bin/symphony-runner"]
+
+FROM common AS claude
+LABEL com.symphony.agent=claude com.symphony.protocol=1
+COPY --from=claude-deps /usr/local/bin/node /usr/local/bin/node
+COPY --from=claude-deps /opt/symphony/claude /opt/symphony/claude
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --gid 11001 claude \
+  && useradd --uid 11001 --gid 11001 --home-dir /home/claude claude \
+  && install -d -o claude -g claude -m 700 /home/claude /workspaces /var/lib/symphony \
+  && install -d /opt/symphony/claude/plugin/.claude-plugin /opt/symphony/claude/plugin/skills \
+  && install -d -m 755 /etc/symphony/claude \
+  && printf '{"name":"symphony","version":"1.0.0","description":"Canonical Symphony procedures"}\n' \
+    > /opt/symphony/claude/plugin/.claude-plugin/plugin.json \
+  && for skill in commit push pull linear land; do \
+       ln -s "/opt/symphony/skills/$skill" "/opt/symphony/claude/plugin/skills/symphony-$skill"; \
+     done \
+  && chmod -R a-w /opt/symphony/claude /opt/symphony/skills
+COPY runner/claude/entrypoint.sh /usr/local/bin/symphony-claude-runner
+COPY runner/claude/git-credential.sh /usr/local/bin/symphony-git-credential
+RUN chmod 755 /usr/local/bin/symphony-claude-runner /usr/local/bin/symphony-git-credential
+ENV HOME=/home/claude CLAUDE_CONFIG_DIR=/home/claude/.claude \
+    CLAUDE_CODE_DISABLE_FAST_MODE=1 DISABLE_AUTOUPDATER=1 SYMPHONY_CONTAINERIZED=1
+USER 11001:11001
+WORKDIR /var/lib/symphony
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/symphony-claude-runner"]
+
+# Credential-free Linux verification of the same transport and process ownership.
+FROM claude AS claude-test
+USER 0:0
+COPY . /opt/symphony
+ENV MIX_HOME=/opt/symphony/test-mix HEX_HOME=/opt/symphony/test-hex
+WORKDIR /opt/symphony/elixir
+RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=test mix deps.get \
+  && MIX_ENV=test mix deps.compile \
+  && chown -R 11001:11001 /opt/symphony /home/claude
+COPY --chown=11001:11001 --from=claude-deps /opt/symphony/claude/node_modules /opt/symphony/runner/claude/node_modules
+USER 11001:11001
+ENTRYPOINT ["mix"]
+CMD ["test", "--cover"]
+
+# The default target retains Codex's existing root/auth layout.
+FROM common AS codex
+LABEL com.symphony.agent=codex com.symphony.protocol=1
+RUN npm install --global @openai/codex@latest

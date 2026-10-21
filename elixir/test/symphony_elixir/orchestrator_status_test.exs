@@ -1,5 +1,46 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Tracker.Memory
+
+  test "live terminal snapshot retains agent identity and unavailable token usage" do
+    previous = Application.get_env(:symphony_elixir, :coding_agent)
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:symphony_elixir, :coding_agent, previous)
+      else
+        Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+    parent = self()
+    name = Module.concat(__MODULE__, :IdentityDashboard)
+    render_fun = fn content -> send(parent, {:identity_frame, content}) end
+    opts = [name: name, enabled: true, refresh_ms: 60_000, render_fun: render_fun]
+    pid = start_supervised!({StatusDashboard, opts})
+    send(pid, :refresh)
+    StatusDashboard.notify_update(name)
+    assert_receive {:identity_frame, content}, 1_000
+    assert content =~ "Agent: Claude Code"
+    assert content =~ "Model: sonnet"
+    assert content =~ "Reasoning: Model default (configured)"
+    assert content =~ "Tokens: unavailable"
+
+    snapshot = Orchestrator.snapshot()
+    configured = %{snapshot | agent: %{snapshot.agent | effort: "xhigh"}}
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, configured}, 0.0)
+    assert rendered =~ "Reasoning: xhigh (configured)"
+    agent = %{snapshot.agent | provider: :codex, model: "gpt-example", model_source: "last_session"}
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: agent}}, 0.0)
+    assert rendered =~ "Agent: Codex"
+    assert rendered =~ "Model: gpt-example (last session)"
+    assert rendered =~ "Reasoning: Runner default (configured)"
+    configured = %{snapshot | agent: %{agent | effort: "ultra"}}
+    assert StatusDashboard.format_snapshot_content_for_test({:ok, configured}, 0.0) =~ "Reasoning: ultra (configured)"
+    rendered = StatusDashboard.format_snapshot_content_for_test({:ok, %{snapshot | agent: %{agent | model: nil}}}, 0.0)
+    assert rendered =~ "Not yet reported"
+  end
 
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
@@ -64,6 +105,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
 
     :sys.replace_state(pid, fn _ -> state_with_issue end)
+    send(pid, {:worker_agent_session, issue_id, %{native: %{model: "gpt-example"}}})
 
     now = DateTime.utc_now()
 
@@ -88,6 +130,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.agent.model == "gpt-example"
+    assert snapshot.agent.model_source == "last_session"
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
@@ -851,7 +895,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms >= 0
   end
 
-  test "polling cleans retained unclaimed terminal workspaces after startup" do
+  test "unclaimed completed workspaces wait for restart instead of recurring terminal sweeps" do
     workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -867,12 +911,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert {:ok, workspace} = Workspace.create_for_issue(issue)
     File.write!(Path.join(workspace, "progress"), "keep until finished")
     pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :RetainedCleanup)})
-    assert is_map(GenServer.call(pid, :snapshot))
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 1_000))
     assert File.read!(Path.join(workspace, "progress")) == "keep until finished"
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Done"}])
 
-    assert is_map(wait_for_snapshot(pid, fn _ -> not File.exists?(workspace) end, 1_000))
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    assert File.read!(Path.join(workspace, "progress")) == "keep until finished"
+    refute File.exists?(Path.join(workspace_root, "cleanup-count"))
+    stop_supervised!(Orchestrator)
+    restarted = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :RetainedCleanup)})
+    assert is_map(wait_for_snapshot(restarted, fn _ -> not File.exists?(workspace) end, 1_000))
     assert File.read!(Path.join(workspace_root, "cleanup-count")) == "cleaned"
   end
 
@@ -893,9 +943,115 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     File.write!(Path.join(active_path, "progress"), "retained")
 
     pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :StartupCleanup)})
-    assert is_map(GenServer.call(pid, :snapshot))
+    assert is_map(wait_for_snapshot(pid, fn _ -> not File.exists?(done_path) end, 1_000))
     refute File.exists?(done_path)
     assert File.read!(Path.join(active_path, "progress")) == "retained"
+  end
+
+  test "ordinary dispatch queries active and blocked states without terminal history" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_blocked_states: ["Blocked"],
+      poll_interval_ms: 60_000
+    )
+
+    # Completed history is irrelevant to ordinary dispatch after the startup sweep.
+    issues = for n <- 1..2_000, do: %Issue{id: "done-#{n}", identifier: "DONE-#{n}", title: "Finished", state: "Done"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, issues)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :BoundedHistory)})
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 5_000))
+    Code.ensure_loaded!(Memory)
+    :erlang.trace_pattern({Memory, :fetch_issues_by_states, 1}, true, [:local])
+    :erlang.trace(pid, true, [:call])
+
+    try do
+      for _ <- 1..3 do
+        send(pid, :run_poll_cycle)
+        assert is_map(GenServer.call(pid, :snapshot))
+        assert_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, [states]}}, 1_000
+        assert MapSet.new(states) == MapSet.new(["Todo", "In Progress", "Blocked"])
+      end
+
+      ref = :erlang.trace_delivered(pid)
+      assert_receive {:trace_delivered, ^pid, ^ref}, 1_000
+      refute_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, _}}, 0
+    after
+      :erlang.trace_pattern({Memory, :fetch_issues_by_states, 1}, false, [:local])
+    end
+  end
+
+  test "failed startup cleanup preserves checkouts and is not retried by ordinary polls" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    issue = %Issue{id: "retained", identifier: "KEEP-1", title: "Keep", state: "Done"}
+
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {_address, unavailable_port}} = :inet.sockname(listener)
+    :ok = :gen_tcp.close(listener)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_endpoint: "http://127.0.0.1:#{unavailable_port}/graphql",
+      workspace_root: workspace_root
+    )
+
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "preserved")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :FailedCleanup)})
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 1_000))
+    assert File.read!(Path.join(workspace, "progress")) == "preserved"
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    assert File.read!(Path.join(workspace, "progress")) == "preserved"
+  end
+
+  test "invalid current configuration cannot perform the pending startup cleanup" do
+    # This fixture owns its scheduler; the default scheduler must not observe its
+    # temporary valid Memory configuration and independently clean the checkout.
+    workflow_path = Workflow.workflow_file_path()
+    previous_workflow = File.read!(workflow_path)
+    previous_issues = Application.fetch_env(:symphony_elixir, :memory_tracker_issues)
+    drain_path = Path.join(Config.agent_state_root(), "agent-draining")
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+
+    on_exit(fn ->
+      File.write!(workflow_path, previous_workflow)
+
+      case previous_issues do
+        {:ok, issues} -> Application.put_env(:symphony_elixir, :memory_tracker_issues, issues)
+        :error -> Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      end
+
+      File.rm(drain_path)
+      assert :ok = WorkflowStore.force_reload()
+      assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+    end)
+
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    issue = %Issue{id: "invalid-config", identifier: "KEEP-CONFIG", title: "Keep", state: "Done"}
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "preserved")
+    File.mkdir_p!(Config.agent_state_root())
+    File.write!(Path.join(Config.agent_state_root(), "agent-draining"), "draining")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :InvalidStartupCleanup)})
+
+    for kind <- [nil, "unsupported"] do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: kind, workspace_root: workspace_root)
+      :sys.replace_state(pid, &%{&1 | draining: false})
+      send(pid, :run_poll_cycle)
+      assert is_map(GenServer.call(pid, :snapshot))
+      assert :sys.get_state(pid).startup_cleanup_pending
+      assert File.read!(Path.join(workspace, "progress")) == "preserved"
+    end
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    refute :sys.get_state(pid).startup_cleanup_pending
+    refute File.exists?(workspace)
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
@@ -1017,6 +1173,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
     assert remaining_ms >= 9_500
     assert remaining_ms <= 10_500
+  end
+
+  test "Claude status remains visible but cannot keep a stalled worker alive" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", codex_stall_timeout_ms: 1_000)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :ClaudeStallOrchestrator)})
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale = DateTime.add(DateTime.utc_now(), -5, :second)
+    issue = %Issue{id: "claude-stall", identifier: "CLAUDE-STALL", state: "In Progress"}
+    entry = %{pid: worker, ref: make_ref(), identifier: issue.identifier, issue: issue, started_at: stale}
+    entry = Map.put(entry, :session_id, "claude:one:turn")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    :sys.replace_state(pid, &%{&1 | running: %{issue.id => entry}, claimed: MapSet.new([issue.id])})
+
+    send(pid, {:codex_worker_update, issue.id, %{event: :agent_progress, provider: :claude, timestamp: stale, productive: true, payload: "Agent response received"}})
+
+    for _ <- 1..3 do
+      send(pid, {:codex_worker_update, issue.id, %{event: :agent_progress, provider: :claude, timestamp: DateTime.utc_now(), productive: false, payload: "Waiting for command"}})
+    end
+
+    state = :sys.get_state(pid)
+    assert state.running[issue.id].last_agent_activity_at == stale
+    assert DateTime.compare(state.running[issue.id].last_codex_timestamp, stale) == :gt
+    send(pid, :run_poll_cycle)
+    # Snapshot is a synchronous barrier after reconciliation.
+    GenServer.call(pid, :snapshot, 1_000)
+    state = :sys.get_state(pid)
+    refute Process.alive?(worker)
+    refute Map.has_key?(state.running, issue.id)
+    assert state.retry_attempts[issue.id].error =~ "stalled for"
+  end
+
+  test "Claude productive activity advances the stall clock while status and usage do not" do
+    stale = DateTime.add(DateTime.utc_now(), -60, :second)
+    now = DateTime.utc_now()
+    issue = %Issue{id: "claude-progress", identifier: "CLAUDE-PROGRESS"}
+    state = %Orchestrator.State{running: %{issue.id => %{session_id: nil, issue: issue, started_at: stale}}, codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    status = %{event: :agent_progress, provider: :claude, timestamp: now, productive: false}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, status}, state)
+    assert state.running[issue.id].last_agent_activity_at == nil
+    progress = %{status | productive: true}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, progress}, state)
+    assert state.running[issue.id].last_agent_activity_at == now
+    usage = %{event: :token_usage_updated, provider: :claude, timestamp: DateTime.add(now, 1, :second)}
+    assert {:noreply, state} = Orchestrator.handle_info({:codex_worker_update, issue.id, usage}, state)
+    assert state.running[issue.id].last_agent_activity_at == now
+    codex = %{event: :notification, timestamp: now, payload: %{}}
+    codex_state = %{state | running: %{issue.id => %{session_id: nil, issue: issue}}}
+    assert {:noreply, codex_state} = Orchestrator.handle_info({:codex_worker_update, issue.id, codex}, codex_state)
+    refute Map.has_key?(codex_state.running[issue.id], :last_agent_activity_at)
+    assert codex_state.running[issue.id].last_codex_timestamp == now
   end
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
@@ -1592,7 +1805,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
 
-  test "status dashboard coalesces rapid updates to one render per interval" do
+  test "status dashboard samples agent metadata and coalesces rapid updates" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()
     runtime_pid = Process.whereis(SymphonyElixir.AgentRuntimeSupervisor)
@@ -1617,6 +1830,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                )
     end
 
+    previous_agent = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 60_000)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    tasks = start_supervised!({Task.Supervisor, []})
+    {:ok, orchestrator} = Orchestrator.start_link(task_supervisor: tasks, readiness_opts: [node_path: "/missing-native-check"])
+
+    on_exit(fn ->
+      if Process.alive?(orchestrator), do: GenServer.stop(orchestrator)
+
+      case previous_agent do
+        {:ok, value} -> Application.put_env(:symphony_elixir, :coding_agent, value)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
     {:ok, pid} =
       StatusDashboard.start_link(
         name: dashboard_name,
@@ -1635,7 +1864,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     StatusDashboard.notify_update(dashboard_name)
-    assert_receive {:render, first_render_ms, _content}, 200
+    assert_receive {:render, first_render_ms, content}, 1_000
+    assert content =~ "Agent: Claude Code · blocked"
+    assert content =~ "Tokens: unavailable"
+    :sys.replace_state(orchestrator, &%{&1 | draining: true})
 
     :sys.replace_state(pid, fn state ->
       %{state | last_snapshot_fingerprint: :force_next_change, last_rendered_content: nil}
@@ -1644,7 +1876,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     StatusDashboard.notify_update(dashboard_name)
     StatusDashboard.notify_update(dashboard_name)
 
-    assert_receive {:render, second_render_ms, _content}, 200
+    assert_receive {:render, second_render_ms, content}, 1_000
+    assert content =~ "Agent: Claude Code · draining"
     assert second_render_ms > first_render_ms
     refute_receive {:render, _third_render_ms, _content}, 60
   end

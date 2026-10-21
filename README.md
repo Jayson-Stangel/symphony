@@ -10,13 +10,13 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
-The supplied workflow uses `Blocked` for work requiring external intervention and reserves
-`Human Review` for validated work ready for approval. Work stays `In Progress` while automated PR
-review is pending or findings are being resolved. Handoff requires completed automated review of
-the latest PR commit with no outstanding actionable findings; green CI alone is insufficient.
-New projects inherit this gate from the supplied workflow. Existing project workflows are
-preserved by `symphony init` and `symphony update`; adopt the automated PR review gate from
-[`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) in each existing project's delivery contract.
+The supplied workflow uses `Blocked` for work requiring external intervention and
+`Human Review` for validated work awaiting human assessment. Workers record available
+feedback and pending external reviews, then end their turn rather than poll while
+waiting. Required repository checks, reviews and human approval still govern merge.
+New projects inherit this policy; existing workflows are preserved by `symphony init`
+and `symphony update`. Adopt the review handoff from
+[`elixir/WORKFLOW.md`](elixir/WORKFLOW.md) deliberately in existing project contracts.
 Configure `tracker.blocked_states` to keep
 blocked tracker issues visible in the web dashboard across service restarts; move them back to an
 active state after resolving the blocker. Existing workflows must add this configuration and their
@@ -58,11 +58,20 @@ symphony setup --install-prerequisites
 symphony doctor
 ```
 
-`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`. On macOS,
-`--install-prerequisites` can install missing [mise](https://mise.jdx.dev/), GitHub CLI (`gh`),
-and Codex; Git comes from the Xcode Command Line Tools and Homebrew is required for automatic
-installation. Sign in to Codex and confirm `codex app-server` works before starting a listener.
+`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`, installs source
+dependencies and builds the local executable. On macOS, `--install-prerequisites` can install
+missing [mise](https://mise.jdx.dev/); Git comes from the Xcode Command Line Tools and Homebrew
+is required for automatic installation. Source setup and updates do not require or install
+host Codex or GitHub CLI: isolated images supply their own execution tools and authentication.
+`doctor` checks the installed source, links, skills, Git and container runtime availability.
+Use `runner doctor --agent codex|claude` to check the selected image's native authentication
+and isolated Git capabilities without starting a listener or making a model request.
 `symphony doctor --json` is available for scripts and CI.
+
+For optional `run --host` debugging, use `doctor --host` to check the pinned host runtime
+instead of a container runtime. Install and authenticate the tools selected by your workflow's
+Codex command, plus GitHub CLI when its procedures need it. Native command configuration and
+authentication remain owned by the agent; neither doctor mode requires a global `codex` binary.
 
 Keep the stable checkout in place. The global command points to it, while developer clones and
 worktrees may be anywhere, dirty, or on feature branches without changing the runtime used by
@@ -74,11 +83,33 @@ managed projects.
 symphony update
 ```
 
-The updater only fast-forwards a clean `main` checkout from its configured upstream. A typical
-installation of this fork tracks `jayson/main`, not OpenAI's `origin`. When source changes, it
-automatically rebuilds the pinned runtime; it also refreshes the global command and skill links
+The updater only fast-forwards a clean `main` checkout tracking `refs/heads/main` on a configured remote.
+A local branch named `main` tracking `dev` is refused before fetching or installing.
+Local commits outside fetched remote `main` are retained and refused before installation.
+Its fetch prunes stale tracking branches only for that upstream remote, resolving branch-name
+collisions while preserving local branches, tags, and other remotes' tracking refs. Custom fetch
+mappings cannot expand that pruning scope. A typical installation of this fork tracks
+`jayson/main`, not OpenAI's `origin`. Each successful update
+repeats idempotent installation and pinned runtime setup, including retries after interrupted setup;
+it also refreshes the global command and skill links
 without changing project credentials or workflows. You do not need to run `symphony setup` after
-a successful update.
+a successful update. A combined source/runner update hands completion to the newly installed
+launcher at the exact fetched revision, without a second fetch. When updating from a launcher
+that predates this handoff, first run a source-only `symphony update`, then invoke the updated
+command for a runner transition. Updated installed source updaters share checkout ownership
+from before fetching through installation, setup and the selected runner transition; a competing
+update refuses immediately. Finish already-running older launchers before adopting this behavior.
+Manual Git changes and older launchers do not participate in this ownership; revision checks
+continue to reject source changes they can observe.
+`--config-dir` selects configuration and its derived runner storage; an explicit
+`SYMPHONY_RUNNER_HOME` still takes precedence. Official runner start, stop, drain, resume,
+recheck and updater actions share one process-held advisory lock per runner, including
+commands using different configuration paths. A competing mutation refuses immediately;
+status, logs and unrelated projects remain available. The lock lives in a private per-user
+directory under `/tmp`; the original configuration-local lock also excludes older updaters. Rerun the
+updated command after a mixed-version refusal. A crashed updater releases the lock after any
+in-flight command exits. Unknown legacy ownerless
+locks remain refused because their ownership cannot be established safely.
 
 #### Run unattended work in an isolated container
 
@@ -149,19 +180,18 @@ portable Node/Git/agent base with Playwright and headless Chromium; add project-
 dependencies in `hooks.after_create` or publish your own compatible image and set
 `SYMPHONY_RUNNER_IMAGE`.
 
-The Codex image includes a version-matched Playwright/Chromium installation and its
+Both agent images include a version-matched Playwright/Chromium installation and its
 Linux dependencies. Use `playwright --version` or `playwright screenshot --browser chromium
 http://127.0.0.1:3000 screenshot.png` from a workspace. For scripted interactions, load
 `require('/opt/symphony/browser/node_modules/@playwright/test')` in Node.js. Browser binaries
 are shared through `PLAYWRIGHT_BROWSERS_PATH`; projects using a different Playwright version
 may need to set that variable to a writable workspace directory and install their own
 matching browser before running tests. The workflow template includes web app
-validation and evidence publication guidance. Workers must attach every generated
-review artifact to its Linear issue, link it in the workpad, and verify publication
-before handoff or completion. Local paths alone are insufficient because completed
-workspaces may be removed. Existing project workflows are preserved, so copy the
-evidence publication and app validation sections into them explicitly when adopting
-this capability.
+validation and acceptance-evidence guidance. Record results and durable proof links;
+publish artifacts needed to assess the change or explicitly required by the target
+repository or ticket. Do not require uploading every temporary log. Review artifacts
+must remain accessible after workspace cleanup and must not expose secrets. Existing
+workflows are preserved; adopt these sections deliberately when changing project policy.
 
 To verify just the browser layer without credentials or a running listener:
 
@@ -187,6 +217,35 @@ symphony init --linear-project my-service-linear-project-slug
 On first use this creates a repository-specific `WORKFLOW.md` from Symphony's full operating
 contract. Existing workflow and credentials are preserved. Review the generated workflow before
 starting the listener.
+
+Project resources use the repository basename plus the existing 12-character hash of its
+normalized `origin` URL. Credentials (`projects/<repository-identity>.env`), runner metadata and update
+journals, container names, workspace/state volumes and Claude login all share this identity.
+Unrelated repositories named `service` therefore remain independent. SSH and HTTPS spellings of
+the same remote normalize to the same identity; changing the repository origin changes identity.
+Codex login remains deliberately shared within the installation's runner namespace.
+
+For an installation that still uses basename-only credentials or container names, run the
+installed updater from that repository:
+
+```bash
+symphony update --migrate-project-identity
+```
+
+This explicit migration verifies the retained runner's repository storage and workflow mount,
+then renames credentials, cache, pending update/rollback journals, and retained containers.
+It preserves file contents, running/stopped state, workspace/state volumes, native logins and
+`WORKFLOW.md`; no agent is restarted. Retry the same command after interruption, then continue
+any pending `update --agent` or `update --rollback-runner`. Conflicting old/new resources, foreign
+storage and unknown metadata are refused before any move. Isolated development installations
+use `update --development-runner --migrate-project-identity` with their existing namespace.
+
+A basename-only credential file without an owned retained runner cannot prove its repository.
+Review it explicitly and copy the intended values to the new `projects/<repository-identity>.env` path
+reported by `init`/`run`; keep the old file until its owner is known. Existing workflows and
+unproven credentials are preserved. A repository gets a new independent credential template even
+if another same-basename repository has old resources or a workflow already exists. Only a retained runner with matching
+repository storage requires migration before `init`; ambiguous credentials are never reused.
 
 Symphony’s shared skills are global and namespaced—`symphony-commit`, `symphony-push`,
 `symphony-pull`, `symphony-linear`, and `symphony-land`. They carry reusable operational
@@ -255,8 +314,15 @@ remote can be cloned into a Symphony workspace.
 
 #### Configure credentials
 
+New clone-only workflows use `workspace.clone_url` so an interrupted unpublished
+clone can retry safely. Existing edited workspaces are preserved. Existing custom
+`after_create` workflows keep their manual interruption recovery; see the
+[workspace recovery details](elixir/README.md).
+
 Initialization stores a private, owner-only credential template outside the repository at
-`~/.config/symphony/projects/<repository>.env`. Add:
+`~/.config/symphony/projects/<repository-identity>.env`. The identity is the basename plus the
+existing normalized `origin` hash. Use the exact credentials path printed by `init` (or by
+`run` when credentials are missing), including any configuration-directory override. Add:
 
 ```dotenv
 LINEAR_API_KEY=lin_api_...
@@ -276,7 +342,7 @@ Verify repository access before starting a listener:
 
 ```bash
 set -a
-. ~/.config/symphony/projects/<repository>.env
+. ~/.config/symphony/projects/<repository-identity>.env
 set +a
 gh repo view <owner>/<repository>
 ```
@@ -313,15 +379,98 @@ help with the setup:
 
 ---
 
+## Model and reasoning configuration
+
+Codex workflows also accept optional `codex.model` and `codex.reasoning_effort`
+for new sessions. Both dashboards show configured reasoning levels. Omitted
+values preserve native runner defaults; see [workflow configuration](elixir/README.md).
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-### Codex-only runtime compatibility
+## Claude subscription workers
 
-This production candidate supports Codex only. `--agent codex` remains accepted for
-existing launcher scripts; other providers and workflow `claude` sections are rejected.
-The launcher retains namespaced storage, container ownership checks, immutable image
-verification, and the drain/backup/rollback update protocol. Existing workspaces,
-authentication volumes, and logs keep their identities. See
-[`docs/development.md`](docs/development.md) for the retained update contract.
+Codex remains the default. A qualified personal Claude profile adds isolated
+Claude workers through pinned Claude Code/Agent SDK and native subscription login. Both
+providers retain native organizational policy. Claude policy files do not create an
+extra Symphony admission gate; native settings may configure permissions and routing.
+Symphony adds no API-key/cloud fallback and does not guarantee native request endpoints
+or billing from a subscription profile.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing and authentication failures end the attempt and retry with scheduler backoff; explicit permission/input stops remain issue-blocked.
+Native failures do not depend on writing an account-pause file. Reliable quota resets
+retain their cooldown through existing retry metadata if storage fails; logs and retry
+diagnostics identify the native cause and storage repair needed. Only successfully
+persisted cooldowns survive restart. Historical auth/policy pauses retain explicit recheck.
+Sonnet remains the default; nonblank model identifiers pass unchanged to the
+native runtime, which validates support. Reasoning effort is configurable.
+Terminal and web dashboards show the configured Claude effort.
+The dashboard updates input tokens during Claude steps and confirms output tokens
+at turn completion; session totals include cached input and avoid duplicate tool blocks.
+It uses project-scoped credentials and
+model-free readiness checks. Both agents receive tracker errors and own recovery:
+read back uncertain writes before retrying, correct rejected requests, and contain
+unresolved failures to the affected issue. Tracker errors do not pause unrelated
+work. Redacted diagnostics retain request fingerprints and correlation/status
+fields without an execution-certainty classifier or GraphQL parser dependency.
+Claude continuation has no independent helper request ceiling; replay history is bounded by the
+shared `agent.max_turns` captured when an attempt starts.
+Per-attempt turn allowances use the original scheduler continuation path for
+both providers. Claude native SDK turn exhaustion also closes the session and
+yields to the same live tracker check before renewal in the retained workspace.
+New workflows do not impose live token/turn circuit breakers.
+Helper exit, timeout, malformed frames and incompatible handshakes before hello are
+transient startup failures, not native policy stops. Established-session
+transport/delivery and transient startup failures use bounded
+cleanup and normal scheduler recovery with backoff and tracker readback. Cleanup
+failure retains separate bounded primary/cleanup diagnostics and the original
+outcome; it does not require container replacement or block unrelated dispatch.
+Captured cancellation and owner-loss cleanup run on the existing task supervisor,
+keeping scheduler controls and sibling workers responsive while each retiring issue
+retains its claim and shared capacity. Captured process generations limit best-effort
+cleanup. Detached descendants may
+survive a crash, especially before ownership publication; baseline recovery does
+not claim universal native-process quiescence. Explicit auth/policy/input stops
+and durable drain retain their own semantics. See [setup, pauses and updater transitions](docs/claude.md)
+for the contract and its limits. Ordinary dispatch excludes terminal history; startup and tracked-issue reconciliation
+retain cleanup, with unclaimed completed workspaces waiting for the next restart.
+Existing stable installations change only through
+reviewed promotion and the installed `symphony update` command.
+Container execution keeps its fixed workspace, bind address and outer-container
+permission boundary. Requested SSH execution is rejected instead of silently removed.
+`/api/v1/state` exposes `agent.execution` with safe requested/effective bindings,
+also logged when container workflow settings load.
+
+For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
+with separate configuration, Docker resource names and a separate dashboard port.
+Development update retries rebuild from the current checkout and safely refresh
+stale pending candidates while retaining their rollback source.
+Update and rollback recovery reconstruct selected runtime metadata from the
+verified container before completing the transition; interrupted metadata writes
+do not require a new listener or manual cache repair.
+If an interrupted transition's verified candidate was stopped, retrying the updater starts
+that retained container and checks current admission before completing. Its workspace,
+state, native login and drain markers remain intact; the prior runner remains available
+for rollback until readiness succeeds.
+Provider changes and rollback restore ownership for the selected runtime so
+retained repositories remain usable by Git when switching back.
+
+Codex and Claude share the configured global and per-state worker limits. Use
+`agent.max_concurrent_agents: 1` for serial work or a larger value for bounded
+parallel work. Healthy explicit authentication/policy rechecks restore normal parallel capacity immediately, without waiting for a model turn. The deprecated `claude.max_concurrent_agents` input is accepted
+but ignored; move any desired limit into `agent`. See the
+[Claude workflow settings](docs/claude.md#workflow-settings) for migration details.
