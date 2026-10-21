@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { checkSettings, nativeExecutable, nativeIdentity } from '../runtime.mjs';
+import { nativeExecutable, nativeIdentity } from '../runtime.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'symphony-settings-'));
@@ -28,12 +28,6 @@ function fixture(t) {
   return { root, config, workspace, marker, env: { HOME: root, CLAUDE_CONFIG_DIR: config,
     PATH: '/usr/local/bin:/usr/bin:/bin', DISABLE_AUTOUPDATER: '1' } };
 }
-
-test('benign excluded project settings do not gate admission', t => {
-  const ctx = fixture(t);
-  // The historical guard accepted a workspace and rejected these benign files.
-  assert.doesNotThrow(() => checkSettings(ctx.workspace));
-});
 
 // These are real pinned native startup proofs, with no prompt or model request.
 test('excluded settings do not gate startup or contaminate the native auth probe', {
@@ -109,14 +103,17 @@ test('installed user inventory remains excluded while the user-source positive c
   }
 });
 
-test('canonical system policy remains active under isolated settings sources', {
+test('native canonical and drop-in policy applies while strict MCP retains its native refusal', {
   skip: process.platform !== 'linux' || process.getuid?.() !== 0 || !existsSync('/.dockerenv')
     || !existsSync('/opt/symphony/claude'),
-  timeout: 20_000,
+  timeout: 45_000,
 }, () => {
   const probe = new URL('./fixtures/native-policy-probe.mjs', import.meta.url);
-  const result = spawnSync(process.execPath, [probe.pathname], { encoding: 'utf8', timeout: 18_000 });
+  const result = spawnSync(process.execPath, [probe.pathname], { encoding: 'utf8', timeout: 40_000 });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { sdkManagedActive: true, nativeAuthMethod: 'api_key',
-    nativeApiKeySource: 'ANTHROPIC_API_KEY', noPrompt: true });
+  assert.deepEqual(JSON.parse(result.stdout), [
+    { source: 'canonical', nativeAuth: 'auth_required', appliedPermissionMode: 'default', noPrompt: true },
+    { source: 'drop-in', nativeAuth: 'auth_required', appliedPermissionMode: 'default', noPrompt: true },
+    { source: 'enterprise-mcp', nativeAuth: 'auth_required', nativeStrictMcpRefused: true, noPrompt: true },
+  ]);
 });

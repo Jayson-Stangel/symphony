@@ -2502,12 +2502,20 @@ API only with native readiness, no drain and no retained pause.
 User/project/local native settings MUST be excluded consistently by coding
 sessions and native authentication probes/commands. Excluded files and project
 MCP configuration MUST NOT become file-existence admission gates. Managed/remote
-organizational policy remains preserved in its canonical Linux path and remote
-cache; enterprise MCP config remains incompatible with strict MCP startup. These
-remain explicit unsupported-settings limits until separately qualified. User
-plugin inventory and home-config managed-settings.json MUST NOT gate admission
-when excluded by the qualified native runtime. This does not silently override
-organizational policy or enable alternate inference routing.
+organizational policy MUST remain native-owned, including canonical Linux files,
+managed drop-ins and account/trust-dependent remote settings. Symphony MUST NOT
+reject organizational policy by file existence or implement a second settings/routing
+resolver. Native permission rules and native strict-MCP incompatibility errors apply.
+Model-free runtime/auth readiness MUST NOT be represented as full native policy or
+session compatibility. Native initialization incompatibility uses bounded startup
+diagnostics and ordinary capped scheduler retry;
+it MUST NOT create a new organizational-policy file gate or persistent policy latch.
+User plugin inventory and home-config managed-settings.json MUST NOT gate admission
+when excluded by the qualified native runtime. Native subscription login and explicit
+session configuration remain validated; Symphony configures no API-key/cloud fallback.
+Native organizational settings may configure credentials, endpoints, hooks and routing.
+A subscription profile or provider label MUST NOT be represented as an endpoint or
+billing guarantee. Codex retains its existing native policy behavior.
 
 See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.

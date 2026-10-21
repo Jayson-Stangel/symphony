@@ -8,33 +8,49 @@ import { spawnSync } from 'node:child_process';
 if (process.argv[2] !== 'child') {
   assert.equal(process.getuid(), 0);
   assert.ok(existsSync('/.dockerenv'), 'requires a disposable Docker test container');
-  const path = '/etc/claude-code/managed-settings.json';
-  assert.equal(existsSync(path), false, 'requires an empty disposable policy profile');
+  const policy = '/etc/claude-code/managed-settings.json';
+  const dropins = '/etc/claude-code/managed-settings.d';
+  const mcp = '/etc/claude-code/managed-mcp.json';
+  for (const path of [policy, dropins, mcp]) assert.equal(existsSync(path), false, 'requires an empty disposable policy profile');
   mkdirSync('/etc/claude-code', { recursive: true });
-  writeFileSync(path, JSON.stringify({ env: { ANTHROPIC_API_KEY: 'inert-managed-policy-fixture' } }));
-  try {
-    const result = spawnSync(process.execPath, [process.argv[1], 'child'], {
-      uid: 11001, gid: 11001, encoding: 'utf8', timeout: 15_000,
-      env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
-    });
-    assert.equal(result.status, 0, result.stderr);
-    process.stdout.write(result.stdout);
-  } finally { rmSync(path); }
+  const settings = { permissions: { disableBypassPermissionsMode: 'disable', deny: ['Read(./restricted)'] } };
+  const results = [];
+  for (const source of ['canonical', 'drop-in', 'enterprise-mcp']) {
+    try {
+      if (source === 'canonical') writeFileSync(policy, JSON.stringify(settings));
+      if (source === 'drop-in') {
+        mkdirSync(dropins);
+        writeFileSync(join(dropins, 'fixture.json'), JSON.stringify(settings));
+      }
+      if (source === 'enterprise-mcp') writeFileSync(mcp, JSON.stringify({ mcpServers: { fixture: { command: '/bin/false' } } }));
+      const result = spawnSync(process.execPath, [process.argv[1], 'child', source], {
+        uid: 11001, gid: 11001, encoding: 'utf8', timeout: 12_000,
+        env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      results.push(JSON.parse(result.stdout));
+    } finally {
+      rmSync(policy, { force: true });
+      rmSync(dropins, { recursive: true, force: true });
+      rmSync(mcp, { force: true });
+    }
+  }
+  console.log(JSON.stringify(results));
 } else {
   const root = mkdtempSync(join(tmpdir(), 'symphony-native-policy-'));
   process.env.HOME = root;
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config');
   const { query, resolveSettings } = await import('@anthropic-ai/claude-agent-sdk');
-  const { nativeExecutable } = await import('../../runtime.mjs');
+  const { nativeExecutable, nativeIdentity } = await import('../../runtime.mjs');
+  const source = process.argv[3];
   const settings = await resolveSettings({ cwd: root, settingSources: [] });
-  assert.ok(settings.sources.some(source => source.source === 'managed' && source.policyOrigin === 'file'));
-  assert.ok(settings.effective.env.ANTHROPIC_API_KEY);
+  if (source !== 'enterprise-mcp') {
+    assert.ok(settings.sources.some(entry => entry.source === 'managed' && entry.policyOrigin === 'file'));
+    assert.deepEqual(settings.effective.permissions.deny, ['Read(./restricted)']);
+  }
   const env = { HOME: root, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
     PATH: '/usr/local/bin:/usr/bin:/bin', DISABLE_AUTOUPDATER: '1' };
-  const auth = spawnSync(nativeExecutable(), ['--setting-sources', '', 'auth', 'status', '--json'], {
-    cwd: root, env, encoding: 'utf8', timeout: 10_000,
-  });
-  assert.equal(JSON.parse(auth.stdout).authMethod, 'api_key');
+  assert.throws(() => nativeIdentity(nativeExecutable(), env), /auth_required/);
   let release;
   const idle = new Promise(resolve => { release = resolve; });
   async function* input() { await idle; }
@@ -44,9 +60,14 @@ if (process.argv[2] !== 'child') {
     allowDangerouslySkipPermissions: true, stderr: () => {},
   } });
   try {
-    await session.initializationResult();
-    assert.equal((await session.accountInfo()).apiKeySource, 'ANTHROPIC_API_KEY');
-    console.log(JSON.stringify({ sdkManagedActive: true, nativeAuthMethod: 'api_key',
-      nativeApiKeySource: 'ANTHROPIC_API_KEY', noPrompt: true }));
+    if (source === 'enterprise-mcp') {
+      await assert.rejects(session.initializationResult(), /cannot use --strict-mcp-config when an enterprise MCP config is present/);
+      console.log(JSON.stringify({ source, nativeAuth: 'auth_required', nativeStrictMcpRefused: true, noPrompt: true }));
+    } else {
+      const initialized = await session.initializationResult();
+      // The native applied mode, rather than the raw cascade alone, proves the restriction took effect.
+      assert.equal(initialized.current_permission_mode, 'default');
+      console.log(JSON.stringify({ source, nativeAuth: 'auth_required', appliedPermissionMode: 'default', noPrompt: true }));
+    }
   } finally { session.close(); release(); rmSync(root, { recursive: true, force: true }); }
 }
