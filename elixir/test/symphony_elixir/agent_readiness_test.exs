@@ -210,7 +210,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     refute File.exists?(guard)
     assert {:ok, %{draining: true}} = GenServer.call(pid, {:agent_control, :drain, false})
     refute File.exists?(guard)
-    assert {:probe, _} = AgentPause.current()
+    assert :ready = AgentPause.current()
     assert {:error, :invalid_action} = GenServer.call(pid, {:agent_control, :unknown, false})
     GenServer.stop(pid)
   end
@@ -559,6 +559,52 @@ defmodule SymphonyElixir.AgentReadinessTest do
     await(fn -> File.exists?(dispatched) end)
     assert :sys.get_state(pid).readiness.ready
     assert :ready = AgentPause.current()
+  end
+
+  test "original unscoped auth observation repairs automatically across restart and retains drain", ctx do
+    dispatched = Path.join(ctx.root, "legacy-dispatched")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 60_000,
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      hook_before_run: "touch '#{dispatched}'; exit 1"
+    )
+
+    issue = %Issue{id: "legacy-dispatch", identifier: "LEGACY-RECOVER", title: "Recover", state: "In Progress", dispatchable: true}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    File.mkdir_p!(Path.dirname(path))
+    bytes = Jason.encode!(%{version: 1, kind: "auth_required", profile: nil, phase: "waiting", resets_at: nil})
+    File.write!(path, bytes)
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    await_poll_idle(pid)
+    refute File.exists?(dispatched)
+    refute :sys.get_state(pid).readiness.ready
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {_timer, token} = :sys.get_state(pid).readiness_timer
+    send(pid, {:refresh_agent_readiness, token})
+    await_check(pid)
+    # This is real worker dispatch through the hook, before any coding/native model turn.
+    await(fn -> File.exists?(dispatched) end)
+    assert File.read!(path) == bytes
+    assert :ready = AgentPause.current()
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+    GenServer.stop(pid)
+    File.rm!(dispatched)
+    {:ok, restarted} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(restarted), do: GenServer.stop(restarted) end)
+    await_check(restarted)
+    await_poll_idle(restarted)
+    assert :sys.get_state(restarted).draining
+    refute File.exists?(dispatched)
+    assert File.read!(path) == bytes
+    assert {:ok, _} = GenServer.call(restarted, {:agent_control, :resume, false})
+    await(fn -> File.exists?(dispatched) end)
+    assert File.read!(path) == bytes
   end
 
   test "readiness recovery coalesces with a poll cycle already in progress", ctx do

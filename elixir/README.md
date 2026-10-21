@@ -587,8 +587,7 @@ Admission transitions and explicit controls request prompt reconciliation,
 coalescing with any poll cycle already in progress. GNU timeout bounds
 the external check group to 35 seconds, including after task/scheduler loss; an old
 OS check may briefly overlap restart until that deadline. Explicit runtime pauses,
-quota cooldowns, drain and cleanup safety remain enforced. Ambiguous unscoped
-legacy auth/policy pause files still require explicit recheck after repair.
+quota cooldowns, drain and cleanup safety remain enforced. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is ignored read-only as a proven pre-input observation. Profiled auth, policy, malformed and diagnostic-bearing legacy files retain their existing recovery requirements.
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
@@ -656,8 +655,7 @@ sessions and updater transition/rollback acceptance require separate evidence.
 
 Both coding providers use the existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
-one-worker ceiling for normal dispatch. Explicit authentication/policy rechecks
-retain one recovery owner until success, then resume configured parallel work.
+one-worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured parallel work immediately, without a model-turn lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only; actual runtime auth/policy stops still require explicit recovery.
 Legacy positive `claude.max_concurrent_agents` values remain
 accepted but are ignored; migrate the desired limit into the `agent` section.
 Changing limits affects new dispatch; existing sessions keep their ownership and

@@ -104,8 +104,7 @@ Both providers use `agent.max_concurrent_agents` (default 10) and
 value to 1 for serial execution, or 3 to allow three independent worker sessions;
 per-state limits can further restrict admission. Reloaded limits apply to new
 starts without terminating existing workers. Normal dispatch has no additional
-Claude cap. An explicit authentication/policy recheck admits one recovery owner
-until that turn succeeds; it then restores the configured parallel capacity.
+Claude cap. A healthy explicit authentication/policy recheck restores configured parallel capacity immediately, without waiting for a model turn.
 Quota cooldown expiry uses normal capacity.
 The old positive `claude.max_concurrent_agents` field is accepted for workflow
 compatibility but is deprecated and **ignored**. Move any desired cap to
@@ -195,10 +194,7 @@ stops; an unhealthy observation does not introduce cross-worker cancellation or 
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Authentication and shared policy failures reported by actual native sessions still
-require explicit operator recovery. Older readiness failures and actual session
-startup failures wrote indistinguishable unscoped pause records. Those ambiguous
-legacy records remain intact and still need explicit recheck after repair; the
-automatic-observation repair does not resolve that migration limitation. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
+require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and
@@ -248,8 +244,7 @@ included in these diagnostics. These fields help reconcile a write but do not
 prove whether an unconfirmed external effect occurred.
 
 An intentional scheduler stop when an issue leaves active states is cancellation,
-not a helper protocol failure. Confirmed cleanup can finish a non-quota operator
-recheck. Quota recovery uses scheduler retries and has no consumed-probe latch.
+not a helper protocol failure. Healthy explicit operator recheck clears recovered auth/policy pauses before dispatch. Recoverable turn failures then use normal scheduler retries, with no consumed-recheck latch.
 
 ```sh
 symphony runner drain
@@ -257,8 +252,7 @@ symphony runner recheck  # requires zero active workers and healthy native polic
 symphony runner resume
 ```
 
-These operations do not perform model probes. They expose at most the next normal
-work attempt. State snapshots (`agent.admission`) and successful resume/recheck
+These operations do not perform model probes. They restore normal configured admission after their existing native/profile checks; drain remains explicit. State snapshots (`agent.admission`) and successful resume/recheck
 responses (`admission`) report effective dispatch eligibility, its reason,
 provider/profile and optional quota retry time. Ordinary resume refuses retained
 Claude authentication/policy pauses; explicit recheck follows operator repair.

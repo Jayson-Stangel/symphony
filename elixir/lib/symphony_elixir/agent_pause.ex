@@ -8,15 +8,12 @@ defmodule SymphonyElixir.AgentPause do
   @startup_codes ~w(auth_required unqualified_auth unknown_auth_status unsupported_tool_schema duplicate_tool_name
                     native_ownership_unavailable native_initialization_timeout unexpected_native_restart policy_blocked protocol_error runtime_unavailable)
   @rank %{
-    "operator_recheck" => 0,
-    "operator_recheck_inflight" => 0,
-    "probe_inflight" => 0,
     "quota_exhausted" => 1,
     "auth_required" => 2,
     "policy_blocked" => 3
   }
 
-  @spec current() :: :ready | {:paused | :probe, map()}
+  @spec current() :: :ready | {:paused, map()}
   def current do
     read_pause()
   end
@@ -81,47 +78,6 @@ defmodule SymphonyElixir.AgentPause do
     atomic_write(pause_path(), merge_pause(old, Map.merge(value, diagnostics(details))))
   end
 
-  @doc "Consumes only an explicit authentication/policy recheck before sending input."
-  @spec begin_turn(String.t()) :: :ok | {:error, term()}
-  def begin_turn(profile) do
-    serialized(fn ->
-      case current() do
-        :ready ->
-          :ok
-
-        {:probe, %{"profile" => ^profile} = value} ->
-          atomic_write(pause_path(), %{value | "kind" => "operator_recheck_inflight", "phase" => "waiting", "resets_at" => nil})
-
-        _ ->
-          {:error, :probe_not_available}
-      end
-    end)
-  end
-
-  @spec complete_probe(String.t()) :: :ok | {:error, term()}
-  def complete_probe(profile) do
-    serialized(fn ->
-      case current() do
-        {:probe, %{"profile" => ^profile}} -> remove_pause()
-        {:paused, %{"kind" => kind, "profile" => ^profile}} when kind in ["probe_inflight", "operator_recheck_inflight"] -> remove_pause()
-        :ready -> :ok
-        {:paused, _value} -> :ok
-        _ -> {:error, :pause_not_clearable}
-      end
-    end)
-  end
-
-  @doc "Clear only a non-quota recheck after confirmed cleanup for an issue state change."
-  @spec cancel_recheck(String.t()) :: :ok | {:error, term()}
-  def cancel_recheck(profile) do
-    serialized(fn ->
-      case current() do
-        {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} -> remove_pause()
-        _ -> :ok
-      end
-    end)
-  end
-
   @spec explicit_recheck(String.t(), keyword()) :: :ok | {:error, term()}
   def explicit_recheck(profile, opts \\ []) do
     serialized(fn ->
@@ -173,7 +129,7 @@ defmodule SymphonyElixir.AgentPause do
     if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: remove_pause()
   end
 
-  defp recheck_pause(_pause, profile), do: write_probe(profile)
+  defp recheck_pause(_pause, _profile), do: remove_pause()
 
   defp validate_pending_names(names) do
     if Enum.all?(names, &Regex.match?(~r/^[A-Za-z0-9_-]{1,128}\.json$/, &1)), do: {:ok, names}, else: {:error, :unknown_state_file}
@@ -192,10 +148,6 @@ defmodule SymphonyElixir.AgentPause do
         error -> {:halt, error}
       end
     end)
-  end
-
-  defp write_probe(profile, kind \\ "operator_recheck") do
-    atomic_write(pause_path(), %{"version" => 1, "kind" => kind, "profile" => profile, "phase" => "probe", "resets_at" => nil})
   end
 
   defp read_pause do
@@ -219,11 +171,17 @@ defmodule SymphonyElixir.AgentPause do
     end
   end
 
+  # The exact original unscoped auth record came only from pre-input observations.
+  # Unknown fields or newer diagnostic-bearing auth stops are not legacy matches.
+  defp public_pause(%{"version" => 1, "kind" => "auth_required", "profile" => nil, "phase" => "waiting", "resets_at" => nil} = value)
+       when map_size(value) == 5,
+       do: :ready
+
   defp public_pause(%{"kind" => kind}) when kind in ["tool_outcome_uncertain", "protocol_error"], do: :ready
 
-  # Quota is a retry delay, never a lease that a turn must finish to release.
-  # Legacy consumed probes have no live owner after a restart or handoff.
-  defp public_pause(%{"kind" => "probe_inflight"}), do: :ready
+  # These historical scheduler permits are not unresolved native/tool outcomes.
+  # Preserve the files without recreating a turn-completion lease.
+  defp public_pause(%{"kind" => kind}) when kind in ["operator_recheck", "operator_recheck_inflight", "probe_inflight"], do: :ready
 
   defp public_pause(%{"kind" => "quota_exhausted"} = value) do
     reset = value["resets_at"]
@@ -234,7 +192,7 @@ defmodule SymphonyElixir.AgentPause do
   end
 
   defp public_pause(value) do
-    {if(value["phase"] == "probe", do: :probe, else: :paused), Map.merge(Map.take(value, ~w(version kind phase profile resets_at)), diagnostics(value))}
+    {:paused, Map.merge(Map.take(value, ~w(version kind phase profile resets_at)), diagnostics(value))}
   end
 
   defp valid_phase?("operator_recheck", phase), do: phase == "probe"

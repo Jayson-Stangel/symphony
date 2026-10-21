@@ -183,25 +183,27 @@ defmodule SymphonyElixir.ConcurrencyTest do
   end
 
   @tag skip: System.get_env("SYMPHONY_TEST_CLAUDE_CONCURRENCY") != "1"
-  test "one operator recheck owns recovery before normal configured concurrency resumes", ctx do
+  test "healthy explicit recheck restores configured concurrency and recoverable retries", ctx do
     profile = String.duplicate("a", 64)
     assert :ok = SymphonyElixir.AgentPause.record(:auth_required, %{profile: profile})
     assert {:ok, %{draining: false}} = GenServer.call(ctx.server, {:agent_control, :recheck, false})
+    assert :ready = SymphonyElixir.AgentPause.current()
     issues = Enum.take(ctx.issues, 3)
     set_issues(issues)
     poll(ctx.server)
-    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 1
-    await(fn -> Enum.count(issues, &started?(ctx, &1)) == 1 end)
-    assert {:paused, %{"kind" => "operator_recheck_inflight"}} = SymphonyElixir.AgentPause.current()
-    poll(ctx.server)
-    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 1
-    probe = Enum.find(issues, &started?(ctx, &1))
-    File.write!(Path.join([ctx.root, "workspaces", probe.identifier, "complete-once"]), "complete")
-    await(fn -> SymphonyElixir.AgentPause.current() == :ready end)
-    poll(ctx.server)
     await(fn -> Enum.all?(issues, &started?(ctx, &1)) end)
-    assert map_size(:sys.get_state(ctx.server, 20_000).running) == 3
-    assert Presenter.state_payload(__MODULE__, 5_000).agent.admission.ready
+    before = :sys.get_state(ctx.server, 20_000)
+    assert map_size(before.running) == 3
+    [failed | retained] = issues
+    path = Path.join([ctx.root, "workspaces", failed.identifier, "fail-once"])
+    File.write!(path, "fail")
+    await(fn -> Map.has_key?(:sys.get_state(ctx.server, 20_000).retry_attempts, failed.id) end)
+    File.rm!(path)
+    await(fn -> turn_count(ctx, failed) == 2 end)
+    after_retry = :sys.get_state(ctx.server, 20_000)
+    assert map_size(after_retry.running) == 3
+    for issue <- retained, do: assert(after_retry.running[issue.id].pid == before.running[issue.id].pid)
+    assert after_retry.running[failed.id].workspace_path == before.running[failed.id].workspace_path
     assert :ready = SymphonyElixir.AgentPause.current()
     stop_workers(ctx)
   end

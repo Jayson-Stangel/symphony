@@ -70,7 +70,6 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
     assert File.regular?(Path.join(ctx.root, "claude-pause.json"))
     assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
-    assert :ok = AgentPause.begin_turn(@profile)
     assert :ready = AgentPause.current()
   end
 
@@ -86,52 +85,49 @@ defmodule SymphonyElixir.AgentPauseTest do
     value = path |> File.read!() |> Jason.decode!() |> Map.put("resets_at", now - 1)
     File.write!(path, Jason.encode!(value))
     assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
-    assert :ok = AgentPause.begin_turn(@profile)
     assert :ready = AgentPause.current()
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: now + 120})
     assert {:paused, %{"resets_at" => reset}} = AgentPause.current()
     assert reset == now + 120
   end
 
-  test "authentication and policy blockers cannot be overwritten by quota or healthy in-flight completion" do
+  test "authentication and policy blockers cannot be overwritten by quota" do
     assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: System.system_time(:second) + 60})
-    assert :ok = AgentPause.complete_probe(@profile)
     assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
     assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     assert :ok = AgentPause.record(:some_unknown_error, %{profile: @profile})
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
 
-  test "legacy quota probes cannot strand handoff or restart recovery", ctx do
+  test "obsolete scheduler permits remain read-only and cannot strand restart recovery", ctx do
     File.mkdir_p!(ctx.root)
 
-    for {kind, phase} <- [{"probe_inflight", "waiting"}, {"quota_exhausted", "probe"}] do
+    for {kind, phase} <- [{"probe_inflight", "waiting"}, {"quota_exhausted", "probe"}, {"operator_recheck", "probe"}, {"operator_recheck_inflight", "waiting"}] do
       File.write!(Path.join(ctx.root, "claude-pause.json"), Jason.encode!(%{version: 1, kind: kind, phase: phase, profile: @profile, resets_at: nil}))
-      assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
-      assert :ok = AgentPause.begin_turn(@profile)
-      assert :ok = AgentPause.cancel_recheck(@profile)
-      assert :ready = AgentPause.current()
       path = Path.join(ctx.root, "claude-pause.json")
+      bytes = File.read!(path)
+      assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+      assert File.read!(path) == bytes
       legacy = path |> File.read!() |> Jason.decode!() |> Map.delete("resets_at")
       File.write!(path, Jason.encode!(legacy))
       assert :ready = AgentPause.current()
     end
   end
 
-  test "an explicit policy recheck still checks identity and durable input consumption", ctx do
+  test "explicit policy recheck checks identity and only clears durably", ctx do
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert {:error, :probe_not_available} = AgentPause.begin_turn(String.duplicate("b", 64))
+    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     File.chmod!(ctx.root, 0o500)
 
     try do
-      assert {:error, _} = AgentPause.begin_turn(@profile)
+      assert {:error, _} = AgentPause.explicit_recheck(@profile)
+      assert {:paused, _} = AgentPause.current()
     after
       File.chmod!(ctx.root, 0o700)
     end
 
-    assert :ok = AgentPause.complete_probe(@profile)
+    assert :ok = AgentPause.explicit_recheck(@profile)
     assert :ready = AgentPause.current()
   end
 
@@ -151,8 +147,6 @@ defmodule SymphonyElixir.AgentPauseTest do
       assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
       assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
       assert :ok = AgentPause.explicit_recheck(@profile)
-      assert :ok = AgentPause.begin_turn(@profile)
-      assert :ok = AgentPause.complete_probe(@profile)
       assert File.read!(path) == evidence
     end
 
@@ -184,41 +178,39 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ready = AgentPause.current()
   end
 
-  test "expected handoff clears only a non-quota recheck with no pending effects", ctx do
-    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert :ok = AgentPause.begin_turn(@profile)
-    assert {:paused, %{"kind" => "operator_recheck_inflight"}} = AgentPause.current()
-    assert :ok = AgentPause.cancel_recheck(String.duplicate("b", 64))
-    File.chmod!(ctx.root, 0o500)
+  test "only the exact original unscoped auth observation is retired read-only", ctx do
+    File.mkdir_p!(ctx.root)
+    path = Path.join(ctx.root, "claude-pause.json")
+    old = %{"version" => 1, "kind" => "auth_required", "profile" => nil, "phase" => "waiting", "resets_at" => nil}
+    bytes = Jason.encode!(old)
+    File.write!(path, bytes)
+    assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert File.read!(path) == bytes
 
-    try do
-      assert {:error, _} = AgentPause.cancel_recheck(@profile)
-    after
-      File.chmod!(ctx.root, 0o700)
+    for value <- [
+          Map.put(old, "profile", @profile),
+          Map.put(old, "kind", "policy_blocked"),
+          Map.put(old, "stage", "startup"),
+          Map.put(old, "unknown", true),
+          Map.put(old, "code", "invalid"),
+          Map.delete(old, "resets_at"),
+          Map.delete(old, "profile"),
+          Map.put(old, "version", 2),
+          Map.put(old, "phase", "probe")
+        ] do
+      bytes = Jason.encode!(value)
+      File.write!(path, bytes)
+      assert {:paused, _} = AgentPause.current()
+      assert File.read!(path) == bytes
     end
-
-    assert :ok = AgentPause.cancel_recheck(@profile)
-    assert :ready = AgentPause.current()
-    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
-    assert :ok = AgentPause.explicit_recheck(@profile)
-    assert :ok = AgentPause.begin_turn(@profile)
-    assert :ok = AgentPause.complete_probe(@profile)
-    assert :ready = AgentPause.current()
-    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
-    assert :ok = AgentPause.begin_turn(@profile)
-    assert :ok = AgentPause.cancel_recheck(@profile)
-    assert :ready = AgentPause.current()
   end
 
   test "failed filesystem operations never clear blockers or pending tools", ctx do
     assert {:error, :invalid_profile} = AgentPause.explicit_recheck(12)
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
-    assert {:error, :pause_not_clearable} = AgentPause.complete_probe(String.duplicate("b", 64))
-    File.rm!(Path.join(ctx.root, "claude-pause.json"))
-    assert :ok = AgentPause.record(:auth_required, %{profile: 12})
-    assert {:paused, %{"profile" => nil}} = AgentPause.current()
+    assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
+    assert {:paused, %{"profile" => @profile}} = AgentPause.current()
     tools = Path.join(ctx.root, "claude-tools")
     File.mkdir_p!(Path.join(tools, "unresolved.json"))
     assert {:error, :eperm} = AgentPause.explicit_recheck(@profile, confirm_tools_reconciled: true)
