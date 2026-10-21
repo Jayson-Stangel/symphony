@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, cpSync, copyFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, cpSync, copyFileSync, mkdirSync, appendFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -106,6 +106,9 @@ test('changed checkout inputs must build successfully before an old tagged image
   for (const name of ['package.json', 'package-lock.json', 'runtime.mjs']) {
     copyFileSync(new URL(`../../${name}`, import.meta.url), join(checkout, name));
   }
+  // Image inputs are intentionally read-only; only these disposable copies change.
+  chmodSync(join(checkout, 'package.json'), 0o600);
+  chmodSync(join(lab, 'lab.mjs'), 0o600);
   const manifest = JSON.parse(readFileSync(join(checkout, 'package.json'), 'utf8'));
   manifest.description = 'Changed checkout manifest.';
   writeFileSync(join(checkout, 'package.json'), JSON.stringify(manifest));
