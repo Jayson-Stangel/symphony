@@ -7,8 +7,7 @@ import { runtime } from '/opt/symphony/runner/claude/runtime.mjs';
 
 const identity = { profile: 'a'.repeat(64), category: 'subscription' };
 if (process.argv[2] === 'check') {
-  console.log(JSON.stringify({ ready: true, ...identity, ...runtime,
-    overages_disabled_attested: true, attested_at: new Date().toISOString() }));
+  console.log(JSON.stringify({ ready: true, ...identity, ...runtime }));
 } else {
   class WaitingQuery {
     constructor({ prompt, options }) {

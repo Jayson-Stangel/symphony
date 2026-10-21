@@ -37,8 +37,8 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
     server = start_supervised!({Orchestrator, name: __MODULE__})
-    # The initial poll sees no issues; all later transitions use the memory tracker.
-    poll(server)
+    await_initial_poll(server)
+
     issue = %Issue{id: "quota-recovery", identifier: "JAY-625", title: "Quota recovery", state: "In Progress", dispatchable: true}
     %{server: server, issue: issue, root: root, turns: turns}
   end
@@ -169,15 +169,13 @@ defmodule SymphonyElixir.QuotaRetryTest do
         protocol: 1,
         sdk: "fixture-sdk",
         cli: "fixture-cli",
-        policy: 1,
-        overages_disabled_attested: true,
-        attested_at: DateTime.to_iso8601(DateTime.utc_now())
+        policy: 1
       })
     )
 
     stop_supervised!(Orchestrator)
     server = start_supervised!({Orchestrator, name: __MODULE__, readiness_opts: [node_path: node, helper_path: helper]})
-    poll(server)
+    await_initial_poll(server)
     %{ctx | server: server}
   end
 
@@ -192,6 +190,8 @@ defmodule SymphonyElixir.QuotaRetryTest do
       end)
 
     :sys.replace_state(server, fn state ->
+      # Never overwrite a live native worker when injecting the quota outcome.
+      assert state.running == %{}
       # Observe an actual worker DOWN, just as the provider adapter reports quota.
       entry = %{
         pid: worker,
@@ -206,6 +206,17 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     send(worker, :quota)
     await(fn -> Map.has_key?(:sys.get_state(server).retry_attempts, issue.id) end)
+  end
+
+  defp await_initial_poll(server) do
+    # Wait for readiness and the actual first cycle; a manual cycle can leave
+    # init's delayed poll queued and overwrite the fixture's injected worker.
+    await(fn ->
+      state = :sys.get_state(server)
+
+      state.readiness.ready and not state.poll_check_in_progress and
+        state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
+    end)
   end
 
   defp poll(server) do

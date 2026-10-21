@@ -158,7 +158,7 @@ Usage:
   symphony skill use-global NAME
   symphony project doctor [--json]
   symphony auth codex {login|check|remove}
-  symphony auth claude {login|check|remove|attest --overages-disabled}
+  symphony auth claude {login|check|remove}
   symphony runner start|stop|status|doctor|logs|drain|resume|recheck
   symphony run [--agent codex|claude] [--port PORT] [--host]
 
@@ -606,7 +606,6 @@ runner_build_image() {
 }
 
 claude_auth_volume() { printf '%s-claude-auth\n' "$(runner_storage_id "$1")"; }
-claude_policy_dir() { printf '%s/claude/%s\n' "$config_home" "$(runner_storage_id "$1")"; }
 
 claude_image_ready() {
   local runtime=$1 image=$2 agent uid
@@ -627,15 +626,14 @@ ensure_claude_auth_volume() {
 }
 
 claude_auth() {
-  local action=$1 root runtime image volume policy temporary users
+  local action=$1 root runtime image volume users
   shift
   case "$action" in
-    attest) [ "$#" = 1 ] && [ "$1" = --overages-disabled ] || die 'Usage: symphony auth claude attest --overages-disabled' ;;
     login|check|remove) [ "$#" = 0 ] || die "auth claude $action takes no arguments" ;;
-    *) die 'Usage: symphony auth claude login|check|remove|attest --overages-disabled' ;;
+    *) die 'Usage: symphony auth claude login|check|remove' ;;
   esac
   root=$(repo_root); runtime=$(container_runtime); image=$(runner_image claude)
-  volume=$(claude_auth_volume "$root"); policy=$(claude_policy_dir "$root")
+  volume=$(claude_auth_volume "$root")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     [ "$action" = login ] || die 'Claude image is missing; provision it with symphony auth claude login first'
     runner_build_image claude
@@ -645,8 +643,6 @@ claude_auth() {
     "$runtime" volume inspect "$volume" >/dev/null 2>&1 || die 'no project-scoped Claude login; run symphony auth claude login'
   fi
   ensure_claude_auth_volume "$root" "$runtime" "$volume"
-  if [ "$action" = login ] || [ "$action" = attest ]; then mkdir -p "$policy"; chmod 755 "$policy"; fi
-  [ -d "$policy" ] || die 'Claude policy directory is missing; run symphony auth claude attest --overages-disabled'
   if [ "$action" = login ] || [ "$action" = remove ]; then
     users=$("$runtime" ps --filter "volume=$volume" --format '{{.ID}}')
     [ -z "$users" ] || die 'Claude profile is in use; drain it through symphony update before changing its native login'
@@ -657,27 +653,13 @@ claude_auth() {
       --read-only --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,nosuid,nodev,size=128m \
       --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs login
-    printf 'Native login retained. Disable account paid overages, then run: symphony auth claude attest --overages-disabled\n'
-  elif [ "$action" = attest ]; then
-    temporary=$(mktemp "$policy/.attestation.XXXXXX")
-    if "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
-      --label "com.symphony.storage=$(runner_storage_id "$root")" \
-      --read-only --cap-drop ALL --security-opt no-new-privileges \
-      --tmpfs /tmp:rw,nosuid,nodev,size=128m \
-      --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" \
-      /opt/symphony/claude/auth.mjs attest --overages-disabled >"$temporary"; then
-      [ "$(wc -c <"$temporary")" -le 4096 ] || { rm -f "$temporary"; die 'invalid attestation output'; }
-      chmod 644 "$temporary"; mv "$temporary" "$policy/attestation.json"
-      printf 'Disabled overages recorded as owner attestation, not automated billing verification.\n'
-    else
-      rm -f "$temporary"; die 'native subscription profile could not be qualified for attestation'
-    fi
+    printf 'Native login retained.\n'
   elif [ "$action" = check ]; then
     "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
       --label "com.symphony.storage=$(runner_storage_id "$root")" \
       --read-only --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,nosuid,nodev,size=128m \
-      --volume "$volume:/home/claude" --mount "type=bind,source=$policy,target=/etc/symphony/claude,readonly" \
+      --volume "$volume:/home/claude" \
       --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs check
   else
     "$runtime" run --rm --name "$(runner_storage_id "$root")-claude-auth" \
@@ -686,9 +668,19 @@ claude_auth() {
       --tmpfs /tmp:rw,nosuid,nodev,size=128m \
       --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs logout
     "$runtime" volume rm "$volume" >/dev/null
-    [ ! -f "$policy/attestation.json" ] || rm "$policy/attestation.json"
     printf 'Native logout completed and local profile removed; server revocation follows native runtime semantics.\n'
   fi
+}
+
+# Native readiness owns the account identity; no separate billing artifact.
+claude_native_profile() {
+  claude_auth check | python3 -c 'import json,re,sys
+try:
+ data=sys.stdin.read(4097); value=json.loads(data); profile=value.get("profile")
+ if not (len(data) <= 4096 and value.get("ready") is True and isinstance(profile,str) and re.fullmatch("[a-f0-9]{64}",profile)): sys.exit(1)
+ print(profile)
+except Exception:
+ sys.exit(1)'
 }
 
 auth_codex_login() {
@@ -767,7 +759,7 @@ runner_report() {
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none policy auth_volume
+  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume
   validate_agent "$agent"
   case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
@@ -780,12 +772,9 @@ runner_start() {
   if [ "$agent" = codex ]; then
     "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
   else
-    auth_volume=$(claude_auth_volume "$root"); policy=$(claude_policy_dir "$root")
+    auth_volume=$(claude_auth_volume "$root")
     "$runtime" volume inspect "$auth_volume" >/dev/null 2>&1 || die 'no project-scoped Claude session; run: symphony auth claude login'
     ensure_claude_auth_volume "$root" "$runtime" "$auth_volume"
-    [ -r "$policy/attestation.json" ] || die 'missing disabled-overage attestation; run: symphony auth claude attest --overages-disabled'
-    profile=$(sed -n 's/^.*"profile":"\([a-f0-9]\{64\}\)".*$/\1/p' "$policy/attestation.json")
-    [ "${#profile}" = 64 ] || die 'invalid Claude profile attestation'
   fi
   [ -n "$git_token" ] || die 'missing GITHUB_TOKEN or GH_TOKEN for the isolated runner'
 
@@ -808,6 +797,7 @@ runner_start() {
       existing_image=$("$runtime" inspect --format '{{.Image}}' "$name")
       [ -n "$image_id" ] && [ "$image_id" = "$existing_image" ] || die 'listener image differs; transition through symphony update --agent'
       if [ "$agent" = claude ]; then
+        profile=$(claude_native_profile)
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")" = "$profile" ] || die 'listener native profile differs; transition through symphony update --agent'
       fi
       return
@@ -828,6 +818,12 @@ runner_start() {
     (
       . "$env_file"
       [ "${SYMPHONY_RUNNER_IMAGE_ID:-}" = "$image_id" ] || die 'image change requires symphony update --agent'
+    ) || return 1
+  fi
+  if [ "$agent" = claude ]; then profile=$(claude_native_profile); fi
+  if [ -r "$env_file" ] && [ "$authority" != update ]; then
+    (
+      . "$env_file"
       [ "${SYMPHONY_RUNNER_PROFILE:-none}" = "$profile" ] || die 'native profile change requires symphony update --agent'
     ) || return 1
   fi
@@ -847,7 +843,6 @@ runner_start() {
       --tmpfs /tmp:rw,nosuid,nodev,size=512m \
       --env-file "$project_env" --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
       --mount "type=bind,source=$workflow,target=/etc/symphony/WORKFLOW.md,readonly" \
-      --mount "type=bind,source=$policy,target=/etc/symphony/claude,readonly" \
       --volume "$storage_id-workspaces:/workspaces" --volume "$storage_id-state:/var/lib/symphony" \
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
     unset SYMPHONY_GIT_TOKEN

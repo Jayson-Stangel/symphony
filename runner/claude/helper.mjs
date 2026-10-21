@@ -299,7 +299,7 @@ export function serve(context, options = {}) {
 async function main() {
   const command = process.argv[2] ?? 'serve';
   if (!['serve', 'check', 'profile'].includes(command) || process.argv.length > 3) throw new RuntimeError('unknown_command');
-  const context = readiness({ workspace: command === 'serve' ? process.cwd() : undefined, requireAttestation: command !== 'profile' });
+  const context = readiness({ workspace: command === 'serve' ? process.cwd() : undefined });
   if (command !== 'serve') {
     console.log(JSON.stringify({ ready: true, protocol: runtime.protocol, ...context.identity, model_requests: 0 }));
     return;

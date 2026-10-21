@@ -30,13 +30,12 @@ defmodule SymphonyElixir.AgentReadinessTest do
     %{root: root, helper: helper, node: node, opts: [node_path: node, helper_path: helper]}
   end
 
-  test "model-free readiness validates protocol, bounded diagnostics, profile and attestation metadata", ctx do
+  test "model-free readiness validates protocol, bounded diagnostics, profile metadata", ctx do
     good = ready()
 
     for value <- [
           good,
           Map.put(good, "profile", "invalid"),
-          Map.put(good, "attested_at", "invalid"),
           Map.put(good, "protocol", 99),
           Map.put(good, "sdk", String.duplicate("a", 129)),
           Map.put(good, "cli", nil),
@@ -454,10 +453,10 @@ defmodule SymphonyElixir.AgentReadinessTest do
     end)
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
-    File.write!(ctx.helper, Jason.encode!(%{code: "overage_attestation_expired"}))
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
     assert %{queued: true} = GenServer.call(pid, :request_refresh)
     await_check(pid)
-    assert %{ready: false, reason: "overage_attestation_expired"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.admission
+    assert %{ready: false, reason: "auth_required"} = Orchestrator.snapshot(__MODULE__.Probe, 200).agent.admission
     assert Process.alive?(worker)
     assert :sys.get_state(pid).running[issue.id].pid == worker
     assert :ready = AgentPause.current()
@@ -660,9 +659,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
       "profile" => profile,
       "sdk" => "0.3.303",
       "cli" => "2.1.303",
-      "policy" => 1,
-      "overages_disabled_attested" => true,
-      "attested_at" => DateTime.to_iso8601(DateTime.utc_now())
+      "policy" => 1
     }
   end
 end
