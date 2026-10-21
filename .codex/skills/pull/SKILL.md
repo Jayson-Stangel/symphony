@@ -16,8 +16,11 @@ description:
 2. Establish the integration repository, remote and branch before merging:
    - For an existing PR, inspect its actual base and head:
      `gh pr view --json number,url,baseRefName,headRefName`.
-   - Verify the base repository as well as the branch against configured remotes:
-     `gh api repos/{owner}/{repo}/pulls/<number> --jq '.base | {ref, repository: .repo.full_name}'`.
+   - From the returned PR URL, set `pr_host`, `pr_repository` (`owner/repo`) and
+     `pr_number`. Query that exact PR, then verify its base repository and branch
+     against configured remotes; checkout-based API placeholders can name another
+     repository's same-numbered PR:
+     `gh api --hostname "$pr_host" "repos/$pr_repository/pulls/$pr_number" --jq '.base | {ref, repository: .repo.full_name}'`.
    - Use the actual PR base when it agrees with target-repository policy. Resolve
      a mismatch under that policy before synchronization; an existing PR does not
      override repository integration or production approval boundaries.

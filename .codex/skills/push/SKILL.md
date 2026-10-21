@@ -105,12 +105,12 @@ git push --force-with-lease origin HEAD
 # integration_repository and integration_base come from verified policy/PR metadata.
 # feature_repository is the verified source repository for the configured push remote.
 # Inspect matching PRs; a failed lookup stops this procedure.
-gh pr list --repo "$integration_repository" --head "$branch" --state all \
+gh pr list --repo "$integration_repository" --base "$integration_base" --head "$branch" --state all \
   --json number,state,baseRefName,headRepository,url
-# Select the verified source repository, excluding same-named branches in other forks.
+# Select the verified source repository and base, excluding unrelated fork/base PRs.
 # Retain the number and state from that same verified result through every mutation.
 # The latest matching PR is first; no matching PR yields an empty row.
-pr_row=$(gh pr list --repo "$integration_repository" --head "$branch" --state all \
+pr_row=$(gh pr list --repo "$integration_repository" --base "$integration_base" --head "$branch" --state all \
   --json number,state,headRepository \
   --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0] | select(. != null) | [.number, .state] | @tsv") || exit 1
 read -r pr_number pr_state <<< "$pr_row"
