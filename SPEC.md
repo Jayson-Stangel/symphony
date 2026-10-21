@@ -667,6 +667,21 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.live_max_total_tokens`: integer, default `0` (disabled)
 - `codex.live_max_turns`: integer, default `0` (disabled)
 
+### Container Execution Bindings
+
+When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
+server bind address and Codex container permission bindings. Requested nonempty
+SSH hosts MUST be rejected before normalization removes unsupported values.
+Native execution behavior is unchanged.
+
+The finalized settings carry an internal requested/effective execution projection,
+updated atomically with the existing last-known-good workflow settings and exposed
+as `agent.execution` in state snapshots. It contains only workspace root, server
+host, SSH host count and categorical Codex approval/sandbox values; arbitrary map
+contents and credentials MUST NOT be copied. Invalid reloads retain both the prior
+bindings and their projection. This is observational metadata, not a new workflow
+profile, registry or mutable configuration source.
+
 ## 7. Orchestration State Machine
 
 The orchestrator is the only component that mutates scheduling state. All worker outcomes are
@@ -766,9 +781,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
-- Successful polls also clean retained local terminal workspaces after stopping any associated worker,
-  including issues completed while unclaimed or after a failed startup tracker read. Tracker
-  failures MUST NOT cause retained workspaces to be deleted.
+- Ordinary dispatch MUST NOT fetch terminal history. Unclaimed workspaces completed after
+  human review remain until startup cleanup on the next restart, as in upstream.
+  Tracker failures MUST NOT cause retained workspaces to be deleted.
 - Container deployments SHOULD retain workspace storage across container replacement by default.
   Recovery reuses existing checkouts and current tracker state; exact agent conversation or
   in-memory retry restoration is not required. Interrupted workspace bootstrap MUST NOT be
@@ -778,8 +793,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 ### 8.1 Poll Loop
 
-At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+At startup, the service validates config and schedules an immediate tick, then repeats
+every `polling.interval_ms`. Startup cleanup runs once on the first admitted poll, after
+readiness and drain state permit work; subsequent readiness recovery and reload do not repeat it.
 
 The effective poll interval SHOULD be updated when workflow config changes are re-applied.
 
@@ -787,8 +803,8 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch observed issues from tracker using active, blocked, and terminal states; clean terminal
-   workspaces only after stopping their workers.
+3. On the first admitted poll only, attempt startup terminal cleanup. Fetch ordinary
+   observed issues using active and blocked states, independently of completed history.
 4. Sort issues by dispatch priority.
 5. Dispatch eligible issues while slots remain.
 6. Notify observability/status consumers of state changes.
@@ -885,11 +901,13 @@ Part B: Tracker state refresh
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
-When the service starts:
+On the first admitted poll after the service starts (deferred while unready or drained):
 
 1. Query tracker for issues in terminal states.
-2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+2. For each returned issue identifier, stop any associated worker before removing its
+   workspace; retain the checkout if stopping fails.
+3. If the terminal-issues fetch fails, log a warning, delete nothing and continue.
+   This one startup attempt is not repeated by ordinary polls, reload or readiness recovery.
 
 This prevents stale terminal workspaces from accumulating after restarts.
 
@@ -2425,7 +2443,21 @@ owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanu
 stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
 crashes before ownership handoff cannot retry without cleanup proof.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
-process cleanup blocks readiness until updater-owned container recovery. Public
+process cleanup blocks readiness until updater-owned container recovery. The
+existing attempt task owns normal cleanup once. Confirmed cleanup preserves the
+exact primary outcome/exception; failure MUST retain separate bounded categorical
+primary and cleanup causes and expose a replacement-required outcome scoped to its
+captured provider. Killed/shutdown/linked-Port `:epipe` workers with captured ownership use the
+existing generation-safe fallback before retry/release. That fallback command and
+its own process group have a ten-second deadline; timeout does not establish that
+any detached native group was cleaned. Actual Claude cleanup failure retains
+`cleanup_restart_required` through healthy observations and resume/recheck. Existing
+marker persistence remains best effort under filesystem failure; current admission
+stays blocked, but durable recovery requires controlled container replacement when
+evidence cannot be persisted. Helper-reported missing startup cleanup acknowledgement remains gated. A separate
+original gap remains: untrappable worker loss before session publication can retry
+without captured ownership or confirmed native cleanup. This unsafe window remains
+unrepaired; no new process service or ownership protocol is introduced here. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex

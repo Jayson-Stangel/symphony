@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   @moduledoc "CodingAgent transport for the pinned, subscription-authenticated SDK helper."
   @behaviour SymphonyElixir.CodingAgent
 
+  require Logger
   alias SymphonyElixir.{AgentPause, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
@@ -329,6 +330,18 @@ defmodule SymphonyElixir.Claude.Adapter do
     close_port(session.port)
     Process.delete({__MODULE__, session.id, :tools})
     result
+  catch
+    _, _ ->
+      close_port(Map.get(session, :port))
+
+      profile =
+        case session do
+          %{identity: %{"profile" => profile}} when is_binary(profile) -> profile
+          _ -> nil
+        end
+
+      record_unconfirmed_cleanup(profile)
+      {:error, :cleanup_unconfirmed}
   end
 
   defp stop_owned_session(session) do
@@ -364,8 +377,8 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp cleanup_owned(session) do
     result =
       try do
-        if File.regular?(session.cleanup) do
-          case System.cmd(session.node, [session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
+        if File.regular?(session.cleanup) and is_binary(System.find_executable("timeout")) do
+          case System.cmd(System.find_executable("timeout"), ["--signal=KILL", "10s", session.node, session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
                  env: Config.claude_cleanup_environment(),
                  stderr_to_stdout: true
                ) do
@@ -386,10 +399,18 @@ defmodule SymphonyElixir.Claude.Adapter do
     result
   end
 
-  defp record_unconfirmed_cleanup(profile) do
-    File.mkdir_p(Config.agent_state_root())
-    File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync])
-    AgentPause.record(:policy_blocked, %{profile: profile})
+  @doc false
+  @spec record_unconfirmed_cleanup(String.t() | nil) :: :ok
+  def record_unconfirmed_cleanup(profile) do
+    with :ok <- File.mkdir_p(Config.agent_state_root()),
+         :ok <- File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync]),
+         :ok <- AgentPause.record(:policy_blocked, %{profile: profile}) do
+      :ok
+    else
+      _ -> Logger.warning("Claude cleanup persistence failed; runtime replacement remains required")
+    end
+
+    :ok
   end
 
   defp await_stopped(port, until) do
