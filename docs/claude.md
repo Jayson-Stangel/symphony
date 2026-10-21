@@ -209,8 +209,9 @@ retain their captured startup identity/configuration and actual runtime auth/pol
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
-Authentication and shared policy failures reported by actual native sessions still
-require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata. Rejected native rate-limit events use ordinary quota recovery regardless of bucket name; actual native billing, authentication and permission failures retain their stop behavior. Established-session protocol, EOF/helper
+Native authentication and shared policy failures end the attempt and use ordinary
+scheduler backoff without new durable pauses. Existing legacy auth/policy pauses
+retain their explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata. Rejected native rate-limit events use ordinary quota recovery regardless of bucket name; actual native billing and authentication failures end the attempt; explicit permission/input stops remain issue-blocked. Established-session protocol, EOF/helper
 timeout and tracker delivery failures use scheduler backoff after bounded cleanup,
 preserving the workspace and requiring tracker readback before uncertain writes.
 No tracker mutation is replayed by the runner. Explicit permission/input stops
@@ -224,8 +225,25 @@ historical pre-hello transport failure. Unknown fields or scoped policy records
 retain explicit recheck. Startup protocol/initialization failures
 keep their original retry cause after a bounded correlated stop attempt; missing or
 foreign cleanup acknowledgement is a separate diagnostic. Actual startup auth,
-policy/schema/identity failures retain their independent behavior. Explicit drains
+policy/schema/identity failures retain their causes through ordinary retry. Explicit drains
 remain durable and prevent queued retries from dispatching.
+
+Native authentication and shared policy failures end the attempt and use existing
+scheduler backoff, without writing new account-pause files. Retry diagnostics preserve
+the original native cause. Native readiness still governs admission; a not-ready
+observation retains queued attempt history. Explicit permission/input stops remain
+issue-blocked. Historical auth/policy files retain explicit recheck requirements.
+
+Only reliable future quota resets are persisted for restart cooldown, by the scheduler.
+The adapter returns outcomes without writing pause state. If the write fails, logs
+identify the state path and repair action; retry diagnostics retain both the quota
+cause and filesystem error. Existing retry metadata keeps admission and retries delayed
+until the latest observed reset, through drain/resume and pending tracker state changes.
+A queued retry consumes no running-worker capacity. Repaired storage lets the next
+native quota outcome persist normally. An unwritten reset cannot survive scheduler
+restart: model-free readiness does not attest quota availability, and the next native
+outcome establishes any renewed cooldown. There is no fallback store or universal latch.
+
 
 Both providers follow the original Codex tool recovery model: tracker responses,
 including GraphQL errors, partial results and transport failures, return to the

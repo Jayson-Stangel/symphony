@@ -411,7 +411,11 @@ for these two sequential checks; each native check remains limited to 35 seconds
 
 Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
 Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
-actual native billing, authentication and permission failures retain their stop behavior.
+actual native billing and authentication failures end the attempt and retry with scheduler backoff; explicit permission/input stops remain issue-blocked.
+Native failures do not depend on writing an account-pause file. Reliable quota resets
+retain their cooldown through existing retry metadata if storage fails; logs and retry
+diagnostics identify the native cause and storage repair needed. Only successfully
+persisted cooldowns survive restart. Historical auth/policy pauses retain explicit recheck.
 Sonnet remains the default; nonblank model identifiers pass unchanged to the
 native runtime, which validates support. Reasoning effort is configurable.
 Terminal and web dashboards show the configured Claude effort.
