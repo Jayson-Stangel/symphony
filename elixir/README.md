@@ -43,6 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+Safe optional pause `code` and `stage` fields explain startup and cleanup failures
+across restarts. They do not change pause behavior; old records retain their existing
+meaning without an invented cause. Resume/recheck responses distinguish readiness,
+account pause, recheck refusal and state-write failure using bounded error codes.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a

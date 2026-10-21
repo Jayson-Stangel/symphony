@@ -111,6 +111,22 @@ defmodule SymphonyElixir.AgentReadinessTest do
     end
   end
 
+  test "safe persisted pause diagnostics remain visible after scheduler restart", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    assert :ok = AgentPause.record(:auth_required, %{profile: String.duplicate("a", 64), startup_code: "unqualified_auth", stage: "startup"})
+
+    for _restart <- 1..2 do
+      {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+      await_check(pid)
+
+      assert %{"kind" => "auth_required", "code" => "unqualified_auth", "stage" => "startup"} =
+               Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.pause
+
+      assert {:error, "auth_required"} = GenServer.call(pid, {:agent_control, :resume, false})
+      GenServer.stop(pid)
+    end
+  end
+
   test "resume refuses auth and policy pauses while quota cooldown is reported explicitly", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
@@ -121,7 +137,8 @@ defmodule SymphonyElixir.AgentReadinessTest do
       File.rm_rf!(Path.join(ctx.root, "state"))
       assert :ok = AgentPause.record(kind, %{profile: String.duplicate("a", 64)})
       assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
-      assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+      assert {:error, reason} = GenServer.call(pid, {:agent_control, :resume, false})
+      assert reason == Atom.to_string(kind)
       assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
       assert {:paused, _} = AgentPause.current()
     end
@@ -132,6 +149,21 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert {:ok, %{draining: false, admission: %{ready: false, reason: "quota_exhausted", retry_at: ^reset}}} = GenServer.call(pid, {:agent_control, :resume, false})
     assert %{ready: false, reason: "quota_exhausted"} = Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.admission
     assert {:paused, _} = AgentPause.current()
+    assert {:error, :reset_not_due} = GenServer.call(pid, {:agent_control, :recheck, false})
+  end
+
+  test "recheck preserves the specific existing legacy-evidence refusal", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    tools = Path.join([ctx.root, "state", "claude-tools"])
+    File.mkdir_p!(tools)
+    File.write!(Path.join(tools, "invalid name"), "secret-canary")
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+    assert {:error, :unknown_state_file} = GenServer.call(pid, {:agent_control, :recheck, true})
+    assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
+    assert File.read!(Path.join(tools, "invalid name")) == "secret-canary"
   end
 
   test "drain survives orchestrator restart and account changes block explicit recovery", ctx do
@@ -148,7 +180,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
-    assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert {:error, "native_identity_mismatch"} = GenServer.call(pid, {:agent_control, :resume, false})
     assert File.exists?(guard)
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.write!(ctx.helper, Jason.encode!(ready()))
@@ -170,7 +202,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
     await_check(pid)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-    assert {:error, :agent_not_ready} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert {:error, :state_write_failed} = GenServer.call(pid, {:agent_control, :resume, false})
     assert Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.draining
     File.rmdir!(guard)
     assert {:ok, %{draining: false}} = GenServer.call(pid, {:agent_control, :resume, false})

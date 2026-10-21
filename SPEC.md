@@ -2466,6 +2466,13 @@ original gap remains: untrappable worker loss before session publication can ret
 without captured ownership or confirmed native cleanup. This unsafe window remains
 unrepaired; no new process service or ownership protocol is introduced here. Public
 state adds provider/readiness/pause fields without removing legacy token fields.
+Pause records MAY expose optional allowlisted `code`/`stage` diagnostics for
+startup and cleanup failures. Invalid or missing diagnostic metadata MUST NOT
+change pause validity, priority, cooldown or recovery behavior. The effective
+winning pause retains its own diagnostic metadata; legacy records acquire no
+invented cause. Controls MUST preserve bounded readiness/admission refusal causes
+and distinguish recheck refusal from durable-state write failure. Raw provider
+text, prompts, credentials and stderr MUST NOT be persisted as diagnostic causes.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
 neither reads nor modifies Claude pause evidence, including retry-delay decisions.
