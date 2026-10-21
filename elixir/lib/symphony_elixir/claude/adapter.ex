@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   @behaviour SymphonyElixir.CodingAgent
 
   require Logger
-  alias SymphonyElixir.{AgentPause, Config, ToolCall, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, AgentReadiness, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
@@ -43,6 +43,13 @@ defmodule SymphonyElixir.Claude.Adapter do
       {:ok, session} ->
         {:ok, session}
 
+      {:error, {:readiness_observation, code}} ->
+        close_port(port)
+
+        if AgentReadiness.observation_code?(code),
+          do: {:error, {:claude_startup_failed, code}},
+          else: paused_start(code)
+
       {:error, {:before_start, code}} ->
         close_port(port)
         paused_start(code)
@@ -68,7 +75,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         initialize_native(port, workspace, instructions, skills, opts, id, start_id)
 
       {:ok, %{"ready" => false, "code" => code}} ->
-        {:error, {:before_start, code}}
+        {:error, {:readiness_observation, code}}
 
       _ ->
         {:error, {:before_start, "protocol_error"}}

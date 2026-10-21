@@ -40,7 +40,10 @@ frames, unexpected EOF and helper timeouts retry the affected attempt with backo
 The next attempt reads tracker state before writing; Symphony never automatically
 retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
 authentication/policy stops remain gated. Transient startup failures retry only after a
-matching helper cleanup acknowledgement. Explicit startup policy/identity failures
+matching helper cleanup acknowledgement. Recognized explicit readiness failures
+before the helper's hello also use ordinary retry without persisting a pause; no
+coding session has started. Malformed or unknown pre-hello failures remain gated.
+Explicit post-start policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 Captured sessions use their common adapter interrupt callback before worker

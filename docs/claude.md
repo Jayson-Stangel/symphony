@@ -55,7 +55,10 @@ enterprise MCP config is present. Real organizational files are preserved rather
 than silently removed or overridden. Unselected ambient
 inference credentials are stripped rather than becoming readiness gates or alternate
 inference routes. Explicitly selected inference selectors are rejected. Unqualified
-runtime versions retain their readiness checks.
+runtime versions retain their readiness checks. Recognized explicit readiness
+failures before helper hello do not create durable pauses: periodic readiness and
+the existing retry backoff recognize repair. This does not clear historical pause
+records or relax post-start runtime policy/input and uncertain-cleanup gates.
 
 ## Project tool credentials
 
