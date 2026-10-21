@@ -58,11 +58,20 @@ symphony setup --install-prerequisites
 symphony doctor
 ```
 
-`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`. On macOS,
-`--install-prerequisites` can install missing [mise](https://mise.jdx.dev/), GitHub CLI (`gh`),
-and Codex; Git comes from the Xcode Command Line Tools and Homebrew is required for automatic
-installation. Sign in to Codex and confirm `codex app-server` works before starting a listener.
+`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`, installs source
+dependencies and builds the local executable. On macOS, `--install-prerequisites` can install
+missing [mise](https://mise.jdx.dev/); Git comes from the Xcode Command Line Tools and Homebrew
+is required for automatic installation. Source setup and updates do not require or install
+host Codex or GitHub CLI: isolated images supply their own execution tools and authentication.
+`doctor` checks the installed source, links, skills, Git and container runtime availability.
+Use `runner doctor --agent codex|claude` to check the selected image's native authentication
+and isolated Git capabilities without starting a listener or making a model request.
 `symphony doctor --json` is available for scripts and CI.
+
+For optional `run --host` debugging, use `doctor --host` to check the pinned host runtime
+instead of a container runtime. Install and authenticate the tools selected by your workflow's
+Codex command, plus GitHub CLI when its procedures need it. Native command configuration and
+authentication remain owned by the agent; neither doctor mode requires a global `codex` binary.
 
 Keep the stable checkout in place. The global command points to it, while developer clones and
 worktrees may be anywhere, dirty, or on feature branches without changing the runtime used by
