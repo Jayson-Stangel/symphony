@@ -3,6 +3,7 @@ name: claude-smoke
 on:
   pull_request:
     paths:
+      - scripts/symphony
       - runner/**
       - elixir/**
       - .codex/skills/**
@@ -10,6 +11,7 @@ on:
   push:
     branches: [dev, main]
     paths:
+      - scripts/symphony
       - runner/**
       - elixir/**
       - .codex/skills/**
@@ -26,3 +28,7 @@ jobs:
         run: docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
       - name: Verify credential-free listener and owned subprocess cleanup
         run: bash runner/claude/smoke.sh symphony-claude-smoke
+      - name: Build production Codex image using shared layers
+        run: docker build --target codex -f runner/Dockerfile -t symphony-codex-smoke .
+      - name: Verify isolated updater, rollback and project identity lifecycle
+        run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
