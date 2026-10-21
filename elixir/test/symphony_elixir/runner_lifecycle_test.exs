@@ -396,6 +396,29 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.exists?(journal)
   end
 
+  test "ordinary journal retry cannot resume a same-image legacy listener as a completed candidate", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".agent", "<no value>")
+    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    File.mkdir_p!(journal)
+    File.write!(Path.join(journal, "target"), "codex\n")
+    File.write!(Path.join(journal, "port"), "4010\n")
+    File.write!(Path.join(journal, "image"), "fixture-image\n")
+    File.write!(ctx.log, "")
+    File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
+    File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
+    # Exercise the ordinary transition after source handoff, without invoking the source updater.
+    script = ~s|source "$1" --help >/dev/null; runner_transition "$(repo_root)" codex false|
+    assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
+    assert message =~ "use symphony update --pause-runner"
+    refute message =~ "candidate recovery refused"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
+    assert String.trim(File.read!(ctx.state)) == "true"
+    assert File.read!(Path.join(journal, "image")) == "fixture-image\n"
+  end
+
   test "failed legacy migration rolls back through the old state API without resume support", ctx do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)

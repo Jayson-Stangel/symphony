@@ -63,6 +63,9 @@ curl.write_text("#!/usr/bin/env python3\nimport json,os,pathlib,subprocess,sys\n
 curl.chmod(0o755);env['PATH']=str(root)+':'+env['PATH']
 def launch(*a, expected=0, cwd=repo):return cmd(['bash',str(checkout/'scripts/symphony'),*a],expected,cwd=cwd,env=env)
 def inspect(n,fmt):return docker('inspect','--format',fmt,n)
+def mounts(n):
+ # Docker may reorder its mount list after rename; retain every field and duplicate.
+ return sorted(json.loads(inspect(n,'{{json .Mounts}}')),key=lambda mount:json.dumps(mount,sort_keys=True))
 def state(listener_port=port):
  for i in range(50):
   try:
@@ -121,14 +124,14 @@ try:
  print('PASS real same-basename repositories retain independent containers, credentials, metadata and storage',flush=True)
  docker('exec',name,'sh','-ceu','mkdir /workspaces/lifecycle-proof; git -C /workspaces/lifecycle-proof init -q; git -C /workspaces/lifecycle-proof config user.name Fixture; git -C /workspaces/lifecycle-proof config user.email fixture@example.invalid; printf committed > /workspaces/lifecycle-proof/edited; git -C /workspaces/lifecycle-proof add edited; git -C /workspaces/lifecycle-proof commit -qm fixture; printf dirty >> /workspaces/lifecycle-proof/edited; printf untracked > /workspaces/lifecycle-proof/untracked; printf preserved > /var/lib/symphony/proof-state')
  assert docker('exec',name,'id','-u')=='0'
- physical_mounts=inspect(name,'{{json .Mounts}}');print('INITIAL PHYSICAL MOUNTS '+physical_mounts,flush=True)
+ physical_mounts=mounts(name);print('INITIAL PHYSICAL MOUNTS '+json.dumps(physical_mounts),flush=True)
  preservation=preserved()
  initial_id=inspect(name,'{{.Id}}');initial_metadata=selected()
  initial_credentials=(config/('projects/'+project_id+'.env')).read_text()
  legacy_identity();launch('update','--development-runner','--migrate-project-identity')
  assert inspect(name,'{{.Id}}')==initial_id;assert selected()==initial_metadata
  assert (config/('projects/'+project_id+'.env')).read_text()==initial_credentials
- assert inspect(name,'{{json .Mounts}}')==physical_mounts;assert preserved()==preservation
+ assert mounts(name)==physical_mounts;assert preserved()==preservation
  print('PASS real running basename identity migration preserves container, credentials and physical mounts',flush=True)
  before=selected();assert base in before
  build(v1);fail('create');(root/'hold-stop').touch()
