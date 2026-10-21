@@ -79,17 +79,6 @@ export function nativeIdentity(binary, env) {
   return { profile, category: 'subscription', sdk: runtime.sdk, cli: runtime.cli, policy: runtime.policy };
 }
 
-export function checkSettings() {
-  // User/project/local settings are excluded by query and native auth flags.
-  // Home managed-settings and user plugin inventory are not enabled sources.
-  // Preserve canonical organizational policy and account-dependent remote state.
-  const paths = [
-    `${nativeConfig}/remote-settings.json`, '/etc/claude-code/managed-settings.json',
-    '/etc/claude-code/managed-mcp.json',
-  ];
-  if (paths.some(path => existsSync(path))) throw new RuntimeError('unqualified_native_settings');
-}
-
 export function isReadOnlyMount(path, mountinfo) {
   const mounts = mountinfo.trim().split('\n').map(line => line.split(' '))
     .filter(fields => fields.length >= 6 && (fields[4] === '/' || path === fields[4] || path.startsWith(fields[4] + '/')))
@@ -108,7 +97,6 @@ export function validateContainer() {
 export function readiness({ workspace } = {}) {
   validateContainer();
   const env = approvedEnvironment(process.env);
-  checkSettings();
   const binary = nativeExecutable();
   const identity = nativeIdentity(binary, env);
   if (workspace && (realpathSync(workspace) !== process.cwd() || !statSync(workspace).isDirectory())) throw new RuntimeError('workspace_identity_mismatch');

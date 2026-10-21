@@ -47,14 +47,19 @@ authentication commands disable user/project/local settings sources. Their mere
 presence does not block readiness. Strict MCP configuration also ignores project
 `.mcp.json` and user/plugin MCP definitions. This does not enable those settings
 or MCP servers. User plugin inventory and a home-config `managed-settings.json`
-are also ignored native sources and do not block readiness. Canonical Linux policy
-(`/etc/claude-code/managed-settings.json`), account/trust-dependent remote settings,
-and enterprise MCP configuration retain the explicit unsupported-settings limit
-(`unqualified_native_settings`). The native CLI refuses strict MCP mode when an
-enterprise MCP config is present. Real organizational files are preserved rather
-than silently removed or overridden. Unselected ambient
-inference credentials are stripped rather than becoming readiness gates or alternate
-inference routes. Explicitly selected inference selectors are rejected. Unqualified
+are also ignored native sources and do not block readiness. Native Claude Code owns
+canonical organizational policy, managed drop-ins and account/trust-dependent remote
+settings. Symphony does not reject these files or replace their native merge and
+permission rules. Strict MCP remains enabled; native Claude reports incompatible
+enterprise MCP configuration during session initialization.
+
+Native subscription login is validated, and Symphony configures no API-key or
+alternate-cloud fallback. Native organizational settings can nevertheless configure
+credentials, endpoints, hooks and routing. A subscription profile or a `firstParty`
+provider label does not prove request destinations or billing. Codex likewise retains
+its native policy behavior. Unselected ambient inference credentials are stripped;
+explicitly selected inference selectors remain rejected at the project-tool boundary.
+These environment rules do not override native organizational policy. Unqualified
 runtime versions retain their readiness checks. Recognized explicit readiness
 failures before helper hello do not create durable pauses: periodic readiness and
 the existing retry backoff recognize repair. This does not clear historical pause
@@ -79,7 +84,7 @@ and inference selectors, runtime/preload variables and Git token aliases cannot
 be selected; invalid selections return `invalid_tool_environment` without values.
 Keep the selected Git credential on its existing route. Variable names do not
 select a cloud model provider: AWS tool access leaves native Claude first-party
-routing unchanged. The listener transports selected values as data; Node builds
+routing by itself. Native organizational settings still apply. The listener transports selected values as data; Node builds
 the native environment at one boundary. Cleanup receives neither the selection
 nor its values. This explicit forwarding is for trusted repository tools and does
 not isolate a native login or spending from arbitrary code run by those tools.

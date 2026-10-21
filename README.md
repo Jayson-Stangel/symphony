@@ -333,7 +333,11 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 ## Claude subscription workers
 
 Codex remains the default. A qualified personal Claude profile adds isolated
-Claude workers through pinned Claude Code/Agent SDK and native subscription login.
+Claude workers through pinned Claude Code/Agent SDK and native subscription login. Both
+providers retain native organizational policy. Claude policy files do not create an
+extra Symphony admission gate; native settings may configure permissions and routing.
+Symphony adds no API-key/cloud fallback and does not guarantee native request endpoints
+or billing from a subscription profile.
 Sonnet remains the default; nonblank model identifiers pass unchanged to the
 native runtime, which validates support. Reasoning effort is configurable.
 Terminal and web dashboards show the configured Claude effort.
