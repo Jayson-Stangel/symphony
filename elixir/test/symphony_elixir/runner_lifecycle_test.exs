@@ -666,7 +666,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     File.cp!(
       Path.join(ctx.config, "projects/#{@project_id}.env"),
-      Path.join(ctx.config, "projects/other.env")
+      Path.join(ctx.config, "projects/#{project_id!(other_repo)}.env")
     )
 
     assert {_, 0} =
@@ -1134,6 +1134,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     calls = File.read!(ctx.log)
     refute calls =~ "auth.mjs\tlogout"
     refute calls =~ "volume\trm"
+  end
+
+  defp project_id!(repo) do
+    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "identity", @launcher, repo])
+    String.trim(identity)
   end
 
   defp await_file!(path, attempts \\ 500)
