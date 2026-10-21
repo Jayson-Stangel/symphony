@@ -45,9 +45,15 @@ The Claude image uses UID/GID 11001, a read-only root filesystem, no Linux
 capabilities, no-new-privileges and a private process namespace. Coding tools are
 trusted to execute repository code. They can access their native account and
 selected Git credential as that same user; this is not isolation from hostile
-code or an absolute spending firewall. Ambient native settings, alternate
-inference credentials, unqualified runtime versions and expired policy metadata
-block readiness rather than selecting a different inference route.
+code or an absolute spending firewall. Query startup and native authentication
+commands disable user/project/local settings sources. Their mere presence does
+not block readiness. Strict MCP configuration also ignores project `.mcp.json`
+and user/plugin MCP definitions. This does not enable those settings or MCP servers.
+Managed/remote organizational policy and installed-plugin metadata remain an
+explicit unsupported-settings limitation (`unqualified_native_settings`); they
+are preserved rather than silently removed or overridden. Alternate inference
+credentials, unqualified runtime versions and expired policy metadata still block
+readiness rather than selecting a different inference route.
 
 ## Workflow settings
 
