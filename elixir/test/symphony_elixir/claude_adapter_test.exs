@@ -1197,7 +1197,14 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
-    {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
+    log =
+      capture_log([level: :info], fn ->
+        send(self(), {:allowance_attempt, native_allowance_attempt(supervisor, issue)})
+      end)
+
+    assert_received {:allowance_attempt, {worker, native, workspace, event_id}}
+    assert log =~ "Native turn allowance reached for issue_id=#{issue.id} issue_identifier=#{issue.identifier} session_id=#{native.id} cause=agent_turn_limit turn=1/3"
+    assert String.starts_with?(event_id, "claude:#{native.id}:")
     assert File.read!(Path.join(workspace, "native-allowance-count")) == "1"
     assert File.read!(Path.join(workspace, "after-run")) == "cleaned"
     assert Port.info(native.port) == nil

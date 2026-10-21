@@ -201,7 +201,10 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       {:error, :agent_turn_limit} ->
-        Logger.info("Native turn allowance reached for #{issue_context(issue)}; closing session for active-state continuation")
+        Logger.info(
+          "Native turn allowance reached for #{issue_context(issue)} session_id=#{attempt_session_id(app_session)} cause=agent_turn_limit turn=#{turn_number}/#{max_turns}; closing session for active-state continuation"
+        )
+
         :ok
 
       {:error, reason} ->
