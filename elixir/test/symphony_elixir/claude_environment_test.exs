@@ -15,6 +15,11 @@ defmodule SymphonyElixir.ClaudeEnvironmentTest do
     assert env["HOME"] == "/home/claude"
   end
 
+  test "unencodable selected data returns only a bounded transport error" do
+    source = Map.put(environment(), "AWS_ACCESS_KEY_ID", <<255>>)
+    assert {:error, :invalid_tool_environment} = Config.claude_child_environment(source, [])
+  end
+
   test "cleanup never receives selected tools or the internal envelope" do
     source = environment() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", "secret-canary") |> Map.put("SYMPHONY_GIT_TOKEN", "git-canary")
     previous = Map.new(source, fn {name, _} -> {name, System.get_env(name)} end)

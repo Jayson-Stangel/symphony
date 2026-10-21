@@ -114,11 +114,11 @@ test('only native subscription identity produces an account fingerprint', () => 
   }
 });
 
-test('environment allowlist strips tracker credentials and rejects competing inference credentials', () => {
+test('environment allowlist strips unselected tracker and inference credentials', () => {
   const source = { HOME: '/home/claude', CLAUDE_CONFIG_DIR: '/home/claude/.claude', CLAUDE_CODE_DISABLE_FAST_MODE: '1' };
   assert.ok(!JSON.stringify(approvedEnvironment({ ...source, GH_TOKEN: 'secret-canary', NODE_OPTIONS: 'secret-canary' })).includes('secret-canary'));
   for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_VERTEX', 'ANTHROPIC_PROFILE']) {
-    assert.throws(() => approvedEnvironment({ ...source, [key]: 'secret-canary' }), error => !error.message.includes('secret-canary'));
+    assert.ok(!JSON.stringify(approvedEnvironment({ ...source, [key]: 'secret-canary' })).includes('secret-canary'));
   }
 });
 

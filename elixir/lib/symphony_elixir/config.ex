@@ -58,14 +58,20 @@ defmodule SymphonyElixir.Config do
     Enum.map(reduced_claude_environment(System.get_env()), fn {key, value} -> {key, if(key == "SYMPHONY_GIT_TOKEN", do: nil, else: value)} end)
   end
 
-  @spec claude_child_environment(map(), [String.t()] | nil) :: {:ok, [{String.t(), String.t() | nil}]}
+  @spec claude_child_environment(map(), [String.t()] | nil) ::
+          {:ok, [{String.t(), String.t() | nil}]} | {:error, :invalid_tool_environment}
   def claude_child_environment(environment \\ System.get_env(), secret_names \\ nil) do
     names = String.split(environment["SYMPHONY_TOOL_ENV"] || "", ",", trim: true) |> Enum.map(&String.trim/1)
     reserved = secret_names || Tracker.bind_agent_tools().secret_environment_names
-    envelope = Jason.encode!(%{names: names, values: Map.take(environment, names), reserved: reserved})
 
-    env = reduced_claude_environment(environment) |> Map.new() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", envelope)
-    {:ok, Enum.to_list(env)}
+    case Jason.encode(%{names: names, values: Map.take(environment, names), reserved: reserved}) do
+      {:ok, envelope} ->
+        env = reduced_claude_environment(environment) |> Map.new() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", envelope)
+        {:ok, Enum.to_list(env)}
+
+      {:error, _reason} ->
+        {:error, :invalid_tool_environment}
+    end
   end
 
   defp reduced_claude_environment(environment) do

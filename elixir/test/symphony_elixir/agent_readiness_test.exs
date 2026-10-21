@@ -65,6 +65,13 @@ defmodule SymphonyElixir.AgentReadinessTest do
     end
   end
 
+  test "tool environment validation is a bounded readiness observation without secret values", ctx do
+    File.write!(ctx.helper, Jason.encode!(%{"code" => "invalid_tool_environment", "detail" => "secret-canary"}))
+    assert %{ready: false, code: "invalid_tool_environment"} = result = AgentReadiness.check(ctx.opts)
+    refute inspect(result) =~ "secret-canary"
+    assert :ready = AgentPause.current()
+  end
+
   test "Codex admission and resume ignore retained Claude pauses", ctx do
     Application.put_env(:symphony_elixir, :coding_agent, :codex)
 
