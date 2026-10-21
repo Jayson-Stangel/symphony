@@ -124,6 +124,18 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     %{repo: repo, config: config, root: root, env: env, log: Path.join(root, "calls"), state: Path.join(root, "running")}
   end
 
+  test "Codex startup Git rewrites remain idempotent for a retained container", ctx do
+    entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
+    [_, rewrite] = Regex.run(~r/if \[ -n "\$\{GH_TOKEN:-\}" \]; then\n(.*?)\nfi/s, entrypoint)
+    home = Path.join(ctx.root, "git-home")
+    File.mkdir_p!(home)
+    env = [{"HOME", home}, {"GIT_CONFIG_GLOBAL", Path.join(home, ".gitconfig")}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"GH_TOKEN", "inert-restart-fixture"}]
+    assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
+    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://x-access-token:inert-restart-fixture@github.com/.insteadOf"], env: env)
+    assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
+  end
+
   test "missing container inspection discards stdout before reporting or creating", ctx do
     assert {"Isolated worker: not running\n", 0} = launch(ctx, "status")
     assert {_, 0} = launch(ctx, "start")
