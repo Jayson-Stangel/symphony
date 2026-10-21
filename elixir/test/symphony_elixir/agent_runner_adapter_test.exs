@@ -122,6 +122,16 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
   end
 
+  test "cleanup failure retains each bounded turn cause as the primary outcome", ctx do
+    for cause <- [:claude_native_eof, :claude_native_event_error, :claude_turn_timeout] do
+      Process.put(:probe_turn_result, {:error, cause})
+      Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+      assert {:agent_replacement_required, %{primary: ^cause, cleanup: :cleanup_unconfirmed}} =
+               catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    end
+  end
+
   test "cleanup failure records a successful primary outcome without pretending completion", ctx do
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 

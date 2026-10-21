@@ -2481,6 +2481,15 @@ winning pause retains its own diagnostic metadata; legacy records acquire no
 invented cause. Controls MUST preserve bounded readiness/admission refusal causes
 and distinguish recheck refusal from durable-state write failure. Raw provider
 text, prompts, credentials and stderr MUST NOT be persisted as diagnostic causes.
+Recoverable turn results MAY include a fixed diagnostic code for native EOF,
+event failure or turn timeout while retaining the existing outcome. The adapter
+MUST normalize optional codes and locally known transport failures to bounded
+causes; unknown or absent codes retain the generic failure. Existing issue/session
+and request correlation MUST reach worker/retry logs without provider text.
+Recoverable turn diagnostics MUST NOT create durable pause state or change cleanup,
+acknowledgement, input-required precedence or retry policy. After a process restart,
+these transient causes remain available only through existing retained operational
+logs; persisted startup/cleanup causes use the existing pause record.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
 neither reads nor modifies Claude pause evidence, including retry-delay decisions.

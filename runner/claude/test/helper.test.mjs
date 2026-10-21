@@ -130,6 +130,27 @@ test('assistant text and stream EOF do not establish completion', async t => {
   assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, 'protocol_error');
 });
 
+for (const [mode, code] of [['eof', 'native_eof'], ['event-error', 'native_event_error'], ['timeout', 'turn_timeout']]) {
+  test(`bounded turn cause distinguishes ${mode} without changing its outcome`, async t => {
+    const ctx = await fixture(t);
+    const outcome = new Promise(resolve => {
+      const send = ctx.helper.send;
+      ctx.helper.send = message => { send(message); if (message.type === 'turn_result') resolve(message); };
+    });
+    ctx.helper.config.turn_timeout_ms = 20;
+    await turn(ctx);
+    if (mode === 'eof') ctx.query.close();
+    if (mode === 'event-error') ctx.query.push({ type: 'result', uuid: 'secret-canary', session_id: 'foreign' });
+    const message = await outcome;
+    assert.equal(message.outcome, 'protocol_error');
+    assert.equal(message.code, code);
+    assert.equal(message.session_id, 'session');
+    assert.equal(message.request_id, 'turn-one');
+    assert.equal(ctx.messages.filter(value => value.type === 'turn_result').length, 1);
+    assert.ok(!JSON.stringify(ctx.messages).includes('secret-canary'));
+  });
+}
+
 test('interrupt cancels callbacks and emits a single cancellation outcome', async t => {
   const ctx = await fixture(t);
   await turn(ctx);

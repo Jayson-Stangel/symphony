@@ -13,9 +13,11 @@ class Probe {
   async inputs(prompt) {
     for await (const input of prompt) {
       this.push({ type: 'system', subtype: 'init', session_id: 'native-probe' });
-      const text = input.message.content;
+      // Worker prompts append recovery instructions after the scenario's first line.
+      const text = input.message.content.split('\n', 1)[0];
       if (text.startsWith('effort:') && this.options.effort !== text.slice(7)) throw new Error('effort_mismatch');
       if (text === 'silence') continue;
+      if (text === 'event-error') { this.push({ type: 'result', uuid: 'secret-canary', session_id: 'foreign' }); continue; }
       if (text === 'malformed') { process.stdout.write('not JSON\n'); continue; }
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }
       if (text.startsWith('fable-quota:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
