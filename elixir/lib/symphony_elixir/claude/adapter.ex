@@ -269,6 +269,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
+  defp handle_message(%{"type" => "turn_result", "outcome" => "agent_turn_limit"}, session, _request, _event_id, _issue, _callback, _until, pending),
+    do: pending_failure(session, pending, :agent_turn_limit)
+
   defp handle_message(%{"type" => "turn_result", "outcome" => outcome} = message, session, _request, _event_id, _issue, _callback, _until, pending) do
     cond do
       outcome == "protocol_error" ->
@@ -280,7 +283,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       outcome in @pause_kinds ->
         pause(session, outcome, Map.take(message, ["resets_at"]))
 
-      outcome in ["permission_blocked", "agent_turn_limit"] ->
+      outcome == "permission_blocked" ->
         {:error, {:agent_blocked, outcome}}
 
       outcome == "transient_error" ->

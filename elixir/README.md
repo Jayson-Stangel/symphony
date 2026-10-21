@@ -289,7 +289,9 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
   Reaching this per-attempt allowance closes the native session normally and schedules the existing
   continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Tracker state and dispatch limits are checked again before another attempt starts.
+  behavior. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
+  session; it does not permanently block active work or reuse the exhausted session. Tracker state
+  and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports

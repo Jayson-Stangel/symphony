@@ -78,6 +78,20 @@ test('completion requires success and no cancellation/latched error', () => {
   assert.deepEqual(summarizeResult({ ...result, is_error: true }), { outcome: 'protocol_error' });
 });
 
+test('native turn allowance yields only when no stronger native stop applies', () => {
+  const result = { subtype: 'error_max_turns', is_error: true, permission_denials: [] };
+  assert.deepEqual(summarizeResult(result), { outcome: 'agent_turn_limit' });
+  const denied = [{ tool_name: 'Bash', tool_use_id: 'one', tool_input: {} }];
+  // Recorded denials do not prove the native allowance ended on a blocking input.
+  assert.deepEqual(summarizeResult({ ...result, permission_denials: denied }), { outcome: 'agent_turn_limit' });
+  assert.deepEqual(summarizeResult({ ...result, subtype: 'error_during_execution', permission_denials: denied }), { outcome: 'permission_blocked' });
+  assert.deepEqual(summarizeResult({ ...result, subtype: 'success', is_error: false, permission_denials: denied }), { outcome: 'completed' });
+  for (const outcome of ['auth_required', 'quota_exhausted', 'policy_blocked']) {
+    assert.deepEqual(summarizeResult(result, { outcome }), { outcome });
+  }
+  assert.deepEqual(summarizeResult(result, null, true), { outcome: 'cancelled' });
+});
+
 test('usage is cumulative across models, includes cache input once, and excludes thinking double count', () => {
   assert.deepEqual(usageTotals({ sonnet: { inputTokens: 10, cacheReadInputTokens: 20,
     cacheCreationInputTokens: 30, outputTokens: 40, thinkingTokens: 15 } }), {

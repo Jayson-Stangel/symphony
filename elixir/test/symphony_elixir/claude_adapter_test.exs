@@ -567,7 +567,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "coded turn failure preserves missing-ack diagnostics without recording a gate", ctx do
+  test "coded turn failure and native allowance preserve missing-ack diagnostics without recording a gate", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
 
@@ -579,21 +579,24 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     }
 
     opts = ctx.opts |> Keyword.put(:helper_path, helper) |> Keyword.put(:tool_binding, binding)
-    assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
-    try do
-      log =
-        capture_log([level: :info], fn ->
-          assert {:error, :claude_native_eof} = Adapter.run_turn(session, "tool-coded-failure", ctx.issue, [])
-        end)
+    for {prompt, cause} <- [{"tool-coded-failure", :claude_native_eof}, {"tool-turn-limit", :agent_turn_limit}] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
-      assert length(Regex.scan(~r/"reason":"ack_missing"/, log)) == 1
-      assert log =~ "issue_id=#{ctx.issue.id}"
-      refute log =~ "secret-canary"
-      assert :ready = AgentPause.current()
-      assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
-    after
-      Adapter.stop_session(session)
+      try do
+        log =
+          capture_log([level: :info], fn ->
+            assert {:error, ^cause} = Adapter.run_turn(session, prompt, ctx.issue, [])
+          end)
+
+        assert length(Regex.scan(~r/"reason":"ack_missing"/, log)) == 1
+        assert log =~ "issue_id=#{ctx.issue.id}"
+        refute log =~ "secret-canary"
+        assert :ready = AgentPause.current()
+        assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
+      after
+        Adapter.stop_session(session)
+      end
     end
   end
 
@@ -792,7 +795,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     for {prompt, expected} <- [
           {"permission_blocked", {:agent_blocked, "permission_blocked"}},
-          {"agent_turn_limit", {:agent_blocked, "agent_turn_limit"}},
+          {"agent_turn_limit", :agent_turn_limit},
           {"transient_error", :claude_transient_error},
           {"cancelled", :claude_cancelled}
         ] do
@@ -1180,6 +1183,80 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "native SDK allowance closes its worker and scheduler continues in a renewed session", ctx do
+    supervisor = start_supervised!(Task.Supervisor)
+    issue = %{ctx.issue | state: "In Progress", dispatchable: true}
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      tracker_kind: "memory",
+      prompt: "native-allowance",
+      max_turns: 3,
+      hook_after_run: "printf cleaned > after-run"
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
+    assert File.read!(Path.join(workspace, "native-allowance-count")) == "1"
+    assert File.read!(Path.join(workspace, "after-run")) == "cleaned"
+    assert Port.info(native.port) == nil
+    File.write!(Path.join(workspace, "implementation.txt"), "retained work")
+
+    state = allowance_scheduler_state(worker, issue, workspace, event_id)
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, worker.ref, :process, worker.pid, :normal}, state)
+    assert state.blocked == %{}
+    assert %{attempt: 1, error: nil, workspace_path: ^workspace, due_at_ms: due} = retry = state.retry_attempts[issue.id]
+    assert (due - System.monotonic_time(:millisecond)) in 0..1_000
+    Process.cancel_timer(retry.timer_ref)
+    assert :ready = AgentPause.current()
+
+    # The scheduler's real tracker lookup keeps active work queued while capacity
+    # is occupied. The fixture then runs the renewed worker after freeing a slot.
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    busy = %{state | max_concurrent_agents: 1, running: %{"other" => %{pid: self(), issue: %{issue | id: "other"}}}}
+    assert {:noreply, waiting} = Orchestrator.handle_info({:retry_issue, issue.id, retry.retry_token}, busy)
+    assert waiting.blocked == %{}
+    assert Map.has_key?(waiting.retry_attempts, issue.id)
+    Process.cancel_timer(waiting.retry_attempts[issue.id].timer_ref)
+    assert {:ok, [^issue]} = Tracker.fetch_issues_by_ids([issue.id])
+
+    finish_on_readback = fn ids ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Human Review"}])
+      Tracker.fetch_issues_by_ids(ids)
+    end
+
+    {_worker, renewed, ^workspace, _event_id} = native_allowance_attempt(supervisor, issue, 1, finish_on_readback)
+    assert renewed.port != native.port
+    assert File.read!(Path.join(workspace, "native-allowance-count")) == "2"
+    assert File.read!(Path.join(workspace, "implementation.txt")) == "retained work"
+    assert Port.info(renewed.port) == nil
+  end
+
+  test "late Human Review and terminal tracker states prevent native allowance redispatch", ctx do
+    supervisor = start_supervised!(Task.Supervisor)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", prompt: "native-allowance", max_turns: 3)
+
+    for late_state <- ["Human Review", "Done"] do
+      issue = %{ctx.issue | id: late_state, identifier: "ALLOWANCE-#{String.replace(late_state, " ", "-")}", state: "In Progress", dispatchable: true}
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
+      assert Port.info(native.port) == nil
+      assert {:noreply, state} = Orchestrator.handle_info({:DOWN, worker.ref, :process, worker.pid, :normal}, allowance_scheduler_state(worker, issue, workspace, event_id))
+      retry = state.retry_attempts[issue.id]
+      Process.cancel_timer(retry.timer_ref)
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: late_state}])
+
+      assert {:noreply, released} = Orchestrator.handle_info({:retry_issue, issue.id, retry.retry_token}, state)
+      assert released.running == %{}
+      assert released.blocked == %{}
+      refute Map.has_key?(released.retry_attempts, issue.id)
+      refute MapSet.member?(released.claimed, issue.id)
+      assert File.dir?(workspace) == (late_state == "Human Review")
+      assert :ready = AgentPause.current()
+    end
+  end
+
   test "EOF, event failure and native deadline reach worker retries with safe correlation", ctx do
     supervisor = start_supervised!(Task.Supervisor)
     observer = self()
@@ -1256,5 +1333,36 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "SSH and unsafe source workspace are rejected before any helper launch", ctx do
     assert {:error, :claude_ssh_unsupported} = Adapter.start_session(ctx.workspace, worker_host: "remote")
     assert {:error, {:invalid_workspace_cwd, :workspace_root, _}} = Adapter.start_session(Path.dirname(ctx.workspace), ctx.opts)
+  end
+
+  defp native_allowance_attempt(supervisor, issue, attempt \\ nil, fetcher \\ &Tracker.fetch_issues_by_ids/1) do
+    observer = self()
+
+    worker =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        AgentRunner.run(issue, observer, coding_agent_adapter: TurnProbe, attempt: attempt, issue_state_fetcher: fetcher)
+      end)
+
+    issue_id = issue.id
+    pid = worker.pid
+    ref = worker.ref
+    assert_receive {:worker_runtime_info, ^issue_id, %{workspace_path: workspace}}, 3_000
+    assert_receive {:worker_agent_session, ^issue_id, %{native: native}}, 3_000
+    assert_receive {:codex_worker_update, ^issue_id, %{event: :session_started, session_id: event_id}}, 3_000
+    assert_receive {^ref, :ok}, 3_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 3_000
+    {worker, native, workspace, event_id}
+  end
+
+  defp allowance_scheduler_state(worker, issue, workspace, event_id) do
+    entry = %{pid: worker.pid, ref: worker.ref, identifier: issue.identifier, issue: issue, workspace_path: workspace, session_id: event_id, started_at: DateTime.utc_now()}
+
+    %Orchestrator.State{
+      running: %{issue.id => entry},
+      claimed: MapSet.new([issue.id]),
+      readiness: %{ready: true, provider: "claude", profile: String.duplicate("a", 64)},
+      max_concurrent_agents: 10,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
   end
 end
