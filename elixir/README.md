@@ -636,6 +636,16 @@ untouched when switching providers.
 Development updater retries refresh stale pending images from the current checkout,
 preserving the rollback container until the replacement passes readiness. See
 [development updates](../docs/development.md#refresh-the-development-build).
+
+Project configuration, container and transition names use the same normalized repository hash
+identity already used by retained storage volumes. Basename-era installations migrate only
+through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
+namespace). Migration preserves volume names, credential bytes, workflow files and pending
+rollback evidence; it requires an owned retained container and refuses mixed or foreign
+resources. See the [installation migration procedure](../README.md) for credentials without
+verifiable ownership. Codex native login remains namespace-shared; Claude login stays scoped
+to the unchanged repository storage identity.
+
 The journal retains transition intent and rollback evidence; selected runner
 metadata is written atomically from the verified container during completion
 and recovery, including an interrupted container creation or rollback.
