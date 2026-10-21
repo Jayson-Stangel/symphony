@@ -766,7 +766,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "missing captured identity cannot mask cleanup failure or prevent its marker", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     Port.close(session.port)
-    session = Map.delete(%{session | owned_native: [%{"pid" => 999_999, "start" => "0"}]}, :identity)
+    failed = %{session | owned_native: [%{"pid" => 999_999, "start" => "0"}], cleanup: "/missing-cleanup"}
+    session = Map.delete(failed, :identity)
     captured = %{adapter: Adapter, native: session}
     assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
     assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
