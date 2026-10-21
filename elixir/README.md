@@ -68,9 +68,11 @@ without gating dispatch; no new intent files or automatic purge are introduced.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
-Successful polls also clean retained local terminal workspaces that no longer have a
-running agent, such as a ticket completed after human review. Startup performs
-the same terminal cleanup; failed tracker reads preserve retained checkouts.
+Ordinary polls query active and blocked candidates without fetching completed history.
+Like upstream, startup attempts terminal cleanup once, when native readiness and
+drain state first permit admission. Unclaimed workspaces completed after human
+review remain until the next startup; failed tracker reads preserve checkouts.
+Readiness recovery and workflow reload do not repeat the startup sweep.
 
 The container launcher mounts persistent repository-specific volumes at
 `/workspaces` and `/var/lib/symphony`. Restart recovery uses the tracker and
@@ -99,8 +101,8 @@ workflows are not automatically migrated. Publication assumes one listener owns
 each workspace root, as with existing workspace creation.
 
 `.symphony` is reserved for local workspace metadata; an issue with that exact
-identifier receives a hashed workspace key. SSH deployments retain their existing
-startup and claimed-issue cleanup behavior without polling all terminal history.
+identifier receives a hashed workspace key. Both local and SSH deployments use startup and targeted claimed-issue cleanup
+without polling all terminal history.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
