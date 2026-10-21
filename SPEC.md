@@ -2423,8 +2423,7 @@ Unchanged health observations preserve the configured tracker poll cadence.
 Admission transitions and explicit controls request prompt reconciliation,
 coalescing with any poll cycle already in progress.
 Drain cancels a waiting resume, and late results cannot undrain or replace a pinned
-account. Old unscoped durable auth/policy records have no reliable provenance and
-still require explicit recheck; they cannot safely be assumed to be observations.
+account. Only the exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is a proven pre-input observation and is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their existing recovery requirements.
 
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
@@ -2514,9 +2513,7 @@ See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.
 
 Expected scheduler cancellation when an issue leaves active states must not
-create a helper protocol failure. Confirmed cleanup can end a non-quota operator
-recheck. Quota recovery requires no turn-completion handshake and cannot remain
-latched by an expected cancellation.
+create a helper protocol failure. A healthy explicit operator recheck clears the recovered auth/policy pause before normal dispatch, without a turn-completion lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only. Quota recovery likewise requires no turn-completion handshake.
 
 Tracker recovery applies to both Codex and Claude and follows the original Codex
 model: deliver errors and partial results to the agent rather than withholding
@@ -2564,9 +2561,7 @@ it MUST NOT add Git trust exceptions or clear uncertainty merely to restore UID.
 
 Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
-additional Claude worker ceiling for normal dispatch. Explicit authentication/policy
-rechecks retain one existing recovery owner until success; non-owners retry without
-changing that pause. Quota cooldown expiry restores normal configured capacity.
+additional Claude worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured capacity immediately; subsequent actual runtime stops still gate admission. Quota cooldown expiry restores normal configured capacity.
 The deprecated positive
 `claude.max_concurrent_agents` input is accepted for existing workflow compatibility
 but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.

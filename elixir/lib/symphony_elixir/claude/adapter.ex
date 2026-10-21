@@ -158,24 +158,12 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   @impl true
   def run_turn(%{owner: owner} = session, prompt, issue, opts) when owner == self() do
-    expected_profile = session.identity["profile"]
-
     case AgentPause.current() do
-      {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^expected_profile}} ->
-        {:error, :claude_turn_not_admitted}
-
       {:paused, value} ->
         pause(session, value["kind"], Map.take(value, ["resets_at", "code", "stage"]))
 
-      {:probe, %{"profile" => profile}} when profile != expected_profile ->
-        pause(session, "policy_blocked", %{})
-
-      _ ->
-        case AgentPause.begin_turn(expected_profile) do
-          :ok -> do_run_turn(session, prompt, issue, opts)
-          {:error, :probe_not_available} -> {:error, :claude_turn_not_admitted}
-          _ -> pause(session, "policy_blocked", %{})
-        end
+      :ready ->
+        do_run_turn(session, prompt, issue, opts)
     end
   end
 
@@ -283,10 +271,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp handle_message(%{"type" => "turn_result", "outcome" => "completed"}, session, _request, event_id, _issue, _callback, _until, pending) do
     if map_size(pending) == 0 do
-      case AgentPause.complete_probe(session.identity["profile"]) do
-        :ok -> {:ok, %{session_id: event_id, provider: :claude}}
-        _ -> pause(session, "policy_blocked", %{})
-      end
+      {:ok, %{session_id: event_id, provider: :claude}}
     else
       pending_failure(session, pending)
     end
@@ -409,15 +394,12 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   @impl true
-  def interrupt(session, reason) do
+  def interrupt(session, _reason) do
     # This may be called by the scheduler while the Port owner is waiting on a
     # tracker request. Cleanup uses captured process generations, never a broad kill.
     send(session.owner, {:claude_session_interrupt, session.port})
 
-    with :ok <- cleanup_owned(session),
-         :ok <- close_port(session.port) do
-      if reason == :issue_state_change, do: AgentPause.cancel_recheck(session.identity["profile"]), else: :ok
-    end
+    with :ok <- cleanup_owned(session), do: close_port(session.port)
   end
 
   defp cleanup_owned(%{owned_native: [], helper_identity: nil}), do: :ok

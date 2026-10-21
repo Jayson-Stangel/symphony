@@ -571,16 +571,14 @@ defmodule SymphonyElixir.Orchestrator do
         %{admission | reason: state.readiness[:code] || "native_not_ready"}
 
       true ->
-        paused_admission(admission, profile)
+        paused_admission(admission)
     end
   end
 
-  defp paused_admission(admission, profile) do
+  defp paused_admission(admission) do
     case active_agent_pause() do
       :ready -> %{admission | ready: true}
-      {:probe, %{"profile" => ^profile}} -> %{admission | ready: true, reason: "operator_recheck"}
       {:paused, value} -> %{admission | reason: value["kind"], retry_at: value["resets_at"]}
-      _ -> %{admission | reason: "profile_changed"}
     end
   end
 
@@ -1729,16 +1727,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp available_slots(%State{} = state) do
     if agent_dispatch_ready?(state) do
-      # Explicit auth/policy recovery retains its existing single turn owner.
-      # Check inflight too: the first worker may claim between admission reads.
-      limit =
-        case active_agent_pause() do
-          {:probe, _} -> 1
-          {:paused, %{"kind" => "operator_recheck_inflight"}} -> 1
-          _ -> state.max_concurrent_agents || Config.max_concurrent_agents()
-        end
-
-      max(limit - map_size(state.running), 0)
+      max((state.max_concurrent_agents || Config.max_concurrent_agents()) - map_size(state.running), 0)
     else
       0
     end

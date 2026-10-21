@@ -203,76 +203,21 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
-  test "a non-owner waits for an in-flight operator recheck without poisoning its pause", ctx do
+  test "explicit recheck does not strand recovery after a cleaned protocol failure", ctx do
     profile = String.duplicate("a", 64)
     assert :ok = AgentPause.record(:auth_required, %{profile: profile})
     assert :ok = AgentPause.explicit_recheck(profile)
-    parent = self()
-
-    owner =
-      Task.async(fn ->
-        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
-        send(parent, {:probe_session, session})
-
-        try do
-          Adapter.run_turn(session, "silence", ctx.issue, on_message: fn %{event: event} -> if event == :session_started, do: send(parent, :probe_waiting) end)
-        after
-          Adapter.stop_session(session)
-        end
-      end)
-
-    assert_receive {:probe_session, probe}, 3_000
-    assert_receive :probe_waiting, 3_000
-    assert {:ok, other} = Adapter.start_session(ctx.workspace, ctx.opts)
+    assert :ready = AgentPause.current()
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    assert {:error, :claude_invalid_frame} = Adapter.run_turn(session, "malformed", ctx.issue, [])
+    assert :ok = Adapter.stop_session(session)
+    assert :ready = AgentPause.current()
+    assert {:ok, next} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
-      assert {:error, :claude_turn_not_admitted} = Adapter.run_turn(other, "no model input", ctx.issue, [])
-      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
+      assert {:ok, _} = Adapter.run_turn(next, "success", ctx.issue, [])
     after
-      Adapter.stop_session(other)
-      Adapter.interrupt(probe, :test_cleanup)
-      Task.await(owner, 5_000)
-    end
-  end
-
-  test "a probe claimed between admission read and begin_turn defers without changing the owner", ctx do
-    profile = String.duplicate("a", 64)
-    assert :ok = AgentPause.record(:auth_required, %{profile: profile})
-    assert :ok = AgentPause.explicit_recheck(profile)
-    parent = self()
-    lock = {AgentPause, self()}
-    assert :global.set_lock(lock, [node()])
-    :erlang.trace_pattern({AgentPause, :begin_turn, 1}, true, [:local])
-
-    worker =
-      Task.async(fn ->
-        assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
-        send(parent, :race_session_ready)
-
-        try do
-          receive do: (:run -> :ok)
-          Adapter.run_turn(session, "must not send model input", ctx.issue, [])
-        after
-          Adapter.stop_session(session)
-        end
-      end)
-
-    try do
-      assert_receive :race_session_ready, 3_000
-      :erlang.trace(worker.pid, true, [:call])
-      send(worker.pid, :run)
-      # Entry proves the adapter already read the available probe. Its serialized
-      # claim waits behind this test's existing lock while the owner claims it.
-      assert_receive {:trace, pid, :call, {AgentPause, :begin_turn, [^profile]}}, 3_000
-      assert pid == worker.pid
-      assert :ok = AgentPause.begin_turn(profile)
-      :global.del_lock(lock, [node()])
-      assert {:error, :claude_turn_not_admitted} = Task.await(worker, 5_000)
-      assert {:paused, %{"kind" => "operator_recheck_inflight", "profile" => ^profile}} = AgentPause.current()
-    after
-      :global.del_lock(lock, [node()])
-      :erlang.trace_pattern({AgentPause, :begin_turn, 1}, false, [:local])
-      if Process.alive?(worker.pid), do: Task.shutdown(worker, 5_000)
+      Adapter.stop_session(next)
     end
   end
 
@@ -390,12 +335,12 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert state.blocked == %{}
     Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
 
-    assert :ok = AgentPause.record(:auth_required)
+    assert :ok = AgentPause.record(:policy_blocked)
     path = Path.join(ctx.root, "state/claude-pause.json")
     legacy = File.read!(path)
     assert {:error, {:claude_startup_failed, "auth_required"}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
     assert File.read!(path) == legacy
-    assert {:paused, %{"kind" => "auth_required", "profile" => nil}} = AgentPause.current()
+    assert {:paused, %{"kind" => "policy_blocked", "profile" => nil}} = AgentPause.current()
   end
 
   test "safe post-start schema rejection survives adapter and scheduler re-recording", ctx do
@@ -755,33 +700,16 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
-  test "a different account's probe cannot run and unwritable probe completion cannot clear policy", ctx do
+  test "a real policy pause remains blocked until matching explicit recovery", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
     assert :ok = AgentPause.record(:policy_blocked, %{profile: other})
-    assert :ok = AgentPause.explicit_recheck(other)
-    assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
-    File.rm!(Path.join(ctx.root, "state/claude-pause.json"))
-    assert :ok = AgentPause.record(:policy_blocked, %{profile: String.duplicate("a", 64)})
-    assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
-    state_root = Path.join(ctx.root, "state")
-    File.chmod!(state_root, 0o500)
+    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("a", 64))
 
     try do
       assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
+      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
     after
-      File.chmod!(state_root, 0o700)
-    end
-
-    callback = fn
-      %{event: :session_started} -> File.chmod!(state_root, 0o500)
-      _ -> :ok
-    end
-
-    try do
-      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "success", ctx.issue, on_message: callback)
-    after
-      File.chmod!(state_root, 0o700)
       Adapter.stop_session(session)
     end
   end
