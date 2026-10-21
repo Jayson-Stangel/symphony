@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.RunnerLifecycleTest do
   use ExUnit.Case, async: true
 
+  @project_id "service-" <> String.slice(Base.encode16(:crypto.hash(:sha, "blob 26\0github.com/example/service"), case: :lower), 0, 12)
+
   @launcher Path.expand("../../../scripts/symphony", __DIR__)
 
   setup do
@@ -14,7 +16,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     {_, 0} = System.cmd("git", ["init", "-q", repo])
     {_, 0} = System.cmd("git", ["-C", repo, "remote", "add", "origin", "https://github.com/example/service.git"])
     File.write!(Path.join(repo, "WORKFLOW.md"), "fixture workflow")
-    File.write!(Path.join(config, "projects/service.env"), "GH_TOKEN=fixture\n")
+    File.write!(Path.join(config, "projects/#{@project_id}.env"), "GH_TOKEN=fixture\n")
     # Every fixture owns curl, including failures; never fall through to a host listener.
     File.write!(Path.join(root, "curl"), "#!/bin/sh\nexit 1\n")
     File.chmod!(Path.join(root, "curl"), 0o755)
@@ -25,7 +27,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     printf '%s\\t' "$@" >> "$FIXTURE_LOG"
     printf '\\n' >> "$FIXTURE_LOG"
     state=$FIXTURE_STATE
-    case "${!#}" in *-before-update) state=$FIXTURE_STATE.backup ;; esac
+    case "${!#}" in
+      *-before-update) state=$FIXTURE_STATE.backup ;;
+    esac
+    case "$1:${!#}" in
+      inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
+    esac
     case "$1" in
       inspect)
         [ -f "$state" ] || { printf '\\n'; exit 1; }
@@ -44,6 +51,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
           *Mounts*)
             case "$*" in
+              *'{{json .Mounts}}'*) printf '[{"Type":"bind","Source":"%s/WORKFLOW.md","Destination":"/etc/symphony/WORKFLOW.md","RW":false}]\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *Source*) printf '%s/WORKFLOW.md /etc/symphony/WORKFLOW.md false\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n%s /root/.codex\\n' "$storage" "$storage" "symphony${SYMPHONY_RUNNER_NAMESPACE:+-$SYMPHONY_RUNNER_NAMESPACE}-codex-auth" ;;
             esac ;;
@@ -161,15 +169,15 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     test "update --config-dir selects runner metadata with explicit override #{@override}", ctx do
       selected = Path.join(ctx.root, "selected")
       File.mkdir_p!(Path.join(selected, "projects"))
-      File.cp!(Path.join(ctx.config, "projects/service.env"), Path.join(selected, "projects/service.env"))
+      File.cp!(Path.join(ctx.config, "projects/#{@project_id}.env"), Path.join(selected, "projects/#{@project_id}.env"))
       runner_home = if @override, do: Path.join(ctx.root, "explicit-runners"), else: nil
       env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"SYMPHONY_RUNNER_HOME", runner_home}]
       ready_curl!(ctx)
       assert {_, 0} = launch_args(ctx, ["run"], env ++ [{"SYMPHONY_CONFIG_HOME", selected}])
       assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--config-dir", selected, "--agent", "claude"], env)
-      metadata = Path.join(runner_home || Path.join(selected, "runners"), "service.env")
+      metadata = Path.join(runner_home || Path.join(selected, "runners"), "#{@project_id}.env")
       assert File.read!(metadata) =~ "SYMPHONY_RUNNER_AGENT=claude"
-      refute File.exists?(Path.join(ctx.config, "runners/service.env"))
+      refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.env"))
     end
   end
 
@@ -215,11 +223,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_FAIL_START_FILE", start}])
       assert File.read!(ctx.state <> ".volume-owner") == @owner
       assert String.trim(File.read!(ctx.state)) == "false"
-      assert File.dir?(Path.join(ctx.config, "runners/service.transition"))
+      assert File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
       assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
       assert File.read!(ctx.state <> ".volume-owner") == @owner
       assert File.read!(ctx.state <> ".agent") == @source
-      refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+      refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     end
   end
 
@@ -256,7 +264,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.read!(ctx.log) =~ "chown -hR"
     refute File.read!(ctx.log) =~ "start\t"
     assert String.trim(File.read!(ctx.state)) == "false"
-    assert File.dir?(Path.join(ctx.config, "runners/service.transition"))
+    assert File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
   end
 
   test "missing container inspection discards stdout before reporting or creating", ctx do
@@ -266,7 +274,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     calls = File.read!(ctx.log) |> String.split("\n", trim: true)
     assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
     refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
-    refute Enum.any?(calls, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage")))
+    refute Enum.any?(calls, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
@@ -293,11 +301,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "official stop retains the qualified transition source and metadata", ctx do
     assert {_, 0} = launch(ctx, "start")
-    metadata = File.read!(Path.join(ctx.config, "runners/service.env"))
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     File.write!(ctx.log, "")
     assert {_, 0} = launch(ctx, "stop")
     assert {"Isolated worker: stopped (false)\n", 0} = launch(ctx, "status")
-    assert File.read!(Path.join(ctx.config, "runners/service.env")) == metadata
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.env")) == metadata
     calls = File.read!(ctx.log)
     assert calls =~ "stop\t--time\t30\tsymphony-#{ctx.namespace}-service"
     refute calls =~ "rm\t"
@@ -316,14 +324,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
     calls = File.read!(ctx.log)
-    assert calls =~ "rename\tsymphony-#{ctx.namespace}-service\tsymphony-#{ctx.namespace}-service-before-update"
+    assert calls =~ "rename\tsymphony-#{ctx.namespace}-#{@project_id}\tsymphony-#{ctx.namespace}-#{@project_id}-before-update"
     assert calls =~ "/state/agent-draining"
     assert calls =~ "com.symphony.agent=claude"
     assert calls =~ "tag\tfixture-claude-image\tsymphony-#{ctx.namespace}-runner-claude:local"
-    assert calls =~ "rm\tsymphony-#{ctx.namespace}-service-before-update"
+    assert calls =~ "rm\tsymphony-#{ctx.namespace}-#{@project_id}-before-update"
     refute calls =~ "stop\t"
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
-    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
   end
 
@@ -333,7 +341,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     for agent <- ["claude", "codex"] do
       assert {_, 0} = launch_args(ctx, ["run"], env)
       File.write!(ctx.state <> ".agent", "<no value>")
-      File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+      File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
       curl = Path.join(ctx.root, "curl")
       File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
       File.chmod!(curl, 0o755)
@@ -352,7 +360,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       # Reset the disposable fixture through its supported stop operation.
       assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
       File.rm!(ctx.state)
-      File.rm!(Path.join(ctx.config, "runners/service.env"))
+      File.rm!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     end
   end
 
@@ -360,11 +368,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
-    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
     File.write!(ctx.log, "")
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env ++ [{"FIXTURE_ENTRYPOINT", "/foreign"}])
     assert message =~ "unknown legacy entrypoint"
-    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4999\n")
+    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4999\n")
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
     assert message =~ "legacy loopback port differs"
     refute File.read!(ctx.log) =~ "stop\t"
@@ -374,8 +382,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
-    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-    journal = Path.join(ctx.config, "runners/service.transition")
+    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     File.mkdir_p!(journal)
     File.write!(Path.join(journal, "target"), "claude\n")
     File.write!(Path.join(journal, "port"), "4010\n")
@@ -392,7 +400,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
-    File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
+    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
     curl = Path.join(ctx.root, "curl")
 
@@ -417,7 +425,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "candidate is not ready"
-    previous = Path.join(ctx.config, "runners/service.transition/previous.env")
+    previous = Path.join(ctx.config, "runners/#{@project_id}.transition/previous.env")
     image_keys = File.read!(previous) |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "SYMPHONY_RUNNER_IMAGE_ID="))
     assert image_keys == ["SYMPHONY_RUNNER_IMAGE_ID=fixture-image"]
     File.write!(Path.join(ctx.root, "curl-calls"), "")
@@ -429,7 +437,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     assert message =~ "Prior runner restored"
     refute File.read!(Path.join(ctx.root, "curl-calls")) =~ "/agent/resume"
-    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
   end
 
@@ -454,7 +462,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert message =~ "pre-admission API"
     assert message =~ "Prior runner restored"
     assert File.read!(ctx.state <> ".agent") == "codex"
-    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
   end
 
   test "recheck client allows two serialized bounded observations without extending other controls", ctx do
@@ -540,13 +548,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert message =~ "Prior runner restored"
     assert File.read!(ctx.state <> ".agent") == "codex"
     refute File.exists?(ctx.state <> ".backup")
-    refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
   end
 
   test "development retry replaces a stale crash-loop candidate without changing workflow or rollback source", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     previous = File.read!(Path.join(journal, "previous.env"))
     ready_curl!(ctx)
     File.write!(ctx.log, "")
@@ -571,7 +579,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-    metadata = Path.join(ctx.config, "runners/service.env")
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
     previous = File.read!(metadata)
     fail = Path.join(ctx.root, "fail-create-once")
     File.write!(fail, "")
@@ -606,13 +614,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     on_exit(fn -> File.touch(barrier <> ".release") end)
     await_file!(barrier <> ".entered")
     stopped = File.read!(ctx.state)
-    metadata = File.read!(Path.join(ctx.config, "runners/service.env"))
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     alternate = Path.join(ctx.root, "alternate-config")
     File.mkdir_p!(Path.join(alternate, "projects"))
 
     File.cp!(
-      Path.join(ctx.config, "projects/service.env"),
-      Path.join(alternate, "projects/service.env")
+      Path.join(ctx.config, "projects/#{@project_id}.env"),
+      Path.join(alternate, "projects/#{@project_id}.env")
     )
 
     for config <- [ctx.config, alternate],
@@ -635,7 +643,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert {message, 1} = launch_args(ctx, args, env ++ alias_env)
       assert message =~ "another updater is active", inspect({config, args})
       assert File.read!(ctx.state) == stopped
-      assert File.read!(Path.join(ctx.config, "runners/service.env")) == metadata
+      assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.env")) == metadata
       refute File.exists?(ctx.state <> ".backup")
     end
 
@@ -658,8 +666,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(Path.join(other_repo, "WORKFLOW.md"), "fixture workflow")
 
     File.cp!(
-      Path.join(ctx.config, "projects/service.env"),
-      Path.join(ctx.config, "projects/other.env")
+      Path.join(ctx.config, "projects/#{@project_id}.env"),
+      Path.join(ctx.config, "projects/#{project_id!(other_repo)}.env")
     )
 
     assert {_, 0} =
@@ -695,7 +703,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
       assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
       assert File.read!(ctx.state) == "false\n"
-      journal = Path.join(ctx.config, "runners/service.transition")
+      journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
       previous = File.read!(Path.join(journal, "previous.env"))
       # Provider/profile are cache fields, not authority for the retained image.
       stale = previous |> String.replace("SYMPHONY_RUNNER_AGENT=#{@source}", "SYMPHONY_RUNNER_AGENT=#{@target}") |> String.replace(~r/SYMPHONY_RUNNER_PROFILE=.*/, "SYMPHONY_RUNNER_PROFILE=stale")
@@ -706,8 +714,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                launch_args(ctx, ["update", "--development-runner", "--agent", @target], env)
 
       assert message =~ "Runner transition complete"
-      assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-service\t"
-      refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
+      assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-#{@project_id}\t"
+      refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-#{@project_id}\t/
       assert File.read!(ctx.state <> ".agent") == @target
 
       assert File.read!(ctx.state <> ".volume-owner") ==
@@ -742,14 +750,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
       assert message =~ @message
       refute File.read!(ctx.log) =~ ~r/(^|\n)(start|stop|rm|rename)\t/
-      assert File.exists?(Path.join(ctx.config, "runners/service.transition"))
+      assert File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     end
   end
 
   test "postcommit retry reconstructs metadata from the selected container", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
-    metadata = Path.join(ctx.config, "runners/service.env")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
     File.cp!(Path.join(journal, "previous.env"), metadata)
     File.rm!(ctx.state <> ".backup")
     ready_curl!(ctx)
@@ -763,7 +771,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = pending_claude_transition!(ctx)
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     previous = File.read!(Path.join(journal, "previous.env"))
     File.write!(ctx.log, "")
 
@@ -792,7 +800,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
              launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
 
     assert message =~ "candidate is not ready"
-    assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-service\t"
+    assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-#{@project_id}\t"
     assert File.read!(Path.join(journal, "previous.env")) == previous
     assert File.exists?(ctx.state <> ".backup")
     assert File.exists?(ctx.state <> ".unresumed")
@@ -803,12 +811,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "rollback restores observed prior identity rather than stale cached fields", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     # Keep the recorded image as rollback evidence; provider/profile are derived cache fields.
     File.write!(Path.join(journal, "previous.env"), "SYMPHONY_RUNNER_PORT=4010\nSYMPHONY_RUNNER_AGENT=claude\nSYMPHONY_RUNNER_IMAGE_ID=fixture-image\nSYMPHONY_RUNNER_PROFILE=stale\n")
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
-    metadata = File.read!(Path.join(ctx.config, "runners/service.env"))
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     assert metadata =~ "SYMPHONY_RUNNER_AGENT=codex\n"
     assert metadata =~ "SYMPHONY_RUNNER_PROFILE=none\n"
     assert metadata =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image\n"
@@ -816,7 +824,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "failed development rebuild leaves the pending image, container and rollback metadata intact", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     before = for name <- ~w(image previous.env target port), into: %{}, do: {name, File.read!(Path.join(journal, name))}
     File.write!(ctx.log, "")
     assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_BUILD", "true"}])
@@ -834,7 +842,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
     assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rm)\t/
-    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.transition/image")) == "fixture-claude-image\n"
   end
 
   test "development refresh refuses a foreign candidate before stopping or removing it", ctx do
@@ -843,7 +851,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(ctx.log, "")
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}])
     assert message =~ "candidate image differs"
-    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.transition/image")) == "fixture-claude-image\n"
     refute File.read!(ctx.log) =~ "stop\t"
     refute File.read!(ctx.log) =~ ~r/(^|\n)rm\t/
   end
@@ -857,7 +865,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_RM_FILE", fail}])
     refute File.exists?(ctx.state)
     assert File.exists?(ctx.state <> ".backup")
-    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.transition/image")) == "fixture-claude-image\n"
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
     assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
@@ -894,7 +902,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "development refresh can retry a journal created before the original runner was renamed", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
 
     for suffix <- ["", ".agent", ".port", ".profile", ".image", ".storage"] do
       if File.exists?(ctx.state <> ".backup" <> suffix) do
@@ -902,14 +910,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       end
     end
 
-    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/service.env"))
+    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/#{@project_id}.env"))
     ready_curl!(ctx)
     File.write!(ctx.log, "")
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
     assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
-    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-#{@project_id}\t/
   end
 
   test "development refresh refuses a running rollback source without replacing either container", ctx do
@@ -920,7 +928,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "prior runner is unexpectedly active"
     refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rm)\t/
-    assert File.read!(Path.join(ctx.config, "runners/service.transition/image")) == "fixture-claude-image\n"
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.transition/image")) == "fixture-claude-image\n"
   end
 
   test "same-image development retry resumes the journal without replacing the candidate", ctx do
@@ -931,13 +939,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute message =~ "Refreshed pending development candidate"
     calls = File.read!(ctx.log)
     refute calls =~ "stop\t"
-    refute calls =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
+    refute calls =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-#{@project_id}\t/
     assert File.read!(ctx.state <> ".image") == "fixture-claude-image"
   end
 
   test "failed replacement readiness retains the original rollback image and remains recoverable", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     previous = File.read!(Path.join(journal, "previous.env"))
     File.write!(ctx.state, "false")
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
@@ -954,10 +962,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "development refresh recovers a journal after the old candidate committed and backup was removed", ctx do
     env = pending_claude_transition!(ctx)
-    journal = Path.join(ctx.config, "runners/service.transition")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     # The previous transition passed readiness and removed its backup, but died before journal cleanup.
     File.rm!(ctx.state <> ".backup")
-    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/service.env"))
+    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/#{@project_id}.env"))
     ready_curl!(ctx)
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
@@ -978,7 +986,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude", "--port", "14030"], dev_env)
     calls = File.read!(ctx.log)
     assert calls =~ "symphony-#{ctx.namespace}-dev-service-"
-    assert calls =~ "--name\tsymphony-#{ctx.namespace}-dev-service\t"
+    assert calls =~ "--name\tsymphony-#{ctx.namespace}-dev-#{@project_id}\t"
     assert calls =~ "symphony-#{ctx.namespace}-dev-runner-claude:local"
     assert calls =~ "-claude-auth:/home/claude"
     refute calls =~ "symphony-#{ctx.namespace}-service"
@@ -1036,7 +1044,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "Claude selects only its project login and keeps selected Git secrets out of arguments", ctx do
-    File.write!(Path.join(ctx.config, "projects/service.env"), "GH_TOKEN=git-secret-canary\n")
+    File.write!(Path.join(ctx.config, "projects/#{@project_id}.env"), "GH_TOKEN=git-secret-canary\n")
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude", "--port", "4111"])
     calls = File.read!(ctx.log)
     assert calls =~ "com.symphony.agent=claude"
@@ -1127,6 +1135,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     calls = File.read!(ctx.log)
     refute calls =~ "auth.mjs\tlogout"
     refute calls =~ "volume\trm"
+  end
+
+  defp project_id!(repo) do
+    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "identity", @launcher, repo])
+    String.trim(identity)
   end
 
   defp await_file!(path, attempts \\ 500)

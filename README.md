@@ -209,6 +209,35 @@ On first use this creates a repository-specific `WORKFLOW.md` from Symphony's fu
 contract. Existing workflow and credentials are preserved. Review the generated workflow before
 starting the listener.
 
+Project resources use the repository basename plus the existing 12-character hash of its
+normalized `origin` URL. Credentials (`projects/<repository-identity>.env`), runner metadata and update
+journals, container names, workspace/state volumes and Claude login all share this identity.
+Unrelated repositories named `service` therefore remain independent. SSH and HTTPS spellings of
+the same remote normalize to the same identity; changing the repository origin changes identity.
+Codex login remains deliberately shared within the installation's runner namespace.
+
+For an installation that still uses basename-only credentials or container names, run the
+installed updater from that repository:
+
+```bash
+symphony update --migrate-project-identity
+```
+
+This explicit migration verifies the retained runner's repository storage and workflow mount,
+then renames credentials, cache, pending update/rollback journals, and retained containers.
+It preserves file contents, running/stopped state, workspace/state volumes, native logins and
+`WORKFLOW.md`; no agent is restarted. Retry the same command after interruption, then continue
+any pending `update --agent` or `update --rollback-runner`. Conflicting old/new resources, foreign
+storage and unknown metadata are refused before any move. Isolated development installations
+use `update --development-runner --migrate-project-identity` with their existing namespace.
+
+A basename-only credential file without an owned retained runner cannot prove its repository.
+Review it explicitly and copy the intended values to the new `projects/<repository-identity>.env` path
+reported by `init`/`run`; keep the old file until its owner is known. Existing workflows and
+unproven credentials are preserved. A repository gets a new independent credential template even
+if another same-basename repository has old resources or a workflow already exists. Only a retained runner with matching
+repository storage requires migration before `init`; ambiguous credentials are never reused.
+
 Symphony’s shared skills are global and namespaced—`symphony-commit`, `symphony-push`,
 `symphony-pull`, `symphony-linear`, and `symphony-land`. They carry reusable operational
 procedures, not repository policy, and update with the stable runtime. The workflow defines each
@@ -282,7 +311,9 @@ clone can retry safely. Existing edited workspaces are preserved. Existing custo
 [workspace recovery details](elixir/README.md).
 
 Initialization stores a private, owner-only credential template outside the repository at
-`~/.config/symphony/projects/<repository>.env`. Add:
+`~/.config/symphony/projects/<repository-identity>.env`. The identity is the basename plus the
+existing normalized `origin` hash. Use the exact credentials path printed by `init` (or by
+`run` when credentials are missing), including any configuration-directory override. Add:
 
 ```dotenv
 LINEAR_API_KEY=lin_api_...
@@ -302,7 +333,7 @@ Verify repository access before starting a listener:
 
 ```bash
 set -a
-. ~/.config/symphony/projects/<repository>.env
+. ~/.config/symphony/projects/<repository-identity>.env
 set +a
 gh repo view <owner>/<repository>
 ```

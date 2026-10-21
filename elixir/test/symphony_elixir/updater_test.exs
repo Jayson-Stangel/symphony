@@ -379,7 +379,8 @@ defmodule SymphonyElixir.UpdaterTest do
       config = Path.join(ctx.root, "selected-config")
       runners = Path.join(ctx.root, "selected-runners")
       File.mkdir_p!(runners)
-      File.write!(Path.join(runners, "upstream.env"), "fixture metadata")
+      id = project_id!(ctx.installation)
+      File.write!(Path.join(runners, "#{id}.env"), "fixture metadata")
       paused = Path.join(ctx.root, "source-paused")
       peer_dir = Path.join(ctx.root, "source-python-peer")
       File.mkdir!(peer_dir)
@@ -425,7 +426,7 @@ defmodule SymphonyElixir.UpdaterTest do
       assert {output, 91} = Task.await(first, 15_000)
       assert output =~ "LOADED_VERSION=A IMAGE=symphony-runner-claude:#{a} CONTEXT=#{a}"
       assert output =~ "RUNNERS=#{runners} CONFIG=#{config}"
-      assert File.regular?(Path.join(runners, "upstream.transition.lock"))
+      assert File.regular?(Path.join(runners, "#{id}.transition.lock"))
       assert {_, 0} = installed_update(ctx)
       assert git!(ctx.installation, ["rev-parse", "HEAD"]) == git!(ctx.seed, ["rev-parse", "HEAD"])
     end
@@ -483,6 +484,11 @@ defmodule SymphonyElixir.UpdaterTest do
 
     assert {_, 137} = Task.await(first, 15_000)
     assert {_, 0} = installed_update(ctx)
+  end
+
+  defp project_id!(repo) do
+    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "identity", @launcher, repo])
+    String.trim(identity)
   end
 
   defp transition_fixture_launcher(version) do

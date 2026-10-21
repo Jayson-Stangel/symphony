@@ -98,11 +98,21 @@ install_prerequisites() {
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null || die 'run this command inside a Git repository'; }
 
-project_id() {
+legacy_project_id() {
   local remote name
   remote=$(git -C "$1" remote get-url origin 2>/dev/null || true)
   name=$(basename "${remote:-$1}" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//')
   printf '%s\n' "$name"
+}
+
+# Keep the established storage identity unchanged; every project resource now
+# uses the same normalized repository identity instead of its ambiguous basename.
+project_id() {
+  local remote digest
+  remote=$(git -C "$1" remote get-url origin 2>/dev/null || printf '%s' "$1")
+  remote=$(printf '%s' "$remote" | sed -E 's#^[^@/]+@([^:]+):#\1/#; s#^[[:alnum:]+.-]+://##; s#^[^/@]+@##; s#\.git/?$##; s#/$##')
+  digest=$(printf '%s' "$remote" | git hash-object --stdin)
+  printf '%s-%s\n' "$(legacy_project_id "$1")" "${digest:0:12}"
 }
 
 skill_name() { printf 'symphony-%s\n' "$1"; }
@@ -154,7 +164,7 @@ Usage:
   symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
   symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --linear-project SLUG [--local-skill NAME]...
   symphony skill override NAME
   symphony skill migrate-local NAME
@@ -186,7 +196,9 @@ the current checkout; it does not fetch main, install links or run host setup.
 See docs/development.md. Leave the namespace unset for the stable installation.
 
 Credentials created by init are stored outside the repository at:
-  $SYMPHONY_CONFIG_HOME/projects/<repository>.env
+  $SYMPHONY_CONFIG_HOME/projects/<repository-identity>.env
+The identity combines the basename and normalized origin hash. Use the exact
+path printed by init, or by run when credentials are missing.
 
 GitHub tokens should be fine-grained and repository-scoped. Grant Contents and
 Pull requests: Read and write; grant Issues or Workflows only when needed.
@@ -302,12 +314,15 @@ update() {
       --rollback-runner)
         [ -z "$transition_target" ] || die 'choose only one runner transition'
         transition_target=rollback; shift ;;
+      --migrate-project-identity)
+        [ -z "$transition_target" ] || die 'choose only one runner transition'
+        transition_target=migrate-identity; shift ;;
       --development-runner) development_runner=true; shift ;;
       --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
         if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown update option: $1" ;;
     esac
   done
@@ -316,8 +331,9 @@ update() {
 
   if "$development_runner"; then
     [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
-    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner or --rollback-runner'
+    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner, --rollback-runner or --migrate-project-identity'
     case "$transition_target" in
+      migrate-identity) runner_migrate_identity "$(repo_root)" ;;
       pause) runner_pause "$(repo_root)" true ;;
       rollback) runner_rollback "$(repo_root)" ;;
       *) runner_transition "$(repo_root)" "$transition_target" true ;;
@@ -325,6 +341,7 @@ update() {
     return
   fi
 
+  if [ "$transition_target" = migrate-identity ]; then runner_migrate_identity "$(repo_root)"; return; fi
   if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)" true; return; fi
   if [ "$transition_target" = rollback ]; then
     runner_rollback "$(repo_root)"
@@ -490,7 +507,7 @@ use_global_skill() {
 }
 
 init() {
-  local slug='' root id remote workflow env_file skill
+  local slug='' root id remote workflow env_file skill runtime
   local -a local_skills
   local_skills=()
   while [ "$#" -gt 0 ]; do
@@ -510,6 +527,12 @@ init() {
   env_file="$config_home/projects/$id.env"
 
   (umask 077; mkdir -p "$(dirname "$env_file")")
+  if [ ! -e "$env_file" ] && [ -e "$config_home/projects/$(legacy_project_id "$root").env" ]; then
+    # Only a matching retained runtime proves this legacy identity. Other
+    # same-basename repositories must still initialize independently.
+    if runtime=$(container_runtime 2>/dev/null); then runner_require_identity "$root"; fi
+    printf 'Legacy basename credentials preserved without reuse. Review and copy only this repository’s intended values to %s.\n' "$env_file"
+  fi
   if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
 # Linear: Settings → Security & access → Personal API keys
 LINEAR_API_KEY=
@@ -646,13 +669,21 @@ container_runtime() {
 }
 
 runner_id() { printf '%s\n' "$runtime_prefix-$(project_id "$1")"; }
-runner_storage_id() {
-  local remote digest
-  remote=$(git -C "$1" remote get-url origin)
-  remote=$(printf '%s' "$remote" | sed -E 's#^[^@/]+@([^:]+):#\1/#; s#^[[:alnum:]+.-]+://##; s#^[^/@]+@##; s#\.git/?$##; s#/$##')
-  digest=$(printf '%s' "$remote" | git hash-object --stdin)
-  printf '%s-%s\n' "$(runner_id "$1")" "${digest:0:12}"
+runner_storage_id() { runner_id "$1"; }
+# A failed migration may leave individually renamed resources. Keep ordinary
+# commands out until its old owned container/backup names have both moved.
+# A different repository's basename-era runner is unrelated and is left alone.
+runner_require_identity() {
+  local root=$1 runtime old storage suffix
+  runtime=$(container_runtime); old="$runtime_prefix-$(legacy_project_id "$root")"
+  storage=$(runner_storage_id "$root")
+  for suffix in '' '-before-update'; do
+    if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$old$suffix" 2>/dev/null || true)" = "$storage" ]; then
+      die 'legacy repository resource identity retained; run symphony update --migrate-project-identity before operating this runner'
+    fi
+  done
 }
+
 runner_env_file() { printf '%s/%s.env\n' "$runner_home" "$(project_id "$1")"; }
 
 validate_agent() {
@@ -809,6 +840,7 @@ runner_status() {
 
 runner_report() {
   local root=$1 state name storage_id runtime agent port image
+  runner_require_identity "$root"
   runtime=$(container_runtime); state=$(runner_status "$root"); name=$(runner_id "$root")
   if [ "$state" = missing ]; then printf 'Isolated worker: not running\n'; return; fi
   storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
@@ -835,13 +867,14 @@ runner_start() {
   local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume
   validate_agent "$agent"
   runner_project_lock "$root"
+  runner_require_identity "$root"
   case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
   env_file="$runner_home/$id.env"; image=$(runner_image "$agent"); workflow="$root/WORKFLOW.md"
   storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
-  [ -r "$project_env" ] || die "missing credentials file: $project_env"
+  [ -r "$project_env" ] || die "missing credentials file: $project_env (legacy installation: symphony update --migrate-project-identity)"
   git_token=$(unset GH_TOKEN GITHUB_TOKEN; set -a; . "$project_env"; printf '%s' "${GH_TOKEN:-${GITHUB_TOKEN:-}}")
   if [ "$agent" = codex ]; then
     "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
@@ -969,10 +1002,31 @@ runner_record_observed_metadata() {
   runner_write_metadata "$root" "$port" "$agent" "$image" "$profile"
 }
 
+# Docker Desktop may report a Darwin host bind through its VM's /host_mnt
+# projection. Compare only that exact projection of the expected host file;
+# destination, bind type and read-only ownership remain mandatory.
+runner_workflow_mount_owned() {
+  local root=$1 runtime=$2 name=$3 mounts
+  mounts=$("$runtime" inspect --format '{{json .Mounts}}' "$name") || return
+  printf '%s\n' "$mounts" | python3 -c '
+import json, sys
+try:
+    expected, platform = sys.argv[1:]
+    mounts = [m for m in json.load(sys.stdin) if m.get("Destination") == "/etc/symphony/WORKFLOW.md"]
+    valid = {expected}
+    if platform == "Darwin":
+        valid.add("/host_mnt" + expected)
+    owned = (len(mounts) == 1 and mounts[0].get("Type") == "bind"
+             and mounts[0].get("RW") is False and mounts[0].get("Source") in valid)
+except (ValueError, TypeError, AttributeError):
+    owned = False
+sys.exit(0 if owned else 1)' "$root/WORKFLOW.md" "$(uname -s)"
+}
+
 # Runner transitions are owned by the installed updater. Every failure retains
 # volumes and leaves a drain marker; rollback is a separate updater operation.
 runner_owned() {
-  local root=$1 runtime=$2 name=$3 storage mode agent mounts
+  local root=$1 runtime=$2 name=$3 metadata=${4:-} storage mode agent mounts
   storage=$(runner_storage_id "$root")
   [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")" = "$storage" ] || die 'unknown or foreign runner storage; updater refused'
   mode=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")
@@ -983,9 +1037,8 @@ runner_owned() {
       [ "$("$runtime" inspect --format '{{join .Config.Entrypoint " "}}' "$name")" = /usr/local/bin/symphony-runner ] || die 'unknown legacy entrypoint; updater refused'
       mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
       printf '%s\n' "$mounts" | grep -Fxq -- "$codex_auth_volume /root/.codex" || die 'legacy Codex login mount differs; updater refused'
-      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$name")
-      printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'legacy workflow mount differs; updater refused'
-      runner_update_port "$root" "$runtime" "$name" >/dev/null
+      runner_workflow_mount_owned "$root" "$runtime" "$name" || die 'legacy workflow mount differs; updater refused'
+      runner_update_port "$root" "$runtime" "$name" "$metadata" >/dev/null
       ;;
     *) validate_agent "$agent" ;;
   esac
@@ -1002,9 +1055,9 @@ runner_is_legacy() {
 }
 
 runner_update_port() {
-  local root=$1 runtime=$2 name=$3 port bindings
+  local root=$1 runtime=$2 name=$3 metadata=${4:-} port bindings
   if runner_is_legacy "$runtime" "$name"; then
-    port=$(sed -n 's/^SYMPHONY_RUNNER_PORT=//p' "$(runner_env_file "$root")")
+    port=$(sed -n 's/^SYMPHONY_RUNNER_PORT=//p' "${metadata:-$(runner_env_file "$root")}")
     bindings=$("$runtime" inspect --format '{{range (index .HostConfig.PortBindings "4010/tcp")}}{{println .HostIp .HostPort}}{{end}}' "$name")
     [ "$bindings" = "127.0.0.1 $port" ] || die 'legacy loopback port differs from metadata; updater refused'
   else
@@ -1180,6 +1233,7 @@ runner_wait_idle() {
 runner_pause() {
   local root=$1 allow_legacy_stop=${2:-false} runtime name state port
   runner_project_lock "$root"
+  runner_require_identity "$root"
   runtime=$(container_runtime); name=$(runner_id "$root"); state=$(runner_status "$root")
   [ "$state" != missing ] || die 'no qualified runner to pause'
   runner_owned "$root" "$runtime" "$name"
@@ -1287,6 +1341,92 @@ runner_prepare_storage() {
       chown -hR "$3:$3" /workspaces /state' sh "$agent" "$new_candidate" "$uid"
 }
 
+# A deliberate updater operation, never an init-time basename credential lookup.
+# File and container renames are individually atomic and retriable after any
+# interruption. Storage/auth volumes and WORKFLOW.md are never moved or rewritten.
+runner_migrate_identity() (
+  local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target old_lock new_lock
+  runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
+  name=$(runner_id "$root"); previous="$runtime_prefix-$old"
+  mkdir -p "$runner_home"
+  # Resource ownership is independent of configuration overrides. Acquire old
+  # then new (the old name is a strict prefix); reserve FD 8 for source ownership.
+  old_lock=$(runner_resource_lock_path "$previous")
+  new_lock=$(runner_resource_lock_path "$name")
+  [ ! -L "$old_lock" ] && [ ! -L "$new_lock" ] || die 'unsafe runner lock'
+  [ ! -e "$old_lock" ] || [ -f "$old_lock" ] || die 'unsafe runner lock'
+  [ ! -e "$new_lock" ] || [ -f "$new_lock" ] || die 'unsafe runner lock'
+  exec 5>>"$old_lock"
+  updater_file_lock "$old_lock" 5
+  exec 6>>"$new_lock"
+  updater_file_lock "$new_lock" 6
+  # Preserve both configuration-local locks used by older updaters.
+  runner_transition_lock "$runner_home/$old.transition.lock"
+  exec 7>&9
+  exec 9>&-
+  unset runner_lock_path
+  runner_transition_lock "$runner_home/$id.transition.lock"
+
+  # Validate all filesystem inputs before any rename. No shell credential/cache
+  # content is evaluated, and mixed old/new state is never silently combined.
+  python3 - "$config_home/projects" "$runner_home" "$old" "$id" <<'PYIDENTITY'
+import os, stat, sys
+projects, runners, old, new = sys.argv[1:]
+def validate(path, directory=False):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if (info.st_uid != os.geteuid() or stat.S_ISLNK(info.st_mode)
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            or (not directory and info.st_nlink != 1)):
+        sys.exit('symphony: unsafe or foreign identity migration metadata: ' + path)
+    if directory:
+        known = {'target', 'port', 'previous.env', 'image', 'image.next', 'previous.env.next'}
+        if not set(os.listdir(path)) <= known:
+            sys.exit('symphony: unknown transition metadata; identity migration refused')
+        for entry in os.listdir(path):
+            validate(os.path.join(path, entry))
+    return True
+for base, suffix, directory in [(projects, '.env', False), (runners, '.env', False),
+                                (runners, '.transition', True), (runners, '.transition.complete', True)]:
+    source = validate(os.path.join(base, old + suffix), directory)
+    target = validate(os.path.join(base, new + suffix), directory)
+    if source and target:
+        sys.exit('symphony: mixed legacy and repository identity metadata; migration refused')
+PYIDENTITY
+  metadata="$runner_home/$old.env"
+  if [ ! -f "$metadata" ]; then metadata=$(runner_env_file "$root"); fi
+  for suffix in '' '-before-update'; do
+    source="$previous$suffix"; target="$name$suffix"
+    if "$runtime" inspect "$source" >/dev/null 2>&1; then
+      ! "$runtime" inspect "$target" >/dev/null 2>&1 || die 'both legacy and repository identity containers exist; migration refused'
+      runner_owned "$root" "$runtime" "$source" "$metadata"
+      runner_workflow_mount_owned "$root" "$runtime" "$source" || die 'workflow mount differs; identity migration refused'
+      anchor=true
+      if [ -z "$suffix" ]; then move_runner=true; else move_backup=true; fi
+    elif "$runtime" inspect "$target" >/dev/null 2>&1; then
+      runner_owned "$root" "$runtime" "$target" "$metadata"
+      runner_workflow_mount_owned "$root" "$runtime" "$target" || die 'workflow mount differs; identity migration refused'
+      anchor=true
+    fi
+  done
+  "$anchor" || die 'no owned retained runner proves the legacy credential identity; review and copy credentials to the new project path explicitly'
+  printf 'Migrating repository identity: %s -> %s. Credentials and pending recovery metadata are retained byte-for-byte.\n' "$old" "$id"
+  if [ -f "$config_home/projects/$old.env" ]; then
+    mv "$config_home/projects/$old.env" "$config_home/projects/$id.env"
+  fi
+  for suffix in '.env' '.transition' '.transition.complete'; do
+    source="$runner_home/$old$suffix"; target="$runner_home/$id$suffix"
+    if [ -e "$source" ]; then mv "$source" "$target"; fi
+  done
+  # Only names qualified during preflight may move. A failed inspect must not
+  # let a later-visible foreign resource enter this repository's identity.
+  if "$move_runner"; then "$runtime" rename "$previous" "$name"; fi
+  if "$move_backup"; then "$runtime" rename "$previous-before-update" "$name-before-update"; fi
+  printf 'Repository identity migrated. Runner state, workspaces, login volumes and pending update/rollback are preserved.\n'
+)
+
 runner_transition() (
   local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 state old_agent
   validate_agent "$agent"
@@ -1294,6 +1434,7 @@ runner_transition() (
   mkdir -p "$runner_home"
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
   runner_project_lock "$root"
+  runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
@@ -1380,6 +1521,7 @@ runner_rollback() (
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
   runner_project_lock "$root"
+  runner_require_identity "$root"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
@@ -1432,6 +1574,7 @@ runner_rollback() (
 runner_stop() {
   local root=$1 runtime name storage_id
   runner_project_lock "$root"
+  runner_require_identity "$root"
   runtime=$(container_runtime); name=$(runner_id "$root")
   if "$runtime" inspect "$name" >/dev/null 2>&1; then
     storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
@@ -1480,6 +1623,7 @@ runner() {
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
       runner_project_lock "$root"
+      runner_require_identity "$root"
       runtime=$(container_runtime)
       runner_owned "$root" "$runtime" "$(runner_id "$root")"
       port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$(runner_id "$root")")
@@ -1508,7 +1652,7 @@ run() {
   if "$host" && [ "$agent" = claude ]; then die 'Claude host/SSH execution is unsupported; use the isolated runner'; fi
   root=$(repo_root); id=$(project_id "$root")
   env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
-  [ -r "$env_file" ] || die "missing credentials file: $env_file"
+  [ -r "$env_file" ] || die "missing credentials file: $env_file (legacy installation: symphony update --migrate-project-identity)"
   [ -f "$workflow" ] || die "missing workflow: $workflow"
   if ! "$host"; then
     runner_start "$root" "$port" "$agent"
