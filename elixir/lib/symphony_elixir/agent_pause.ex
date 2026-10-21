@@ -177,6 +177,11 @@ defmodule SymphonyElixir.AgentPause do
     end
   end
 
+  # Retired cleanup/ownership proof stops are identified by persisted diagnostics.
+  # Preserve ambiguous untagged policy records for the existing explicit recheck.
+  defp public_pause(%{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}), do: :ready
+  defp public_pause(%{"kind" => "policy_blocked", "code" => "native_ownership_unavailable", "stage" => "startup"}), do: :ready
+
   # The exact original unscoped auth record came only from pre-input observations.
   # Unknown fields or newer diagnostic-bearing auth stops are not legacy matches.
   defp public_pause(%{"version" => 1, "kind" => "auth_required", "profile" => nil, "phase" => "waiting", "resets_at" => nil} = value)

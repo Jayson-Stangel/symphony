@@ -59,8 +59,8 @@ defmodule SymphonyElixir.Claude.Adapter do
         startup_failure(code, :ok)
 
       {:error, code} ->
-        # A failed initialization may already own detached native processes.
-        # Only the helper can prove their cleanup before ownership handoff.
+        # Attempt bounded cleanup before reporting the original startup failure.
+        # Missing confirmation is diagnostic, not a project-wide recovery gate.
         write(port, %{v: 1, type: "stop", session_id: id, request_id: request})
         cleanup = await_startup_stop(port, deadline(5_000), id, request)
         close_port(port)
@@ -134,22 +134,14 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart"],
+  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart", "native_ownership_unavailable"],
     do: {:error, {:claude_startup_failed, code}}
 
   defp startup_failure(code, :ok), do: paused_start(code)
 
   defp startup_failure(code, {:error, :cleanup_unconfirmed}) do
-    record_unconfirmed_cleanup(nil)
-
-    details = %{
-      startup_code: AgentPause.safe_startup_code(code),
-      cleanup: :unconfirmed,
-      code: "cleanup_restart_required",
-      stage: "cleanup"
-    }
-
-    {:error, {:agent_pause, :policy_blocked, details}}
+    Logger.warning("Claude startup cleanup incomplete stage=cleanup startup_code=#{AgentPause.safe_startup_code(code)} cleanup=cleanup_unconfirmed")
+    startup_failure(code, :ok)
   end
 
   defp match_expected_profile(_profile, nil), do: :ok
@@ -367,13 +359,6 @@ defmodule SymphonyElixir.Claude.Adapter do
     _, _ ->
       close_port(Map.get(session, :port))
 
-      profile =
-        case session do
-          %{identity: %{"profile" => profile}} when is_binary(profile) -> profile
-          _ -> nil
-        end
-
-      record_unconfirmed_cleanup(profile)
       {:error, :cleanup_unconfirmed}
   end
 
@@ -405,42 +390,17 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp cleanup_owned(%{owned_native: [], helper_identity: nil}), do: :ok
 
   defp cleanup_owned(session) do
-    result =
-      try do
-        if File.regular?(session.cleanup) and is_binary(System.find_executable("timeout")) do
-          case System.cmd(System.find_executable("timeout"), ["--signal=KILL", "10s", session.node, session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
-                 env: Config.claude_cleanup_environment(),
-                 stderr_to_stdout: true
-               ) do
-            {_output, 0} -> :ok
-            _ -> {:error, :cleanup_unconfirmed}
-          end
-        else
-          {:error, :cleanup_unconfirmed}
-        end
-      rescue
+    if File.regular?(session.cleanup) and is_binary(System.find_executable("timeout")) do
+      case System.cmd(System.find_executable("timeout"), ["--signal=KILL", "10s", session.node, session.cleanup, Jason.encode!(%{helper: session.helper_identity, native: session.owned_native})],
+             env: Config.claude_cleanup_environment(),
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} -> :ok
         _ -> {:error, :cleanup_unconfirmed}
       end
-
-    if result != :ok do
-      record_unconfirmed_cleanup(session.identity["profile"])
-    end
-
-    result
-  end
-
-  @doc false
-  @spec record_unconfirmed_cleanup(String.t() | nil) :: :ok
-  def record_unconfirmed_cleanup(profile) do
-    with :ok <- File.mkdir_p(Config.agent_state_root()),
-         :ok <- File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync]),
-         :ok <- AgentPause.record(:policy_blocked, %{profile: profile, code: "cleanup_restart_required", stage: "cleanup"}) do
-      :ok
     else
-      _ -> Logger.warning("Claude cleanup persistence failed; runtime replacement remains required")
+      {:error, :cleanup_unconfirmed}
     end
-
-    :ok
   end
 
   defp await_stopped(port, until) do

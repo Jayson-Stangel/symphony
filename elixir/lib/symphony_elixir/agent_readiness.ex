@@ -17,11 +17,7 @@ defmodule SymphonyElixir.AgentReadiness do
     if Config.coding_agent() == :codex do
       %{ready: true, provider: "codex", profile: SymphonyElixir.AgentPause.codex_profile()}
     else
-      if File.exists?(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed")) do
-        blocked("cleanup_restart_required")
-      else
-        do_check(opts)
-      end
+      do_check(opts)
     end
   end
 

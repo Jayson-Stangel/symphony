@@ -4,7 +4,6 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Claude.Adapter, as: ClaudeAdapter
   alias SymphonyElixir.{CodingAgent, Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
@@ -30,9 +29,6 @@ defmodule SymphonyElixir.AgentRunner do
         :ok
 
       {:error, {:agent_pause, _kind, _details} = reason} ->
-        exit(reason)
-
-      {:error, {:agent_replacement_required, _causes} = reason} ->
         exit(reason)
 
       {:error, {:agent_blocked, _kind} = reason} ->
@@ -124,18 +120,30 @@ defmodule SymphonyElixir.AgentRunner do
           _, _ -> {:error, :cleanup_failed}
         end
 
-      finish_attempt(session, outcome, cleanup)
+      finish_attempt(issue, session, outcome, cleanup)
     end
   end
 
-  defp finish_attempt(_session, {:returned, result}, :ok), do: result
-  defp finish_attempt(_session, {:raised, kind, reason, stack}, :ok), do: :erlang.raise(kind, reason, stack)
+  defp finish_attempt(_issue, _session, {:returned, result}, :ok), do: result
+  defp finish_attempt(_issue, _session, {:raised, kind, reason, stack}, :ok), do: :erlang.raise(kind, reason, stack)
 
-  defp finish_attempt(session, outcome, cleanup) do
-    provider = Map.get(%{ClaudeAdapter => :claude, SymphonyElixir.CodingAgent.Codex => :codex}, session.adapter, :custom)
-    causes = %{provider: provider, primary: outcome_cause(outcome), cleanup: cleanup_cause(cleanup)}
-    {:error, {:agent_replacement_required, causes}}
+  defp finish_attempt(issue, session, outcome, cleanup) do
+    Logger.warning(
+      "Agent cleanup incomplete for #{issue_context(issue)} session_id=#{attempt_session_id(session)} primary=#{inspect(outcome_cause(outcome))} cleanup=#{inspect(cleanup_cause(cleanup))}; returning original outcome"
+    )
+
+    finish_attempt(issue, session, outcome, :ok)
   end
+
+  defp attempt_session_id(%{native: %{id: id}}), do: safe_session_id(id)
+  defp attempt_session_id(%{native: %{thread_id: id}}), do: safe_session_id(id)
+  defp attempt_session_id(_session), do: "n/a"
+
+  defp safe_session_id(id) when is_binary(id) and byte_size(id) <= 128 do
+    if Regex.match?(~r/^[A-Za-z0-9_-]+$/, id), do: id, else: "n/a"
+  end
+
+  defp safe_session_id(_id), do: "n/a"
 
   defp outcome_cause({:returned, :ok}), do: :completed
   defp outcome_cause({:returned, {:error, {:agent_blocked, kind}}}), do: {:agent_blocked, native_cause(kind)}

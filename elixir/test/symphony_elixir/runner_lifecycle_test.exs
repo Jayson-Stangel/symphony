@@ -108,7 +108,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             if [ "$initialize" = true ]; then touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining"; fi
             printf '%s' "$uid" > "$FIXTURE_STATE.volume-owner"
             printf '%s %s %s\\n' "$provider" "$initialize" "$uid" >> "$FIXTURE_STATE.preparations"
-            if [ "$initialize" = true ] && [ "$provider" = claude ]; then rm -f "$FIXTURE_STATE.cleanup-unconfirmed"; fi
             if [ -f "${FIXTURE_FAIL_PREP_AFTER_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_PREP_AFTER_FILE"; exit 1; fi ;;
           *"/state/agent-upgrade-unresumed"*) touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining" ;;
         esac ;;

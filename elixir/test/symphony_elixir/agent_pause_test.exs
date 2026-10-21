@@ -70,11 +70,11 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert {:paused, %{"kind" => "auth_required", "code" => "unqualified_auth", "stage" => "startup"}} =
              Task.async(fn -> AgentPause.current() end) |> Task.await()
 
-    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile, code: "cleanup_restart_required", stage: "cleanup"})
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile, code: "unsupported_tool_schema", stage: "startup"})
     winning = AgentPause.current()
     assert :ok = AgentPause.record(:auth_required, details)
     assert AgentPause.current() == winning
-    assert {:paused, %{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}} = winning
+    assert {:paused, %{"kind" => "policy_blocked", "code" => "unsupported_tool_schema", "stage" => "startup"}} = winning
     refute File.read!(Path.join(ctx.root, "claude-pause.json")) =~ "startup_code"
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert {:paused, replaced} = AgentPause.current()

@@ -35,24 +35,20 @@ the Codex child, so the agent does not need a second tracker login.
 
 Codex and Claude return tracker errors to the agent, following the original Codex
 recovery flow. The agent reads back uncertain writes before retrying and corrects
-rejected requests. After confirmed session cleanup, lost delivery, malformed turn
-frames, unexpected EOF and helper timeouts retry the affected attempt with backoff.
-The next attempt reads tracker state before writing; Symphony never automatically
-retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
-authentication/policy stops remain gated. Transient startup failures retry only after a
-matching helper cleanup acknowledgement. Recognized explicit readiness failures
-before the helper's hello also use ordinary retry without persisting a pause; no
-coding session has started. Malformed or unknown pre-hello failures remain gated.
-Explicit post-start policy/identity failures
-and missing cleanup confirmation remain fail-closed. Every initial/retry
-prompt includes tracker recovery instructions, including for custom workflows.
-Captured sessions use their common adapter interrupt callback before worker
-termination and workspace removal. An interrupt error retains the worker, claim
-and workspace. An unpublished session keeps the existing task-only path, which
-must not be interpreted as confirmed native cleanup.
-Safe optional pause `code` and `stage` fields explain startup and cleanup failures
-across restarts. They do not change pause behavior; old records retain their existing
-meaning without an invented cause. Resume/recheck responses distinguish readiness,
+rejected requests. Lost delivery, malformed turn frames, unexpected EOF and helper
+timeouts retry the affected attempt with backoff after bounded cleanup. Every
+initial/retry prompt requires tracker readback before uncertain writes; Symphony
+never automatically replays a mutation. Explicit input/permission and actual
+authentication/policy stops retain their behavior. Transient startup failure keeps
+its retry classification even when the bounded correlated cleanup acknowledgement
+is missing. Captured sessions use the common adapter interrupt callback before
+Task retirement and workspace reconciliation. A callback error is logged and does
+not retain an eternal worker/claim. An unpublished session retains Task-only
+recovery without a native cleanup proof.
+Safe optional pause `code` and `stage` fields explain actual startup pauses across
+restarts. Legacy attributed cleanup stops are ignored read-only; untagged policy
+records retain the normal fresh healthy explicit recheck path. Old markers are
+ignored/preserved, and unknown historical causes are not reconstructed. Resume/recheck responses distinguish readiness,
 account pause, recheck refusal and state-write failure using bounded error codes.
 Recoverable native EOF, event failure, turn timeout and local transport failures
 carry fixed safe causes through existing worker and retry logs with issue/session
@@ -60,14 +56,15 @@ correlation. They do not create a pause or change retry/cleanup policy. After a
 scheduler restart, transient turn causes depend on existing log retention; they
 are not new durable runner state. Unknown optional wire codes retain the generic
 protocol failure.
-The existing attempt task owns normal cleanup once. Successful cleanup preserves
-the original result or exception; failed cleanup reports separate categorical
-primary/cleanup causes and the captured provider. Claude fallback cleanup has a
-10-second GNU timeout; captured killed/shutdown/epipe worker loss reuses generation-checked cleanup
-before retry. Actual cleanup failure remains `cleanup_restart_required` through
-healthy observations and resume/recheck, requiring controlled runtime replacement.
-Untrappable worker death before session publication still lacks captured ownership
-and may retry without native cleanup proof; this original unsafe window remains open.
+The existing attempt Task owns normal cleanup once. Both successful and failed
+cleanup preserve the exact original result or exception; bounded diagnostics keep
+primary and cleanup causes separate with issue/session correlation. Claude fallback
+cleanup has a 10-second GNU timeout; captured killed/shutdown/epipe owner loss uses
+existing generation checks before retry. Cleanup uncertainty has no global
+readiness/dispatch latch and never requires container replacement by itself.
+Detached native/shell descendants may survive, particularly before ownership
+publication. This baseline recovery limit is explicit; no guardian/registry or
+new supervision architecture attempts to prove universal quiescence.
 
 Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding

@@ -12,12 +12,20 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
         owner = self()
         {:ok, pid} = Agent.start_link(fn -> owner end)
         send(owner, {:probe_started, pid})
-        {:ok, pid}
+
+        native =
+          case Process.get(:probe_native_context) do
+            context when is_map(context) -> Map.put(context, :pid, pid)
+            _ -> pid
+          end
+
+        {:ok, native}
       end
     end
 
     @impl true
-    def run_turn(pid, prompt, _issue, _opts) do
+    def run_turn(native, prompt, _issue, _opts) do
+      pid = probe_pid(native)
       owner = Agent.get(pid, & &1)
       send(owner, {:probe_turn, pid, prompt})
       if Process.get(:probe_raise), do: raise("probe raised")
@@ -29,7 +37,9 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     def interrupt(pid, _reason), do: stop_session(pid)
 
     @impl true
-    def stop_session(pid) do
+    def stop_session(native) do
+      pid = probe_pid(native)
+
       if Process.alive?(pid) do
         send(Agent.get(pid, & &1), {:probe_stopped, pid})
         Agent.stop(pid)
@@ -38,6 +48,9 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
       if Process.get(:probe_cleanup_raise), do: raise("cleanup raised with sensitive text")
       Process.get(:probe_cleanup_result, :ok)
     end
+
+    defp probe_pid(%{pid: pid}), do: pid
+    defp probe_pid(pid), do: pid
   end
 
   setup do
@@ -113,8 +126,13 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     Process.put(:probe_turn_result, {:error, {:agent_blocked, "protocol_error"}})
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
-    assert {:agent_replacement_required, %{primary: {:agent_blocked, :protocol_error}, cleanup: :cleanup_unconfirmed}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    log =
+      capture_log(fn ->
+        assert {:agent_blocked, "protocol_error"} = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+      end)
+
+    assert log =~ "primary={:agent_blocked, :protocol_error} cleanup=:cleanup_unconfirmed"
+    assert log =~ "issue_id=adapter-one"
 
     assert_received {:probe_started, pid}
     assert_received {:probe_stopped, ^pid}
@@ -127,24 +145,37 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
       Process.put(:probe_turn_result, {:error, cause})
       Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
-      assert {:agent_replacement_required, %{primary: ^cause, cleanup: :cleanup_unconfirmed}} =
-               catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+      log =
+        capture_log(fn ->
+          assert_raise RuntimeError, ~r/#{cause}/, fn -> AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe) end
+        end)
+
+      assert log =~ "primary=#{inspect(cause)} cleanup=:cleanup_unconfirmed"
     end
   end
 
-  test "cleanup failure records a successful primary outcome without pretending completion", ctx do
+  test "cleanup failure preserves successful primary outcome for ordinary continuation", ctx do
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
-    assert {:agent_replacement_required, %{primary: :completed, cleanup: :cleanup_unconfirmed}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, issue_state_fetcher: fn _ -> {:ok, []} end))
+    log =
+      capture_log(fn ->
+        assert :ok = AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, issue_state_fetcher: fn _ -> {:ok, []} end)
+      end)
+
+    assert log =~ "primary=:completed cleanup=:cleanup_unconfirmed"
   end
 
   test "raised primary and cleanup exceptions retain separate bounded causes", ctx do
     Process.put(:probe_raise, true)
     Process.put(:probe_cleanup_raise, true)
 
-    assert {:agent_replacement_required, %{primary: {:error, RuntimeError}, cleanup: :cleanup_failed}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    log =
+      capture_log(fn ->
+        assert_raise RuntimeError, "probe raised", fn -> AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe) end
+      end)
+
+    assert log =~ "primary={:error, RuntimeError} cleanup=:cleanup_failed"
+    refute log =~ "sensitive"
 
     assert_received {:probe_stopped, _}
     refute_received {:probe_stopped, _}
@@ -154,16 +185,67 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     Process.put(:probe_turn_result, {:error, {:agent_blocked, String.duplicate("sensitive", 1_000)}})
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
-    assert {:agent_replacement_required, %{primary: {:agent_blocked, :unknown}, cleanup: :cleanup_unconfirmed}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    log =
+      capture_log(fn ->
+        assert {:agent_blocked, kind} = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+        assert kind == String.duplicate("sensitive", 1_000)
+      end)
+
+    assert log =~ "primary={:agent_blocked, :unknown}"
+    refute log =~ "sensitive"
   end
 
   test "thrown arbitrary struct-like map is not exposed by cleanup diagnostics", ctx do
     Process.put(:probe_throw, %{__struct__: String.duplicate("secret", 1_000)})
     Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
 
-    assert {:agent_replacement_required, %{primary: :throw, cleanup: :cleanup_unconfirmed}} =
-             catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+    log =
+      capture_log(fn ->
+        assert %{__struct__: payload} = catch_throw(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+        assert payload == String.duplicate("secret", 1_000)
+      end)
+
+    assert log =~ "primary=:throw cleanup=:cleanup_unconfirmed"
+    refute log =~ "secret"
+  end
+
+  test "cleanup diagnostics preserve bounded captured session correlation without exposing malformed identities", ctx do
+    for {context, expected} <- [
+          {%{id: "native-session"}, "native-session"},
+          {%{thread_id: "codex-thread"}, "codex-thread"},
+          {%{id: "secret-canary payload"}, "n/a"},
+          {%{id: String.duplicate("secret-canary", 100)}, "n/a"},
+          {%{id: 42}, "n/a"}
+        ] do
+      Process.put(:probe_native_context, context)
+      Process.put(:probe_raise, true)
+      Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+      log =
+        capture_log(fn ->
+          assert_raise RuntimeError, "probe raised", fn -> AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe) end
+        end)
+
+      assert log =~ "issue_id=adapter-one issue_identifier=ADAPTER-1 session_id=#{expected}"
+      assert log =~ "primary={:error, RuntimeError} cleanup=:cleanup_unconfirmed"
+      refute log =~ "secret-canary"
+    end
+  end
+
+  test "actual pause outcomes are not converted to retry errors by cleanup failure", ctx do
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+    for kind <- [:auth_required, :quota_exhausted, :policy_blocked] do
+      reason = {:agent_pause, kind, %{profile: String.duplicate("a", 64)}}
+      Process.put(:probe_turn_result, {:error, reason})
+
+      log =
+        capture_log(fn ->
+          assert ^reason = catch_exit(AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe))
+        end)
+
+      assert log =~ "primary={:agent_pause, #{inspect(kind)}} cleanup=:cleanup_unconfirmed"
+    end
   end
 
   test "startup failure still runs after hook without inventing cleanup", ctx do

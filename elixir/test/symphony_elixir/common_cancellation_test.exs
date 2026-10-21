@@ -19,6 +19,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
         File.write!(Path.join(native.workspace, "interrupted"), "confirmed")
       end
 
+      if native.outcome == :raise, do: raise("secret-canary cleanup exception")
       native.outcome
     end
   end
@@ -126,15 +127,29 @@ defmodule SymphonyElixir.CommonCancellationTest do
     refute File.exists?(ctx.workspace)
   end
 
-  test "a captured callback error retains the worker, claim and workspace", ctx do
-    state = capture_session(ctx, %{ctx.native | outcome: {:error, :cleanup_unconfirmed}})
-    assert state == Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state)
-    assert_receive {:interrupted, :issue_state_change, true, _port_owner}
-    assert Process.alive?(ctx.owner)
-    assert Port.info(ctx.port) != nil
-    assert File.exists?(ctx.alive)
-    assert File.dir?(ctx.workspace)
-    refute File.exists?(ctx.removed)
+  for {label, outcome} <- [{"error", {:error, :cleanup_unconfirmed}}, {"exception", :raise}] do
+    @cleanup_outcome outcome
+    test "a captured callback #{label} still retires the task and reconciles its workspace", ctx do
+      ctx = %{ctx | entry: Map.put(ctx.entry, :session_id, "cancel-session")}
+      state = capture_session(ctx, %{ctx.native | outcome: @cleanup_outcome})
+
+      log =
+        capture_log(fn ->
+          state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state)
+          assert state.running == %{}
+          refute MapSet.member?(state.claimed, ctx.issue.id)
+        end)
+
+      assert_receive {:interrupted, :issue_state_change, true, _port_owner}
+      assert log =~ "issue_id=common-cancel issue_identifier=CANCEL-1 session_id=cancel-session"
+      assert log =~ "cleanup=cleanup_unconfirmed"
+      refute log =~ "secret-canary"
+      refute Process.alive?(ctx.owner)
+      assert Port.info(ctx.port) == nil
+      refute File.exists?(ctx.alive)
+      refute File.dir?(ctx.workspace)
+      assert File.read!(ctx.removed) == "task-only"
+    end
   end
 
   test "an unpublished session retains the existing task-only cancellation path", ctx do
