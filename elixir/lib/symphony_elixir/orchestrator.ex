@@ -836,10 +836,10 @@ defmodule SymphonyElixir.Orchestrator do
       nil ->
         release_issue_claim(state, issue_id)
 
-      %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
+      %{pid: _, ref: _, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
 
-        stop_running_task(pid, ref, state.task_supervisor, Map.get(running_entry, :agent_session), reason)
+        stop_running_task(issue_id, running_entry, state.task_supervisor, reason)
         cleanup_stopped_workspace(cleanup_workspace, running_entry, identifier)
 
         %{
@@ -1036,7 +1036,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid, _task_supervisor), do: :ok
 
-  defp stop_running_task(pid, ref, task_supervisor, session, reason \\ :scheduler_stop) do
+  defp stop_running_task(issue_id, entry, task_supervisor, reason \\ :scheduler_stop) do
+    pid = Map.get(entry, :pid)
+    ref = Map.get(entry, :ref)
+    session = Map.get(entry, :agent_session)
+
     result =
       try do
         case session do
@@ -1047,19 +1051,19 @@ defmodule SymphonyElixir.Orchestrator do
         _, _ -> {:error, :cleanup_unconfirmed}
       end
 
-    if result != :ok, do: Logger.warning("Agent interrupt cleanup incomplete task_pid=#{inspect(pid)} cleanup=cleanup_unconfirmed; retiring task")
+    if result != :ok do
+      Logger.warning(
+        "Agent interrupt cleanup incomplete issue_id=#{issue_id} issue_identifier=#{Map.get(entry, :identifier, issue_id)} session_id=#{running_entry_session_id(entry)} task_pid=#{inspect(pid)} cleanup=cleanup_unconfirmed; retiring task"
+      )
+    end
+
     if is_pid(pid), do: terminate_task(pid, task_supervisor)
     if is_reference(ref), do: Process.demonitor(ref, [:flush])
     :ok
   end
 
   defp stop_and_block_issue(%State{} = state, issue_id, running_entry, error) do
-    stop_running_task(
-      Map.get(running_entry, :pid),
-      Map.get(running_entry, :ref),
-      state.task_supervisor,
-      Map.get(running_entry, :agent_session)
-    )
+    stop_running_task(issue_id, running_entry, state.task_supervisor)
 
     block_issue_from_entry(state, issue_id, running_entry, error)
   end

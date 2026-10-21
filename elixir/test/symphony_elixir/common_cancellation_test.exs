@@ -130,6 +130,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
   for {label, outcome} <- [{"error", {:error, :cleanup_unconfirmed}}, {"exception", :raise}] do
     @cleanup_outcome outcome
     test "a captured callback #{label} still retires the task and reconciles its workspace", ctx do
+      ctx = %{ctx | entry: Map.put(ctx.entry, :session_id, "cancel-session")}
       state = capture_session(ctx, %{ctx.native | outcome: @cleanup_outcome})
 
       log =
@@ -140,6 +141,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
         end)
 
       assert_receive {:interrupted, :issue_state_change, true, _port_owner}
+      assert log =~ "issue_id=common-cancel issue_identifier=CANCEL-1 session_id=cancel-session"
       assert log =~ "cleanup=cleanup_unconfirmed"
       refute log =~ "secret-canary"
       refute Process.alive?(ctx.owner)
