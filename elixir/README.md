@@ -43,6 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+Captured sessions use their common adapter interrupt callback before worker
+termination and workspace removal. An interrupt error retains the worker, claim
+and workspace. An unpublished session keeps the existing task-only path, which
+must not be interpreted as confirmed native cleanup.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a
@@ -54,8 +58,9 @@ and may retry without native cleanup proof; this original unsafe window remains 
 
 Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
-sessions; managed/remote policy and unqualified installed-plugin metadata retain
-the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
+sessions; ignored user plugin inventory and home-config managed-settings do not
+block readiness. Canonical managed policy, remote cache and enterprise MCP config
+retain the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
 Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
 in the existing project credentials env file. Unselected ambient variables are
 stripped; tracker secrets and native inference/runtime selectors cannot be selected.
