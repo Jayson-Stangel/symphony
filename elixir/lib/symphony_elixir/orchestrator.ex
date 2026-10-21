@@ -391,9 +391,11 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
-      |> cleanup_startup_workspaces()
 
-    with :ok <- Config.validate!(),
+    validation = Config.validate!()
+    state = if validation == :ok, do: cleanup_startup_workspaces(state), else: state
+
+    with :ok <- validation,
          {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
       state = refresh_tracker_blocked(state, issues)
       if available_slots(state) > 0, do: choose_issues(issues, state), else: state

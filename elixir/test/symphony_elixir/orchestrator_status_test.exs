@@ -984,9 +984,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
     issue = %Issue{id: "retained", identifier: "KEEP-1", title: "Keep", state: "Done"}
 
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {_address, unavailable_port}} = :inet.sockname(listener)
+    :ok = :gen_tcp.close(listener)
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "linear",
-      tracker_project_slug: nil,
+      tracker_endpoint: "http://127.0.0.1:#{unavailable_port}/graphql",
       workspace_root: workspace_root
     )
 
@@ -1000,6 +1004,33 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :run_poll_cycle)
     assert is_map(GenServer.call(pid, :snapshot))
     assert File.read!(Path.join(workspace, "progress")) == "preserved"
+  end
+
+  test "invalid current configuration cannot perform the pending startup cleanup" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    issue = %Issue{id: "invalid-config", identifier: "KEEP-CONFIG", title: "Keep", state: "Done"}
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "preserved")
+    File.mkdir_p!(Config.agent_state_root())
+    File.write!(Path.join(Config.agent_state_root(), "agent-draining"), "draining")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :InvalidStartupCleanup)})
+
+    for kind <- [nil, "unsupported"] do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: kind, workspace_root: workspace_root)
+      :sys.replace_state(pid, &%{&1 | draining: false})
+      send(pid, :run_poll_cycle)
+      assert is_map(GenServer.call(pid, :snapshot))
+      assert :sys.get_state(pid).startup_cleanup_pending
+      assert File.read!(Path.join(workspace, "progress")) == "preserved"
+    end
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    refute :sys.get_state(pid).startup_cleanup_pending
+    refute File.exists?(workspace)
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
