@@ -62,7 +62,7 @@ tool_available() { command -v "$1" >/dev/null 2>&1; }
 
 required_tools() {
   local tool missing=0
-  for tool in git mise gh codex; do
+  for tool in git mise; do
     if ! tool_available "$tool"; then
       printf 'Missing prerequisite: %s\n' "$tool" >&2
       missing=1
@@ -84,14 +84,9 @@ install_prerequisites() {
       }
       tool_available brew || die 'install Homebrew first: https://brew.sh'
       tool_available mise || brew install mise
-      tool_available gh || brew install gh
-      if ! tool_available codex; then
-        tool_available npm || brew install node
-        npm install -g @openai/codex@latest
-      fi
       ;;
     *)
-      die 'automatic prerequisite installation currently supports macOS only; install git, mise, gh, and Codex, then rerun symphony setup'
+      die 'automatic prerequisite installation currently supports macOS only; install git and mise, then rerun symphony setup'
       ;;
   esac
 }
@@ -163,7 +158,7 @@ Usage:
   symphony --version
   symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
-  symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
+  symphony doctor [--host] [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --linear-project SLUG [--local-skill NAME]...
   symphony skill override NAME
@@ -177,7 +172,8 @@ Usage:
 
 Run this command from a clean, stable Symphony checkout such as ~/src/symphony.
 `install` only links the command and creates protected configuration storage.
-`setup` deliberately installs or repairs prerequisites and the pinned mise runtime.
+`setup` deliberately installs or repairs source build prerequisites and the pinned
+mise runtime. Add --host to doctor for the optional host runtime.
 `update` fast-forwards the tracked main branch and keeps its global skills linked
 to the stable runtime; it never overwrites project files.
 
@@ -390,39 +386,44 @@ complete_update() {
 }
 
 doctor() {
-  local json=false
+  local json=false host=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true; shift ;;
+      --host) host=true; shift ;;
       --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
         if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony doctor [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony doctor [--host] [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown doctor option: $1" ;;
     esac
   done
 
-  local git_ok mise_ok gh_ok codex_ok runtime_ok launcher_ok source_ok skills_ok ready=true
+  local git_ok mise_ok runtime_ok launcher_ok source_ok skills_ok container_ok ready=true
   git_ok=false; tool_available git && git_ok=true
   mise_ok=false; tool_available mise && mise_ok=true
-  gh_ok=false; tool_available gh && gh_ok=true
-  codex_ok=false; tool_available codex && codex_ok=true
-  runtime_ok=false; runtime_ready && runtime_ok=true
+  runtime_ok=false; "$host" && runtime_ready && runtime_ok=true
+  container_ok=false; if ! "$host"; then (container_runtime) >/dev/null 2>&1 && container_ok=true; fi
   launcher_ok=false; [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$symphony_home/scripts/symphony" ] && launcher_ok=true
   source_ok=false; [ -x "$symphony_home/elixir/bin/symphony" ] && source_ok=true
   skills_ok=false; global_skills_ready && skills_ok=true
-  "$git_ok" && "$mise_ok" && "$gh_ok" && "$codex_ok" && "$runtime_ok" && "$launcher_ok" && "$source_ok" && "$skills_ok" || ready=false
+  "$git_ok" && "$launcher_ok" && "$source_ok" && "$skills_ok" || ready=false
+  if "$host"; then
+    "$mise_ok" && "$runtime_ok" || ready=false
+  else
+    "$container_ok" || ready=false
+  fi
 
   if "$json"; then
-    printf '{"mode":"doctor","ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"skills":%s,"git":%s,"mise":%s,"gh":%s,"codex":%s,"runtime":%s}}\n' \
-      "$(bool "$ready")" "$(source_revision)" "$(source_state)" "$(bool "$source_ok")" "$(bool "$launcher_ok")" \
-      "$(bool "$skills_ok")" "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$gh_ok")" "$(bool "$codex_ok")" "$(bool "$runtime_ok")"
+    printf '{"mode":"doctor","host":%s,"ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"skills":%s,"git":%s,"mise":%s,"runtime":%s,"container":%s}}\n' \
+      "$(bool "$host")" "$(bool "$ready")" "$(source_revision)" "$(source_state)" "$(bool "$source_ok")" "$(bool "$launcher_ok")" \
+      "$(bool "$skills_ok")" "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$runtime_ok")" "$(bool "$container_ok")"
   else
     printf 'Symphony %s (%s)\n' "$(source_revision)" "$(source_state)"
-    printf 'source=%s launcher=%s skills=%s git=%s mise=%s gh=%s codex=%s runtime=%s\n' \
-      "$source_ok" "$launcher_ok" "$skills_ok" "$git_ok" "$mise_ok" "$gh_ok" "$codex_ok" "$runtime_ok"
-    "$ready" && printf 'Ready.\n' || printf 'Not ready. Run symphony install and symphony setup as needed.\n' >&2
+    printf 'host=%s source=%s launcher=%s skills=%s git=%s mise=%s runtime=%s container=%s\n' \
+      "$host" "$source_ok" "$launcher_ok" "$skills_ok" "$git_ok" "$mise_ok" "$runtime_ok" "$container_ok"
+    "$ready" && printf 'Ready.\n' || printf 'Not ready. Check the selected container/host prerequisites; run symphony install and symphony setup as needed.\n' >&2
   fi
   "$ready"
 }
