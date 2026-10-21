@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Tracker.Memory
 
   test "live terminal snapshot retains agent identity and unavailable token usage" do
     previous = Application.get_env(:symphony_elixir, :coding_agent)
@@ -894,7 +895,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms >= 0
   end
 
-  test "polling cleans retained unclaimed terminal workspaces after startup" do
+  test "unclaimed completed workspaces wait for restart instead of recurring terminal sweeps" do
     workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -910,12 +911,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert {:ok, workspace} = Workspace.create_for_issue(issue)
     File.write!(Path.join(workspace, "progress"), "keep until finished")
     pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :RetainedCleanup)})
-    assert is_map(GenServer.call(pid, :snapshot))
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 1_000))
     assert File.read!(Path.join(workspace, "progress")) == "keep until finished"
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Done"}])
 
-    assert is_map(wait_for_snapshot(pid, fn _ -> not File.exists?(workspace) end, 1_000))
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    assert File.read!(Path.join(workspace, "progress")) == "keep until finished"
+    refute File.exists?(Path.join(workspace_root, "cleanup-count"))
+    stop_supervised!(Orchestrator)
+    restarted = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :RetainedCleanup)})
+    assert is_map(wait_for_snapshot(restarted, fn _ -> not File.exists?(workspace) end, 1_000))
     assert File.read!(Path.join(workspace_root, "cleanup-count")) == "cleaned"
   end
 
@@ -936,9 +943,94 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     File.write!(Path.join(active_path, "progress"), "retained")
 
     pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :StartupCleanup)})
-    assert is_map(GenServer.call(pid, :snapshot))
+    assert is_map(wait_for_snapshot(pid, fn _ -> not File.exists?(done_path) end, 1_000))
     refute File.exists?(done_path)
     assert File.read!(Path.join(active_path, "progress")) == "retained"
+  end
+
+  test "ordinary dispatch queries active and blocked states without terminal history" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_blocked_states: ["Blocked"],
+      poll_interval_ms: 60_000
+    )
+
+    # Completed history is irrelevant to ordinary dispatch after the startup sweep.
+    issues = for n <- 1..2_000, do: %Issue{id: "done-#{n}", identifier: "DONE-#{n}", title: "Finished", state: "Done"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, issues)
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :BoundedHistory)})
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 5_000))
+    Code.ensure_loaded!(Memory)
+    :erlang.trace_pattern({Memory, :fetch_issues_by_states, 1}, true, [:local])
+    :erlang.trace(pid, true, [:call])
+
+    try do
+      for _ <- 1..3 do
+        send(pid, :run_poll_cycle)
+        assert is_map(GenServer.call(pid, :snapshot))
+        assert_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, [states]}}, 1_000
+        assert MapSet.new(states) == MapSet.new(["Todo", "In Progress", "Blocked"])
+      end
+
+      ref = :erlang.trace_delivered(pid)
+      assert_receive {:trace_delivered, ^pid, ^ref}, 1_000
+      refute_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, _}}, 0
+    after
+      :erlang.trace_pattern({Memory, :fetch_issues_by_states, 1}, false, [:local])
+    end
+  end
+
+  test "failed startup cleanup preserves checkouts and is not retried by ordinary polls" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    issue = %Issue{id: "retained", identifier: "KEEP-1", title: "Keep", state: "Done"}
+
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, {_address, unavailable_port}} = :inet.sockname(listener)
+    :ok = :gen_tcp.close(listener)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_endpoint: "http://127.0.0.1:#{unavailable_port}/graphql",
+      workspace_root: workspace_root
+    )
+
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "preserved")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :FailedCleanup)})
+    assert is_map(wait_for_snapshot(pid, fn _ -> not :sys.get_state(pid).startup_cleanup_pending end, 1_000))
+    assert File.read!(Path.join(workspace, "progress")) == "preserved"
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    assert File.read!(Path.join(workspace, "progress")) == "preserved"
+  end
+
+  test "invalid current configuration cannot perform the pending startup cleanup" do
+    workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
+    issue = %Issue{id: "invalid-config", identifier: "KEEP-CONFIG", title: "Keep", state: "Done"}
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "progress"), "preserved")
+    File.mkdir_p!(Config.agent_state_root())
+    File.write!(Path.join(Config.agent_state_root(), "agent-draining"), "draining")
+    pid = start_supervised!({Orchestrator, name: Module.concat(__MODULE__, :InvalidStartupCleanup)})
+
+    for kind <- [nil, "unsupported"] do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: kind, workspace_root: workspace_root)
+      :sys.replace_state(pid, &%{&1 | draining: false})
+      send(pid, :run_poll_cycle)
+      assert is_map(GenServer.call(pid, :snapshot))
+      assert :sys.get_state(pid).startup_cleanup_pending
+      assert File.read!(Path.join(workspace, "progress")) == "preserved"
+    end
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    refute :sys.get_state(pid).startup_cleanup_pending
+    refute File.exists?(workspace)
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do

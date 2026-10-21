@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Orchestrator do
       :expected_profile,
       :agent_model,
       readiness_opts: [],
+      startup_cleanup_pending: true,
       readiness_task: nil,
       readiness_timer: nil,
       readiness_control: nil,
@@ -91,7 +92,6 @@ defmodule SymphonyElixir.Orchestrator do
           codex_rate_limits: nil
         }
 
-        if agent_dispatch_ready?(state), do: run_terminal_workspace_cleanup()
         state = schedule_tick(state, 0)
 
         {:ok, state, {:continue, :check_readiness}}
@@ -433,9 +433,11 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    validation = Config.validate!()
+    state = if validation == :ok, do: cleanup_startup_workspaces(state), else: state
+
+    with :ok <- validation,
          {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
-      state = cleanup_terminal_issues(state, issues)
       state = refresh_tracker_blocked(state, issues)
       if available_slots(state) > 0, do: choose_issues(issues, state), else: state
     else
@@ -584,31 +586,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp observed_issue_states do
     tracker = Config.settings!().tracker
-    # SSH deployments retain their existing startup/claimed-issue cleanup. A
-    # recurring sweep of all terminal history would repeatedly contact every
-    # remote host, even for checkouts that were already removed.
-    terminal_states = if Config.settings!().worker.ssh_hosts == [], do: tracker.terminal_states, else: []
-    Enum.uniq(tracker.active_states ++ tracker.blocked_states ++ terminal_states)
-  end
-
-  defp cleanup_terminal_issues(state, issues) do
-    terminal_states = terminal_state_set()
-
-    Enum.reduce(issues, state, fn issue, state ->
-      if terminal_issue_state?(issue.state, terminal_states) do
-        # Stop any worker before deleting its checkout, including a state change
-        # observed after the running-issue reconciliation earlier in this tick.
-        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
-        cleanup_if_stopped(state, issue)
-        state
-      else
-        state
-      end
-    end)
-  end
-
-  defp cleanup_if_stopped(state, issue) do
-    unless Map.has_key?(state.running, issue.id), do: cleanup_issue_workspace(issue)
+    Enum.uniq(tracker.active_states ++ tracker.blocked_states)
   end
 
   defp refresh_tracker_blocked(state, issues) do
@@ -1529,21 +1507,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_issue_or_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{} = issue ->
-            cleanup_issue_workspace(issue)
+  defp cleanup_startup_workspaces(%State{startup_cleanup_pending: true} = state) do
+    state =
+      case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+        {:ok, issues} ->
+          cleanup_startup_issues(issues, state)
 
-          _ ->
-            :ok
-        end)
+        {:error, reason} ->
+          Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+          state
+      end
 
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+    %{state | startup_cleanup_pending: false}
+  end
+
+  defp cleanup_startup_workspaces(state), do: state
+
+  defp cleanup_startup_issues(issues, state) do
+    Enum.reduce(issues, state, fn
+      %Issue{} = issue, state ->
+        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
+        unless Map.has_key?(state.running, issue.id), do: cleanup_issue_workspace(issue)
+        state
+
+      _, state ->
+        state
+    end)
   end
 
   defp notify_dashboard do

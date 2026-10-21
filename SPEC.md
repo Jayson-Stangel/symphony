@@ -781,9 +781,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
-- Successful polls also clean retained local terminal workspaces after stopping any associated worker,
-  including issues completed while unclaimed or after a failed startup tracker read. Tracker
-  failures MUST NOT cause retained workspaces to be deleted.
+- Ordinary dispatch MUST NOT fetch terminal history. Unclaimed workspaces completed after
+  human review remain until startup cleanup on the next restart, as in upstream.
+  Tracker failures MUST NOT cause retained workspaces to be deleted.
 - Container deployments SHOULD retain workspace storage across container replacement by default.
   Recovery reuses existing checkouts and current tracker state; exact agent conversation or
   in-memory retry restoration is not required. Interrupted workspace bootstrap MUST NOT be
@@ -793,8 +793,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 ### 8.1 Poll Loop
 
-At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+At startup, the service validates config and schedules an immediate tick, then repeats
+every `polling.interval_ms`. Startup cleanup runs once on the first admitted poll, after
+readiness and drain state permit work; subsequent readiness recovery and reload do not repeat it.
 
 The effective poll interval SHOULD be updated when workflow config changes are re-applied.
 
@@ -802,8 +803,8 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch observed issues from tracker using active, blocked, and terminal states; clean terminal
-   workspaces only after stopping their workers.
+3. On the first admitted poll only, attempt startup terminal cleanup. Fetch ordinary
+   observed issues using active and blocked states, independently of completed history.
 4. Sort issues by dispatch priority.
 5. Dispatch eligible issues while slots remain.
 6. Notify observability/status consumers of state changes.
@@ -900,11 +901,13 @@ Part B: Tracker state refresh
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
-When the service starts:
+On the first admitted poll after the service starts (deferred while unready or drained):
 
 1. Query tracker for issues in terminal states.
-2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+2. For each returned issue identifier, stop any associated worker before removing its
+   workspace; retain the checkout if stopping fails.
+3. If the terminal-issues fetch fails, log a warning, delete nothing and continue.
+   This one startup attempt is not repeated by ordinary polls, reload or readiness recovery.
 
 This prevents stale terminal workspaces from accumulating after restarts.
 
@@ -1176,6 +1179,13 @@ Optional provider-native agent tool extension:
   provider and client documentation when identifying credential names and aliases, as these can
   change over time. Literal credentials in a repo-owned `WORKFLOW.md` remain readable to a child
   with workspace access and SHOULD NOT be used when this isolation matters.
+- Explicit project-tool environment selection MAY forward credentials needed by repository tools.
+  Ambient inference variables MUST NOT become admission gates or automatic provider selection.
+  The Claude helper MUST validate selected names at one native environment boundary, exclude
+  tracker-secret names from the captured adapter binding and reserve identity, inference and
+  runtime/preload selectors. Transport selected values as data rather than helper startup variables.
+  Invalid selection diagnostics MUST NOT include values; cleanup MUST NOT receive the selection.
+  Existing project credential files and selected Git forwarding remain the source of operator intent.
 - Unsupported tool names MUST return a structured failure result using the targeted protocol and
   continue the session.
 - Each adapter that ships tools MUST document:

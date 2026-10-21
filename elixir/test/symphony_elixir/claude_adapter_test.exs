@@ -106,6 +106,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
           binding = %{
             adapter: BoundTool,
+            secret_environment_names: [],
             tracker_settings: %{owner: parent, tag: n},
             tool_specs: [
               %{
@@ -274,6 +275,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "Claude receives a mutation rejection and corrects it through the production helper", ctx do
     binding = %{
       adapter: RecoverableLinearTool,
+      secret_environment_names: [],
       tracker_settings: %{owner: self()},
       tool_specs: AgentTool.tool_specs()
     }
@@ -292,7 +294,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   end
 
   test "Claude receives an uncertain mutation error and reconciles in the same session", ctx do
-    binding = %{adapter: RecoverableLinearTool, tracker_settings: %{owner: self()}, tool_specs: AgentTool.tool_specs()}
+    binding = %{
+      adapter: RecoverableLinearTool,
+      secret_environment_names: [],
+      tracker_settings: %{owner: self()},
+      tool_specs: AgentTool.tool_specs()
+    }
+
     assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :tool_binding, binding))
 
     try do
