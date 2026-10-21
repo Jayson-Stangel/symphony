@@ -1102,7 +1102,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @doc false
   @spec humanize_codex_message(term()) :: String.t()
-  def humanize_codex_message(nil), do: "no codex message yet"
+  def humanize_codex_message(nil), do: "no agent message yet"
 
   def humanize_codex_message(%{event: event, message: message}) do
     payload = unwrap_codex_message_payload(message)
@@ -1173,7 +1173,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
   defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
-  defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
+  defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from agent"
   defp humanize_codex_event(_event, _message, _payload), do: nil
 
   defp unwrap_codex_message_payload(%{} = message) do

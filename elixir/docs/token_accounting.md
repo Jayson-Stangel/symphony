@@ -2,6 +2,9 @@
 
 This document explains how Codex reports token usage through the app-server protocol and how Symphony should account for it.
 
+It covers Codex only. Claude SDK usage follows the separate
+[runtime accounting contract](../../docs/claude.md#runtime-contract).
+
 It is based on the current Codex source in `codex-rs`, especially:
 
 - `app-server/README.md`

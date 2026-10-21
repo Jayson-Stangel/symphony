@@ -17,7 +17,9 @@ resources as well as the checkout, configuration and dashboard port.
 
 After the feature has passed review, been promoted to main, and been installed
 through the existing stable `symphony update` command, run these commands from the
-target repository:
+target repository. First [initialize its workflow](../README.md#initialize-a-repository)
+and [configure repository-scoped credentials](../README.md#configure-credentials).
+Choose a disposable tracker scope for a pilot before starting the listener:
 
 ```sh
 symphony auth claude login
@@ -168,7 +170,8 @@ The overlay is removed at session cleanup without changing the repository or
 canonical procedures. Optional override validation still occurs at session start;
 there is no setup-time cache to invalidate when repository procedures change.
 Unsafe paths, symlinks and malformed manifests fail closed. Existing workpads,
-including Codex Workpad comments, are reused.
+including legacy Codex Workpad or Symphony Workpad comments, are reused with the
+Agent Workpad header.
 
 ## Pauses and recovery
 
@@ -340,7 +343,8 @@ source for a later updater transition. A normal run can restart the same profile
 
 ## Provider and image transitions
 
-After reviewed promotion, use the installed updater from the target repository:
+After reviewed promotion and explicit approval for the exact stable rollout, use
+the installed updater from the target repository:
 
 ```sh
 symphony update --agent claude

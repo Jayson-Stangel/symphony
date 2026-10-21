@@ -13,7 +13,8 @@ defmodule SymphonyElixir.Claude.Instructions do
   authentication, billing and organizational policy. Do not change credentials,
   native settings or the selected inference route. Native-allowed usage remains
   native-owned. Use the supplied tracker tool aliases and canonical Symphony
-  skills. Reuse an existing Codex Workpad or Symphony Workpad; keep one workpad.
+  skills. Use Agent Workpad for the workpad header. Reuse an existing Agent Workpad,
+  Codex Workpad or Symphony Workpad; keep one workpad.
   """
 
   @spec context(Path.t()) :: {:ok, String.t()} | {:error, atom()}

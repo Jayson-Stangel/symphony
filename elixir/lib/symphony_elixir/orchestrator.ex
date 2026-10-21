@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls the configured issue tracker and dispatches repository copies to Codex-backed workers.
+  Polls the configured issue tracker and dispatches repository copies to coding-agent workers.
   """
 
   use GenServer
@@ -1000,7 +1000,7 @@ defmodule SymphonyElixir.Orchestrator do
       session_id = running_entry_session_id(running_entry)
 
       if input_required_blocker?(running_entry) do
-        error = blocker_error(running_entry, "stalled for #{elapsed_ms}ms after Codex requested operator input")
+        error = blocker_error(running_entry, "stalled for #{elapsed_ms}ms after the agent requested operator input")
 
         Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
 
@@ -1016,7 +1016,7 @@ defmodule SymphonyElixir.Orchestrator do
         |> schedule_retry_after_stop(issue_id, next_attempt, %{
           identifier: identifier,
           issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
+          error: "stalled for #{elapsed_ms}ms without agent activity"
         })
       end
     else
@@ -1105,14 +1105,14 @@ defmodule SymphonyElixir.Orchestrator do
       fallback
   end
 
-  defp codex_event_blocker_error(:turn_input_required), do: "codex turn requires operator input"
-  defp codex_event_blocker_error(:approval_required), do: "codex turn requires approval"
+  defp codex_event_blocker_error(:turn_input_required), do: "agent turn requires operator input"
+  defp codex_event_blocker_error(:approval_required), do: "agent turn requires approval"
   defp codex_event_blocker_error(_event), do: nil
 
   defp completion_blocker_error(completion) do
     case input_required_completion_outcome(completion) do
-      outcome when outcome in [:input_required, :needs_input] -> "codex turn requires operator input"
-      :approval_required -> "codex turn requires approval"
+      outcome when outcome in [:input_required, :needs_input] -> "agent turn requires operator input"
+      :approval_required -> "agent turn requires approval"
       nil -> nil
     end
   end

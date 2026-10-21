@@ -1,10 +1,10 @@
 # Symphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
+This directory contains the Elixir agent orchestration service that polls the configured tracker, creates per-issue workspaces, and runs the selected coding agent (Codex or Claude).
 
 ## Environment
 
-- Elixir: `1.19.x` (OTP 28) via `mise`.
+- Elixir: `1.19.x` (OTP 28) and Node.js `24.18.0` via `mise`.
 - Install deps: `mix setup`.
 - Main quality gate: `make all` (format check, lint, coverage, dialyzer).
 
@@ -19,7 +19,7 @@ This directory contains the Elixir agent orchestration service that polls Linear
     change where practical so the spec stays current.
 - Prefer adding config access through `SymphonyElixir.Config` instead of ad-hoc env reads.
 - Workspace safety is critical:
-  - Never run Codex turn cwd in source repo.
+  - Never run agent turn cwd in source repo.
   - Workspaces must stay under configured workspace root.
 - Orchestrator behavior is stateful and concurrency-sensitive; preserve retry, reconciliation, and cleanup semantics.
 - Simplicity is a project constraint: prefer the smallest coherent design with one clear owner and
