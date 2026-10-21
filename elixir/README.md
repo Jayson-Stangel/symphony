@@ -524,12 +524,17 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 `bin/symphony --agent codex|claude` selects one startup-owned coding provider;
 Codex is the default. Claude runs only in its qualified nonroot container image.
 Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
-accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
+accepts bounded nonblank model identifiers unchanged; the native runtime validates
+support rather than a second model allowlist. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
+SDK/CLI pins have one owner in `runner/claude/package.json` and its lock, also
+used by the qualification lab. Node verifies the installed runtime. Elixir checks
+protocol/policy compatibility and bounded version diagnostics without duplicating
+dependency pins; compatible upgrades preserve the same protocol contract.
 The state API adds an `agent` object while retaining existing token fields.
 Model-free Claude readiness runs in one supervised task at startup, on explicit
 refresh/control, and every 30 seconds after completion. Failed observations recover

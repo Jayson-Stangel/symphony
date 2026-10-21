@@ -6,10 +6,8 @@ const common = { v: z.literal(1), session_id: id, request_id: id };
 export const toolSpec = z.object({ name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/),
   description: z.string().max(8192), inputSchema: z.record(z.string(), z.unknown()) }).strict();
 
-// Keep aligned with Config.Schema.Claude; see docs/claude.md.
-const models = ['sonnet', 'opus', 'haiku', 'fable',
-  'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'];
-const settings = z.object({ model: z.enum(models), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
+// Native model support is runtime-owned; preserve identifiers without a second catalog.
+const settings = z.object({ model: z.string().max(256).refine(value => value.trim().length > 0), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
   max_agentic_turns: z.number().int().positive().max(100),
   turn_timeout_ms: z.number().int().positive().max(3_600_000) }).strict();
 

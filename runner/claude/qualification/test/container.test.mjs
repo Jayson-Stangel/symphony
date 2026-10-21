@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { executable, versions } from '../policy.mjs';
 
-const inLab = process.platform === 'linux' && existsSync('/opt/symphony-claude-lab/lab.mjs');
+const inLab = process.platform === 'linux' && existsSync('/opt/symphony-claude-lab/qualification/lab.mjs');
 
 test('real lab container has no capabilities, no privilege escalation and protected installed files',
   { skip: !inLab }, () => {

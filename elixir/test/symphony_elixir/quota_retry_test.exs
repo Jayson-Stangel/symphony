@@ -166,8 +166,9 @@ defmodule SymphonyElixir.QuotaRetryTest do
       Jason.encode!(%{
         ready: true,
         profile: AgentPause.codex_profile(),
-        sdk: "0.3.303",
-        cli: "2.1.303",
+        protocol: 1,
+        sdk: "fixture-sdk",
+        cli: "fixture-cli",
         policy: 1,
         overages_disabled_attested: true,
         attested_at: DateTime.to_iso8601(DateTime.utc_now())
