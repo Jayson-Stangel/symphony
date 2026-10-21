@@ -41,7 +41,10 @@ initial/retry prompt requires tracker readback before uncertain writes; Symphony
 never automatically replays a mutation. Explicit input/permission and actual
 authentication/policy stops retain their behavior. Transient startup failure keeps
 its retry classification even when the bounded correlated cleanup acknowledgement
-is missing. Captured sessions use the common adapter interrupt callback before
+is missing. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+use the same retry path. Only exact attributed historical pre-hello transport
+pauses are ignored read-only; ambiguous policy evidence remains gated. Captured
+sessions use the common adapter interrupt callback before
 Task retirement and workspace reconciliation. A callback error is logged and does
 not retain an eternal worker/claim. An unpublished session retains Task-only
 recovery without a native cleanup proof.

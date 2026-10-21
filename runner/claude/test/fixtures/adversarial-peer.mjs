@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 const mode = readFileSync('peer-mode', 'utf8').trim();
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
+if (mode === 'exit-hello') process.exit(23);
+if (mode === 'silent-hello') { for await (const _line of createInterface({ input: process.stdin })) {} process.exit(0); }
+if (mode === 'malformed-hello') { process.stdout.write('secret-canary\n'); process.exit(0); }
+if (mode === 'oversized-hello') { await new Promise(resolve => process.stdout.write('x'.repeat(1_100_000) + '\n', resolve)); process.exit(0); }
 if (mode === 'auth-hello') send({ ready: false, code: 'auth_required' });
 else send({ v: mode === 'bad-version' ? 9 : 1, type: 'hello', protocol: mode === 'bad-protocol' ? 9 : 1,
   sdk: mode === 'bad-sdk' ? 'x'.repeat(129) : mode === 'future-runtime' ? '0.999.0' : 'fixture-sdk',
