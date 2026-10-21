@@ -693,3 +693,21 @@ accepted but are ignored; migrate the desired limit into the `agent` section.
 Changing limits affects new dispatch; existing sessions keep their ownership and
 may temporarily exceed a reduced limit until they finish. The state API reports
 the effective global setting as `agent.max_concurrent_agents`.
+
+Installed updater recovery follows the launcher contract in the root README. A clean local
+`main` must track a configured remote's `main`; `--config-dir` also selects derived runner
+storage unless `SYMPHONY_RUNNER_HOME` is explicit. Transition exclusion uses a stable advisory
+regular file at the original lock pathname, excluding older mkdir-based launchers. Process
+exit releases its lock, including crashes. Unknown legacy ownerless lock
+directories require operator inspection; a proven-dead legacy owner can be retired on retry.
+
+Every installed update repeats idempotent setup, even when source is already current, so
+retry completes an interrupted setup. Source/runner updates reload the newly installed
+launcher against the exact fetched revision before transitioning; completion never refetches.
+
+Installed source updates hold checkout ownership in Git metadata across fetch, exec handoff,
+installation, setup and transition. The inherited source descriptor remains separate from
+per-project transition ownership; competing updated updaters refuse before changing source.
+Already-running older launchers and manual Git operations do not honor this ownership.
+Finish older calls before source-only adoption. Development-runner operations keep their
+existing isolated-checkout and per-project behavior.
