@@ -449,6 +449,28 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
   end
 
+  test "recheck client allows two serialized bounded observations without extending other controls", ctx do
+    ready_curl!(ctx)
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    calls = Path.join(ctx.root, "control-calls")
+
+    File.write!(Path.join(ctx.root, "curl"), """
+    #!/bin/sh
+    printf '%s\\n' "$*" >> '#{calls}'
+    printf '{}'
+    """)
+
+    for action <- ["recheck", "resume", "drain"] do
+      assert {_, 0} = launch_args(ctx, ["runner", action], env)
+    end
+
+    [recheck, resume, drain] = calls |> File.read!() |> String.split("\n", trim: true)
+    assert recheck =~ "--max-time 80"
+    assert resume =~ "--max-time 45"
+    assert drain =~ "--max-time 45"
+  end
+
   for {label, admission, succeeds} <- [
         {"quota cooldown", %{ready: false, reason: "quota_exhausted", retry_at: 4_000_000_000}, true},
         {"authentication pause", %{ready: false, reason: "auth_required"}, false},

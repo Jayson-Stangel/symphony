@@ -9,9 +9,10 @@ defmodule SymphonyElixir.Claude.Instructions do
   the repository root and that directory. Preserve both sets of constraints; stop
   for operator input if they cannot be reconciled. Do not create or overwrite
   CLAUDE.md, AGENTS.md, or tracked setup files merely to configure this runtime.
-  Symphony owns scheduling, authentication, billing policy and tracker bindings.
-  Do not replace native credentials, enable paid features, or choose another
-  inference route. Use the supplied tracker tool aliases and canonical Symphony
+  Symphony owns scheduling and tracker bindings. The native runtime owns
+  authentication, billing and organizational policy. Do not change credentials,
+  native settings or the selected inference route. Native-allowed usage remains
+  native-owned. Use the supplied tracker tool aliases and canonical Symphony
   skills. Reuse an existing Codex Workpad or Symphony Workpad; keep one workpad.
   """
 

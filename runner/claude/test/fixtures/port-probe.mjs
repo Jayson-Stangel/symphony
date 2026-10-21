@@ -1,5 +1,7 @@
 // Credential-free protocol peer using the production framing/state machine.
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { serve } from '../../helper.mjs';
 
 let helper;
@@ -17,11 +19,31 @@ class Probe {
       const text = input.message.content.split('\n', 1)[0];
       if (text.startsWith('effort:') && this.options.effort !== text.slice(7)) throw new Error('effort_mismatch');
       if (text === 'silence') continue;
+      if (text === 'native-allowance') {
+        const path = join(this.options.cwd, 'native-allowance-count');
+        const count = existsSync(path) ? Number(readFileSync(path, 'utf8')) + 1 : 1;
+        writeFileSync(path, String(count));
+        if (count === 1) {
+          this.push({ type: 'result', subtype: 'error_max_turns', is_error: true, uuid: randomUUID(),
+            session_id: 'native-probe', user_message_uuid: input.uuid,
+            permission_denials: [{ tool_name: 'Read', tool_use_id: 'prior-denial', tool_input: {} }] });
+          continue;
+        }
+      }
       if (text === 'event-error') { this.push({ type: 'result', uuid: 'secret-canary', session_id: 'foreign' }); continue; }
       if (text === 'malformed') { process.stdout.write('not JSON\n'); continue; }
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }
       if (text.startsWith('fable-quota:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
         status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: Number(text.split(':')[1]),
+      } });
+      if (text.startsWith('allowed-overage')) {
+        for (const status of ['allowed', 'allowed_warning']) this.push({ type: 'rate_limit_event', rate_limit_info: {
+          status, overageStatus: status, isUsingOverage: true, rateLimitType: 'overage',
+        } });
+        if (text === 'allowed-overage-billing-error') this.push({ type: 'assistant', error: 'billing_error' });
+      }
+      if (text.startsWith('new-bucket:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
+        status: 'rejected', rateLimitType: 'future-native-bucket', resetsAt: Number(text.split(':')[1]),
       } });
       if (text === 'quota') this.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
       if (text === 'auth') this.push({ type: 'assistant', error: 'authentication_failed' });

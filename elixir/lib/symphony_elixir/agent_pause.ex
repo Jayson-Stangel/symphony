@@ -87,9 +87,14 @@ defmodule SymphonyElixir.AgentPause do
 
   defp recheck_claude(profile, opts) do
     serialized(fn ->
-      with :ok <- recheck_identity(profile),
+      with true <- is_binary(profile) and valid_profile?(profile),
+           {:ok, pause} <- load_pause(),
+           :ok <- recheck_quota(pause),
            :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
-        recheck_pause(read_pause(), profile)
+        recheck_pause(pause)
+      else
+        false -> {:error, :invalid_profile}
+        error -> error
       end
     end)
   end
@@ -129,13 +134,13 @@ defmodule SymphonyElixir.AgentPause do
     end
   end
 
-  defp recheck_pause(:ready, _profile), do: :ok
-
-  defp recheck_pause({_, %{"kind" => "quota_exhausted", "resets_at" => reset}}, _profile) when is_integer(reset) and reset > 0 do
-    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: remove_pause()
+  defp recheck_quota(%{"kind" => "quota_exhausted", "resets_at" => reset}) when is_integer(reset) and reset > 0 do
+    if reset > System.system_time(:second), do: {:error, :reset_not_due}, else: :ok
   end
 
-  defp recheck_pause(_pause, _profile), do: remove_pause()
+  defp recheck_quota(_pause), do: :ok
+  defp recheck_pause(nil), do: :ok
+  defp recheck_pause(pause), do: if(public_pause(pause) == :ready, do: :ok, else: remove_pause())
 
   defp validate_pending_names(names) do
     if Enum.all?(names, &Regex.match?(~r/^[A-Za-z0-9_-]{1,128}\.json$/, &1)), do: {:ok, names}, else: {:error, :unknown_state_file}
@@ -157,23 +162,26 @@ defmodule SymphonyElixir.AgentPause do
   end
 
   defp read_pause do
-    case File.read(pause_path()) do
-      {:error, :enoent} ->
-        :ready
+    case load_pause() do
+      {:ok, nil} -> :ready
+      {:ok, value} -> public_pause(value)
+      {:error, _reason} -> {:paused, blocker("policy_blocked")}
+    end
+  end
 
-      {:ok, data} when byte_size(data) <= 4096 ->
-        with {:ok, %{"version" => 1, "kind" => kind, "phase" => phase} = value} <- Jason.decode(data),
-             true <- kind in @stored_kinds and phase in ["waiting", "probe"],
-             true <- valid_profile?(value["profile"]),
-             true <- is_nil(value["resets_at"]) or (is_integer(value["resets_at"]) and value["resets_at"] >= 0),
-             true <- valid_phase?(kind, phase) do
-          public_pause(value)
-        else
-          _ -> {:paused, blocker("policy_blocked")}
-        end
-
-      _ ->
-        {:paused, blocker("policy_blocked")}
+  defp load_pause do
+    with {:ok, %{type: :regular, size: size}} when size <= 4096 <- File.lstat(pause_path()),
+         {:ok, data} when byte_size(data) <= 4096 <- File.read(pause_path()),
+         {:ok, %{"version" => 1, "kind" => kind, "phase" => phase} = value} <- Jason.decode(data),
+         true <- kind in @stored_kinds and phase in ["waiting", "probe"],
+         true <- valid_profile?(value["profile"]),
+         true <- is_nil(value["resets_at"]) or (is_integer(value["resets_at"]) and value["resets_at"] >= 0),
+         true <- valid_phase?(kind, phase) do
+      {:ok, value}
+    else
+      {:error, :enoent} -> {:ok, nil}
+      {:error, reason} when is_atom(reason) -> {:error, reason}
+      _ -> {:error, :invalid_pause}
     end
   end
 
@@ -181,6 +189,12 @@ defmodule SymphonyElixir.AgentPause do
   # Preserve ambiguous untagged policy records for the existing explicit recheck.
   defp public_pause(%{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}), do: :ready
   defp public_pause(%{"kind" => "policy_blocked", "code" => "native_ownership_unavailable", "stage" => "startup"}), do: :ready
+
+  # This exact unscoped startup record was emitted for helper transport failures
+  # before hello. Preserve its bytes, but do not recreate the retired policy gate.
+  defp public_pause(%{"version" => 1, "kind" => "policy_blocked", "profile" => nil, "phase" => "waiting", "resets_at" => nil, "code" => "protocol_error", "stage" => "startup"} = value)
+       when map_size(value) == 7,
+       do: :ready
 
   # The exact original unscoped auth record came only from pre-input observations.
   # Unknown fields or newer diagnostic-bearing auth stops are not legacy matches.
@@ -254,17 +268,6 @@ defmodule SymphonyElixir.AgentPause do
   defp valid_profile?(nil), do: true
   defp valid_profile?(value) when is_binary(value), do: Regex.match?(~r/^[a-f0-9]{64}$/, value)
   defp valid_profile?(_value), do: false
-
-  defp recheck_identity(profile) do
-    if is_binary(profile) and valid_profile?(profile) do
-      case read_pause() do
-        {_, %{"profile" => expected}} when expected not in [nil, profile] -> {:error, :profile_changed}
-        _ -> :ok
-      end
-    else
-      {:error, :invalid_profile}
-    end
-  end
 
   defp remove_pause, do: File.rm(pause_path())
 

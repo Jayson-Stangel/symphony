@@ -291,6 +291,75 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  @tag timeout: 45_000
+  test "pre-hello exit, timeout and malformed transport retry and a repaired peer executes work", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+
+    for {mode, cause} <- [
+          {"exit-hello", {:helper_exited, 23}},
+          {"silent-hello", :timeout},
+          {"malformed-hello", :invalid_frame},
+          {"oversized-hello", :frame_too_large},
+          {"bad-version", "protocol_error"},
+          {"bad-protocol", "protocol_error"},
+          {"bad-policy", "protocol_error"},
+          {"bad-sdk", "protocol_error"}
+        ] do
+      File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
+
+      assert {:error, {:claude_startup_failed, ^cause}} =
+               Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+    end
+
+    # Repair also recovers the precise transport pause left by older versions.
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    File.mkdir_p!(Path.dirname(path))
+    legacy = Jason.encode!(%{version: 1, kind: "policy_blocked", profile: nil, phase: "waiting", resets_at: nil, code: "protocol_error", stage: "startup"})
+    File.write!(path, legacy)
+    # The production helper framing runs against a credential-free SDK peer.
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, %{provider: :claude}} = Adapter.run_turn(session, "success", ctx.issue, [])
+      assert :ready = AgentPause.current()
+      assert File.read!(path) == legacy
+    after
+      assert :ok = Adapter.stop_session(session)
+    end
+  end
+
+  test "pre-hello helper death reaches ordinary worker retry, not a project or issue gate", ctx do
+    helper = Path.join(ctx.root, "exit-before-hello.mjs")
+    File.write!(helper, "process.exit(23);\n")
+    parent = self()
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :start ->
+            {:error, reason} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+            send(parent, {:startup_failed, reason})
+            exit(reason)
+        end
+      end)
+
+    ref = Process.monitor(worker)
+    entry = %{pid: worker, ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    send(worker, :start)
+    assert_receive {:startup_failed, {:claude_startup_failed, {:helper_exited, 23}} = reason}
+    assert_receive {:DOWN, ^ref, :process, ^worker, ^reason} = down
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    assert state.retry_attempts[ctx.issue.id].attempt == 1
+    assert state.blocked == %{}
+    assert state.running == %{}
+    Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+    assert :ready = AgentPause.current()
+  end
+
   test "recognized pre-start readiness observations retry without creating a durable pause", ctx do
     helper = Path.join(ctx.root, "readiness-failed.mjs")
 
@@ -389,11 +458,11 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "unqualified handshakes pause while missing ownership metadata aborts for normal retry", ctx do
+  test "explicit native startup stops pause while missing ownership metadata retries", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk"] do
+    for mode <- ["auth-start", "error-start"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
     end
@@ -567,7 +636,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "coded turn failure preserves missing-ack diagnostics without recording a gate", ctx do
+  test "coded turn failure and native allowance preserve missing-ack diagnostics without recording a gate", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
 
@@ -579,21 +648,24 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     }
 
     opts = ctx.opts |> Keyword.put(:helper_path, helper) |> Keyword.put(:tool_binding, binding)
-    assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
-    try do
-      log =
-        capture_log([level: :info], fn ->
-          assert {:error, :claude_native_eof} = Adapter.run_turn(session, "tool-coded-failure", ctx.issue, [])
-        end)
+    for {prompt, cause} <- [{"tool-coded-failure", :claude_native_eof}, {"tool-turn-limit", :agent_turn_limit}] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
-      assert length(Regex.scan(~r/"reason":"ack_missing"/, log)) == 1
-      assert log =~ "issue_id=#{ctx.issue.id}"
-      refute log =~ "secret-canary"
-      assert :ready = AgentPause.current()
-      assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
-    after
-      Adapter.stop_session(session)
+      try do
+        log =
+          capture_log([level: :info], fn ->
+            assert {:error, ^cause} = Adapter.run_turn(session, prompt, ctx.issue, [])
+          end)
+
+        assert length(Regex.scan(~r/"reason":"ack_missing"/, log)) == 1
+        assert log =~ "issue_id=#{ctx.issue.id}"
+        refute log =~ "secret-canary"
+        assert :ready = AgentPause.current()
+        assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
+      after
+        Adapter.stop_session(session)
+      end
     end
   end
 
@@ -715,11 +787,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
-  test "a real policy pause remains blocked until matching explicit recovery", ctx do
+  test "a real policy pause remains blocked until explicit recovery", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
     assert :ok = AgentPause.record(:policy_blocked, %{profile: other})
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("a", 64))
 
     try do
       assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
@@ -772,6 +843,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     issue = %{ctx.issue | state: "Human Review", dispatchable: true}
     state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    state = finish_owner_cleanup(state, ctx.issue.id)
     assert state.running == %{}
     refute MapSet.member?(state.claimed, ctx.issue.id)
     assert AgentPause.current() == :ready
@@ -792,7 +864,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     for {prompt, expected} <- [
           {"permission_blocked", {:agent_blocked, "permission_blocked"}},
-          {"agent_turn_limit", {:agent_blocked, "agent_turn_limit"}},
+          {"agent_turn_limit", :agent_turn_limit},
           {"transient_error", :claude_transient_error},
           {"cancelled", :claude_cancelled}
         ] do
@@ -870,6 +942,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     log =
       capture_log(fn ->
         assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.blocked == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
@@ -955,6 +1028,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
 
         assert {:noreply, state} = Orchestrator.handle_info(down, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
         assert state.blocked == %{}
@@ -964,6 +1038,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
       end
     end
+  end
+
+  defp finish_owner_cleanup(state, issue_id) do
+    ref = state.running[issue_id].ref
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason} = down, 12_000
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    state
   end
 
   defp cleanup_running_entry(issue, ref, session) do
@@ -1132,6 +1213,32 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "allowed native overage crosses the real Port without a pause, but billing failure still stops", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "allowed-overage", ctx.issue, [])
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "allowed-overage-billing-error", ctx.issue, [])
+      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "a new native rejected quota bucket retains its authoritative cooldown through the real Port", ctx do
+    reset = System.system_time(:second) + 600
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "new-bucket:#{reset}", ctx.issue, [])
+      assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => ^reset}} = AgentPause.current()
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "Fable weekly quota persists its reset and recovers automatically after the cooldown after helper replacement", ctx do
     reset = System.system_time(:second) + 3_600
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
@@ -1177,6 +1284,87 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert :ready = AgentPause.current()
     after
       Adapter.stop_session(replacement)
+    end
+  end
+
+  test "native SDK allowance closes its worker and scheduler continues in a renewed session", ctx do
+    supervisor = start_supervised!(Task.Supervisor)
+    issue = %{ctx.issue | state: "In Progress", dispatchable: true}
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      tracker_kind: "memory",
+      prompt: "native-allowance",
+      max_turns: 3,
+      hook_after_run: "printf cleaned > after-run"
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    log =
+      capture_log([level: :info], fn ->
+        send(self(), {:allowance_attempt, native_allowance_attempt(supervisor, issue)})
+      end)
+
+    assert_received {:allowance_attempt, {worker, native, workspace, event_id}}
+    assert log =~ "Native turn allowance reached for issue_id=#{issue.id} issue_identifier=#{issue.identifier} session_id=#{native.id} cause=agent_turn_limit turn=1/3"
+    assert String.starts_with?(event_id, "claude:#{native.id}:")
+    assert File.read!(Path.join(workspace, "native-allowance-count")) == "1"
+    assert File.read!(Path.join(workspace, "after-run")) == "cleaned"
+    assert Port.info(native.port) == nil
+    File.write!(Path.join(workspace, "implementation.txt"), "retained work")
+
+    state = allowance_scheduler_state(worker, issue, workspace, event_id)
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, worker.ref, :process, worker.pid, :normal}, state)
+    assert state.blocked == %{}
+    assert %{attempt: 1, error: nil, workspace_path: ^workspace, due_at_ms: due} = retry = state.retry_attempts[issue.id]
+    assert (due - System.monotonic_time(:millisecond)) in 0..1_000
+    Process.cancel_timer(retry.timer_ref)
+    assert :ready = AgentPause.current()
+
+    # The scheduler's real tracker lookup keeps active work queued while capacity
+    # is occupied. The fixture then runs the renewed worker after freeing a slot.
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    busy = %{state | max_concurrent_agents: 1, running: %{"other" => %{pid: self(), issue: %{issue | id: "other"}}}}
+    assert {:noreply, waiting} = Orchestrator.handle_info({:retry_issue, issue.id, retry.retry_token}, busy)
+    assert waiting.blocked == %{}
+    assert Map.has_key?(waiting.retry_attempts, issue.id)
+    Process.cancel_timer(waiting.retry_attempts[issue.id].timer_ref)
+    assert {:ok, [^issue]} = Tracker.fetch_issues_by_ids([issue.id])
+
+    finish_on_readback = fn ids ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: "Human Review"}])
+      Tracker.fetch_issues_by_ids(ids)
+    end
+
+    {_worker, renewed, ^workspace, _event_id} = native_allowance_attempt(supervisor, issue, 1, finish_on_readback)
+    assert renewed.port != native.port
+    assert File.read!(Path.join(workspace, "native-allowance-count")) == "2"
+    assert File.read!(Path.join(workspace, "implementation.txt")) == "retained work"
+    assert Port.info(renewed.port) == nil
+  end
+
+  test "late Human Review and terminal tracker states prevent native allowance redispatch", ctx do
+    supervisor = start_supervised!(Task.Supervisor)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", prompt: "native-allowance", max_turns: 3)
+
+    for late_state <- ["Human Review", "Done"] do
+      issue = %{ctx.issue | id: late_state, identifier: "ALLOWANCE-#{String.replace(late_state, " ", "-")}", state: "In Progress", dispatchable: true}
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
+      assert Port.info(native.port) == nil
+      assert {:noreply, state} = Orchestrator.handle_info({:DOWN, worker.ref, :process, worker.pid, :normal}, allowance_scheduler_state(worker, issue, workspace, event_id))
+      retry = state.retry_attempts[issue.id]
+      Process.cancel_timer(retry.timer_ref)
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | state: late_state}])
+
+      assert {:noreply, released} = Orchestrator.handle_info({:retry_issue, issue.id, retry.retry_token}, state)
+      assert released.running == %{}
+      assert released.blocked == %{}
+      refute Map.has_key?(released.retry_attempts, issue.id)
+      refute MapSet.member?(released.claimed, issue.id)
+      assert File.dir?(workspace) == (late_state == "Human Review")
+      assert :ready = AgentPause.current()
     end
   end
 
@@ -1256,5 +1444,36 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "SSH and unsafe source workspace are rejected before any helper launch", ctx do
     assert {:error, :claude_ssh_unsupported} = Adapter.start_session(ctx.workspace, worker_host: "remote")
     assert {:error, {:invalid_workspace_cwd, :workspace_root, _}} = Adapter.start_session(Path.dirname(ctx.workspace), ctx.opts)
+  end
+
+  defp native_allowance_attempt(supervisor, issue, attempt \\ nil, fetcher \\ &Tracker.fetch_issues_by_ids/1) do
+    observer = self()
+
+    worker =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        AgentRunner.run(issue, observer, coding_agent_adapter: TurnProbe, attempt: attempt, issue_state_fetcher: fetcher)
+      end)
+
+    issue_id = issue.id
+    pid = worker.pid
+    ref = worker.ref
+    assert_receive {:worker_runtime_info, ^issue_id, %{workspace_path: workspace}}, 3_000
+    assert_receive {:worker_agent_session, ^issue_id, %{native: native}}, 3_000
+    assert_receive {:codex_worker_update, ^issue_id, %{event: :session_started, session_id: event_id}}, 3_000
+    assert_receive {^ref, :ok}, 3_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 3_000
+    {worker, native, workspace, event_id}
+  end
+
+  defp allowance_scheduler_state(worker, issue, workspace, event_id) do
+    entry = %{pid: worker.pid, ref: worker.ref, identifier: issue.identifier, issue: issue, workspace_path: workspace, session_id: event_id, started_at: DateTime.utc_now()}
+
+    %Orchestrator.State{
+      running: %{issue.id => entry},
+      claimed: MapSet.new([issue.id]),
+      readiness: %{ready: true, provider: "claude", profile: String.duplicate("a", 64)},
+      max_concurrent_agents: 10,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
   end
 end

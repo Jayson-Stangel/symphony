@@ -137,7 +137,6 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: System.system_time(:second) + 60})
     assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     assert :ok = AgentPause.record(:some_unknown_error, %{profile: @profile})
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
@@ -157,9 +156,8 @@ defmodule SymphonyElixir.AgentPauseTest do
     end
   end
 
-  test "explicit policy recheck checks identity and only clears durably", ctx do
+  test "explicit policy recheck accepts the selected qualified profile and only clears durably", ctx do
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     File.chmod!(ctx.root, 0o500)
 
     try do
@@ -169,7 +167,7 @@ defmodule SymphonyElixir.AgentPauseTest do
       File.chmod!(ctx.root, 0o700)
     end
 
-    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert :ok = AgentPause.explicit_recheck(String.duplicate("b", 64))
     assert :ready = AgentPause.current()
   end
 
@@ -224,6 +222,34 @@ defmodule SymphonyElixir.AgentPauseTest do
     end
 
     assert :ready = AgentPause.current()
+  end
+
+  test "only attributable pre-hello transport policy records are retired without erasing evidence", ctx do
+    File.mkdir_p!(ctx.root)
+    path = Path.join(ctx.root, "claude-pause.json")
+    old = %{"version" => 1, "kind" => "policy_blocked", "profile" => nil, "phase" => "waiting", "resets_at" => nil, "code" => "protocol_error", "stage" => "startup"}
+    bytes = Jason.encode!(old)
+    File.write!(path, bytes)
+    assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert File.read!(path) == bytes
+
+    for value <- [
+          Map.put(old, "profile", @profile),
+          Map.put(old, "unknown", true),
+          Map.put(old, "code", "policy_blocked"),
+          Map.put(old, "code", "unsupported_tool_schema"),
+          Map.put(old, "kind", "auth_required"),
+          old |> Map.put("kind", "quota_exhausted") |> Map.put("resets_at", System.system_time(:second) + 1000),
+          Map.put(old, "stage", "turn"),
+          Map.delete(old, "code"),
+          Map.delete(old, "profile"),
+          Map.put(old, "resets_at", System.system_time(:second) + 1000)
+        ] do
+      bytes = Jason.encode!(value)
+      File.write!(path, bytes)
+      assert {:paused, _} = AgentPause.current()
+      assert File.read!(path) == bytes
+    end
   end
 
   test "only the exact original unscoped auth observation is retired read-only", ctx do
@@ -285,6 +311,8 @@ defmodule SymphonyElixir.AgentPauseTest do
       File.write!(path, data)
       assert {:paused, %{"kind" => "policy_blocked"} = safe} = AgentPause.current()
       refute inspect(safe) =~ "secret-canary"
+      assert {:error, :invalid_pause} = AgentPause.explicit_recheck(@profile)
+      assert File.read!(path) == data
     end
 
     File.rm!(path)

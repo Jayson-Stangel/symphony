@@ -108,6 +108,28 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     refute_received {:probe_started, _}
   end
 
+  test "native allowance yields after one turn and bounded cleanup even when cleanup is unconfirmed", ctx do
+    Process.put(:probe_turn_result, {:error, :agent_turn_limit})
+    Process.put(:probe_cleanup_result, {:error, :cleanup_unconfirmed})
+
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 AgentRunner.run(ctx.issue, nil,
+                   coding_agent_adapter: Probe,
+                   issue_state_fetcher: fn _ -> flunk("exhausted native session must not be reused") end
+                 )
+      end)
+
+    assert log =~ "Native turn allowance reached"
+    assert_received {:probe_started, pid}
+    assert_received {:probe_turn, ^pid, _prompt}
+    assert_received {:probe_stopped, ^pid}
+    refute_received {:probe_turn, _, _}
+    refute_received {:probe_started, _}
+    assert File.read!(Path.join([ctx.root, "ADAPTER-1", "after"])) == "after"
+  end
+
   test "recoverable delivery failure exits only after cleanup and retains readback context", ctx do
     reason = {:agent_blocked, "tracker_delivery_failed"}
     Process.put(:probe_turn_result, {:error, reason})

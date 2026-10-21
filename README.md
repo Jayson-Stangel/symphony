@@ -354,6 +354,21 @@ providers retain native organizational policy. Claude policy files do not create
 extra Symphony admission gate; native settings may configure permissions and routing.
 Symphony adds no API-key/cloud fallback and does not guarantee native request endpoints
 or billing from a subscription profile.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 Sonnet remains the default; nonblank model identifiers pass unchanged to the
 native runtime, which validates support. Reasoning effort is configurable.
 Terminal and web dashboards show the configured Claude effort.
@@ -366,12 +381,19 @@ unresolved failures to the affected issue. Tracker errors do not pause unrelated
 work. Redacted diagnostics retain request fingerprints and correlation/status
 fields without an execution-certainty classifier or GraphQL parser dependency.
 Per-attempt turn allowances use the original scheduler continuation path for
-both providers; new workflows do not impose live token/turn circuit breakers.
-Established-session transport/delivery and transient startup failures use bounded
+both providers. Claude native SDK turn exhaustion also closes the session and
+yields to the same live tracker check before renewal in the retained workspace.
+New workflows do not impose live token/turn circuit breakers.
+Helper exit, timeout, malformed frames and incompatible handshakes before hello are
+transient startup failures, not native policy stops. Established-session
+transport/delivery and transient startup failures use bounded
 cleanup and normal scheduler recovery with backoff and tracker readback. Cleanup
 failure retains separate bounded primary/cleanup diagnostics and the original
 outcome; it does not require container replacement or block unrelated dispatch.
-Captured process generations limit best-effort cleanup. Detached descendants may
+Captured cancellation and owner-loss cleanup run on the existing task supervisor,
+keeping scheduler controls and sibling workers responsive while each retiring issue
+retains its claim and shared capacity. Captured process generations limit best-effort
+cleanup. Detached descendants may
 survive a crash, especially before ownership publication; baseline recovery does
 not claim universal native-process quiescence. Explicit auth/policy/input stops
 and durable drain retain their own semantics. See [setup, pauses and updater transitions](docs/claude.md)

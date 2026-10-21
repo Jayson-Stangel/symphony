@@ -39,31 +39,25 @@ test('effort accepts SDK levels and leaves omitted effort unset', () => {
   }
 });
 
-test('only authoritative quota buckets establish a reset time; prose does not', () => {
+test('native rate-limit status owns admission, independent of overage metadata or bucket names', () => {
   assert.equal(classifyEvent({ type: 'assistant', message: 'quota exceeded' }), null);
-  for (const rateLimitType of ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included']) {
-    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-      status: 'rejected', rateLimitType, resetsAt: 12345,
-    } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+  for (const rateLimitType of ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet',
+    'seven_day_overage_included', 'overage', 'future_native_bucket', undefined]) {
+    for (const metadata of [{}, { isUsingOverage: true }, { overageStatus: 'allowed' }, { overageStatus: 'allowed_warning' }]) {
+      for (const status of ['allowed', 'allowed_warning']) {
+        assert.equal(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+          status, rateLimitType, resetsAt: 12345, ...metadata,
+        } }), null);
+      }
+      assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
+        status: 'rejected', rateLimitType, resetsAt: 12345, ...metadata,
+      } }), { outcome: 'quota_exhausted', resets_at: 12345 });
+    }
   }
   for (const resetsAt of [undefined, null, 'tomorrow', -1, 0]) {
     assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt,
+      status: 'rejected', resetsAt,
     } }), { outcome: 'quota_exhausted', resets_at: null });
-  }
-  for (const info of [{ isUsingOverage: true }, { overageStatus: 'allowed' }, { overageStatus: 'allowed_warning' }]) {
-    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-      status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: 12345, ...info,
-    } }), { outcome: 'policy_blocked' });
-  }
-  assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: {
-    status: 'rejected', rateLimitType: 'seven_day', resetsAt: 'tomorrow',
-  } }), { outcome: 'quota_exhausted', resets_at: null });
-  assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'unknown' } }), { outcome: 'policy_blocked' });
-  assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', overageStatus: 'allowed' } }), { outcome: 'policy_blocked' });
-  for (const info of [{ status: 'allowed_warning', overageStatus: 'allowed_warning' },
-    { status: 'allowed', isUsingOverage: true }, { status: 'rejected', rateLimitType: 'overage' }]) {
-    assert.deepEqual(classifyEvent({ type: 'rate_limit_event', rate_limit_info: info }), { outcome: 'policy_blocked' });
   }
   assert.deepEqual(classifyEvent({ type: 'assistant', error: 'billing_error' }), { outcome: 'policy_blocked' });
   assert.deepEqual(classifyEvent({ type: 'assistant', error: 'authentication_failed' }), { outcome: 'auth_required' });
@@ -76,6 +70,20 @@ test('completion requires success and no cancellation/latched error', () => {
   assert.deepEqual(summarizeResult(result, { outcome: 'quota_exhausted' }), { outcome: 'quota_exhausted' });
   assert.deepEqual(summarizeResult(result, null, true), { outcome: 'cancelled' });
   assert.deepEqual(summarizeResult({ ...result, is_error: true }), { outcome: 'protocol_error' });
+});
+
+test('native turn allowance yields only when no stronger native stop applies', () => {
+  const result = { subtype: 'error_max_turns', is_error: true, permission_denials: [] };
+  assert.deepEqual(summarizeResult(result), { outcome: 'agent_turn_limit' });
+  const denied = [{ tool_name: 'Bash', tool_use_id: 'one', tool_input: {} }];
+  // Recorded denials do not prove the native allowance ended on a blocking input.
+  assert.deepEqual(summarizeResult({ ...result, permission_denials: denied }), { outcome: 'agent_turn_limit' });
+  assert.deepEqual(summarizeResult({ ...result, subtype: 'error_during_execution', permission_denials: denied }), { outcome: 'permission_blocked' });
+  assert.deepEqual(summarizeResult({ ...result, subtype: 'success', is_error: false, permission_denials: denied }), { outcome: 'completed' });
+  for (const outcome of ['auth_required', 'quota_exhausted', 'policy_blocked']) {
+    assert.deepEqual(summarizeResult(result, { outcome }), { outcome });
+  }
+  assert.deepEqual(summarizeResult(result, null, true), { outcome: 'cancelled' });
 });
 
 test('usage is cumulative across models, includes cache input once, and excludes thinking double count', () => {

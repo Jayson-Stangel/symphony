@@ -1120,8 +1120,10 @@ runner_admission_ready() {
 }
 
 runner_control_request() {
-  local port=$1 action=$2
-  curl --fail --silent --show-error --max-time 45 --max-filesize 1048576 \
+  local port=$1 action=$2 deadline=45
+  # Recheck can serialize behind an existing 35s check, then run its own 35s check.
+  if [ "$action" = recheck ]; then deadline=80; fi
+  curl --fail --silent --show-error --max-time "$deadline" --max-filesize 1048576 \
     -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
     -d '{}' "http://127.0.0.1:$port/api/v1/agent/$action"
 }
