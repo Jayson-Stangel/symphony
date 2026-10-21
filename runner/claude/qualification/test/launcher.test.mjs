@@ -106,6 +106,9 @@ test('changed checkout inputs must build successfully before an old tagged image
   for (const name of ['package.json', 'package-lock.json', 'runtime.mjs']) {
     copyFileSync(new URL(`../../${name}`, import.meta.url), join(checkout, name));
   }
+  // Image inputs are read-only; the owned temporary checkout must permit edits and cleanup.
+  const writable = spawnSync('chmod', ['-R', 'u+w', checkout], { encoding: 'utf8' });
+  assert.equal(writable.status, 0, writable.stderr);
   const manifest = JSON.parse(readFileSync(join(checkout, 'package.json'), 'utf8'));
   manifest.description = 'Changed checkout manifest.';
   writeFileSync(join(checkout, 'package.json'), JSON.stringify(manifest));
