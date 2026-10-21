@@ -168,7 +168,8 @@ The overlay is removed at session cleanup without changing the repository or
 canonical procedures. Optional override validation still occurs at session start;
 there is no setup-time cache to invalidate when repository procedures change.
 Unsafe paths, symlinks and malformed manifests fail closed. Existing workpads,
-including Codex Workpad comments, are reused.
+including legacy Codex Workpad or Symphony Workpad comments, are reused with the
+Agent Workpad header.
 
 ## Pauses and recovery
 
