@@ -51,7 +51,12 @@ are also ignored native sources and do not block readiness. Native Claude Code o
 canonical organizational policy, managed drop-ins and account/trust-dependent remote
 settings. Symphony does not reject these files or replace their native merge and
 permission rules. Strict MCP remains enabled; native Claude reports incompatible
-enterprise MCP configuration during session initialization.
+enterprise MCP configuration during session initialization. The model-free readiness
+check validates the runtime and native login; it does not establish full native
+policy or session compatibility. Native initialization failures, including strict-MCP
+incompatibility, use bounded startup diagnostics and ordinary scheduler backoff
+until native configuration is repaired.
+The default failure backoff starts at 10 seconds and caps at five minutes.
 
 Native subscription login is validated, and Symphony configures no API-key or
 alternate-cloud fallback. Native organizational settings can nevertheless configure
@@ -203,7 +208,7 @@ require explicit operator recovery. The exact original five-field version-1 auth
 delivery failures retry the affected attempt with scheduler backoff after confirmed
 cleanup, preserving its workspace and requiring tracker readback before writing.
 No tracker mutation is replayed by the runner. Explicit permission/input and
-native turn-limit stops remain blocked. Transient startup protocol or native initialization failures also retry once the
+native turn-limit stops remain blocked. Startup protocol or native initialization failures also retry once the
 helper acknowledges owned-native cleanup for that exact session/request. The
 cleanup wait is bounded; a missing or foreign acknowledgement retains the original
 startup cause and creates the existing cleanup-unconfirmed stop. Explicit startup
@@ -253,7 +258,7 @@ not a helper protocol failure. Healthy explicit operator recheck clears recovere
 
 ```sh
 symphony runner drain
-symphony runner recheck  # requires zero active workers and healthy native policy
+symphony runner recheck  # requires zero active workers and healthy native/runtime checks
 symphony runner resume
 ```
 
@@ -303,7 +308,7 @@ The updater preflights the candidate, drains the qualified listener, waits for
 zero workers, retains the stopped prior container, and checks exclusive volume
 ownership before migrating root-owned workspace/state files to UID 11001. It
 pins the candidate image ID and journals the transition. It resumes the
-candidate only after native policy readiness and verifies its effective admission
+candidate only after native runtime/login readiness and verifies its effective admission
 result before removing the stopped prior container. A retained quota cooldown is
 reported explicitly as intentionally paused until its reset; it is not operational
 dispatch. Authentication/policy pauses refuse ordinary resume and retain rollback

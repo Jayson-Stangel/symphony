@@ -2506,6 +2506,10 @@ organizational policy MUST remain native-owned, including canonical Linux files,
 managed drop-ins and account/trust-dependent remote settings. Symphony MUST NOT
 reject organizational policy by file existence or implement a second settings/routing
 resolver. Native permission rules and native strict-MCP incompatibility errors apply.
+Model-free runtime/auth readiness MUST NOT be represented as full native policy or
+session compatibility. Native initialization incompatibility uses bounded startup
+diagnostics and ordinary capped scheduler retry;
+it MUST NOT create a new organizational-policy file gate or persistent policy latch.
 User plugin inventory and home-config managed-settings.json MUST NOT gate admission
 when excluded by the qualified native runtime. Native subscription login and explicit
 session configuration remain validated; Symphony configures no API-key/cloud fallback.
