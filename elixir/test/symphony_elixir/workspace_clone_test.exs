@@ -89,17 +89,28 @@ defmodule SymphonyElixir.WorkspaceCloneTest do
     wrapper_dir = Path.join(root, "bin")
     File.mkdir_p!(wrapper_dir)
     gate = Path.join(root, "timeout-clone")
+    # The abandoned command models a late writer; the retry performs a real clone.
+    checkpoint = Path.join(root, "first-clone-stage")
+    release = Path.join(root, "release-first-clone")
+    on_exit(fn -> File.write(release, "release") end)
 
     File.write!(Path.join(wrapper_dir, "git"), """
     #!/bin/sh
     first=0
     if mkdir "#{gate}" 2>/dev/null; then first=1; fi
-    "#{git}" "$@" || exit $?
     for destination do :; done
     printf '%s\\n' "$destination" >> "#{root}/destinations"
     if [ "$first" = 1 ]; then
-      sleep 0.4
+      printf '%s' "$destination" > "#{checkpoint}"
+      attempts=0
+      while [ ! -f "#{release}" ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 1000 ] || exit 1
+        sleep 0.01
+      done
       printf late > "$destination/late-output"
+    else
+      "#{git}" "$@"
     fi
     """)
 
@@ -107,17 +118,23 @@ defmodule SymphonyElixir.WorkspaceCloneTest do
     System.put_env("PATH", wrapper_dir <> ":" <> original_path)
     on_exit(fn -> System.put_env("PATH", original_path) end)
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(root, "workspaces"), workspace_clone_url: source, hook_timeout_ms: 200)
-    assert {:error, {:workspace_clone_timeout, workspace, 200}} = Workspace.create_for_issue("CLONE-TIMEOUT")
+    first_clone = Task.async(fn -> Workspace.create_for_issue("CLONE-TIMEOUT") end)
+    wait_for!(fn -> File.regular?(checkpoint) end)
+    assert {:error, {:workspace_clone_timeout, workspace, 200}} = Task.await(first_clone, 5_000)
     refute File.exists?(workspace)
     stage_root = Path.join([root, "workspaces", ".symphony", "clones"])
     [stage_name] = File.ls!(stage_root)
+    {:ok, stage} = SymphonyElixir.PathSafety.canonicalize(Path.join(stage_root, stage_name))
+    assert File.read!(checkpoint) == stage
     configure_clone!(root, source)
     assert {:ok, ^workspace} = Workspace.create_for_issue("CLONE-TIMEOUT")
-    Process.sleep(450)
+    File.write!(release, "release")
+    late_output = Path.join(stage, "late-output")
+    wait_for!(fn -> File.read(late_output) == {:ok, "late"} end)
     assert File.ls!(stage_root) == [stage_name]
     assert File.read!(Path.join(workspace, "README.md")) == "source\n"
     refute File.exists?(Path.join(workspace, "late-output")), File.read!(Path.join(root, "destinations"))
-    assert File.read!(Path.join([stage_root, stage_name, "late-output"])) == "late"
+    assert File.read!(late_output) == "late"
   end
 
   test "existing non-directory destination is preserved" do
