@@ -992,6 +992,7 @@ defmodule SymphonyElixir.CoreTest do
       {:ok, task_supervisor} = Task.Supervisor.start_link()
 
       state = %Orchestrator.State{
+        readiness: SymphonyElixir.AgentReadiness.check(),
         task_supervisor: task_supervisor,
         claimed: MapSet.new([issue_id]),
         retry_attempts: %{}

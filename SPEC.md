@@ -2548,6 +2548,15 @@ retryable. New-candidate preparation writes drain/unresumed markers before chown
 Ownership-only rollback MUST preserve cleanup uncertainty and marker semantics;
 it MUST NOT add Git trust exceptions or clear uncertainty merely to restore UID.
 
+### Provider-owned pause isolation
+
+The pause boundary MUST return ready/no-op for Codex before reading, normalizing,
+writing or reconciling Claude pause state. Shared scheduler admission consumes
+normalized readiness provider/profile/ready fields rather than a separate
+provider-specific bypass. Claude account pauses retain their existing semantics.
+Issue-local legacy tracker recovery evidence remains available to either provider;
+it is not a project dispatch gate.
+
 ### Shared provider concurrency
 
 Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
