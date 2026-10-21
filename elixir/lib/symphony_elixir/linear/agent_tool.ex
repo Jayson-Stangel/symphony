@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Linear.AgentTool do
   @moduledoc """
-  Provider-native Linear tool exposed to Codex app-server turns.
+  Provider-native Linear tool exposed to coding-agent turns.
   """
 
   alias SymphonyElixir.Linear.{Client, Operation}

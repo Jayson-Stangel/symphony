@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.GitLab.AgentTool do
   @moduledoc """
-  Provider-native GitLab REST tool exposed to Codex app-server turns.
+  Provider-native GitLab REST tool exposed to coding-agent turns.
   """
 
   alias SymphonyElixir.GitLab.Client

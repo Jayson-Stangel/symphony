@@ -5,7 +5,7 @@ work instead of supervising coding agents.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
-_In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+_In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise individual agents; they can manage the work at a higher level._
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
@@ -159,7 +159,7 @@ Stopping or replacing the container retains them. The listener automatically
 returns after a container-engine restart unless explicitly stopped. On startup,
 Symphony reads current tracker state and resumes eligible tickets from their
 existing checkouts, including uncommitted changes and untracked evidence, using
-fresh Codex sessions. Tickets awaiting review or blocked in the tracker retain
+fresh agent sessions. Tickets awaiting review or blocked in the tracker retain
 their workspaces without dispatch. Terminal tickets are cleaned at startup and
 on later successful polls, including tickets completed while Symphony was offline.
 Tracker read failures leave retained workspaces intact until reconciliation succeeds.
@@ -274,7 +274,7 @@ symphony init --linear-project my-service-linear-project-slug --local-skill land
 The override is written as `.codex/skills/symphony-land/` and recorded in
 `.codex/symphony-skill-overrides.yml`. It stops receiving global updates until it is removed, so
 keep it small and document why it differs. This namespacing keeps Symphony-specific procedures
-from changing how Codex behaves in unrelated repositories.
+from changing how agents behave in unrelated repositories.
 
 To return one overridden skill to the global version without discarding team changes:
 
@@ -353,7 +353,7 @@ Then start Symphony and its optional local dashboard:
 symphony run --port 4010
 ```
 
-Review polling and progress updates stay within the current Codex turn; only completed turns
+Review polling and progress updates stay within the current agent turn; only completed turns
 count toward the worker continuation limit.
 
 Visit `http://localhost:4010` to observe the listener. For a first run, temporarily set

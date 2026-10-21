@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Jira.AgentTool do
   @moduledoc """
-  Provider-native Jira Cloud REST tool exposed to Codex app-server turns.
+  Provider-native Jira Cloud REST tool exposed to coding-agent turns.
   """
 
   alias SymphonyElixir.Jira.Client

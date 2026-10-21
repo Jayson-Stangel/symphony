@@ -89,7 +89,7 @@ Workspaces may survive a container restart. Before making changes, inspect the
 existing branch, working tree, PR, and workpad and resume unfinished work. Keep
 uncommitted changes and local evidence; do not reset or clean an existing
 checkout merely because this is a fresh agent session. Tracker state determines
-whether work should resume. Codex conversation history may not be available.
+whether work should resume. Agent conversation history may not be available.
 
 1. This is an unattended orchestration session. Do not ask a human to perform follow-up actions.
 2. Only stop early for a true external blocker (missing required tools, auth, permissions, or secrets). If blocked, record it in the workpad and move the issue according to the workflow.

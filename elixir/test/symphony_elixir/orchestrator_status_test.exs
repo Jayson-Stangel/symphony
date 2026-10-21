@@ -1581,7 +1581,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert %{
              identifier: "MT-INPUT",
-             error: "codex turn requires operator input"
+             error: "agent turn requires operator input"
            } = state.blocked[issue_id]
   end
 
@@ -1638,7 +1638,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert %{
              identifier: "MT-INPUT-NORMAL",
-             error: "codex turn requires operator input"
+             error: "agent turn requires operator input"
            } = state.blocked[issue_id]
   end
 

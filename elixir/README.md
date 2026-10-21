@@ -22,16 +22,18 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 1. Polls the configured tracker for candidate work (included adapters: Linear, GitHub Issues, Jira
    Cloud, Asana, and GitLab)
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+3. Starts the selected coding agent inside the workspace
+4. Sends a workflow prompt to the agent
+5. Keeps the agent working on the issue until the work is done
 
-During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
+Codex uses [App Server mode](https://developers.openai.com/codex/app-server/);
+Claude uses the [native SDK helper](../docs/claude.md).
+
+During agent sessions, the selected tracker adapter may advertise provider-native tools. The
 Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
 `jira_rest`, Asana serves `asana_api`, and GitLab serves `gitlab_api`. Symphony executes those
 tools with configured host-side auth and removes declared tracker-token environment variables from
-the Codex child, so the agent does not need a second tracker login.
+the agent child, so the agent does not need a second tracker login.
 
 Codex and Claude return tracker errors to the agent, following the original Codex
 recovery flow. The agent reads back uncertain writes before retrying and corrects
@@ -97,7 +99,7 @@ Readiness recovery and workflow reload do not repeat the startup sweep.
 
 The container launcher mounts persistent repository-specific volumes at
 `/workspaces` and `/var/lib/symphony`. Restart recovery uses the tracker and
-existing files, with fresh Codex sessions; in-memory retry counts and session
+existing files, with fresh agent sessions; in-memory retry counts and session
 history are not restored. Completed workspace setup is reused without rerunning
 `after_create`. If shutdown interrupts a local `after_create` hook, a marker in
 `workspace.root/.symphony/bootstrap/<workspace-key>` causes subsequent attempts to fail
@@ -125,7 +127,7 @@ each workspace root, as with existing workspace creation.
 identifier receives a hashed workspace key. Both local and SSH deployments use startup and targeted claimed-issue cleanup
 without polling all terminal history.
 
-If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
+If the agent reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 session details are in memory only; restarting the orchestrator clears those runtime stops, so any
 still-active tracker issue can become a dispatch candidate again after restart.
@@ -221,7 +223,7 @@ Optional flags:
 - `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+agent session prompt.
 
 Minimal example:
 
@@ -318,7 +320,7 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
   when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
-- Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
+- Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if the agent can read that
   workspace. Use `$VAR`/host-side secret references so Symphony can keep the token out of the
   child environment.
 - For path values, `~` is expanded to the home directory.
@@ -368,7 +370,7 @@ codex:
 - Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
   with the session-bound endpoint/token and strips declared token environment variables from the
-  Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
+  agent child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
   whatever the configured Linear token can access.
 - Evidence downloads: worker tool calls request file URLs signed for five minutes
   with Linear's `public-file-urls-expire-in` header. Workers can retrieve and hash
@@ -403,7 +405,7 @@ codex:
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
   `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
-  credentials and provider authentication aliases from the Codex child, and leaves raw tool access
+  credentials and provider authentication aliases from the agent child, and leaves raw tool access
   limited by that token's GitHub permissions.
 
 ### Jira Cloud adapter
@@ -416,7 +418,7 @@ codex:
 - Blockers: inward `Blocks` links populate `blocked_by`; issues in Jira's `new` status category
   wait until blockers reach configured terminal states, while in-progress categories keep running.
 - Tool: `jira_rest` sends relative `/rest/api/3/` requests host-side with configured Basic auth,
-  strips token environment variables from Codex, and can reach whatever the Jira credential can.
+  strips token environment variables from the agent, and can reach whatever the Jira credential can.
 
 ### Asana adapter
 
@@ -426,7 +428,7 @@ codex:
 - Scope: Symphony polls tasks in the configured project, treats their section as state, and omits
   deleted or out-of-project tasks during ID refreshes.
 - Tool: `asana_api` sends relative Asana REST requests host-side with the configured auth; Symphony
-  strips `ASANA_PAT` and configured token variables from the Codex child, while raw tool calls are
+  strips `ASANA_PAT` and configured token variables from the agent child, while raw tool calls are
   not limited to the configured project.
 
 ### GitLab adapter
@@ -435,7 +437,7 @@ codex:
   `api_key` (default `GITLAB_PAT`); use `opened` and `closed` tracker states.
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
-  credentials and provider authentication aliases out of the Codex child.
+  credentials and provider authentication aliases out of the agent child.
 
 ## Web dashboard
 
@@ -477,7 +479,7 @@ or `last_session`), and configured `agent.effort` (null for native defaults). Re
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
 - `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.codex/`: repository-local Codex skills and setup helpers
+- `../.codex/`: repository-local agent skills and setup helpers
 
 ## Testing
 

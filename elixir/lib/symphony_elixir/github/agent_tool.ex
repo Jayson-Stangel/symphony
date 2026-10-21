@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.GitHub.AgentTool do
   @moduledoc """
-  Provider-native GitHub REST tool exposed to Codex app-server turns.
+  Provider-native GitHub REST tool exposed to coding-agent turns.
   """
 
   alias SymphonyElixir.GitHub.Client

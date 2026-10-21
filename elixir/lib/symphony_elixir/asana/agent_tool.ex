@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Asana.AgentTool do
   @moduledoc """
-  Provider-native Asana REST tool exposed to Codex app-server turns.
+  Provider-native Asana REST tool exposed to coding-agent turns.
   """
 
   alias SymphonyElixir.Asana.Client
