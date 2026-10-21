@@ -44,11 +44,17 @@ Docker volume; workspace and state/log volumes are separate and retained.
 The Claude image uses UID/GID 11001, a read-only root filesystem, no Linux
 capabilities, no-new-privileges and a private process namespace. Coding tools are
 trusted to execute repository code. They can access their native account and
-selected Git and project-tool credentials as that same user; this is not isolation from hostile
-code or an absolute spending firewall. Unselected ambient inference credentials
-are stripped; they do not become readiness gates or alternate inference routes.
-Native settings, unqualified runtime versions and expired policy metadata retain
-the documented readiness checks.
+selected Git and project-tool credentials as that same user; this is not isolation
+from hostile code or an absolute spending firewall. Query startup and native
+authentication commands disable user/project/local settings sources. Their mere
+presence does not block readiness. Strict MCP configuration also ignores project
+`.mcp.json` and user/plugin MCP definitions. This does not enable those settings
+or MCP servers. Managed/remote organizational policy and installed-plugin metadata
+remain an explicit unsupported-settings limitation (`unqualified_native_settings`);
+they are preserved rather than silently removed or overridden. Unselected ambient
+inference credentials are stripped rather than becoming readiness gates or alternate
+inference routes. Explicitly selected inference selectors are rejected. Unqualified
+runtime versions and expired policy metadata retain their readiness checks.
 
 ## Project tool credentials
 

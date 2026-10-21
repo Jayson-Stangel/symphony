@@ -373,26 +373,21 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      count=0
-
-      while IFS= read -r _line; do
-        count=$((count + 1))
-
-        case "$count" in
-          1)
+      while IFS= read -r line; do
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
             ;;
-          3)
+          *'"method":"turn/start"'*)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
             printf '%s\\n' '{"method":"thread/status/changed","params":{"threadId":"thread-1002","status":{"type":"idle"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
           *)
-            exit 0
             ;;
         esac
       done

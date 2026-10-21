@@ -2438,6 +2438,13 @@ updater completion must explicitly report this intentional pause rather than cla
 operational dispatch. New candidates must prove admission, not only native readiness
 or successful HTTP resume. Verified rollback sources may use their pre-admission
 API only with native readiness, no drain and no retained pause.
+User/project/local native settings MUST be excluded consistently by coding
+sessions and native authentication probes/commands. Excluded files and project
+MCP configuration MUST NOT become file-existence admission gates. Managed/remote
+organizational policy and unqualified installed-plugin metadata remain preserved,
+explicit unsupported-settings limits until separately qualified; this does not
+silently override organizational policy or enable alternate inference routing.
+
 See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.
 
