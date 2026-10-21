@@ -2411,7 +2411,7 @@ configured effort, also available as `agent.effort` in the state API.
 Native subscription authentication is checked without model probes. Billing-attestation files and expiry are not required.
 Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
 Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
-actual native billing, authentication and permission failures retain their stop behavior.
+actual native billing and authentication failures end the attempt; explicit permission/input stops remain issue-blocked.
 No API-key inference fallback is configured. Model-free readiness is an observation,
 not a durable account pause. A failed observation is refreshed automatically after
 repair, including while drained or paused. One supervised task performs the check
@@ -2447,9 +2447,25 @@ durable global turn gate. Native session admission validates the current native 
 
 Native terminal results must correlate to the current input; text, malformed
 frames or partial EOF cannot complete a turn. Authentication and shared policy
-failures persist project pauses. Temporary quota failures use the existing scheduler
+failures use ordinary scheduler retry without new project pauses. Temporary quota failures use the existing scheduler
 retry lifecycle and bounded backoff, extended to a reliable provider reset time
 when supplied. Quota cooldowns expire automatically; unknown resets use backoff.
+Native authentication and shared policy failures end the attempt and use existing
+scheduler backoff, without writing new account-pause files. Retry diagnostics preserve
+the original native cause. Native readiness still governs admission; a not-ready
+observation retains queued attempt history. Explicit permission/input stops remain
+issue-blocked. Historical auth/policy files retain explicit recheck requirements.
+
+Only reliable future quota resets are persisted for restart cooldown, by the scheduler.
+The adapter returns outcomes without writing pause state. If the write fails, logs
+identify the state path and repair action; retry diagnostics retain both the quota
+cause and filesystem error. Existing retry metadata keeps admission and retries delayed
+until the latest observed reset, through drain/resume and pending tracker state changes.
+A queued retry consumes no running-worker capacity. Repaired storage lets the next
+native quota outcome persist normally. An unwritten reset cannot survive scheduler
+restart: model-free readiness does not attest quota availability, and the next native
+outcome establishes any renewed cooldown. There is no fallback store or universal latch.
+
 No durable consumed-quota-probe gate survives handoff, interruption or restart.
 Legacy consumed probes and expired/unknown quota records do not block dispatch.
 Tracker errors are issue-scoped; the agent owns tracker reconciliation. Established
@@ -2523,7 +2539,7 @@ and request correlation MUST reach worker/retry logs without provider text.
 Recoverable turn diagnostics MUST NOT create durable pause state or change cleanup,
 acknowledgement, input-required precedence or retry policy. After a process restart,
 these transient causes remain available only through existing retained operational
-logs; persisted startup/cleanup causes use the existing pause record.
+logs. Historical pause files preserve their previously recorded bounded diagnostics.
 The orchestrator's admission result is authoritative for dispatch, status and
 resume: `ready`, `reason`, `provider`, `profile` and optional `retry_at`. Codex
 neither reads nor modifies Claude pause evidence, including retry-delay decisions.
@@ -2652,7 +2668,7 @@ it is not a project dispatch gate.
 
 Codex and Claude MUST use the same existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler admission controls. There is no
-additional Claude worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured capacity immediately; subsequent actual runtime stops still gate admission. Quota cooldown expiry restores normal configured capacity.
+additional Claude worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured capacity immediately; new native failures use existing scheduler backoff and native readiness. Quota cooldown expiry restores normal configured capacity.
 The deprecated positive
 `claude.max_concurrent_agents` input is accepted for existing workflow compatibility
 but MUST NOT influence dispatch. Operators migrate desired caps into `agent`.

@@ -289,10 +289,10 @@ defmodule SymphonyElixir.Orchestrator do
       case pop_retry_attempt_state(state, issue_id, retry_token) do
         {:ok, attempt, metadata, state} ->
           cond do
-            agent_dispatch_ready?(state) ->
+            agent_dispatch_ready?(state) and quota_retry_delay(state, metadata) == 0 ->
               handle_retry_issue(state, issue_id, attempt, metadata)
 
-            not state.draining and match?({:paused, %{"kind" => "quota_exhausted"}}, AgentPause.current()) ->
+            not state.draining or quota_retry_delay(state, metadata) > 0 ->
               {:noreply, schedule_issue_retry(state, issue_id, attempt, metadata)}
 
             true ->
@@ -418,13 +418,31 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_agent_down({:agent_pause, kind, details} = reason, state, issue_id, running_entry, session_id)
        when kind in [:quota_exhausted, "quota_exhausted"] do
-    AgentPause.record(kind, details)
-    retry_agent_down(state, issue_id, running_entry, session_id, reason)
+    reset = details[:resets_at] || details["resets_at"]
+    reset = if is_integer(reset) and reset > System.system_time(:second), do: reset
+
+    reason =
+      if reset do
+        case AgentPause.record(kind, details) do
+          :ok ->
+            reason
+
+          {:error, error} ->
+            Logger.error(
+              "Could not persist native quota cooldown issue_id=#{issue_id} state_root=#{Config.agent_state_root()} reason=#{inspect(error)}; repair state storage; running scheduler retains retry deadline, restart cannot recover an unwritten reset"
+            )
+
+            {:agent_pause, kind, Map.put(details, :state_write_error, error)}
+        end
+      else
+        reason
+      end
+
+    retry_agent_down(state, issue_id, running_entry, session_id, reason, %{quota_reset_at: reset})
   end
 
-  defp handle_agent_down({:agent_pause, kind, details}, state, issue_id, _running_entry, _session_id) do
-    AgentPause.record(kind, details)
-    release_issue_claim(state, issue_id)
+  defp handle_agent_down({:agent_pause, _kind, _details} = reason, state, issue_id, running_entry, session_id) do
+    retry_unless_input_required(state, issue_id, running_entry, session_id, reason)
   end
 
   defp handle_agent_down({:agent_blocked, kind} = reason, state, issue_id, running_entry, session_id)
@@ -456,18 +474,23 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
-  defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
+  defp retry_agent_down(state, issue_id, running_entry, session_id, reason, metadata \\ %{}) do
     Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
-      identifier: running_entry.identifier,
-      issue_url: running_entry.issue.url,
-      error: "agent exited: #{inspect(reason)}",
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+    schedule_issue_retry(
+      state,
+      issue_id,
+      next_attempt,
+      Map.merge(metadata, %{
+        identifier: running_entry.identifier,
+        issue_url: running_entry.issue.url,
+        error: "agent exited: #{inspect(reason)}",
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    )
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -637,12 +660,12 @@ defmodule SymphonyElixir.Orchestrator do
         %{admission | reason: readiness[:code] || "native_not_ready"}
 
       true ->
-        paused_admission(admission)
+        paused_admission(admission, state)
     end
   end
 
-  defp paused_admission(admission) do
-    case AgentPause.current() do
+  defp paused_admission(admission, state) do
+    case current_agent_pause(state) do
       :ready -> %{admission | ready: true}
       {:paused, value} -> %{admission | reason: value["kind"], retry_at: value["resets_at"]}
     end
@@ -1458,7 +1481,7 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
-    delay_ms = max(retry_delay(next_attempt, metadata), quota_retry_delay())
+    delay_ms = max(retry_delay(next_attempt, metadata), quota_retry_delay(state, metadata))
     old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
@@ -1490,18 +1513,46 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            quota_reset_at: metadata[:quota_reset_at]
           })
     }
   end
 
-  defp quota_retry_delay do
-    case AgentPause.current() do
-      {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}} ->
-        max(reset * 1_000 - System.system_time(:millisecond), 0)
+  # Native quota belongs to the existing attempt retry outcome. Keep its deadline
+  # even when the optional restart record cannot be written; no separate latch or
+  # persistence owner is needed. Unknown resets never replace a known deadline.
+  defp quota_retry_delay(state, metadata) do
+    reset = max(quota_reset_at(state), metadata[:quota_reset_at] || 0)
+    max(reset * 1_000 - System.system_time(:millisecond), 0)
+  end
 
-      _ ->
-        0
+  defp quota_reset_at(state) do
+    if Config.coding_agent() == :claude do
+      stored =
+        case AgentPause.current() do
+          {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}} when is_integer(reset) -> reset
+          _ -> 0
+        end
+
+      Enum.reduce(state.retry_attempts, stored, fn {_id, retry}, reset -> max(reset, retry[:quota_reset_at] || 0) end)
+    else
+      0
+    end
+  end
+
+  defp current_agent_pause(state) do
+    reset = quota_reset_at(state)
+
+    case AgentPause.current() do
+      {:paused, %{"kind" => kind}} = pause when kind != "quota_exhausted" ->
+        pause
+
+      _ when reset > 0 ->
+        if reset > System.system_time(:second), do: {:paused, %{"kind" => "quota_exhausted", "resets_at" => reset}}, else: :ready
+
+      pause ->
+        pause
     end
   end
 
@@ -1513,7 +1564,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          quota_reset_at: Map.get(retry_entry, :quota_reset_at)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1944,7 +1996,7 @@ defmodule SymphonyElixir.Orchestrator do
          readiness: state.readiness,
          admission: agent_admission(state),
          draining: state.draining,
-         pause: public_agent_pause(),
+         pause: public_agent_pause(state),
          usage_available: Config.coding_agent() == :codex or state.agent_usage_observed,
          totals: agent_usage_totals(state)
        },
@@ -2017,7 +2069,7 @@ defmodule SymphonyElixir.Orchestrator do
     readiness = state.readiness
 
     with %{ready: true} <- readiness,
-         :ok <- recheck_agent_pause(action, readiness, reconcile),
+         :ok <- recheck_agent_pause(action, readiness, reconcile, state),
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
          :ok <- resume_admission(admission),
          :ok <- remove_drain() do
@@ -2047,10 +2099,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp resume_admission(%{reason: "quota_exhausted"}), do: :ok
   defp resume_admission(%{reason: reason}), do: {:error, reason}
 
-  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile),
-    do: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
+  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile, state) do
+    if quota_retry_delay(state, %{}) > 0,
+      do: {:error, :reset_not_due},
+      else: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
+  end
 
-  defp recheck_agent_pause(_action, _readiness, _reconcile), do: :ok
+  defp recheck_agent_pause(_action, _readiness, _reconcile, _state), do: :ok
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
 
   defp remove_drain do
@@ -2074,8 +2129,8 @@ defmodule SymphonyElixir.Orchestrator do
     if Config.coding_agent() == :codex or state.agent_usage_observed, do: state.codex_totals
   end
 
-  defp public_agent_pause do
-    case AgentPause.current() do
+  defp public_agent_pause(state) do
+    case current_agent_pause(state) do
       :ready -> nil
       {status, value} -> Map.take(value, ["kind", "resets_at", "probe", "code", "stage"]) |> Map.put("status", status)
     end

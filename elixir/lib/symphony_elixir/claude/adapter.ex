@@ -430,7 +430,6 @@ defmodule SymphonyElixir.Claude.Adapter do
     if kind in ["protocol_error", "tool_outcome_uncertain", "tracker_delivery_failed"] do
       {:error, {:agent_blocked, kind}}
     else
-      AgentPause.record(kind, details)
       {:error, {:agent_pause, @codes[kind] || :policy_blocked, details}}
     end
   end
@@ -438,7 +437,6 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp paused_start(code) do
     kind = if code in ["auth_required", "unqualified_auth", "unknown_auth_status"], do: :auth_required, else: :policy_blocked
     details = %{startup_code: AgentPause.safe_startup_code(code), stage: "startup"}
-    AgentPause.record(kind, details)
     {:error, {:agent_pause, kind, details}}
   end
 

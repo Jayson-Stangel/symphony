@@ -583,7 +583,7 @@ support rather than a second model allowlist. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
-for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
+for native sign-in, closed `claude` settings, shared scheduler concurrency, quota cooldowns,
 tracker-side-effect recovery and updater-owned provider/image transitions.
 SDK/CLI pins have one owner in `runner/claude/package.json` and its lock, also
 used by the qualification lab. Node verifies the installed runtime. Elixir checks
@@ -598,12 +598,17 @@ Unchanged health observations preserve the configured tracker poll cadence.
 Admission transitions and explicit controls request prompt reconciliation,
 coalescing with any poll cycle already in progress. GNU timeout bounds
 the external check group to 35 seconds, including after task/scheduler loss; an old
-OS check may briefly overlap restart until that deadline. Explicit runtime pauses,
+OS check may briefly overlap restart until that deadline. Legacy runtime pauses,
 quota cooldowns, drain and cleanup safety remain enforced. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is ignored read-only as a proven pre-input observation. Profiled auth, policy, malformed and diagnostic-bearing legacy files retain their existing recovery requirements.
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
+New native auth/policy failures retain their causes through ordinary retry, without
+new durable stops. Only reliable quota resets are persisted by the scheduler;
+write failures retain the native cause and storage repair diagnostic in existing
+retry metadata, which enforces the running-process cooldown. Unwritten resets
+cannot survive restart. See the [recovery contract](../docs/claude.md) for limits.
 
 Native Claude Code owns organizational settings and their permission/routing behavior;
 canonical files, managed drop-ins and remote policy are not Symphony file-existence
@@ -703,7 +708,7 @@ sessions and updater transition/rollback acceptance require separate evidence.
 
 Both coding providers use the existing `agent.max_concurrent_agents` and
 `agent.max_concurrent_agents_by_state` scheduler controls. Claude has no separate
-one-worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured parallel work immediately, without a model-turn lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only; actual runtime auth/policy stops still require explicit recovery.
+one-worker ceiling for normal dispatch. Healthy explicit authentication/policy rechecks restore configured parallel work immediately, without a model-turn lease. Obsolete operator_recheck/operator_recheck_inflight/probe_inflight scheduler permits are ignored read-only; historical auth/policy pauses still require explicit recheck; new native failures use ordinary scheduler backoff.
 Legacy positive `claude.max_concurrent_agents` values remain
 accepted but are ignored; migrate the desired limit into the `agent` section.
 Changing limits affects new dispatch; existing sessions keep their ownership and

@@ -98,6 +98,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  defp record_worker_outcome(issue, reason) do
+    ref = make_ref()
+    entry = %{ref: ref, identifier: issue.identifier, issue: issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{issue.id => entry}, claimed: MapSet.new([issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
+    Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+    state
+  end
+
   setup do
     SymphonyElixir.TestSupport.isolate_inference_environment()
     root = Path.join(System.tmp_dir!(), "symphony-claude-adapter-#{System.unique_integer([:positive])}")
@@ -419,7 +428,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:paused, %{"kind" => "policy_blocked", "profile" => nil}} = AgentPause.current()
   end
 
-  test "safe post-start schema rejection survives adapter and scheduler re-recording", ctx do
+  test "safe post-start schema rejection reaches the scheduler retry without persistence", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "error-start")
 
@@ -429,17 +438,18 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     ref = make_ref()
     entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
     state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
-    assert {:noreply, _state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
-
-    assert {:paused, %{"kind" => "policy_blocked", "code" => "unsupported_tool_schema", "stage" => "startup"}} =
-             Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
+    assert state.retry_attempts[ctx.issue.id].error =~ "unsupported_tool_schema"
+    Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+    assert :ready = AgentPause.current()
+    refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
   end
 
   test "account changes cannot switch the listener's pinned native identity", ctx do
     assert {:error, {:agent_pause, :policy_blocked, _}} =
              Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :expected_profile, String.duplicate("b", 64)))
 
-    assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+    assert :ready = AgentPause.current()
   end
 
   test "a transient error after quota recovery remains eligible for scheduler backoff", ctx do
@@ -1213,7 +1223,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "allowed native overage crosses the real Port without a pause, but billing failure still stops", ctx do
+  test "allowed native overage crosses the real Port; native billing failure is returned without persistence", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
@@ -1221,7 +1231,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert :ready = AgentPause.current()
       refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
       assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "allowed-overage-billing-error", ctx.issue, [])
-      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+      assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
     end
@@ -1232,7 +1242,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
-      assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "new-bucket:#{reset}", ctx.issue, [])
+      assert {:error, {:agent_pause, :quota_exhausted, _} = reason} = Adapter.run_turn(session, "new-bucket:#{reset}", ctx.issue, [])
+      record_worker_outcome(ctx.issue, reason)
       assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => ^reset}} = AgentPause.current()
     after
       Adapter.stop_session(session)
@@ -1244,7 +1255,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
-      assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "fable-quota:#{reset}", ctx.issue, [])
+      assert {:error, {:agent_pause, :quota_exhausted, _} = reason} = Adapter.run_turn(session, "fable-quota:#{reset}", ctx.issue, [])
+      record_worker_outcome(ctx.issue, reason)
       assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => ^reset}} = AgentPause.current()
       assert {:paused, _} = AgentPause.current()
       assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "no request", ctx.issue, [])
@@ -1434,7 +1446,40 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "native authentication errors pause and silence has a bounded deadline", ctx do
+  test "native Port refusals preserve the original cause with unwritable state and scheduler-owned persistence", ctx do
+    state_root = Path.join(ctx.root, "state")
+    File.mkdir_p!(state_root)
+    File.chmod!(state_root, 0o500)
+    on_exit(fn -> File.chmod(state_root, 0o700) end)
+    reset = System.system_time(:second) + 600
+
+    for {prompt, kind} <- [{"auth", :auth_required}, {"allowed-overage-billing-error", :policy_blocked}, {"new-bucket:#{reset}", :quota_exhausted}] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+      try do
+        assert {:error, {:agent_pause, ^kind, _} = reason} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        # The adapter never attempts the filesystem write or masks native failure.
+        refute File.exists?(Path.join(state_root, "claude-pause.json"))
+        refute inspect(reason) =~ "state_write_error"
+        state = record_worker_outcome(ctx.issue, reason)
+        retry = state.retry_attempts[ctx.issue.id]
+        assert retry.error =~ Atom.to_string(kind)
+        assert retry.attempt == 1
+
+        if kind == :quota_exhausted do
+          assert retry.error =~ "state_write_error"
+          assert retry.error =~ ":eacces"
+          assert retry.quota_reset_at == reset
+        else
+          refute retry.error =~ "state_write_error"
+        end
+      after
+        Adapter.stop_session(session)
+      end
+    end
+  end
+
+  test "native authentication errors return failure and silence has a bounded deadline", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
     try do
