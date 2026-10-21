@@ -108,10 +108,12 @@ git push --force-with-lease origin HEAD
 gh pr list --repo "$integration_repository" --head "$branch" --state all \
   --json number,state,baseRefName,headRepository,url
 # Select the verified source repository, excluding same-named branches in other forks.
-# The latest matching PR is first; no matching PR yields an empty state.
-pr_state=$(gh pr list --repo "$integration_repository" --head "$branch" --state all \
-  --json state,headRepository \
-  --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0].state // \"\"") || exit 1
+# Retain the number and state from that same verified result through every mutation.
+# The latest matching PR is first; no matching PR yields an empty row.
+pr_row=$(gh pr list --repo "$integration_repository" --head "$branch" --state all \
+  --json number,state,headRepository \
+  --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0] | select(. != null) | [.number, .state] | @tsv") || exit 1
+read -r pr_number pr_state <<< "$pr_row"
 if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
   echo "Current branch is tied to a closed PR; create a new branch + PR." >&2
   exit 1
@@ -120,10 +122,10 @@ fi
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
 if [ -z "$pr_state" ]; then
-  gh pr create --repo "$integration_repository" --base "$integration_base" --title "$pr_title"
+  pr_url=$(gh pr create --repo "$integration_repository" --base "$integration_base" --title "$pr_title") || exit 1
+  pr_number=$(gh pr view "$pr_url" --repo "$integration_repository" --json number -q .number) || exit 1
 else
   # REST avoids deprecated Projects (classic) queries in older gh pr edit.
-  pr_number=$(gh pr view --repo "$integration_repository" --json number -q .number)
   gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
     -f title="$pr_title" --jq .html_url
 fi
@@ -133,14 +135,13 @@ fi
 # 1) draft the body and run the repo's documented body validator, if any
 # 2) publish the validated file via REST (preserves actual newlines)
 # 3) re-read the published title/body and compare with the current diff
-pr_number=$(gh pr view --repo "$integration_repository" --json number -q .number)
 gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
   -F body=@/tmp/pr_body.md --jq .html_url
 
-gh pr view --repo "$integration_repository" --json title,body
+gh pr view "$pr_number" --repo "$integration_repository" --json title,body
 
 # Show PR URL for the reply
-gh pr view --repo "$integration_repository" --json url -q .url
+gh pr view "$pr_number" --repo "$integration_repository" --json url -q .url
 ```
 
 ## Notes
