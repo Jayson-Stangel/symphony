@@ -23,7 +23,7 @@ async function main() {
   const binary = nativeExecutable();
   const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 65536 });
   if (version.status !== 0 || version.stdout?.trim() !== `${runtime.cli} (Claude Code)`) throw new RuntimeError('runtime_version_mismatch');
-  const child = spawn(binary, ['auth', command], { env, stdio: 'inherit' });
+  const child = spawn(binary, ['--setting-sources', '', 'auth', command], { env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
   process.exitCode = await new Promise((resolve, reject) => {
     child.once('error', () => reject(new RuntimeError('native_auth_unavailable')));
