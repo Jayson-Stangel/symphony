@@ -2553,6 +2553,13 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+Installed source updates MUST validate the configured remote and upstream merge ref
+`refs/heads/main` before fetching or installing; a local branch name alone is insufficient.
+Runner storage derives from the selected config directory after CLI options are resolved,
+unless an explicit runner-home override is present. Runner transition exclusion uses a
+stable advisory lock inode held through the updater and its in-flight commands. Crashes
+release it without separately published owner metadata. Unknown legacy ownerless locks
+remain refused; only a provably absent legacy owner may be retired on ordinary retry.
 Selected runner metadata is a derived cache, not transition authority. Successful
 update/recovery and rollback MUST atomically record the verified selected
 container image, provider, native profile and port before completing the journal.

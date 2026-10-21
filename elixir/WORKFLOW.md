@@ -479,3 +479,8 @@ Claude configuration lives in a `claude` front-matter mapping. Only `model`
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider
 selection is fixed across workflow reloads. -->
+
+Installed updates require a clean local main tracking a configured remote's main. The
+launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME
+is explicit. Transition advisory locks release after a crash and any in-flight command
+exits; unknown legacy ownerless locks remain refused for operator inspection.

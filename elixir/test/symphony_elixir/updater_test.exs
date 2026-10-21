@@ -79,6 +79,112 @@ defmodule SymphonyElixir.UpdaterTest do
     refute File.exists?(ctx.log)
   end
 
+  test "main tracking dev is refused before fetch or installation", ctx do
+    advance!(ctx)
+    git!(ctx.seed, ["push", "origin", "main:dev"])
+    git!(ctx.installation, ["config", "branch.main.merge", "refs/heads/dev"])
+    assert {output, 1} = update(ctx)
+    assert output =~ "requires the upstream main branch"
+    assert git!(ctx.installation, ["rev-parse", "HEAD"]) == ctx.initial
+    assert git!(ctx.installation, ["rev-parse", "origin/main"]) == ctx.initial
+    refute File.exists?(ctx.log)
+  end
+
+  test "configured upstream remote names may contain a slash", ctx do
+    git!(ctx.installation, ["remote", "rename", "origin", "fork/production"])
+    advance!(ctx)
+    assert {_, 0} = update(ctx)
+    assert git!(ctx.installation, ["rev-parse", "HEAD"]) == git!(ctx.seed, ["rev-parse", "HEAD"])
+  end
+
+  test "local main upstream is refused before installation", ctx do
+    git!(ctx.installation, ["config", "branch.main.remote", "."])
+    assert {output, 1} = update(ctx)
+    assert output =~ "main on a configured remote"
+    refute File.exists?(ctx.log)
+  end
+
+  test "advisory lock survives helper exit and releases after updater death", ctx do
+    definitions = launcher_definitions!(ctx)
+    lock = Path.join(ctx.root, "transition.lock")
+    assert {_, 137} = lock_command(ctx, definitions, lock, "runner_transition_lock \"$2\"; kill -KILL $$")
+    assert {_, 0} = lock_command(ctx, definitions, lock, "printf recovered")
+    assert File.regular?(lock <> ".guard")
+    refute File.exists?(lock)
+  end
+
+  test "active updater and its in-flight child retain exclusion", ctx do
+    definitions = launcher_definitions!(ctx)
+    lock = Path.join(ctx.root, "transition.lock")
+    acquired = Path.join(ctx.root, "acquired")
+    # Killing the shell must not admit a rival while its synchronous effect is
+    # still pending. After that child exits, ordinary retry needs no lock repair.
+    task =
+      Task.async(fn ->
+        lock_command(ctx, definitions, lock, "sleep 1 & printf acquired > \"$3\"; kill -KILL $$", acquired)
+      end)
+
+    wait_for_file!(acquired)
+    assert {output, 1} = lock_command(ctx, definitions, lock, ":")
+    assert output =~ "another updater is active"
+    assert {_, 137} = Task.await(task, 5_000)
+    assert {_, 0} = lock_command(ctx, definitions, lock, ":")
+  end
+
+  test "legacy active or ownerless locks are preserved; proven dead owner recovers", ctx do
+    definitions = launcher_definitions!(ctx)
+    lock = Path.join(ctx.root, "transition.lock")
+    File.mkdir!(lock)
+    assert {output, 1} = lock_command(ctx, definitions, lock, ":")
+    assert output =~ "no verifiable owner"
+    File.write!(Path.join(lock, "owner"), System.pid())
+    assert {output, 1} = lock_command(ctx, definitions, lock, ":")
+    assert output =~ "another updater is active"
+    # Obtain an actual terminated process ID rather than assume a large PID is free.
+    assert {pid, 0} = System.cmd("bash", ["-c", "printf '%s' $$"])
+    File.write!(Path.join(lock, "owner"), pid)
+    assert {_, 0} = lock_command(ctx, definitions, lock, ":")
+    refute File.exists?(lock)
+  end
+
+  test "symlink and unknown legacy lock records are refused without deletion", ctx do
+    definitions = launcher_definitions!(ctx)
+    lock = Path.join(ctx.root, "transition.lock")
+    File.ln_s!(ctx.seed, lock <> ".guard")
+    assert {output, 1} = lock_command(ctx, definitions, lock, ":")
+    assert output =~ "unsafe updater lock"
+    File.rm!(lock <> ".guard")
+    File.mkdir!(lock)
+    File.write!(Path.join(lock, "owner"), "not-a-pid")
+    assert {output, 1} = lock_command(ctx, definitions, lock, ":")
+    assert output =~ "invalid updater lock owner"
+    assert File.read!(Path.join(lock, "owner")) == "not-a-pid"
+  end
+
+  defp launcher_definitions!(ctx) do
+    [definitions, _] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
+    path = Path.join(ctx.root, "definitions.sh")
+    File.write!(path, definitions)
+    path
+  end
+
+  defp lock_command(ctx, definitions, lock, effect, marker \\ "") do
+    System.cmd("bash", ["-c", "source \"$1\"; runner_transition_lock \"$2\"; " <> effect, "fixture", definitions, lock, marker], env: [{"SYMPHONY_HOME", ctx.installation}], stderr_to_stdout: true)
+  end
+
+  defp wait_for_file!(path, attempts \\ 100)
+  defp wait_for_file!(path, 0), do: flunk("lock fixture did not publish #{path}")
+
+  defp wait_for_file!(path, attempts) do
+    if File.exists?(path),
+      do: :ok,
+      else:
+        (
+          Process.sleep(10)
+          wait_for_file!(path, attempts - 1)
+        )
+  end
+
   defp advance!(ctx) do
     File.write!(Path.join(ctx.seed, "update.txt"), "upstream change")
     git!(ctx.seed, ["add", "update.txt"])

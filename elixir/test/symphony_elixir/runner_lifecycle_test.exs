@@ -148,6 +148,23 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     %{repo: repo, config: config, root: root, env: env, log: Path.join(root, "calls"), state: Path.join(root, "running")}
   end
 
+  for override <- [false, true] do
+    @override override
+    test "update --config-dir selects runner metadata with explicit override #{@override}", ctx do
+      selected = Path.join(ctx.root, "selected")
+      File.mkdir_p!(Path.join(selected, "projects"))
+      File.cp!(Path.join(ctx.config, "projects/service.env"), Path.join(selected, "projects/service.env"))
+      runner_home = if @override, do: Path.join(ctx.root, "explicit-runners"), else: nil
+      env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"SYMPHONY_RUNNER_HOME", runner_home}]
+      ready_curl!(ctx)
+      assert {_, 0} = launch_args(ctx, ["run"], env ++ [{"SYMPHONY_CONFIG_HOME", selected}])
+      assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--config-dir", selected, "--agent", "claude"], env)
+      metadata = Path.join(runner_home || Path.join(selected, "runners"), "service.env")
+      assert File.read!(metadata) =~ "SYMPHONY_RUNNER_AGENT=claude"
+      refute File.exists?(Path.join(ctx.config, "runners/service.env"))
+    end
+  end
+
   test "Codex startup Git rewrites remain idempotent for a retained container", ctx do
     entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
     [_, rewrite] = Regex.run(~r/if \[ -n "\$\{GH_TOKEN:-\}" \]; then\n(.*?)\nfi/s, entrypoint)

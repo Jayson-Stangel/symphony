@@ -23,6 +23,9 @@ config_home=${SYMPHONY_CONFIG_HOME:-"${XDG_CONFIG_HOME:-$HOME/.config}/$runtime_
 bin_dir=${SYMPHONY_BIN_DIR:-"$HOME/.local/bin"}
 skills_dir=${SYMPHONY_SKILLS_DIR:-"${CODEX_HOME:-$HOME/.codex}/skills"}
 runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
+
+# Resolve derived storage after command options have selected configuration.
+resolve_runner_home() { runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}; }
 codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-$runtime_prefix-codex-auth}
 managed_skills=(commit push pull linear land)
 
@@ -260,6 +263,8 @@ update() {
     esac
   done
 
+  resolve_runner_home
+
   if "$development_runner"; then
     [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
     [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner or --rollback-runner'
@@ -279,11 +284,14 @@ update() {
 
   [ -d "$symphony_home/.git" ] || die "Symphony source is not a Git checkout: $symphony_home"
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die "Symphony source has uncommitted changes; update it manually: $symphony_home"
-  local branch upstream remote before after
+  local branch upstream remote merge_ref before after
   branch=$(git -C "$symphony_home" branch --show-current)
   [ "$branch" = main ] || die "update requires main, not ${branch:-detached HEAD}"
-  upstream=$(git -C "$symphony_home" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null) || die 'main has no upstream; configure it before updating'
-  remote=${upstream%%/*}
+  remote=$(git -C "$symphony_home" config --get branch.main.remote) || die 'main has no upstream remote; configure it before updating'
+  merge_ref=$(git -C "$symphony_home" config --get branch.main.merge) || die 'main has no upstream branch; configure it before updating'
+  [ "$merge_ref" = refs/heads/main ] || die "update requires the upstream main branch, not $merge_ref"
+  [ "$remote" != . ] && git -C "$symphony_home" remote get-url "$remote" >/dev/null 2>&1 || die 'main must track main on a configured remote'
+  upstream="refs/remotes/$remote/main"
   before=$(git -C "$symphony_home" rev-parse HEAD)
   # Restrict pruning to this remote's tracking branches, even with custom fetch mappings.
   git -C "$symphony_home" fetch --prune --no-prune-tags --refmap= "$remote" \
@@ -941,18 +949,58 @@ runner_update_port() {
   printf '%s\n' "$port"
 }
 
+# Keep the guard inode: unlinking a locked file would allow a second updater
+# to lock a different inode. flock is released when the updater and its children
+# close FD 9, including on crashes; there is no separate owner publication.
 runner_transition_lock() {
-  local path=$1 owner
-  [ ! -L "$path" ] || die 'unsafe updater lock'
-  if [ -d "$path" ]; then
-    [ -f "$path/owner" ] || die 'updater lock has no verifiable owner; inspect it before recovery'
-    owner=$(cat "$path/owner")
-    case "$owner" in ''|*[!0-9]*) die 'invalid updater lock owner' ;; esac
-    if kill -0 "$owner" 2>/dev/null; then die 'another updater is active'; fi
-    rm "$path/owner"; rmdir "$path"
+  local path=$1
+  if [ -n "${runner_lock_path:-}" ]; then
+    [ "$runner_lock_path" = "$path" ] || die 'updater already holds a different project lock'
+    return
   fi
-  mkdir "$path" || die 'another updater acquired the project lock'
-  printf '%s\n' "$$" >"$path/owner"
+  [ ! -L "$path.guard" ] || die 'unsafe updater lock'
+  [ ! -e "$path.guard" ] || [ -f "$path.guard" ] || die 'unsafe updater lock'
+  exec 9>>"$path.guard"
+  python3 - "$path" <<'PYLOCK'
+import fcntl, os, pathlib, stat, sys
+
+def refuse(message):
+    sys.exit('symphony: ' + message)
+
+info = os.fstat(9)
+if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+    refuse('unknown or foreign updater lock; inspect it before recovery')
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    refuse('another updater is active')
+
+# Accept only a provably abandoned lock from the previous launcher. Preserve
+# ownerless/foreign records for inspection rather than guessing their ownership.
+path = pathlib.Path(sys.argv[1])
+if path.is_symlink():
+    refuse('unsafe updater lock')
+if path.exists():
+    owner = path / 'owner'
+    if not path.is_dir() or path.stat().st_uid != os.geteuid() or owner.is_symlink() or not owner.is_file():
+        refuse('updater lock has no verifiable owner; inspect it before recovery')
+    pid = owner.read_text().strip()
+    if not pid.isascii() or not pid.isdecimal() or int(pid) <= 0:
+        refuse('invalid updater lock owner')
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        pass
+    except (PermissionError, OverflowError):
+        refuse('updater lock owner cannot be verified; inspect it before recovery')
+    else:
+        refuse('another updater is active')
+    if set(path.iterdir()) != {owner}:
+        refuse('unknown updater lock metadata; inspect it before recovery')
+    owner.unlink()
+    path.rmdir()
+PYLOCK
+  runner_lock_path=$path
 }
 
 runner_resume_when_ready() {
@@ -1133,7 +1181,6 @@ runner_transition() (
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
   fi
-  trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
   candidate="$runtime_prefix-runner-$agent:$(source_revision)"
   export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ -d "$journal" ]; then
@@ -1210,7 +1257,6 @@ runner_rollback() (
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
   fi
-  trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
