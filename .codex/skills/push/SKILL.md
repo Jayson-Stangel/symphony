@@ -10,7 +10,6 @@ description:
 ## Prerequisites
 
 - `gh` CLI is installed and available in `PATH`.
-- `gh auth status` succeeds for operations on the verified GitHub host.
 
 ## Repository policy
 
@@ -35,9 +34,11 @@ missing Elixir tooling for a project that does not use it.
 
 ## Steps
 
-1. Inspect status, the current branch and remotes. Establish the target GitHub
-   host, repository and integration base from its `AGENTS.md`/integration policy
-   and any existing PR's actual base. Inspect an existing PR by its verified URL:
+1. Inspect status, the current branch and remotes. Derive `integration_host` from
+   the verified remote or PR URL, then check access only to that host with
+   `gh auth status --hostname "$integration_host"`. Establish the repository and
+   integration base from its `AGENTS.md`/integration policy and any existing PR's
+   actual base. Inspect an existing PR by its verified URL:
    `gh pr view "$pr_url" --json number,url,baseRefName,headRefName`.
    Verify the URL's host and base repository against the remotes, as in
    `symphony-pull`. Retain that host for every subsequent CLI/API operation.
@@ -79,13 +80,17 @@ missing Elixir tooling for a project that does not use it.
      Symphony.
 7. Run the target repository's PR-body validator when one is documented. Otherwise
    review the body against its requirements and actual validation evidence.
-8. Reply with the PR URL from `gh pr view`.
+8. Reply with the retained verified PR URL from the explicit-number,
+   host-qualified readback.
 
 ## Commands
 
 ```sh
 # Identify branch
 branch=$(git branch --show-current)
+
+# Derive integration_host from the verified remote or PR URL before checking access.
+gh auth status --hostname "$integration_host" || exit 1
 
 # Before pushing, run the validation commands discovered in the target repo.
 # For example, use npm run validate only if that repository requires it.
