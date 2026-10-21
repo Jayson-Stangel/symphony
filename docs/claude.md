@@ -215,7 +215,13 @@ timeout and tracker delivery failures use scheduler backoff after bounded cleanu
 preserving the workspace and requiring tracker readback before uncertain writes.
 No tracker mutation is replayed by the runner. Explicit permission/input stops
 remain blocked; native turn allowances yield through ordinary continuation.
-Startup protocol/initialization failures
+Pre-hello helper exit, timeout, malformed frames and incompatible handshakes use
+startup retry without a durable policy stop.
+Retry diagnostics preserve fixed transport causes and the helper exit status. Only
+the exact version-1 seven-field policy_blocked/waiting record with nil profile/reset,
+code protocol_error and stage startup is ignored read-only as an attributable
+historical pre-hello transport failure. Unknown fields or scoped policy records
+retain explicit recheck. Startup protocol/initialization failures
 keep their original retry cause after a bounded correlated stop attempt; missing or
 foreign cleanup acknowledgement is a separate diagnostic. Actual startup auth,
 policy/schema/identity failures retain their independent behavior. Explicit drains

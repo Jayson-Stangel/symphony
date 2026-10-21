@@ -2448,8 +2448,13 @@ through shared scheduler continuation; a fresh live tracker read and dispatch
 limits govern session renewal in the retained workspace. It MUST NOT create a
 permanent issue block or reuse the exhausted session.
 Recognized explicit model-free readiness failures before hello use startup retry
-without a durable pause; malformed or unknown pre-hello failures retain their
-existing classification. Transient startup protocol/native initialization failures
+without a durable pause; unknown explicit readiness errors retain their existing
+classification. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+MUST use ordinary retry rather than a durable policy pause, preserving fixed
+failure categories and the OS helper exit status. Exact attributable
+historical pre-hello transport pause records MAY be ignored without deleting
+their evidence; ambiguous policy records MUST retain explicit recheck.
+Transient startup protocol/native initialization failures
 attempt a correlated bounded stop, then retain their original retry classification
 even when cleanup acknowledgement is missing or foreign. Missing/invalid captured
 ownership metadata aborts startup and uses normal retry, never a global pause;
@@ -2457,8 +2462,15 @@ expected account/profile mismatch remains an independent policy stop.
 
 The existing attempt task owns normal cleanup once. Scheduler cancellation MUST
 attempt the captured session's common interrupt callback before retiring the Task
-and reconciling its claim/workspace. Callback error or exception MUST NOT retain an
-eternal worker/claim. Bounded cleanup failure is a diagnostic, not a global pause,
+and reconciling its claim/workspace. Captured-session native interrupt and ordinary
+Task retirement run in an existing supervised Task, outside the scheduler callback.
+Abnormal cleanup-task exit falls back to existing bounded Task-only retirement. The running
+entry retains its claim and capacity until cleanup finishes; concurrent retirements
+remain independent, and repeated tracker reconciliation updates the pending outcome
+without starting another cleanup. Terminal tracker state supersedes pending retry.
+Scheduler snapshots, controls, readiness and sibling DOWN handling remain responsive.
+Callback error or exception MUST NOT retain an eternal worker/claim. Bounded cleanup
+failure is a diagnostic, not a global pause,
 readiness refusal or mandatory-container-replacement requirement. Exact primary
 returns/exceptions survive cleanup failure; bounded primary and cleanup causes
 are logged separately with available issue/session correlation. Captured

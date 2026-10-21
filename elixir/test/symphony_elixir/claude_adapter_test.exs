@@ -291,6 +291,75 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  @tag timeout: 45_000
+  test "pre-hello exit, timeout and malformed transport retry and a repaired peer executes work", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+
+    for {mode, cause} <- [
+          {"exit-hello", {:helper_exited, 23}},
+          {"silent-hello", :timeout},
+          {"malformed-hello", :invalid_frame},
+          {"oversized-hello", :frame_too_large},
+          {"bad-version", "protocol_error"},
+          {"bad-protocol", "protocol_error"},
+          {"bad-policy", "protocol_error"},
+          {"bad-sdk", "protocol_error"}
+        ] do
+      File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
+
+      assert {:error, {:claude_startup_failed, ^cause}} =
+               Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+    end
+
+    # Repair also recovers the precise transport pause left by older versions.
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    File.mkdir_p!(Path.dirname(path))
+    legacy = Jason.encode!(%{version: 1, kind: "policy_blocked", profile: nil, phase: "waiting", resets_at: nil, code: "protocol_error", stage: "startup"})
+    File.write!(path, legacy)
+    # The production helper framing runs against a credential-free SDK peer.
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, %{provider: :claude}} = Adapter.run_turn(session, "success", ctx.issue, [])
+      assert :ready = AgentPause.current()
+      assert File.read!(path) == legacy
+    after
+      assert :ok = Adapter.stop_session(session)
+    end
+  end
+
+  test "pre-hello helper death reaches ordinary worker retry, not a project or issue gate", ctx do
+    helper = Path.join(ctx.root, "exit-before-hello.mjs")
+    File.write!(helper, "process.exit(23);\n")
+    parent = self()
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :start ->
+            {:error, reason} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+            send(parent, {:startup_failed, reason})
+            exit(reason)
+        end
+      end)
+
+    ref = Process.monitor(worker)
+    entry = %{pid: worker, ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    send(worker, :start)
+    assert_receive {:startup_failed, {:claude_startup_failed, {:helper_exited, 23}} = reason}
+    assert_receive {:DOWN, ^ref, :process, ^worker, ^reason} = down
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    assert state.retry_attempts[ctx.issue.id].attempt == 1
+    assert state.blocked == %{}
+    assert state.running == %{}
+    Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+    assert :ready = AgentPause.current()
+  end
+
   test "recognized pre-start readiness observations retry without creating a durable pause", ctx do
     helper = Path.join(ctx.root, "readiness-failed.mjs")
 
@@ -389,11 +458,11 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "unqualified handshakes pause while missing ownership metadata aborts for normal retry", ctx do
+  test "explicit native startup stops pause while missing ownership metadata retries", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk"] do
+    for mode <- ["auth-start", "error-start"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
     end
@@ -775,6 +844,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     issue = %{ctx.issue | state: "Human Review", dispatchable: true}
     state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    state = finish_owner_cleanup(state, ctx.issue.id)
     assert state.running == %{}
     refute MapSet.member?(state.claimed, ctx.issue.id)
     assert AgentPause.current() == :ready
@@ -873,6 +943,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     log =
       capture_log(fn ->
         assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.blocked == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
@@ -958,6 +1029,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
 
         assert {:noreply, state} = Orchestrator.handle_info(down, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
         assert state.blocked == %{}
@@ -967,6 +1039,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
       end
     end
+  end
+
+  defp finish_owner_cleanup(state, issue_id) do
+    ref = state.running[issue_id].ref
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason} = down, 12_000
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    state
   end
 
   defp cleanup_running_entry(issue, ref, session) do
