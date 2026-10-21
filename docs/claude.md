@@ -316,7 +316,7 @@ generations constrain cleanup to the helper's owned native group.
 The existing attempt task owns normal session cleanup. Cleanup success preserves
 its exact primary result or exception; failure reports bounded primary and cleanup
 causes separately with an explicit replacement requirement. When a captured worker
-is killed or shut down without its cleanup, the scheduler reuses generation-safe
+is killed, shut down or exits with linked-Port `:epipe` without its cleanup, the scheduler reuses generation-safe
 cleanup before retry/release. The fallback command and its own children are bounded
 by a 10-second GNU timeout. A timeout does not prove detached native-group cleanup;
 uncertainty retains the existing marker and `cleanup_restart_required` admission.

@@ -802,38 +802,45 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
   end
 
-  @tag timeout: 15_000
-  test "abnormal owner and helper death cleans captured native descendants before retry", ctx do
-    if File.dir?("/proc/self") do
-      sentinel = Path.join(ctx.root, "delayed-write")
-      helper = Path.join(ctx.root, "background.mjs")
-      probe = Path.expand("../../../runner/claude/test/fixtures/background-probe.mjs", __DIR__)
-      File.write!(helper, "process.argv[2] = #{Jason.encode!(sentinel)}; await import(#{Jason.encode!("file://" <> probe)});\n")
-      parent = self()
+  # The :epipe case injects the linked-Port exit reason into a real session owner;
+  # native process ownership/cleanup is real, not a kernel EPIPE reproduction.
+  for {owner_exit, owner_down} <- [kill: :killed, epipe: :epipe] do
+    @owner_exit owner_exit
+    @owner_down owner_down
+    @tag timeout: 15_000
+    test "captured native descendants are cleaned before retry after #{owner_exit} owner loss", ctx do
+      if File.dir?("/proc/self") do
+        sentinel = Path.join(ctx.root, "delayed-write")
+        helper = Path.join(ctx.root, "background.mjs")
+        probe = Path.expand("../../../runner/claude/test/fixtures/background-probe.mjs", __DIR__)
+        File.write!(helper, "process.argv[2] = #{Jason.encode!(sentinel)}; await import(#{Jason.encode!("file://" <> probe)});\n")
+        parent = self()
 
-      {owner, ref} =
-        spawn_monitor(fn ->
-          {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
-          send(parent, {:owned_session, session})
-          receive do: (:finish -> :ok)
-        end)
+        {owner, ref} =
+          spawn_monitor(fn ->
+            {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+            send(parent, {:owned_session, session})
+            receive do: (:finish -> :ok)
+          end)
 
-      assert_receive {:owned_session, session}, 2_000
-      assert length(session.owned_native) == 1
-      assert {_output, 0} = System.cmd("kill", ["-KILL", to_string(session.helper_identity.pid)])
-      Process.exit(owner, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^owner, :killed} = down, 1_000
-      entry = cleanup_running_entry(ctx.issue, ref, session)
-      state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+        assert_receive {:owned_session, session}, 2_000
+        assert length(session.owned_native) == 1
+        assert {_output, 0} = System.cmd("kill", ["-KILL", to_string(session.helper_identity.pid)])
+        Process.exit(owner, @owner_exit)
+        owner_down = @owner_down
+        assert_receive {:DOWN, ^ref, :process, ^owner, ^owner_down} = down, 1_000
+        entry = cleanup_running_entry(ctx.issue, ref, session)
+        state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
 
-      assert {:noreply, state} = Orchestrator.handle_info(down, state)
-      assert state.running == %{}
-      assert state.retry_attempts[ctx.issue.id].attempt == 1
-      assert state.blocked == %{}
-      Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
-      Process.sleep(4_200)
-      refute File.exists?(sentinel)
-      refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+        assert {:noreply, state} = Orchestrator.handle_info(down, state)
+        assert state.running == %{}
+        assert state.retry_attempts[ctx.issue.id].attempt == 1
+        assert state.blocked == %{}
+        Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+        Process.sleep(4_200)
+        refute File.exists?(sentinel)
+        refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
+      end
     end
   end
 

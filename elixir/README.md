@@ -46,7 +46,7 @@ prompt includes tracker recovery instructions, including for custom workflows.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a
-10-second GNU timeout; captured worker-owner loss reuses generation-checked cleanup
+10-second GNU timeout; captured killed/shutdown/epipe worker loss reuses generation-checked cleanup
 before retry. Actual cleanup failure remains `cleanup_restart_required` through
 healthy observations and resume/recheck, requiring controlled runtime replacement.
 Untrappable worker death before session publication still lacks captured ownership

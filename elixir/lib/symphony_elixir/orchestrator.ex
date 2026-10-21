@@ -304,7 +304,7 @@ defmodule SymphonyElixir.Orchestrator do
   # Untrappable owner loss skips the worker's cleanup. Reuse its captured
   # generation-checked session, never rediscover or broadly signal processes.
   defp cleanup_lost_owner(reason, %{agent_session: %{adapter: SymphonyElixir.Claude.Adapter} = session})
-       when reason in [:killed, :shutdown] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+       when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
     result =
       try do
         SymphonyElixir.CodingAgent.interrupt(session, :worker_owner_lost)

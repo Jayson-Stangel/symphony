@@ -2424,7 +2424,7 @@ process cleanup blocks readiness until updater-owned container recovery. The
 existing attempt task owns normal cleanup once. Confirmed cleanup preserves the
 exact primary outcome/exception; failure MUST retain separate bounded categorical
 primary and cleanup causes and expose a replacement-required outcome scoped to its
-captured provider. Killed/shutdown workers with captured native ownership use the
+captured provider. Killed/shutdown/linked-Port `:epipe` workers with captured ownership use the
 existing generation-safe fallback before retry/release. That fallback command and
 its own process group have a ten-second deadline; timeout does not establish that
 any detached native group was cleaned. Actual Claude cleanup failure retains
