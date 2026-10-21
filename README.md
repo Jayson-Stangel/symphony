@@ -350,9 +350,19 @@ both providers; new workflows do not impose live token/turn circuit breakers.
 Established-session transport and delivery failures retry after confirmed
 cleanup with backoff and tracker readback; startup transient failures retry after
 a matching owned-process cleanup acknowledgement; explicit input/permission and cleanup
-stops retain their gates. See [setup, pauses and updater transitions](docs/claude.md)
-for the contract and its limits. Existing stable installations change only through
+stops retain their gates. Cleanup failures retain separate bounded primary and cleanup
+causes and explicitly require runtime replacement; a healthy check cannot waive
+uncertain captured native ownership. Worker loss before ownership publication
+remains an explicit unsafe retry gap. See [setup, pauses and updater transitions](docs/claude.md)
+for the contract and its limits. Ordinary dispatch excludes terminal history; startup and tracked-issue reconciliation
+retain cleanup, with unclaimed completed workspaces waiting for the next restart.
+Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
+Container execution keeps its fixed workspace, bind address and outer-container
+permission boundary. Requested SSH execution is rejected instead of silently removed.
+`/api/v1/state` exposes `agent.execution` with safe requested/effective bindings,
+also logged when container workflow settings load.
+
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh

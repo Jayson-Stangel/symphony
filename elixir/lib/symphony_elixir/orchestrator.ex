@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Claude.Adapter, as: ClaudeAdapter
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -38,6 +39,7 @@ defmodule SymphonyElixir.Orchestrator do
       :expected_profile,
       :agent_model,
       readiness_opts: [],
+      startup_cleanup_pending: true,
       readiness_task: nil,
       readiness_timer: nil,
       readiness_control: nil,
@@ -90,7 +92,6 @@ defmodule SymphonyElixir.Orchestrator do
           codex_rate_limits: nil
         }
 
-        if agent_dispatch_ready?(state), do: run_terminal_workspace_cleanup()
         state = schedule_tick(state, 0)
 
         {:ok, state, {:continue, :check_readiness}}
@@ -184,6 +185,7 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
+        reason = cleanup_lost_owner(reason, running_entry)
         state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
@@ -299,6 +301,45 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  # Untrappable owner loss skips the worker's cleanup. Reuse its captured
+  # generation-checked session, never rediscover or broadly signal processes.
+  defp cleanup_lost_owner(reason, %{agent_session: %{adapter: SymphonyElixir.Claude.Adapter} = session})
+       when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+    result =
+      try do
+        SymphonyElixir.CodingAgent.interrupt(session, :worker_owner_lost)
+      catch
+        _, _ -> {:error, :cleanup_unconfirmed}
+      end
+
+    case result do
+      :ok ->
+        reason
+
+      _ ->
+        ClaudeAdapter.record_unconfirmed_cleanup(cleanup_session_profile(session))
+        {:agent_replacement_required, %{provider: :claude, primary: :worker_owner_lost, cleanup: :cleanup_unconfirmed}}
+    end
+  end
+
+  defp cleanup_lost_owner(reason, _entry), do: reason
+
+  defp cleanup_session_profile(%{native: %{identity: %{"profile" => profile}}}) when is_binary(profile), do: profile
+  defp cleanup_session_profile(_session), do: nil
+
+  defp handle_agent_down({:agent_replacement_required, causes}, state, issue_id, running_entry, session_id) do
+    Logger.warning("Agent cleanup requires runtime replacement for issue_id=#{issue_id} session_id=#{session_id} causes=#{inspect(causes)}")
+
+    state =
+      if causes[:provider] == :claude do
+        %{state | readiness: %{ready: false, provider: "claude", code: "cleanup_restart_required"}}
+      else
+        state
+      end
+
+    block_issue_from_entry(state, issue_id, running_entry, "runtime replacement required: #{inspect(causes)}")
+  end
+
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
@@ -392,9 +433,11 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    validation = Config.validate!()
+    state = if validation == :ok, do: cleanup_startup_workspaces(state), else: state
+
+    with :ok <- validation,
          {:ok, issues} <- Tracker.fetch_issues_by_states(observed_issue_states()) do
-      state = cleanup_terminal_issues(state, issues)
       state = refresh_tracker_blocked(state, issues)
       if available_slots(state) > 0, do: choose_issues(issues, state), else: state
     else
@@ -441,7 +484,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_agent_readiness(%{readiness_task: %Task{}} = state), do: state
 
   defp refresh_agent_readiness(state) do
-    if Config.coding_agent() == :claude do
+    if Config.coding_agent() == :claude and state.readiness[:code] != "cleanup_restart_required" do
       cancel_readiness_timer(state)
       opts = state.readiness_opts
       task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> AgentReadiness.check(opts) end)
@@ -454,7 +497,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp finish_readiness_check(state, readiness) do
     previous_admission = agent_admission(state)
     control_pending = not is_nil(state.readiness_control)
-    readiness = pin_readiness(readiness, state.expected_profile)
+
+    readiness =
+      cond do
+        Config.coding_agent() == :codex -> AgentReadiness.check()
+        state.readiness[:code] == "cleanup_restart_required" -> state.readiness
+        true -> pin_readiness(readiness, state.expected_profile)
+      end
+
     token = make_ref()
     timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
 
@@ -536,31 +586,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp observed_issue_states do
     tracker = Config.settings!().tracker
-    # SSH deployments retain their existing startup/claimed-issue cleanup. A
-    # recurring sweep of all terminal history would repeatedly contact every
-    # remote host, even for checkouts that were already removed.
-    terminal_states = if Config.settings!().worker.ssh_hosts == [], do: tracker.terminal_states, else: []
-    Enum.uniq(tracker.active_states ++ tracker.blocked_states ++ terminal_states)
-  end
-
-  defp cleanup_terminal_issues(state, issues) do
-    terminal_states = terminal_state_set()
-
-    Enum.reduce(issues, state, fn issue, state ->
-      if terminal_issue_state?(issue.state, terminal_states) do
-        # Stop any worker before deleting its checkout, including a state change
-        # observed after the running-issue reconciliation earlier in this tick.
-        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
-        cleanup_if_stopped(state, issue)
-        state
-      else
-        state
-      end
-    end)
-  end
-
-  defp cleanup_if_stopped(state, issue) do
-    unless Map.has_key?(state.running, issue.id), do: cleanup_issue_workspace(issue)
+    Enum.uniq(tracker.active_states ++ tracker.blocked_states)
   end
 
   defp refresh_tracker_blocked(state, issues) do
@@ -1481,21 +1507,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_issue_or_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{} = issue ->
-            cleanup_issue_workspace(issue)
+  defp cleanup_startup_workspaces(%State{startup_cleanup_pending: true} = state) do
+    state =
+      case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+        {:ok, issues} ->
+          cleanup_startup_issues(issues, state)
 
-          _ ->
-            :ok
-        end)
+        {:error, reason} ->
+          Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+          state
+      end
 
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+    %{state | startup_cleanup_pending: false}
+  end
+
+  defp cleanup_startup_workspaces(state), do: state
+
+  defp cleanup_startup_issues(issues, state) do
+    Enum.reduce(issues, state, fn
+      %Issue{} = issue, state ->
+        state = terminate_running_issue(state, issue.id, true, :issue_state_change)
+        unless Map.has_key?(state.running, issue.id), do: cleanup_issue_workspace(issue)
+        state
+
+      _, state ->
+        state
+    end)
   end
 
   defp notify_dashboard do
@@ -1809,20 +1846,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    settings = Config.settings!()
+
     configured_model =
-      if Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: Config.settings!().codex.model
+      if Config.coding_agent() == :claude, do: settings.claude.model, else: settings.codex.model
 
     configured_effort =
       if Config.coding_agent() == :claude do
-        Config.settings!().claude.effort
+        settings.claude.effort
       else
-        Config.settings!().codex.reasoning_effort
+        settings.codex.reasoning_effort
       end
 
     {:reply,
      %{
        agent: %{
          provider: Config.coding_agent(),
+         execution: settings.execution,
          max_concurrent_agents: state.max_concurrent_agents,
          model: configured_model || state.agent_model,
          effort: configured_effort,
@@ -1886,12 +1926,17 @@ defmodule SymphonyElixir.Orchestrator do
     do: {:reply, {:error, :readiness_check_in_progress}, state}
 
   defp request_agent_resume(state, action, reconcile, from) do
-    if Config.coding_agent() == :claude do
-      readiness = %{ready: false, provider: "claude", code: "checking"}
-      state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
-      {:noreply, refresh_agent_readiness(state)}
-    else
-      resume_agent(state, action, reconcile)
+    cond do
+      Config.coding_agent() == :codex ->
+        resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
+
+      state.readiness[:code] == "cleanup_restart_required" ->
+        {:reply, {:error, :agent_not_ready}, state}
+
+      true ->
+        readiness = %{ready: false, provider: "claude", code: "checking"}
+        state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
+        {:noreply, refresh_agent_readiness(state)}
     end
   end
 

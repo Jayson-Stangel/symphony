@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.AgentReadinessTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.{AgentPause, AgentReadiness}
+  alias SymphonyElixir.Tracker.Memory
 
   setup do
     SymphonyElixir.TestSupport.isolate_inference_environment()
@@ -193,6 +194,53 @@ defmodule SymphonyElixir.AgentReadinessTest do
     GenServer.stop(pid)
   end
 
+  test "Claude defers its one startup cleanup until admission and does not repeat it on recovery", ctx do
+    workspace_root = Path.join(ctx.root, "workspaces")
+    issue = %Issue{id: "startup-cleanup", identifier: "CLEAN-1", title: "Finished", state: "Done", dispatchable: false}
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      poll_interval_ms: 60_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "retained"), "work")
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    assert :sys.get_state(pid).startup_cleanup_pending
+    assert File.exists?(workspace)
+
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    {_timer, token} = :sys.get_state(pid).readiness_timer
+    send(pid, {:refresh_agent_readiness, token})
+    await_check(pid)
+    assert :sys.get_state(pid).startup_cleanup_pending
+    assert File.exists?(workspace)
+    assert {:ok, _} = GenServer.call(pid, {:agent_control, :resume, false})
+    await(fn -> not :sys.get_state(pid).startup_cleanup_pending end)
+    refute File.exists?(workspace)
+
+    assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+    File.write!(Path.join(workspace, "retained"), "completed while unclaimed")
+
+    for observation <- [%{code: "auth_required"}, ready()] do
+      File.write!(ctx.helper, Jason.encode!(observation))
+      {_timer, token} = :sys.get_state(pid).readiness_timer
+      send(pid, {:refresh_agent_readiness, token})
+      await_check(pid)
+    end
+
+    send(pid, :run_poll_cycle)
+    assert is_map(GenServer.call(pid, :snapshot))
+    refute :sys.get_state(pid).startup_cleanup_pending
+    assert File.read!(Path.join(workspace, "retained")) == "completed while unclaimed"
+  end
+
   test "Codex startup and restart keep legacy tracker evidence local to its issue", ctx do
     Application.put_env(:symphony_elixir, :coding_agent, :codex)
     profile = AgentPause.codex_profile()
@@ -320,7 +368,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     await_check(pid)
-    issue = %Issue{id: "existing-session", identifier: "PROBE-ACTIVE", title: "Existing", state: "In Progress"}
+    issue = %Issue{id: "existing-session", identifier: "PROBE-ACTIVE", title: "Existing", state: "In Progress", dispatchable: true}
 
     {:ok, worker} =
       Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
@@ -483,7 +531,11 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert_no_polls(pid)
     # Complete the existing cycle with the repaired observation; no second cycle is queued.
     send(pid, :run_poll_cycle)
-    assert_receive {:trace, ^pid, :call, {SymphonyElixir.Tracker.Memory, :fetch_issues_by_states, [_states]}}, 1_000
+    # First admitted cycle performs its one startup sweep, then the ordinary read.
+    assert_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, [terminal_states]}}, 1_000
+    assert terminal_states == Config.settings!().tracker.terminal_states
+    assert_receive {:trace, ^pid, :call, {Memory, :fetch_issues_by_states, [observed_states]}}, 1_000
+    assert observed_states == Config.settings!().tracker.active_states
     await_poll_idle(pid)
     assert_no_polls(pid)
     assert Process.read_timer(:sys.get_state(pid).tick_timer_ref) > 30_000
