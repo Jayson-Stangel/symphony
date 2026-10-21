@@ -334,8 +334,9 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 Codex remains the default. A qualified personal Claude profile adds isolated
 Claude workers through pinned Claude Code/Agent SDK and native subscription login.
-Sonnet remains the default; current model IDs, family aliases and reasoning effort
-are configurable. Terminal and web dashboards show the configured Claude effort.
+Sonnet remains the default; nonblank model identifiers pass unchanged to the
+native runtime, which validates support. Reasoning effort is configurable.
+Terminal and web dashboards show the configured Claude effort.
 The dashboard updates input tokens during Claude steps and confirms output tokens
 at turn completion; session totals include cached input and avoid duplicate tool blocks.
 It requires disabled-overage owner attestation, project-scoped credentials and

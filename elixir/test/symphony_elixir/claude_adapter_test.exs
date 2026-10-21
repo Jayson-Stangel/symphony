@@ -332,12 +332,20 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-hello", "auth-start", "error-start", "bad-version", "bad-profile", "bad-owned", "bad-pid"] do
+    for mode <- ["auth-hello", "auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk", "bad-profile", "bad-owned", "bad-pid"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
     end
 
     assert {:error, :claude_runtime_missing} = Adapter.start_session(ctx.workspace, Keyword.put(opts, :node_path, "/missing"))
+  end
+
+  test "compatible helper dependency metadata upgrades do not require an Elixir version update", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "future-runtime")
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    assert :ok = Adapter.stop_session(session)
+    assert :ready = AgentPause.current()
   end
 
   test "startup protocol failure retries only after a correlated cleanup acknowledgement", ctx do

@@ -3,7 +3,6 @@
 set -euo pipefail
 lab_root=$(cd "$(dirname "$0")" && pwd)
 lab_namespace=symphony-claude-qualification-01a15554
-lab_image="$lab_namespace:0.3.303-2.1.303"
 lab_auth="$lab_namespace-auth"
 lab_workspace="$lab_namespace-workspace"
 lab_label=com.symphony.claude-qualification
@@ -20,12 +19,19 @@ owned_volume() {
   fi
 }
 
+build_image() {
+  # Docker owns the input graph/cache; never qualify a stale mutable tag.
+  lab_image=$(docker build --quiet --file "$lab_root/Dockerfile" \
+    --label "$lab_label=$lab_namespace" --tag "$lab_namespace:runtime" "$lab_root/..")
+  [ -n "$lab_image" ] || fail 'Docker build returned no image identity.'
+}
+
 verify_image() {
   local owner
+  build_image
   owner=$(docker image inspect --format "{{index .Config.Labels \"$lab_label\"}}" "$lab_image")
   [ "$owner" = "$lab_namespace" ] || fail 'Qualification image identity mismatch; run lab build.'
-  # Pin to the resolved immutable image for this invocation.
-  lab_image=$(docker image inspect --format '{{.Id}}' "$lab_image")
+  # build --quiet returned the immutable ID; inspect and execute that same ID.
 }
 
 usage() {
@@ -38,14 +44,15 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
   build)
     [ "$#" = 0 ] || fail 'build takes no arguments'
-    docker build --label "$lab_label=$lab_namespace" --tag "$lab_image" "$lab_root"
+    build_image
+    printf 'Qualification image: %s\n' "$lab_image"
     ;;
   test)
     [ "$#" = 0 ] || fail 'test takes no arguments'
     verify_image
     docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
       --tmpfs /tmp:rw,exec,nosuid,nodev,size=32m \
-      --entrypoint npm --workdir /opt/symphony-claude-lab "$lab_image" test
+      --entrypoint sh --workdir /opt/symphony-claude-lab/qualification "$lab_image" -c 'node --test test/*.test.mjs'
     ;;
   inspect|login|status|live|cancel)
     if [ "$command" = live ] || [ "$command" = cancel ]; then
