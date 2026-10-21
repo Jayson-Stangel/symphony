@@ -12,7 +12,7 @@ This guide defines logging conventions for Symphony so agents can diagnose failu
 
 When logging issue-related work, include both identifiers:
 
-- `issue_id`: Linear internal UUID (stable foreign key).
+- `issue_id`: tracker-owned internal issue ID (stable foreign key).
 - `issue_identifier`: human ticket key (for example `MT-620`).
 
 When logging agent execution lifecycle events, include:
@@ -39,7 +39,7 @@ When logging agent execution lifecycle events, include:
 
 ## Checklist For New Logs
 
-- Is this event tied to a Linear issue? Include `issue_id` and `issue_identifier`.
+- Is this event tied to a tracker issue? Include `issue_id` and `issue_identifier`.
 - Is this event tied to an agent session? Include `session_id`.
 - Is the failure reason present and concise?
 - Is the message format consistent with existing lifecycle logs?

@@ -1,10 +1,10 @@
 # Symphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs the selected coding agent (Codex or Claude).
+This directory contains the Elixir agent orchestration service that polls the configured tracker, creates per-issue workspaces, and runs the selected coding agent (Codex or Claude).
 
 ## Environment
 
-- Elixir: `1.19.x` (OTP 28) via `mise`.
+- Elixir: `1.19.x` (OTP 28) and Node.js `24.18.0` via `mise`.
 - Install deps: `mix setup`.
 - Main quality gate: `make all` (format check, lint, coverage, dialyzer).
 

@@ -17,7 +17,9 @@ resources as well as the checkout, configuration and dashboard port.
 
 After the feature has passed review, been promoted to main, and been installed
 through the existing stable `symphony update` command, run these commands from the
-target repository:
+target repository. First [initialize its workflow](../README.md#initialize-a-repository)
+and [configure repository-scoped credentials](../README.md#configure-credentials).
+Choose a disposable tracker scope for a pilot before starting the listener:
 
 ```sh
 symphony auth claude login
@@ -341,7 +343,8 @@ source for a later updater transition. A normal run can restart the same profile
 
 ## Provider and image transitions
 
-After reviewed promotion, use the installed updater from the target repository:
+After reviewed promotion and explicit approval for the exact stable rollout, use
+the installed updater from the target repository:
 
 ```sh
 symphony update --agent claude

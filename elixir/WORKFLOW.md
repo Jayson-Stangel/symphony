@@ -22,14 +22,14 @@ polling:
 workspace:
   root: ~/code/symphony-workspaces
   # Opt in to ordinary local clone-only bootstrap with:
-  # clone_url: https://github.com/openai/symphony
+  # clone_url: https://github.com/Jayson-Stangel/symphony.git
   # Remove hooks.after_create below when enabling clone_url; they cannot coexist.
   # clone_url does not support worker.ssh_hosts. Custom setup keeps the hook below.
   # Clones publish atomically; interrupted unpublished stages permit fresh retries.
   # See README.md for retained staging directories and arbitrary-hook recovery.
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
+    git clone --depth 1 --branch dev https://github.com/Jayson-Stangel/symphony.git .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi

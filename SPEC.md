@@ -2316,8 +2316,9 @@ Use the same validation profiles as Section 17:
 - Provider-native agent tools, when shipped, execute through the app-server session using
   host-side configured adapter auth without passing tracker secrets to the child.
 - TODO: Persist retry queue and session metadata across process restarts.
-- TODO: Make observability settings configurable in workflow front matter without prescribing UI
-  implementation details.
+- Observability settings MAY be configured in workflow front matter without prescribing UI
+  implementation details. The Elixir implementation exposes terminal dashboard enablement,
+  refresh and render intervals under `observability`; see [its configuration guide](elixir/README.md#web-dashboard).
 - TODO: Extract common semantic helper tools only after multiple adapters demonstrate real
   duplication; do not preemptively replace provider-native tools with generic CRUD.
 

@@ -1,10 +1,12 @@
 # Claude qualification lab
 
-This development harness is the first gate for subscription-backed Claude support.
-It does not change the production Symphony launcher, Codex, or any stable service.
-The production transport decision remains open until qualification passes.
+This isolated development harness exercises subscription-backed Claude runtime
+upgrades and bounded native behavior. Production uses the SDK through Symphony's
+Node stdio helper; see the [implemented runtime contract](../../../docs/claude.md#runtime-contract).
+The lab has separate login/workspace volumes and does not change the production
+launcher, Codex, or any stable service.
 
-## Candidate runtime
+## Runtime under test
 
 - Node 24.18.0, with the base image digest pinned in `Dockerfile`.
 - SDK and CLI pins come from the production `../package.json` and `../package-lock.json`.
@@ -13,7 +15,8 @@ The production transport decision remains open until qualification passes.
   login and SDK execution use that same executable. The SDK's own bundled executable
   is not selected implicitly. Dependencies are locked; install scripts are disabled.
 
-These are candidate pins, not a claim of tested subscription funding.
+Matching the production pins does not establish subscription funding or renew
+live qualification for a new account/runtime combination.
 
 ## Offline checks
 
@@ -79,20 +82,24 @@ there is no automatic retry, alternate model or funding fallback.
 Evidence contains fixed event categories and counters, not prompts, arbitrary native
 errors or credential values. The output explicitly leaves funding and cancellation
 qualification pending: session success alone proves neither. The live deadline is
-120 seconds; closing a session is not yet proof of process-tree cancellation.
+120 seconds; closing a session alone does not prove process-tree cancellation.
+Use the separate cancellation probe below for its bounded descendant/sentinel checks.
 
 Do not delete volumes or rerun a failed/partially completed experiment blindly. Inspect
-the retained evidence and create a deliberately separate run if needed. This initial
-lab intentionally exposes no destructive cleanup command.
+the retained evidence and create a deliberately separate run if needed. The lab
+exposes no destructive cleanup command.
 
-## Remaining qualification
+## Qualification scope for runtime changes
 
-- Capture live final-result, auth and tool behavior against the candidate versions.
+When SDK/CLI pins or native behavior change, recheck the relevant scenarios
+from this regression checklist:
+
+- Capture live final-result, auth and tool behavior against the selected versions.
 - Prove interruption of a harmless long-running child and absence of delayed writes.
 - Qualify skills/instruction loading without ambient hooks or unapproved settings.
 - Confirm native login survives container replacement and characterize renewal failure.
 - Record account-side included-allowance and paid-usage evidence after reporting settles.
-- Compare the SDK/helper complexity with the direct CLI control surface; record one ADR.
+- Review compatibility with the production helper's stdio protocol and native cleanup contract.
 
 The separately authorized cancellation probe is:
 
@@ -107,11 +114,13 @@ the harness snapshots its actual descendants, requests SDK interruption, checks
 their process identities, closes the session and keeps the container alive another
 16 seconds. A surviving process or delayed sentinel fails qualification. Evidence
 contains only categories and counts. This probe does not establish production
-supervision correctness; later Elixir integration must repeat lifecycle checks.
+supervision correctness. The production helper/OTP tests and
+[credential-free Linux smoke](../smoke.sh) exercise that separate lifecycle.
 
 No account dashboard scraping, API-key tests, deliberate quota exhaustion or stable
-process transitions are part of this lab. Production readiness/policy enforcement and
-the complete tracker workflow belong to later implementation tickets.
+process transitions are part of this lab. Production readiness/policy enforcement
+and tracker recovery follow the [current runner contract](../../../docs/claude.md);
+the lab does not substitute for its tests or authenticated deployment acceptance.
 
 ## First-party references checked October 19, 2026
 
