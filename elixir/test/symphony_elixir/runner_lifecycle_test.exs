@@ -66,7 +66,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             [ "${FIXTURE_FOREIGN_VOLUME:-false}" != true ] || { echo foreign; exit 0; }
             name=${!#}; printf '%s' "${name%-claude-auth}" ;;
         esac ;;
-      ps) printf '%s' "${FIXTURE_PROFILE_IN_USE:-}" ;;
+      ps)
+        case "$*" in
+          *-workspaces*|*-state*) printf '%s' "${FIXTURE_ACTIVE_STORAGE_USER:-}" ;;
+          *) printf '%s' "${FIXTURE_PROFILE_IN_USE:-}" ;;
+        esac ;;
       run)
         case "$*" in
           *--detach*)
@@ -80,6 +84,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
             done
+            if [ ! -f "$FIXTURE_STATE.volume-owner" ]; then
+              if [ "$(cat "$FIXTURE_STATE.agent")" = claude ]; then echo 11001; else echo 0; fi > "$FIXTURE_STATE.volume-owner"
+            fi
             if [ -f "${FIXTURE_FAIL_CREATE_FILE:-/nonexistent}" ]; then
               rm "$FIXTURE_FAIL_CREATE_FILE"; exit 1
             fi ;;
@@ -90,6 +97,19 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             else
               printf '%s\\n' '{"ready":true,"profile":"#{String.duplicate("a", 64)}","model_requests":0}'
             fi ;;
+          *"chown -hR"*)
+            if [ -f "${FIXTURE_FAIL_PREP_BEFORE_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_PREP_BEFORE_FILE"; exit 1; fi
+            uid=${!#}; initialize=${@: -2:1}; provider=${@: -3:1}
+            # The old launcher only changed ownership for Claude.
+            case "$uid" in
+              claude) uid=11001; initialize=true; provider=claude ;;
+              codex) uid=$(cat "$FIXTURE_STATE.volume-owner"); initialize=true; provider=codex ;;
+            esac
+            if [ "$initialize" = true ]; then touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining"; fi
+            printf '%s' "$uid" > "$FIXTURE_STATE.volume-owner"
+            printf '%s %s %s\\n' "$provider" "$initialize" "$uid" >> "$FIXTURE_STATE.preparations"
+            if [ "$initialize" = true ] && [ "$provider" = claude ]; then rm -f "$FIXTURE_STATE.cleanup-unconfirmed"; fi
+            if [ -f "${FIXTURE_FAIL_PREP_AFTER_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_PREP_AFTER_FILE"; exit 1; fi ;;
           *"/state/agent-upgrade-unresumed"*) touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining" ;;
         esac ;;
       exec)
@@ -139,6 +159,80 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
     assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://x-access-token:inert-restart-fixture@github.com/.insteadOf"], env: env)
     assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
+  end
+
+  test "cross-provider completion restores target ownership in both directions", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert File.read!(ctx.state <> ".volume-owner") == "11001"
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], env)
+    assert File.read!(ctx.state <> ".volume-owner") == "0"
+    assert File.read!(ctx.state <> ".preparations") == "claude true 11001\ncodex true 0\n"
+  end
+
+  for {source, target, owner} <- [{"codex", "claude", "0"}, {"claude", "codex", "11001"}], position <- ["BEFORE", "AFTER"] do
+    @source source
+    @target target
+    @owner owner
+    @position position
+    test "#{source} rollback retries after failure #{position} ownership and before source start", ctx do
+      env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+      ready_curl!(ctx)
+      assert {_, 0} = launch_args(ctx, ["run", "--agent", @source], env)
+      fail = Path.join(ctx.root, "fail-prepare-once")
+      File.write!(fail, "")
+      assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", @target], env ++ [{"FIXTURE_FAIL_PREP_#{@position}_FILE", fail}])
+      assert String.trim(File.read!(ctx.state <> ".backup")) == "false"
+      refute File.exists?(ctx.state)
+      start = Path.join(ctx.root, "fail-start-once")
+      File.write!(start, "")
+      assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_FAIL_START_FILE", start}])
+      assert File.read!(ctx.state <> ".volume-owner") == @owner
+      assert String.trim(File.read!(ctx.state)) == "false"
+      assert File.dir?(Path.join(ctx.config, "runners/service.transition"))
+      assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+      assert File.read!(ctx.state <> ".volume-owner") == @owner
+      assert File.read!(ctx.state <> ".agent") == @source
+      refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    end
+  end
+
+  test "ownership-only Claude rollback preserves cleanup uncertainty", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
+    fail = Path.join(ctx.root, "fail-prepare-once")
+    File.write!(fail, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], env ++ [{"FIXTURE_FAIL_PREP_AFTER_FILE", fail}])
+    File.write!(ctx.state <> ".cleanup-unconfirmed", "retained evidence")
+    start = Path.join(ctx.root, "fail-start-once")
+    File.write!(start, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_FAIL_START_FILE", start}])
+    assert File.read!(ctx.state <> ".volume-owner") == "11001"
+    assert File.read!(ctx.state <> ".cleanup-unconfirmed") == "retained evidence"
+    assert File.read!(ctx.state <> ".preparations") =~ "claude false 11001"
+  end
+
+  test "active retained source refuses rollback before candidate or storage mutation", ctx do
+    env = pending_claude_transition!(ctx)
+    File.write!(ctx.state <> ".backup", "true")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "prior runner is unexpectedly active"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rm|rename|run|start)\t/
+  end
+
+  test "foreign active storage refuses rollback ownership and prior start", ctx do
+    env = pending_claude_transition!(ctx)
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_ACTIVE_STORAGE_USER", "foreign-container"}])
+    assert message =~ "retained volume is in use"
+    refute File.read!(ctx.log) =~ "chown -hR"
+    refute File.read!(ctx.log) =~ "start\t"
+    assert String.trim(File.read!(ctx.state)) == "false"
+    assert File.dir?(Path.join(ctx.config, "runners/service.transition"))
   end
 
   test "missing container inspection discards stdout before reporting or creating", ctx do

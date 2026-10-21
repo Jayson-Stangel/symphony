@@ -1007,6 +1007,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "invalid current configuration cannot perform the pending startup cleanup" do
+    # This fixture owns its scheduler; the default scheduler must not observe its
+    # temporary valid Memory configuration and independently clean the checkout.
+    workflow_path = Workflow.workflow_file_path()
+    previous_workflow = File.read!(workflow_path)
+    previous_issues = Application.fetch_env(:symphony_elixir, :memory_tracker_issues)
+    drain_path = Path.join(Config.agent_state_root(), "agent-draining")
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+
+    on_exit(fn ->
+      File.write!(workflow_path, previous_workflow)
+
+      case previous_issues do
+        {:ok, issues} -> Application.put_env(:symphony_elixir, :memory_tracker_issues, issues)
+        :error -> Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      end
+
+      File.rm(drain_path)
+      assert :ok = WorkflowStore.force_reload()
+      assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.AgentRuntimeSupervisor)
+    end)
+
     workspace_root = Path.join(Path.dirname(Workflow.workflow_file_path()), "workspaces")
     issue = %Issue{id: "invalid-config", identifier: "KEEP-CONFIG", title: "Keep", state: "Done"}
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: workspace_root)
