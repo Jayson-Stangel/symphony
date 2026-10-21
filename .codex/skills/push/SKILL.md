@@ -115,7 +115,7 @@ pr_rows=$(gh api --hostname "$integration_host" --method GET --paginate \
   "repos/$integration_repository/pulls" \
   -f head="$feature_owner:$branch" -f base="$integration_base" \
   -f state=all -f sort=created -f direction=desc \
-  --jq ".[] | select(.head.repo.full_name == \"$feature_repository\") | [.number, (if .merged_at then \"MERGED\" else (.state | ascii_upcase) end)] | @tsv") || exit 1
+  --jq ".[] | select((.head.repo.full_name // \"\" | ascii_downcase) == (\"$feature_repository\" | ascii_downcase)) | [.number, (if .merged_at then \"MERGED\" else (.state | ascii_upcase) end)] | @tsv") || exit 1
 # Native created-descending ordering makes the first matching row the newest PR.
 # No matching PR across all pages yields an empty number/state.
 read -r pr_number pr_state <<< "$pr_rows"
