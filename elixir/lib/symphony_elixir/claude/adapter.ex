@@ -134,7 +134,15 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp startup_failure(code, {:error, :cleanup_unconfirmed}) do
     record_unconfirmed_cleanup(nil)
-    {:error, {:agent_pause, :policy_blocked, %{startup_code: safe_startup_code(code), cleanup: :unconfirmed}}}
+
+    details = %{
+      startup_code: AgentPause.safe_startup_code(code),
+      cleanup: :unconfirmed,
+      code: "cleanup_restart_required",
+      stage: "cleanup"
+    }
+
+    {:error, {:agent_pause, :policy_blocked, details}}
   end
 
   defp match_expected_profile(_profile, nil), do: :ok
@@ -150,7 +158,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         {:error, :claude_turn_not_admitted}
 
       {:paused, value} ->
-        pause(session, value["kind"], Map.take(value, ["resets_at"]))
+        pause(session, value["kind"], Map.take(value, ["resets_at", "code", "stage"]))
 
       {:probe, %{"profile" => profile}} when profile != expected_profile ->
         pause(session, "policy_blocked", %{})
@@ -405,7 +413,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   def record_unconfirmed_cleanup(profile) do
     with :ok <- File.mkdir_p(Config.agent_state_root()),
          :ok <- File.write(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"), "restart-required\n", [:sync]),
-         :ok <- AgentPause.record(:policy_blocked, %{profile: profile}) do
+         :ok <- AgentPause.record(:policy_blocked, %{profile: profile, code: "cleanup_restart_required", stage: "cleanup"}) do
       :ok
     else
       _ -> Logger.warning("Claude cleanup persistence failed; runtime replacement remains required")
@@ -436,14 +444,9 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp paused_start(code) do
     kind = if code in ["auth_required", "unqualified_auth", "unknown_auth_status"], do: :auth_required, else: :policy_blocked
-    AgentPause.record(kind)
-    {:error, {:agent_pause, kind, %{startup_code: safe_startup_code(code)}}}
-  end
-
-  defp safe_startup_code(code) do
-    safe_codes = ~w(auth_required unqualified_auth unknown_auth_status unsupported_tool_schema duplicate_tool_name
-                    native_ownership_unavailable native_initialization_timeout unexpected_native_restart policy_blocked protocol_error)
-    if code in safe_codes, do: code, else: "runtime_unavailable"
+    details = %{startup_code: AgentPause.safe_startup_code(code), stage: "startup"}
+    AgentPause.record(kind, details)
+    {:error, {:agent_pause, kind, details}}
   end
 
   defp start_port(workspace, env, opts) do

@@ -1931,7 +1931,7 @@ defmodule SymphonyElixir.Orchestrator do
         resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
 
       state.readiness[:code] == "cleanup_restart_required" ->
-        {:reply, {:error, :agent_not_ready}, state}
+        {:reply, {:error, "cleanup_restart_required"}, state}
 
       true ->
         readiness = %{ready: false, provider: "claude", code: "checking"}
@@ -1946,10 +1946,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp resume_agent(state, action, reconcile) do
     readiness = state.readiness
 
-    with true <- readiness.ready,
+    with %{ready: true} <- readiness,
          :ok <- recheck_agent_pause(action, readiness, reconcile),
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
-         true <- admission.ready or admission.reason == "quota_exhausted",
+         :ok <- resume_admission(admission),
          :ok <- remove_drain() do
       state = %{
         state
@@ -1961,9 +1961,14 @@ defmodule SymphonyElixir.Orchestrator do
       {state, _coalesced} = queue_poll(state)
       {:reply, {:ok, %{draining: false, admission: admission}}, state}
     else
-      _ -> {:reply, {:error, :agent_not_ready}, %{state | readiness: readiness}}
+      %{ready: false} -> {:reply, {:error, readiness[:code] || "native_not_ready"}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  defp resume_admission(%{ready: true}), do: :ok
+  defp resume_admission(%{reason: "quota_exhausted"}), do: :ok
+  defp resume_admission(%{reason: reason}), do: {:error, reason}
 
   defp recheck_agent_pause(:recheck, %{provider: "claude", profile: profile}, reconcile),
     do: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
@@ -1972,7 +1977,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
 
   defp remove_drain do
-    with :ok <- remove_drain_marker("agent-upgrade-unresumed"), do: remove_drain_marker("agent-draining")
+    with :ok <- remove_drain_marker("agent-upgrade-unresumed"),
+         :ok <- remove_drain_marker("agent-draining") do
+      :ok
+    else
+      _ -> {:error, :state_write_failed}
+    end
   end
 
   defp remove_drain_marker(name) do
@@ -1990,7 +2000,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp public_agent_pause do
     case active_agent_pause() do
       :ready -> nil
-      {status, value} -> Map.take(value, ["kind", "resets_at", "probe"]) |> Map.put("status", status)
+      {status, value} -> Map.take(value, ["kind", "resets_at", "probe", "code", "stage"]) |> Map.put("status", status)
     end
   end
 
