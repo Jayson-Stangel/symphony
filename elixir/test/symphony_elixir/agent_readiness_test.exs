@@ -91,7 +91,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
 
     try do
       System.put_env(%{"SYMPHONY_TOOL_ENV" => "TOOL_TOKEN", "TOOL_TOKEN" => String.duplicate("界", 50_000)})
-      assert %{ready: false, code: "runtime_unavailable"} = result = AgentReadiness.check(ctx.opts)
+      assert %{ready: false, code: "invalid_tool_environment"} = result = AgentReadiness.check(ctx.opts)
       refute inspect(result) =~ "界"
       refute File.exists?(marker)
       assert :ready = AgentPause.current()
