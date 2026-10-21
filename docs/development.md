@@ -136,3 +136,25 @@ delete metadata or force-replace active work. For a retained failed transition:
 
 Stable deployment remains a separate reviewed `dev` → `main` promotion followed
 by the installed global `symphony update` command.
+
+## Opt-in updater lifecycle proof
+
+From a separate development checkout, prepare both production images explicitly:
+
+```sh
+docker build --file runner/Dockerfile --target codex -t updater-proof:codex .
+docker build --file runner/Dockerfile --target claude -t updater-proof:claude .
+python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
+```
+
+This optional script uses the actual application, entrypoints, Docker mounts,
+HTTP drain/resume and update/rollback metadata in an empty Memory project. It
+checks interrupted creation, interrupted rollback, cleanup recovery and retained
+committed, edited, untracked and state files. It records physical mounts and UID.
+Only Codex login-status and selection of prepared image variants are test peers;
+Claude's fresh-volume missing-auth refusal uses its actual native check. The
+prepared images remain unchanged; temporary containers, volumes and image tags
+use a unique development namespace and are removed. Local diagnostic files are
+retained in the printed temporary directory. No stable command, host login mount,
+native positive authentication or model request is used. Successful mixed-provider
+UID migration and authenticated inference remain separate qualification.

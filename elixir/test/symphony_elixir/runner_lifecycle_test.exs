@@ -4,7 +4,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   @launcher Path.expand("../../../scripts/symphony", __DIR__)
 
   setup do
-    root = Path.join(System.tmp_dir!(), "symphony-runner-#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "symphony-runner-#{System.pid()}-#{System.unique_integer([:positive])}")
     repo = Path.join(root, "repo")
     config = Path.join(root, "config")
     runtime = Path.join(root, "container-runtime")
@@ -15,6 +15,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     {_, 0} = System.cmd("git", ["-C", repo, "remote", "add", "origin", "https://github.com/example/service.git"])
     File.write!(Path.join(repo, "WORKFLOW.md"), "fixture workflow")
     File.write!(Path.join(config, "projects/service.env"), "GH_TOKEN=fixture\n")
+    # Every fixture owns curl, including failures; never fall through to a host listener.
+    File.write!(Path.join(root, "curl"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(root, "curl"), 0o755)
 
     File.write!(runtime, """
     #!/bin/bash
@@ -76,7 +79,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.port=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.port" ;;
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
-            done ;;
+            done
+            if [ -f "${FIXTURE_FAIL_CREATE_FILE:-/nonexistent}" ]; then
+              rm "$FIXTURE_FAIL_CREATE_FILE"; exit 1
+            fi ;;
           *"auth.mjs check"*)
             [ "${FIXTURE_AUTH_FAIL:-false}" != true ] || exit 1
             if [ -n "${FIXTURE_AUTH_JSON:-}" ]; then
@@ -112,6 +118,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     env = [
+      {"PATH", root <> ":" <> System.fetch_env!("PATH")},
       {"SYMPHONY_CONFIG_HOME", config},
       {"SYMPHONY_RUNNER_HOME", Path.join(config, "runners")},
       {"SYMPHONY_CONTAINER_RUNTIME", runtime},
@@ -120,6 +127,18 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     ]
 
     %{repo: repo, config: config, root: root, env: env, log: Path.join(root, "calls"), state: Path.join(root, "running")}
+  end
+
+  test "Codex startup Git rewrites remain idempotent for a retained container", ctx do
+    entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
+    [_, rewrite] = Regex.run(~r/if \[ -n "\$\{GH_TOKEN:-\}" \]; then\n(.*?)\nfi/s, entrypoint)
+    home = Path.join(ctx.root, "git-home")
+    File.mkdir_p!(home)
+    env = [{"HOME", home}, {"GIT_CONFIG_GLOBAL", Path.join(home, ".gitconfig")}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"GH_TOKEN", "inert-restart-fixture"}]
+    assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
+    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://x-access-token:inert-restart-fixture@github.com/.insteadOf"], env: env)
+    assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
   end
 
   test "missing container inspection discards stdout before reporting or creating", ctx do
@@ -407,6 +426,52 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert previous =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image"
   end
 
+  test "retry repairs metadata after candidate creation interrupts before metadata publication", ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+    metadata = Path.join(ctx.config, "runners/service.env")
+    previous = File.read!(metadata)
+    fail = Path.join(ctx.root, "fail-create-once")
+    File.write!(fail, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_CREATE_FILE", fail}])
+    assert File.read!(metadata) == previous
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image"
+    assert File.exists?(ctx.state <> ".backup")
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert File.read!(metadata) =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-claude-image\n"
+    assert File.read!(metadata) =~ "SYMPHONY_RUNNER_AGENT=claude\n"
+    assert File.read!(metadata) =~ "SYMPHONY_RUNNER_PROFILE=#{String.duplicate("a", 64)}\n"
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
+  end
+
+  test "postcommit retry reconstructs metadata from the selected container", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    metadata = Path.join(ctx.config, "runners/service.env")
+    File.cp!(Path.join(journal, "previous.env"), metadata)
+    File.rm!(ctx.state <> ".backup")
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert File.read!(metadata) =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-claude-image\n"
+    refute File.exists?(journal)
+  end
+
+  test "rollback restores observed prior identity rather than stale cached fields", ctx do
+    env = pending_claude_transition!(ctx)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    # Keep the recorded image as rollback evidence; provider/profile are derived cache fields.
+    File.write!(Path.join(journal, "previous.env"), "SYMPHONY_RUNNER_PORT=4010\nSYMPHONY_RUNNER_AGENT=claude\nSYMPHONY_RUNNER_IMAGE_ID=fixture-image\nSYMPHONY_RUNNER_PROFILE=stale\n")
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    metadata = File.read!(Path.join(ctx.config, "runners/service.env"))
+    assert metadata =~ "SYMPHONY_RUNNER_AGENT=codex\n"
+    assert metadata =~ "SYMPHONY_RUNNER_PROFILE=none\n"
+    assert metadata =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image\n"
+  end
+
   test "failed development rebuild leaves the pending image, container and rollback metadata intact", ctx do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/service.transition")
@@ -480,6 +545,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     if [ -f "$FIXTURE_STATE.api-draining" ]; then draining=true; fi
     printf '{"counts":{"running":0},"agent":{"draining":%s,"readiness":{"ready":true},"admission":{"ready":true}}}' "$draining"
     """)
+
+    File.chmod!(Path.join(ctx.root, "curl"), 0o755)
   end
 
   test "development refresh can retry a journal created before the original runner was renamed", ctx do
@@ -547,6 +614,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     journal = Path.join(ctx.config, "runners/service.transition")
     # The previous transition passed readiness and removed its backup, but died before journal cleanup.
     File.rm!(ctx.state <> ".backup")
+    File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/service.env"))
     ready_curl!(ctx)
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)

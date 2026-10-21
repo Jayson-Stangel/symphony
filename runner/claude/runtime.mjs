@@ -37,7 +37,7 @@ export function approvedEnvironment(source) {
 function projectToolEnvironment(encoded, fixed) {
   if (!encoded) return {};
   try {
-    if (encoded.length > 65_536) throw new Error();
+    if (Buffer.byteLength(encoded, 'utf8') > 65_536) throw new Error();
     const { names, values, reserved } = JSON.parse(encoded);
     if (!Array.isArray(names) || names.length > 128 || !Array.isArray(reserved)
       || reserved.some(name => typeof name !== 'string') || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error();
