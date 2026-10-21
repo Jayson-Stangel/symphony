@@ -1323,7 +1323,7 @@ runner_prepare_storage() {
 # File and container renames are individually atomic and retriable after any
 # interruption. Storage/auth volumes and WORKFLOW.md are never moved or rewritten.
 runner_migrate_identity() (
-  local root=$1 runtime old id name previous anchor=false metadata suffix source target mounts old_lock new_lock
+  local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target mounts old_lock new_lock
   runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
   name=$(runner_id "$root"); previous="$runtime_prefix-$old"
   mkdir -p "$runner_home"
@@ -1383,6 +1383,7 @@ PYIDENTITY
       mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$source")
       printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'workflow mount differs; identity migration refused'
       anchor=true
+      if [ -z "$suffix" ]; then move_runner=true; else move_backup=true; fi
     elif "$runtime" inspect "$target" >/dev/null 2>&1; then
       runner_owned "$root" "$runtime" "$target" "$metadata"
       mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$target")
@@ -1399,11 +1400,10 @@ PYIDENTITY
     source="$runner_home/$old$suffix"; target="$runner_home/$id$suffix"
     if [ -e "$source" ]; then mv "$source" "$target"; fi
   done
-  for suffix in '' '-before-update'; do
-    if "$runtime" inspect "$previous$suffix" >/dev/null 2>&1; then
-      "$runtime" rename "$previous$suffix" "$name$suffix"
-    fi
-  done
+  # Only names qualified during preflight may move. A failed inspect must not
+  # let a later-visible foreign resource enter this repository's identity.
+  if "$move_runner"; then "$runtime" rename "$previous" "$name"; fi
+  if "$move_backup"; then "$runtime" rename "$previous-before-update" "$name-before-update"; fi
   printf 'Repository identity migrated. Runner state, workspaces, login volumes and pending update/rollback are preserved.\n'
 )
 

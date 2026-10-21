@@ -193,6 +193,28 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     refute File.exists?(Path.join(ctx.root, "config/runners/#{id}.transition"))
   end
 
+  test "a later-visible foreign backup cannot be adopted after failed preflight inspection", ctx do
+    repo = hd(ctx.repos)
+    {id, old, name} = legacy!(ctx, repo)
+    # An already migrated current runner can coexist with another repository's
+    # basename-era backup. Model a one-shot transport failure hiding that backup.
+    File.rename!(Path.join(ctx.runtime, "#{old}.json"), Path.join(ctx.runtime, "#{name}.json"))
+
+    for base <- ["projects", "runners"] do
+      File.rename!(Path.join(ctx.root, "config/#{base}/service.env"), Path.join(ctx.root, "config/#{base}/#{id}.env"))
+    end
+
+    foreign = Map.put(container(ctx, name), "storage", "foreign-repository-volume")
+    write_container(ctx, old <> "-before-update", foreign)
+    File.write!(Path.join(ctx.runtime, "hide-inspect-once"), old <> "-before-update")
+    assert {_, 0} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
+    assert container(ctx, old <> "-before-update") == foreign
+    refute File.exists?(Path.join(ctx.runtime, name <> "-before-update.json"))
+    assert {message, 1} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
+    assert message =~ "foreign runner storage"
+    assert container(ctx, old <> "-before-update") == foreign
+  end
+
   test "unproven basename credentials are never automatically adopted", ctx do
     repo = hd(ctx.repos)
     File.mkdir_p!(Path.join(ctx.root, "config/projects"))
