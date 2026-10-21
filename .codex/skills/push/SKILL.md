@@ -108,16 +108,17 @@ git push --force-with-lease origin HEAD
 # integration_host, integration_repository (owner/repo) and integration_base come
 # from verified remote/policy/PR URL metadata, including the host on github.com.
 # feature_repository is the verified source owner/repo on that same GitHub host.
-# Inspect matching PRs; a failed lookup stops this procedure.
-gh pr list --repo "$integration_host/$integration_repository" --base "$integration_base" --head "$branch" --state all \
-  --json number,state,baseRefName,headRepository,url || exit 1
-# Select the verified source repository and base, excluding unrelated fork/base PRs.
-# Retain the number and state from that same verified result through every mutation.
-# The latest matching PR is first; no matching PR yields an empty row.
-pr_row=$(gh pr list --repo "$integration_host/$integration_repository" --base "$integration_base" --head "$branch" --state all \
-  --json number,state,headRepository \
-  --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0] | select(. != null) | [.number, .state] | @tsv") || exit 1
-read -r pr_number pr_state <<< "$pr_row"
+# Use native source/base filters and all pages; retain the newest exact-source match.
+# A failed lookup stops before any PR creation or metadata mutation.
+feature_owner=${feature_repository%%/*}
+pr_rows=$(gh api --hostname "$integration_host" --method GET --paginate \
+  "repos/$integration_repository/pulls" \
+  -f head="$feature_owner:$branch" -f base="$integration_base" \
+  -f state=all -f sort=created -f direction=desc \
+  --jq ".[] | select(.head.repo.full_name == \"$feature_repository\") | [.number, (if .merged_at then \"MERGED\" else (.state | ascii_upcase) end)] | @tsv") || exit 1
+# Native created-descending ordering makes the first matching row the newest PR.
+# No matching PR across all pages yields an empty number/state.
+read -r pr_number pr_state <<< "$pr_rows"
 if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
   echo "Current branch is tied to a closed PR; create a new branch + PR." >&2
   exit 1
