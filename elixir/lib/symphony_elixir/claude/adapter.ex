@@ -184,6 +184,9 @@ defmodule SymphonyElixir.Claude.Adapter do
         emit(callback, :session_started, %{session_id: event_id, provider: :claude})
         await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), %{})
 
+      {:error, :port_closed} ->
+        {:error, :claude_helper_closed}
+
       _ ->
         pause(session, "protocol_error", %{})
     end
@@ -194,13 +197,22 @@ defmodule SymphonyElixir.Claude.Adapter do
     case frame(session.port, min(until, deadline(session.config.read_timeout_ms))) do
       {:error, :timeout} ->
         if System.monotonic_time(:millisecond) >= until do
-          pending_failure(session, pending)
+          pending_failure(session, pending, :claude_turn_timeout)
         else
           await_turn(session, request, event_id, issue, callback, until, pending)
         end
 
       {:error, :interrupted} ->
         {:error, :claude_cancelled}
+
+      {:error, :helper_exited} ->
+        pending_failure(session, pending, :claude_helper_exited)
+
+      {:error, :invalid_frame} ->
+        pending_failure(session, pending, :claude_invalid_frame)
+
+      {:error, :frame_too_large} ->
+        pending_failure(session, pending, :claude_frame_too_large)
 
       {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
         handle_message(message, session, request, event_id, issue, callback, until, pending)
@@ -273,18 +285,38 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp handle_message(%{"type" => "turn_result", "outcome" => outcome} = message, session, _request, _event_id, _issue, _callback, _until, _pending) do
+  defp handle_message(%{"type" => "turn_result", "outcome" => outcome} = message, session, _request, _event_id, _issue, _callback, _until, pending) do
     cond do
-      outcome in @pause_kinds -> pause(session, outcome, Map.take(message, ["resets_at"]))
-      outcome in ["permission_blocked", "agent_turn_limit"] -> {:error, {:agent_blocked, outcome}}
-      outcome == "transient_error" -> {:error, :claude_transient_error}
-      outcome == "cancelled" -> {:error, :claude_cancelled}
-      true -> pause(session, "protocol_error", %{})
+      outcome == "protocol_error" ->
+        case turn_failure(message["code"]) do
+          nil -> pause(session, outcome, %{})
+          cause -> pending_failure(session, pending, cause)
+        end
+
+      outcome in @pause_kinds ->
+        pause(session, outcome, Map.take(message, ["resets_at"]))
+
+      outcome in ["permission_blocked", "agent_turn_limit"] ->
+        {:error, {:agent_blocked, outcome}}
+
+      outcome == "transient_error" ->
+        {:error, :claude_transient_error}
+
+      outcome == "cancelled" ->
+        {:error, :claude_cancelled}
+
+      true ->
+        pause(session, "protocol_error", %{})
     end
   end
 
   defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, _pending),
     do: pause(session, "protocol_error", %{})
+
+  defp turn_failure("native_eof"), do: :claude_native_eof
+  defp turn_failure("native_event_error"), do: :claude_native_event_error
+  defp turn_failure("turn_timeout"), do: :claude_turn_timeout
+  defp turn_failure(_code), do: nil
 
   # Validate categories again at the transport boundary; arbitrary helper text
   # and unknown details must never reach dashboards or logs.
@@ -315,9 +347,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp pending_failure(session, pending) do
+  defp pending_failure(session, pending, cause \\ nil) do
     Enum.each(pending, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
-    pause(session, "protocol_error", %{})
+    if cause, do: {:error, cause}, else: pause(session, "protocol_error", %{})
   end
 
   defp valid_tool_call?(session, seen, tool, name, args) do

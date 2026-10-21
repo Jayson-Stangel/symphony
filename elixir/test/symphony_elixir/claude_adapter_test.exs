@@ -4,6 +4,32 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
   @helper Path.expand("../../../runner/claude/test/fixtures/port-probe.mjs", __DIR__)
 
+  defmodule TurnProbe do
+    @behaviour SymphonyElixir.CodingAgent
+    alias SymphonyElixir.Claude.Adapter
+
+    @impl true
+    def start_session(workspace, opts) do
+      Adapter.start_session(
+        workspace,
+        Keyword.merge(opts,
+          node_path: System.find_executable("node"),
+          helper_path: Path.expand("../../../runner/claude/test/fixtures/port-probe.mjs", __DIR__),
+          cleanup_path: Path.expand("../../../runner/claude/cleanup.mjs", __DIR__)
+        )
+      )
+    end
+
+    @impl true
+    def run_turn(native, prompt, issue, opts),
+      do: Adapter.run_turn(%{native | config: %{native.config | turn_timeout_ms: 1_000}}, prompt, issue, opts)
+
+    @impl true
+    defdelegate stop_session(native), to: Adapter
+    @impl true
+    defdelegate interrupt(native, reason), to: Adapter
+  end
+
   defmodule BoundTool do
     alias SymphonyElixir.Linear.AgentTool
 
@@ -151,7 +177,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert sessions |> Map.values() |> Enum.map(& &1.workspace) |> Enum.uniq() |> length() == 3
     assert {:error, :wrong_session_owner} = Adapter.run_turn(sessions[2], "wrong-owner", ctx.issue, [])
     Enum.each(Enum.with_index(workers, 1), fn {worker, n} -> send(worker.pid, {:turn, if(n == 1, do: "malformed", else: "tool")}) end)
-    assert_receive {:parallel_result, 1, {:error, {:agent_blocked, "protocol_error"}}}, 3_000
+    assert_receive {:parallel_result, 1, {:error, :claude_invalid_frame}}, 3_000
 
     for n <- [2, 3] do
       assert_receive {:bound_tool_executed, ^n, %{"query" => "query"}, %{id: id}}, 3_000
@@ -440,7 +466,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
 
       try do
-        assert {:error, {:agent_blocked, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        result = Adapter.run_turn(session, prompt, ctx.issue, [])
+
+        case prompt do
+          "oversized" -> assert result == {:error, :claude_frame_too_large}
+          "array" -> assert result == {:error, :claude_invalid_frame}
+          "exit" -> assert result == {:error, :claude_helper_exited}
+          _ -> assert match?({:error, {:agent_blocked, _}}, result)
+        end
+
         assert :ready = AgentPause.current()
       after
         Adapter.stop_session(session)
@@ -514,6 +548,57 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "coded turn failure preserves missing-ack diagnostics without recording a gate", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+
+    binding = %{
+      adapter: BoundTool,
+      tracker_settings: %{owner: self(), tag: "probe"},
+      secret_environment_names: [],
+      tool_specs: [%{"name" => "probe_tool", "description" => "probe", "inputSchema" => %{"type" => "object"}}]
+    }
+
+    opts = ctx.opts |> Keyword.put(:helper_path, helper) |> Keyword.put(:tool_binding, binding)
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
+
+    try do
+      log =
+        capture_log([level: :info], fn ->
+          assert {:error, :claude_native_eof} = Adapter.run_turn(session, "tool-coded-failure", ctx.issue, [])
+        end)
+
+      assert length(Regex.scan(~r/"reason":"ack_missing"/, log)) == 1
+      assert log =~ "issue_id=#{ctx.issue.id}"
+      refute log =~ "secret-canary"
+      assert :ready = AgentPause.current()
+      assert Path.wildcard(Path.join(ctx.root, "state/claude-tools/*.json")) == []
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "legacy and malicious optional turn diagnostics retain the generic safe failure", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+
+    for prompt <- ["protocol_error", "diagnostic-unknown", "diagnostic-map"] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+
+      try do
+        log =
+          capture_log(fn ->
+            assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+          end)
+
+        refute log =~ "secret-canary"
+        assert :ready = AgentPause.current()
+      after
+        Adapter.stop_session(session)
+      end
+    end
+  end
+
   test "closed ports, unclean helper shutdown and explicit interrupts require bounded cleanup", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     cleanup = Path.join(ctx.root, "cleanup-ok.mjs")
@@ -530,7 +615,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     assert :ok = Adapter.interrupt(session, :operator)
-    assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, "closed", ctx.issue, [])
+    assert {:error, :claude_helper_closed} = Adapter.run_turn(session, "closed", ctx.issue, [])
     assert :ok = Adapter.stop_session(session)
   end
 
@@ -1107,13 +1192,52 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "EOF, event failure and native deadline reach worker retries with safe correlation", ctx do
+    supervisor = start_supervised!(Task.Supervisor)
+    observer = self()
+
+    for {prompt, cause} <- [{"partial", :claude_native_eof}, {"event-error", :claude_native_event_error}, {"silence", :claude_turn_timeout}] do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", prompt: prompt)
+      path = Workflow.workflow_file_path()
+      workflow = File.read!(path) |> String.replace("\nagent:\n", "\nclaude:\n  turn_timeout_ms: 20\nagent:\n", global: false)
+      File.write!(path, workflow)
+      SymphonyElixir.WorkflowStore.force_reload()
+
+      log =
+        capture_log(fn ->
+          worker = Task.Supervisor.async_nolink(supervisor, fn -> AgentRunner.run(ctx.issue, observer, coding_agent_adapter: TurnProbe) end)
+          pid = worker.pid
+          ref = worker.ref
+          assert_receive {:worker_agent_session, _, %{native: native}}, 3_000
+          assert_receive {:codex_worker_update, _, %{event: :session_started, session_id: session_id}}, 3_000
+          assert_receive {:DOWN, ^ref, :process, ^pid, {%RuntimeError{message: message}, _stack} = reason}, 3_000
+          assert message =~ Atom.to_string(cause)
+          assert Port.info(native.port) == nil
+          entry = %{pid: pid, ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, session_id: session_id, started_at: DateTime.utc_now()}
+          state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+          assert {:noreply, retrying} = Orchestrator.handle_info({:DOWN, ref, :process, pid, reason}, state)
+          retry = retrying.retry_attempts[ctx.issue.id]
+          assert retry.error =~ Atom.to_string(cause)
+          Process.cancel_timer(retry.timer_ref)
+          send(observer, {:logged_session, session_id})
+        end)
+
+      assert_receive {:logged_session, session_id}
+      assert log =~ "issue_id=#{ctx.issue.id}"
+      assert log =~ "session_id=#{session_id}"
+      assert log =~ Atom.to_string(cause)
+      refute log =~ "secret-canary"
+      assert :ready = AgentPause.current()
+    end
+  end
+
   test "partial output and malformed frames never count as completion", ctx do
-    for prompt <- ["partial", "malformed"] do
+    for {prompt, cause} <- [{"partial", :claude_native_eof}, {"malformed", :claude_invalid_frame}] do
       assert :ok = AgentPause.explicit_recheck(String.duplicate("a", 64))
       assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
 
       try do
-        assert {:error, {:agent_blocked, _}} = Adapter.run_turn(session, prompt, ctx.issue, [])
+        assert {:error, ^cause} = Adapter.run_turn(session, prompt, ctx.issue, [])
         assert :ready = AgentPause.current()
       after
         Adapter.stop_session(session)
@@ -1135,7 +1259,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     session = %{session | config: %{session.config | turn_timeout_ms: 30, read_timeout_ms: 10}}
 
     try do
-      assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, "silence", ctx.issue, [])
+      assert {:error, :claude_turn_timeout} = Adapter.run_turn(session, "silence", ctx.issue, [])
     after
       Adapter.stop_session(session)
     end

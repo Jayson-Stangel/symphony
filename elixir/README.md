@@ -51,6 +51,12 @@ Safe optional pause `code` and `stage` fields explain startup and cleanup failur
 across restarts. They do not change pause behavior; old records retain their existing
 meaning without an invented cause. Resume/recheck responses distinguish readiness,
 account pause, recheck refusal and state-write failure using bounded error codes.
+Recoverable native EOF, event failure, turn timeout and local transport failures
+carry fixed safe causes through existing worker and retry logs with issue/session
+correlation. They do not create a pause or change retry/cleanup policy. After a
+scheduler restart, transient turn causes depend on existing log retention; they
+are not new durable runner state. Unknown optional wire codes retain the generic
+protocol failure.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a
