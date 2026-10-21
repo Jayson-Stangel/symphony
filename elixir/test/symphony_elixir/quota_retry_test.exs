@@ -227,6 +227,9 @@ defmodule SymphonyElixir.QuotaRetryTest do
     assert state.retry_attempts[ctx.issue.id].quota_reset_at == reset - 1
     assert GenServer.call(ctx.server, :snapshot).agent.admission.retry_at == reset
 
+    assert {:error, :reset_not_due} = GenServer.call(ctx.server, {:agent_control, :recheck, false})
+    assert GenServer.call(ctx.server, :snapshot).agent.admission.retry_at == reset
+
     # Real tracker movement and drain cannot cancel the bounded account deadline.
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{ctx.issue | state: "Done"}, %{other | state: "Human Review"}, %{earlier | state: "Done"}, %{later | state: "Done"}])
     File.chmod!(state_root, 0o700)

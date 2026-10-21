@@ -2069,7 +2069,7 @@ defmodule SymphonyElixir.Orchestrator do
     readiness = state.readiness
 
     with %{ready: true} <- readiness,
-         :ok <- recheck_agent_pause(action, readiness, reconcile),
+         :ok <- recheck_agent_pause(action, readiness, reconcile, state),
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
          :ok <- resume_admission(admission),
          :ok <- remove_drain() do
@@ -2099,10 +2099,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp resume_admission(%{reason: "quota_exhausted"}), do: :ok
   defp resume_admission(%{reason: reason}), do: {:error, reason}
 
-  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile),
-    do: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
+  defp recheck_agent_pause(:recheck, %{profile: profile}, reconcile, state) do
+    if quota_retry_delay(state, %{}) > 0,
+      do: {:error, :reset_not_due},
+      else: AgentPause.explicit_recheck(profile, confirm_tools_reconciled: reconcile == true)
+  end
 
-  defp recheck_agent_pause(_action, _readiness, _reconcile), do: :ok
+  defp recheck_agent_pause(_action, _readiness, _reconcile, _state), do: :ok
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
 
   defp remove_drain do
