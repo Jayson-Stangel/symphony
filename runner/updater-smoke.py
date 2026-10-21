@@ -112,7 +112,6 @@ try:
  storage=inspect(name,'{{index .Config.Labels "com.symphony.storage"}}');claude_auth=storage+'-claude-auth'
  docker('volume','create','--label','com.symphony.storage='+storage,claude_auth)
  docker('run','--rm','--network','none','--read-only','--cap-drop','ALL','--cap-add','CHOWN','--user','0:0','--entrypoint','sh','--volume',claude_auth+':/home/claude',claude_image,'-ceu','chown 11001:11001 /home/claude')
- policy=config/'claude'/storage;policy.mkdir(parents=True)
  prior_id=inspect(name,'{{.Id}}');before=selected()
  negative=launch('update','--development-runner','--agent','claude',expected=1)
  assert 'auth_required' in negative and 'model_requests' in negative

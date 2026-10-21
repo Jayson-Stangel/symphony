@@ -431,7 +431,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-    assert {_, 0} = launch_args(ctx, ["auth", "claude", "attest", "--overages-disabled"], env)
     metadata = Path.join(ctx.config, "runners/service.env")
     previous = File.read!(metadata)
     fail = Path.join(ctx.root, "fail-create-once")
