@@ -129,30 +129,37 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     config = [tracker_kind: "memory", workspace_root: ctx.workspaces, codex_stall_timeout_ms: 0]
     write_workflow_file!(Workflow.workflow_file_path(), config)
     entries = install_workers(ctx, ["1", "2", "3"], {:claude, cleanup})
+    started_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.add(-3_600)
 
     :sys.replace_state(ctx.server, fn state ->
       running =
         Map.new(state.running, fn {id, entry} ->
-          {id, %{entry | started_at: DateTime.add(DateTime.utc_now(), -3_600)}}
+          {id, %{entry | started_at: started_at}}
         end)
 
       %{state | running: running}
     end)
 
-    assert_accounting_snapshot(10_800, 0)
+    # One elapsed second contributes once per retained worker. The UI receives
+    # second-precision timestamps, so a fixed +2s allowance is invalid for three.
+    payload = SymphonyElixirWeb.Presenter.state_payload(__MODULE__, 200)
+    assert_runtime_card(payload, DateTime.add(started_at, 3_600), 10_800)
+    assert_runtime_card(payload, DateTime.add(started_at, 3_601), 10_803)
+    starts = List.duplicate(started_at, 3)
+    assert_accounting_snapshot(10_800, 0, starts)
     for {_id, entry} <- entries, do: Process.exit(entry.pid, :kill)
     await(fn -> Enum.all?(1..3, &File.exists?(Path.join(ctx.root, "started-#{&1}"))) end)
     assert length(Orchestrator.snapshot(__MODULE__, 200).running) == 3
     assert {:ok, %{draining: true}} = GenServer.call(ctx.server, {:agent_control, :drain, false}, 200)
     state = :sys.get_state(ctx.server, 200)
     assert state.retry_attempts == %{}
-    during = assert_accounting_snapshot(10_800, 0)
+    during = assert_accounting_snapshot(10_800, 0, starts)
     assert during.codex_totals.seconds_running == 0
     for n <- 1..3, do: File.write!(Path.join(ctx.root, "release-#{n}"), "release")
     await(fn -> map_size(:sys.get_state(ctx.server, 200).retry_attempts) == 3 end)
     state = :sys.get_state(ctx.server, 200)
     assert state.running == %{}
-    after_cleanup = assert_accounting_snapshot(10_800, 0)
+    after_cleanup = assert_accounting_snapshot(10_800, 0, starts)
     assert after_cleanup.codex_totals.seconds_running >= 10_800
 
     for n <- 1..3 do
@@ -236,11 +243,12 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     config = Keyword.put(config, :codex_live_max_total_tokens, token_limit)
     write_workflow_file!(Workflow.workflow_file_path(), config)
     entries = install_workers(ctx, ["accounting"], :probe)
+    started_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.add(-3_600)
 
     :sys.replace_state(ctx.server, fn state ->
       entry = %{
         state.running["accounting"]
-        | started_at: DateTime.add(DateTime.utc_now(), -3_600),
+        | started_at: started_at,
           codex_input_tokens: 11,
           codex_output_tokens: 3,
           codex_total_tokens: 14,
@@ -252,7 +260,7 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
       %{state | running: %{"accounting" => session}, codex_totals: totals}
     end)
 
-    before = assert_accounting_snapshot(3_600, 14)
+    before = assert_accounting_snapshot(3_600, 14, [started_at])
     issue = entries["accounting"].issue
 
     case outcome do
@@ -267,7 +275,7 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     end
 
     assert_receive {:cleanup_started, "accounting", cleanup, _reason}, 500
-    during = assert_accounting_snapshot(3_600, 14)
+    during = assert_accounting_snapshot(3_600, 14, [started_at])
     assert during.codex_totals.seconds_running == 0
     assert during.codex_totals == before.codex_totals
     ref = :sys.get_state(ctx.server, 200).running["accounting"].ref
@@ -280,7 +288,7 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     end
 
     await(fn -> :sys.get_state(ctx.server, 200).running == %{} end)
-    after_cleanup = assert_accounting_snapshot(3_600, 14)
+    after_cleanup = assert_accounting_snapshot(3_600, 14, [started_at])
     assert after_cleanup.codex_totals.seconds_running >= 3_600
     state = :sys.get_state(ctx.server, 200)
     assert Map.has_key?(state.retry_attempts, issue.id) == (outcome == :retry)
@@ -290,14 +298,31 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     assert :sys.get_state(ctx.server, 200).codex_totals == after_cleanup.codex_totals
   end
 
-  defp assert_accounting_snapshot(expected_seconds, expected_tokens) do
+  defp assert_accounting_snapshot(expected_seconds, expected_tokens, started_ats) do
     snapshot = Orchestrator.snapshot(__MODULE__, 200)
+    observed_at = DateTime.utc_now()
     seconds = snapshot.codex_totals.seconds_running + Enum.sum(Enum.map(snapshot.running, & &1.runtime_seconds))
-    assert seconds >= expected_seconds and seconds <= expected_seconds + 2
+    # No attempt can contribute more than its actual elapsed age, including while
+    # cleanup retains its capacity or after runtime transfers to completed totals.
+    elapsed = Enum.sum(Enum.map(started_ats, &DateTime.diff(observed_at, &1, :second)))
+    assert seconds >= expected_seconds and seconds <= elapsed
     assert snapshot.codex_totals.total_tokens == expected_tokens
     assert snapshot.codex_totals.input_tokens + snapshot.codex_totals.output_tokens == expected_tokens
     payload = SymphonyElixirWeb.Presenter.state_payload(__MODULE__, 200)
-    html = Phoenix.LiveViewTest.render_component(&SymphonyElixirWeb.DashboardLive.render/1, payload: payload, now: DateTime.utc_now())
+    now = DateTime.utc_now()
+
+    rendered_seconds =
+      Enum.reduce(payload.running, payload.codex_totals.seconds_running, fn entry, total ->
+        {:ok, started_at, _offset} = DateTime.from_iso8601(entry.started_at)
+        total + DateTime.diff(now, started_at, :second)
+      end)
+
+    assert_runtime_card(payload, now, rendered_seconds)
+    snapshot
+  end
+
+  defp assert_runtime_card(payload, now, expected_seconds) do
+    html = Phoenix.LiveViewTest.render_component(&SymphonyElixirWeb.DashboardLive.render/1, payload: payload, now: now)
 
     card =
       html
@@ -306,8 +331,8 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
       |> Enum.find(fn node -> node |> Floki.find(".metric-label") |> Floki.text() == "Runtime" end)
 
     rendered = card |> Floki.find(".metric-value") |> Floki.text()
-    assert rendered in Enum.map(expected_seconds..(expected_seconds + 2), &"#{div(&1, 60)}m #{rem(&1, 60)}s")
-    snapshot
+    seconds = trunc(expected_seconds)
+    assert rendered == "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
   end
 
   defp install_workers(ctx, ids, adapter) do
