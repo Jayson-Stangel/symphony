@@ -1467,7 +1467,8 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         assert retry.attempt == 1
 
         if kind == :quota_exhausted do
-          assert retry.error =~ "state_write_error: :eacces"
+          assert retry.error =~ "state_write_error"
+          assert retry.error =~ ":eacces"
           assert retry.quota_reset_at == reset
         else
           refute retry.error =~ "state_write_error"
