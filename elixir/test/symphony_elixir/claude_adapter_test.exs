@@ -658,6 +658,26 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "oversized outgoing prompts are rejected before delivery and leave the session usable", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    callback = fn event -> send(self(), {:oversized_prompt_event, event}) end
+
+    try do
+      log =
+        capture_log(fn ->
+          prompt = String.duplicate("secret-canary", 100_000)
+          assert {:error, {:agent_blocked, "protocol_error"}} = Adapter.run_turn(session, prompt, ctx.issue, on_message: callback)
+        end)
+
+      refute_received {:oversized_prompt_event, _}
+      refute log =~ "secret-canary"
+      assert :ready = AgentPause.current()
+      assert {:ok, _} = Adapter.run_turn(session, "after-rejected-prompt", ctx.issue, [])
+    after
+      assert :ok = Adapter.stop_session(session)
+    end
+  end
+
   test "closed ports, unclean helper shutdown and explicit interrupts require bounded cleanup", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     cleanup = Path.join(ctx.root, "cleanup-ok.mjs")
