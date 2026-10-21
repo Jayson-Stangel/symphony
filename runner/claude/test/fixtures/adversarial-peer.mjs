@@ -23,6 +23,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     active = base; activePrompt = c.prompt;
     const type = c.prompt;
     if (type === 'exit') process.exit(1);
+    if (type === 'diagnostic-unknown' || type === 'diagnostic-map') { send({ ...base, type: 'turn_result', outcome: 'protocol_error', code: type === 'diagnostic-map' ? { secret: 'secret-canary' } : 'secret-canary' }); continue; }
     if (type === 'oversized') { process.stdout.write('x'.repeat(1_100_000) + '\n'); continue; }
     if (type === 'array') { send([]); continue; }
     if (type === 'wrong-session') { send({ ...base, session_id: 'wrong', type: 'progress', activity: 'agent' }); continue; }
@@ -44,6 +45,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     send({ ...base, type: 'turn_result', outcome: type });
   } else if (c.type === 'tool_result') {
+    if (activePrompt === 'tool-coded-failure') { send({ ...active, type: 'turn_result', outcome: 'protocol_error', code: 'native_eof', message: 'secret-canary' }); continue; }
     if (['tool-definite-error', 'tool-read-error', 'tool-linear-definite-error', 'tool-linear-server-error', 'tool-linear-partial-error', 'tool-linear-read-error', 'tool-linear-read-timeout', 'tool-linear-local-error'].includes(activePrompt)) send({ ...active, type: 'tool_result_accepted', tool_id: 'one' });
     send({ ...active, type: 'turn_result', outcome: 'completed' }); // Deliberately missing tool ACK.
   } else if (c.type === 'stop') {
