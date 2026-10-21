@@ -31,11 +31,13 @@ def docker(*a): return cmd([real,*a])
 cmd(['git','init','-q',str(repo)]); cmd(['git','-C',str(repo),'remote','add','origin','https://example.invalid/service.git'])
 project_id=cmd(['bash','-c','source "$SYMPHONY_HOME/scripts/symphony" --help >/dev/null; project_id "$1"','identity',str(repo)],env=env)
 name=prefix+'-'+project_id
+owned_names=[name,name+'-before-update',prefix+'-service',prefix+'-service-before-update']
+owned_storage={name}
 (repo/'WORKFLOW.md').write_text('---\ntracker:\n  kind: memory\nworkspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\nobservability:\n  dashboard_enabled: false\n---\nEmpty isolated proof; no inference.\n')
 (config/('projects/'+project_id+'.env')).write_text('GH_TOKEN=credential-free-placeholder\n')
 wrapper=root/'docker-peer'
 wrapper.write_text('''#!/usr/bin/env python3
-import json,os,pathlib,subprocess,sys
+import json,os,pathlib,subprocess,sys,time
 r=pathlib.Path(os.environ['PROOF_ROOT']); a=sys.argv[1:]; real=os.environ['PROOF_REAL_DOCKER']
 with (r/'docker-calls.jsonl').open('a') as f:f.write(json.dumps(a)+'\\n')
 if a[0]=='build':
@@ -44,6 +46,11 @@ if a[0]=='build':
 if a[0]=='run' and '--entrypoint' in a and a[a.index('--entrypoint')+1]=='codex' and a[-2:]==['login','status']:
  print('STUB native authentication status; no credentials/inference');sys.exit(0)
 p=subprocess.run([real,*a]); fault=r/'fault'
+if p.returncode==0 and a[0]=='stop' and (r/'hold-stop').exists():
+ (r/'stop-observed').touch(); deadline=time.monotonic()+60
+ while (r/'hold-stop').exists():
+  if time.monotonic()>deadline:sys.exit('timed out waiting for competing-command proof')
+  time.sleep(.05)
 if p.returncode==0 and fault.exists():
  mode=fault.read_text().strip()
  matches=(mode=='create' and a[0]=='run' and '--detach' in a) or (mode=='backup-remove' and a[0]=='rm' and a[-1].endswith('-before-update')) or (mode=='rollback-rename' and a[0]=='rename' and a[1].endswith('-before-update'))
@@ -54,12 +61,12 @@ with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
 curl=root/'curl'
 curl.write_text("#!/usr/bin/env python3\nimport json,os,pathlib,subprocess,sys\np=subprocess.run(["+repr(shutil.which('curl'))+",*sys.argv[1:]],stdout=subprocess.PIPE,stderr=subprocess.PIPE)\nwith (pathlib.Path(os.environ['PROOF_ROOT'])/'http.jsonl').open('a') as f:f.write(json.dumps({'args':sys.argv[1:],'exit':p.returncode,'body':p.stdout.decode(errors='replace')})+'\\n')\nsys.stdout.buffer.write(p.stdout);sys.stderr.buffer.write(p.stderr);sys.exit(p.returncode)\n")
 curl.chmod(0o755);env['PATH']=str(root)+':'+env['PATH']
-def launch(*a, expected=0):return cmd(['bash',str(checkout/'scripts/symphony'),*a],expected,cwd=repo,env=env)
+def launch(*a, expected=0, cwd=repo):return cmd(['bash',str(checkout/'scripts/symphony'),*a],expected,cwd=cwd,env=env)
 def inspect(n,fmt):return docker('inspect','--format',fmt,n)
-def state():
+def state(listener_port=port):
  for i in range(50):
   try:
-   with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/v1/state',timeout=2) as r:v=json.load(r)
+   with urllib.request.urlopen(f'http://127.0.0.1:{listener_port}/api/v1/state',timeout=2) as r:v=json.load(r)
    if 'error' not in v:return v
   except OSError:pass
   time.sleep(.2)
@@ -93,6 +100,25 @@ try:
  v1=image(1);v2=image(2)
  docker('volume','create',auth);docker('tag',base,prefix+'-runner:local')
  launch('run','--port',str(port)); assert state()['counts']=={'running':0,'retrying':0,'blocked':0}
+ # Same basename, distinct normalized remotes: two real listeners and separate
+ # project credentials, runner metadata, containers and physical state volumes.
+ other=root/'other'/'service';other.mkdir(parents=True)
+ cmd(['git','init','-q',str(other)]);cmd(['git','-C',str(other),'remote','add','origin','https://example.invalid/other/service.git'])
+ other_id=cmd(['bash','-c','source "$SYMPHONY_HOME/scripts/symphony" --help >/dev/null; project_id "$1"','identity',str(other)],env=env)
+ assert other_id!=project_id
+ shutil.copyfile(repo/'WORKFLOW.md',other/'WORKFLOW.md')
+ (config/('projects/'+other_id+'.env')).write_text('GH_TOKEN=other-credential-free-placeholder\n')
+ with socket.socket() as s:s.bind(('127.0.0.1',0));other_port=s.getsockname()[1]
+ other_name=prefix+'-'+other_id
+ owned_names.append(other_name);owned_storage.add(other_name)
+ launch('run','--port',str(other_port),cwd=other)
+ assert state(other_port)['counts']=={'running':0,'retrying':0,'blocked':0}
+ assert inspect(other_name,'{{.State.Running}}')=='true' and inspect(name,'{{.State.Running}}')=='true'
+ assert inspect(other_name,'{{index .Config.Labels "com.symphony.storage"}}')!=inspect(name,'{{index .Config.Labels "com.symphony.storage"}}')
+ assert (config/('runners/'+other_id+'.env')).exists() and selected()
+ assert (config/('projects/'+other_id+'.env')).read_text()!=(config/('projects/'+project_id+'.env')).read_text()
+ launch('runner','stop',cwd=other)
+ print('PASS real same-basename repositories retain independent containers, credentials, metadata and storage',flush=True)
  docker('exec',name,'sh','-ceu','mkdir /workspaces/lifecycle-proof; git -C /workspaces/lifecycle-proof init -q; git -C /workspaces/lifecycle-proof config user.name Fixture; git -C /workspaces/lifecycle-proof config user.email fixture@example.invalid; printf committed > /workspaces/lifecycle-proof/edited; git -C /workspaces/lifecycle-proof add edited; git -C /workspaces/lifecycle-proof commit -qm fixture; printf dirty >> /workspaces/lifecycle-proof/edited; printf untracked > /workspaces/lifecycle-proof/untracked; printf preserved > /var/lib/symphony/proof-state')
  assert docker('exec',name,'id','-u')=='0'
  physical_mounts=inspect(name,'{{json .Mounts}}');print('INITIAL PHYSICAL MOUNTS '+physical_mounts,flush=True)
@@ -105,7 +131,23 @@ try:
  assert inspect(name,'{{json .Mounts}}')==physical_mounts;assert preserved()==preservation
  print('PASS real running basename identity migration preserves container, credentials and physical mounts',flush=True)
  before=selected();assert base in before
- build(v1);fail('create');launch('update','--development-runner','--agent','codex',expected=97)
+ build(v1);fail('create');(root/'hold-stop').touch()
+ with (root/'held-update.log').open('w') as output:
+  update=subprocess.Popen(['bash',str(checkout/'scripts/symphony'),'update','--development-runner','--agent','codex'],cwd=repo,env=env,stdout=output,stderr=subprocess.STDOUT)
+  try:
+   deadline=time.monotonic()+60
+   while not (root/'stop-observed').exists():
+    assert update.poll() is None,'updater exited before stop barrier'
+    assert time.monotonic()<deadline,'updater did not reach actual Docker stop'
+    time.sleep(.05)
+   refusal=launch('run','--port',str(port),expected=1)
+   assert 'another updater is active' in refusal
+  finally:
+   (root/'hold-stop').unlink(missing_ok=True)
+   try:result=update.wait(timeout=90)
+   except subprocess.TimeoutExpired:update.kill();update.wait();raise
+ print((root/'held-update.log').read_text(),flush=True);assert result==97
+ print('PASS real stop-before-rename competing run refuses existing updater ownership',flush=True)
  assert selected()==before;assert inspect(name,'{{.Image}}')==v1;assert inspect(name+'-before-update','{{.Image}}')==base
  assert inspect(name+'-before-update','{{.State.ExitCode}}') in ['0','1']
  assert inspect(name+'-before-update','{{.State.OOMKilled}}')=='false'
@@ -117,7 +159,10 @@ try:
  assert (config/('runners/'+project_id+'.transition/previous.env')).read_text()==previous_metadata
  assert preserved()==preservation
  print('PASS real pending transition basename identity migration preserves candidate, backup and journal',flush=True)
+ launch('runner','stop');assert inspect(name,'{{.State.Running}}')=='false'
  launch('update','--development-runner','--agent','codex');assert v1 in selected();assert state()['agent']['draining'] is False
+ assert inspect(name,'{{.Id}}')==candidate_id
+ print('PASS real stopped retained candidate restarts with the same container identity',flush=True)
  assert not (config/('runners/'+project_id+'.transition')).exists()
  launch('runner','stop');launch('run','--port',str(port));assert state()['agent']['provider']=='codex'
  assert preserved()==preservation
@@ -149,10 +194,10 @@ finally:
  try:print('FINAL ACTUAL HTTP SNAPSHOT '+json.dumps(state(),sort_keys=True),flush=True)
  except Exception as e:print('FINAL SNAPSHOT UNAVAILABLE '+str(e),flush=True)
  if (root/'http.jsonl').exists():print('ACTUAL CONTROL HTTP '+(root/'http.jsonl').read_text(),flush=True)
- for n in [name,name+'-before-update',prefix+'-service',prefix+'-service-before-update']:
+ for n in owned_names:
   subprocess.run([real,'logs',n],stdout=open(root/(n+'.log'),'w'),stderr=subprocess.STDOUT)
   owner=subprocess.run([real,'inspect','--format','{{index .Config.Labels \"com.symphony.storage\"}}',n],text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
-  if owner.returncode==0 and owner.stdout.strip()==name:
+  if owner.returncode==0 and owner.stdout.strip() in owned_storage:
    subprocess.run([real,'rm','-f',n],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  volumes=subprocess.check_output([real,'volume','ls','--format','{{.Name}}'],text=True).splitlines()
  for v in volumes:
