@@ -340,7 +340,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
     {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
     await_check(pid)
-    issue = %Issue{id: "existing-session", identifier: "PROBE-ACTIVE", title: "Existing", state: "In Progress"}
+    issue = %Issue{id: "existing-session", identifier: "PROBE-ACTIVE", title: "Existing", state: "In Progress", dispatchable: true}
 
     {:ok, worker} =
       Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->

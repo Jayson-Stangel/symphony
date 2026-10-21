@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Claude.Adapter, as: ClaudeAdapter
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -184,6 +185,7 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
+        reason = cleanup_lost_owner(reason, running_entry)
         state = handle_agent_down(reason, state, issue_id, running_entry, session_id)
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
@@ -297,6 +299,45 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  # Untrappable owner loss skips the worker's cleanup. Reuse its captured
+  # generation-checked session, never rediscover or broadly signal processes.
+  defp cleanup_lost_owner(reason, %{agent_session: %{adapter: SymphonyElixir.Claude.Adapter} = session})
+       when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+    result =
+      try do
+        SymphonyElixir.CodingAgent.interrupt(session, :worker_owner_lost)
+      catch
+        _, _ -> {:error, :cleanup_unconfirmed}
+      end
+
+    case result do
+      :ok ->
+        reason
+
+      _ ->
+        ClaudeAdapter.record_unconfirmed_cleanup(cleanup_session_profile(session))
+        {:agent_replacement_required, %{provider: :claude, primary: :worker_owner_lost, cleanup: :cleanup_unconfirmed}}
+    end
+  end
+
+  defp cleanup_lost_owner(reason, _entry), do: reason
+
+  defp cleanup_session_profile(%{native: %{identity: %{"profile" => profile}}}) when is_binary(profile), do: profile
+  defp cleanup_session_profile(_session), do: nil
+
+  defp handle_agent_down({:agent_replacement_required, causes}, state, issue_id, running_entry, session_id) do
+    Logger.warning("Agent cleanup requires runtime replacement for issue_id=#{issue_id} session_id=#{session_id} causes=#{inspect(causes)}")
+
+    state =
+      if causes[:provider] == :claude do
+        %{state | readiness: %{ready: false, provider: "claude", code: "cleanup_restart_required"}}
+      else
+        state
+      end
+
+    block_issue_from_entry(state, issue_id, running_entry, "runtime replacement required: #{inspect(causes)}")
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
@@ -443,7 +484,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_agent_readiness(%{readiness_task: %Task{}} = state), do: state
 
   defp refresh_agent_readiness(state) do
-    if Config.coding_agent() == :claude do
+    if Config.coding_agent() == :claude and state.readiness[:code] != "cleanup_restart_required" do
       cancel_readiness_timer(state)
       opts = state.readiness_opts
       task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> AgentReadiness.check(opts) end)
@@ -456,7 +497,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp finish_readiness_check(state, readiness) do
     previous_admission = agent_admission(state)
     control_pending = not is_nil(state.readiness_control)
-    readiness = pin_readiness(readiness, state.expected_profile)
+
+    readiness =
+      cond do
+        Config.coding_agent() == :codex -> AgentReadiness.check()
+        state.readiness[:code] == "cleanup_restart_required" -> state.readiness
+        true -> pin_readiness(readiness, state.expected_profile)
+      end
+
     token = make_ref()
     timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
 
@@ -1875,12 +1923,17 @@ defmodule SymphonyElixir.Orchestrator do
     do: {:reply, {:error, :readiness_check_in_progress}, state}
 
   defp request_agent_resume(state, action, reconcile, from) do
-    if Config.coding_agent() == :claude do
-      readiness = %{ready: false, provider: "claude", code: "checking"}
-      state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
-      {:noreply, refresh_agent_readiness(state)}
-    else
-      resume_agent(state, action, reconcile)
+    cond do
+      Config.coding_agent() == :codex ->
+        resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
+
+      state.readiness[:code] == "cleanup_restart_required" ->
+        {:reply, {:error, :agent_not_ready}, state}
+
+      true ->
+        readiness = %{ready: false, provider: "claude", code: "checking"}
+        state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
+        {:noreply, refresh_agent_readiness(state)}
     end
   end
 
