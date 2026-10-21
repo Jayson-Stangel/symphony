@@ -1475,6 +1475,7 @@ runner_transition() (
   candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
     if [ "$(runner_status "$root")" = true ] &&
+       ! runner_is_legacy "$runtime" "$name" &&
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ]; then
       runner_owned "$root" "$runtime" "$name"
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
