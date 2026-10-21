@@ -404,7 +404,7 @@ Use this only when completion is blocked by missing required tools or missing au
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
-4. Remove the existing `## Agent Workpad` comment from the issue.
+4. Find and remove the existing workpad comment using Step 1's current/legacy header matching (`## Agent Workpad`, `## Codex Workpad`, or `## Symphony Workpad`).
 5. Create a fresh branch from the latest verified policy integration base.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
