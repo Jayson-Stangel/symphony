@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { approvedEnvironment, nativeExecutable, readiness, runtime, RuntimeError, validateContainer, checkSettings } from './runtime.mjs';
+import { approvedEnvironment, nativeExecutable, readiness, runtime, RuntimeError, validateContainer } from './runtime.mjs';
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
@@ -11,7 +11,6 @@ async function main() {
     return;
   }
   validateContainer();
-  checkSettings();
   const env = approvedEnvironment(process.env);
   const binary = nativeExecutable();
   const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8', timeout: 15_000, maxBuffer: 65536 });

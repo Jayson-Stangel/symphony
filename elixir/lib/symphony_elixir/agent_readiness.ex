@@ -3,7 +3,7 @@ defmodule SymphonyElixir.AgentReadiness do
 
   alias SymphonyElixir.Config
 
-  @codes ~w(auth_required unqualified_auth unknown_auth_status unqualified_native_settings
+  @codes ~w(auth_required unqualified_auth unknown_auth_status
             native_identity_mismatch
             runtime_version_mismatch sdk_version_mismatch invalid_tool_environment
             nonroot_profile_required container_profile_required runtime_unavailable)

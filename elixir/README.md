@@ -596,6 +596,12 @@ retain their captured startup identity/configuration and actual runtime auth/pol
 stops; an unhealthy observation does not introduce cross-worker cancellation or a
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
+Native Claude Code owns organizational settings and their permission/routing behavior;
+canonical files, managed drop-ins and remote policy are not Symphony file-existence
+gates. Explicit user/project/local source isolation and strict MCP remain enabled.
+Native subscription checks do not guarantee request endpoints or billing, and Symphony
+configures no API-key/cloud fallback. Codex keeps its existing native policy behavior.
+
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck

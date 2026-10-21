@@ -294,7 +294,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
   test "recognized pre-start readiness observations retry without creating a durable pause", ctx do
     helper = Path.join(ctx.root, "readiness-failed.mjs")
 
-    for code <- ~w(auth_required unqualified_auth unknown_auth_status unqualified_native_settings native_identity_mismatch
+    for code <- ~w(auth_required unqualified_auth unknown_auth_status native_identity_mismatch
                    runtime_version_mismatch sdk_version_mismatch invalid_tool_environment nonroot_profile_required
                    container_profile_required runtime_unavailable) do
       File.write!(helper, "console.log(" <> Jason.encode!(Jason.encode!(%{ready: false, code: code})) <> ");")
