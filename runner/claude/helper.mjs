@@ -57,7 +57,7 @@ export class Helper {
       message: { role: 'user', content: command.prompt } });
     this.wake?.();
     this.turnDeadline = setTimeout(() => {
-      if (this.active) this.finish({ outcome: 'protocol_error' });
+      if (this.active) this.finish({ outcome: 'protocol_error', code: 'turn_timeout' });
       void this.stop(command.request_id);
     }, this.config.turn_timeout_ms);
   }
@@ -99,7 +99,7 @@ export class Helper {
       },
     } });
     this.consume = this.readEvents().catch(() => {
-      if (this.active) this.finish({ outcome: 'protocol_error' });
+      if (this.active) this.finish({ outcome: 'protocol_error', code: 'native_event_error' });
       void this.stop(command.request_id);
     });
     let deadline;
@@ -170,7 +170,7 @@ export class Helper {
       }
     }
     if (this.state !== 'stopped') {
-      if (this.active) this.finish({ outcome: 'protocol_error' });
+      if (this.active) this.finish({ outcome: 'protocol_error', code: 'native_eof' });
       await this.stop(this.state === 'starting' ? this.startRequest : 'native_eof');
     }
   }
