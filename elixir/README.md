@@ -421,6 +421,20 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+`/api/v1/state` also exposes `agent.execution.mode`, `requested` and `effective`
+for the selected runtime's execution environment. These show workspace root,
+server host, SSH host count and categorical Codex approval/sandbox settings.
+Arbitrary policy-map contents and tracker credentials are excluded; custom values
+are represented as `custom`, and an implicit turn sandbox as `default`.
+Container settings retain `/workspaces`, `0.0.0.0` and the existing Codex
+container sandbox/approval bindings. Requested nonempty `worker.ssh_hosts` is
+unsupported inside a container and is rejected before transformation for either
+provider. Native Codex SSH support is unchanged; native Claude SSH remains
+unsupported. A rejected reload retains the previous effective settings and their
+requested/effective snapshot together. Container bindings are also logged on
+successful settings load. This metadata is computed internally, not a workflow
+option or a second configuration store.
+
 Both the web and terminal dashboards show the selected coding agent and model
 near the top, including while idle. Claude displays its configured model alias
 or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.
@@ -538,12 +552,17 @@ This project is licensed under the [Apache License 2.0](../LICENSE).
 `bin/symphony --agent codex|claude` selects one startup-owned coding provider;
 Codex is the default. Claude runs only in its qualified nonroot container image.
 Workflow reload cannot change providers. `claude.model` defaults to `sonnet` and
-accepts current Opus, Sonnet, Haiku and Fable IDs and family aliases. Optional
+accepts bounded nonblank model identifiers unchanged; the native runtime validates
+support rather than a second model allowlist. Optional
 `claude.effort` selects `low`, `medium`, `high`, `xhigh`, or `max` for new sessions;
 omit it for the model default. Both dashboards show the configured reasoning
 level. See [the Claude runner contract](../docs/claude.md)
 for native sign-in, closed `claude` settings, shared scheduler concurrency, durable pauses,
 tracker-side-effect recovery and updater-owned provider/image transitions.
+SDK/CLI pins have one owner in `runner/claude/package.json` and its lock, also
+used by the qualification lab. Node verifies the installed runtime. Elixir checks
+protocol/policy compatibility and bounded version diagnostics without duplicating
+dependency pins; compatible upgrades preserve the same protocol contract.
 The state API adds an `agent` object while retaining existing token fields.
 Model-free Claude readiness runs in one supervised task at startup, on explicit
 refresh/control, and every 30 seconds after completion. Failed observations recover

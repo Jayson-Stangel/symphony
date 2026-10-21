@@ -63,7 +63,8 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp initialize(port, workspace, instructions, skills, opts, id, start_id) do
     case frame(port, deadline(35_000)) do
-      {:ok, %{"v" => 1, "type" => "hello", "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1}} ->
+      {:ok, %{"v" => 1, "type" => "hello", "protocol" => 1, "sdk" => sdk, "cli" => cli, "policy" => 1}}
+      when is_binary(sdk) and byte_size(sdk) in 1..128 and is_binary(cli) and byte_size(cli) in 1..128 ->
         initialize_native(port, workspace, instructions, skills, opts, id, start_id)
 
       {:ok, %{"ready" => false, "code" => code}} ->

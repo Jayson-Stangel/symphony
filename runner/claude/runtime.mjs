@@ -5,7 +5,9 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
-export const runtime = Object.freeze({ sdk: '0.3.303', cli: '2.1.303', policy: 1, protocol: 1 });
+const { dependencies } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+export const runtime = Object.freeze({ sdk: dependencies['@anthropic-ai/claude-agent-sdk'],
+  cli: dependencies['@anthropic-ai/claude-code'], policy: 1, protocol: 1 });
 export const home = '/home/claude';
 export const nativeConfig = `${home}/.claude`;
 export const attestationPath = '/etc/symphony/claude/attestation.json';

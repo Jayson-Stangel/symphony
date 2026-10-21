@@ -51,15 +51,17 @@ defmodule SymphonyElixir.AgentReadiness do
     end
   end
 
-  defp interpret(0, %{"ready" => true, "profile" => profile, "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1, "overages_disabled_attested" => true, "attested_at" => at})
-       when is_binary(profile) and is_binary(at) do
+  defp interpret(0, %{"ready" => true, "protocol" => 1, "profile" => profile, "sdk" => sdk, "cli" => cli, "policy" => 1, "overages_disabled_attested" => true, "attested_at" => at})
+       when is_binary(profile) and is_binary(at) and is_binary(sdk) and byte_size(sdk) in 1..128 and
+              is_binary(cli) and byte_size(cli) in 1..128 do
     if Regex.match?(~r/^[a-f0-9]{64}$/, profile) and match?({:ok, _, _}, DateTime.from_iso8601(at)) do
       %{
         ready: true,
         provider: "claude",
         profile: profile,
-        sdk: "0.3.303",
-        cli: "2.1.303",
+        sdk: sdk,
+        cli: cli,
+        protocol: 1,
         policy: 1,
         local_policy_passed: true,
         overages_disabled_attested: true,

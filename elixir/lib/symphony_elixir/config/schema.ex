@@ -279,8 +279,6 @@ defmodule SymphonyElixir.Config.Schema do
       :turn_timeout_ms,
       :stall_timeout_ms
     ]
-    # Keep aligned with runner/claude/protocol.mjs; see docs/claude.md.
-    @models ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1)
 
     embedded_schema do
       field(:model, :string, default: "sonnet")
@@ -298,7 +296,8 @@ defmodule SymphonyElixir.Config.Schema do
       changeset =
         schema
         |> cast(attrs, @fields, empty_values: [])
-        |> validate_inclusion(:model, @models)
+        |> validate_length(:model, min: 1, max: 256)
+        |> validate_format(:model, ~r/(*UCP)\S/u)
         |> validate_inclusion(:effort, ~w(low medium high xhigh max))
         |> validate_number(:max_concurrent_agents, greater_than: 0)
         |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)
@@ -379,6 +378,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   embedded_schema do
+    field(:execution, :map, virtual: true, default: %{})
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
@@ -485,6 +485,16 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> validate_clone_configuration()
+    |> validate_container_execution()
+  end
+
+  defp validate_container_execution(changeset) do
+    if changeset.valid? and System.get_env("SYMPHONY_CONTAINERIZED") == "1" and
+         get_field(changeset, :worker).ssh_hosts != [] do
+      add_error(changeset, :worker, "ssh_hosts are unsupported in container execution")
+    else
+      changeset
+    end
   end
 
   defp validate_clone_configuration(changeset) do
@@ -569,33 +579,59 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    settings
-    |> Map.put(:tracker, tracker)
-    |> Map.put(:workspace, workspace)
-    |> Map.put(:codex, codex)
-    |> apply_container_overrides()
+    requested =
+      settings
+      |> Map.put(:tracker, tracker)
+      |> Map.put(:workspace, workspace)
+      |> Map.put(:codex, codex)
+
+    containerized = System.get_env("SYMPHONY_CONTAINERIZED") == "1"
+    effective = apply_container_overrides(requested, containerized)
+    %{effective | execution: execution_bindings(requested, effective, containerized)}
   end
 
-  defp apply_container_overrides(settings) do
-    case System.get_env("SYMPHONY_CONTAINERIZED") do
-      "1" ->
-        %{
-          settings
-          | worker: %{settings.worker | ssh_hosts: []},
-            workspace: %{settings.workspace | root: "/workspaces"},
-            server: %{settings.server | host: "0.0.0.0"},
-            codex: %{
-              settings.codex
-              | approval_policy: "never",
-                thread_sandbox: "danger-full-access",
-                turn_sandbox_policy: %{"type" => "dangerFullAccess"}
-            }
+  defp execution_bindings(requested, effective, containerized) do
+    %{
+      mode: if(containerized, do: "container", else: "native"),
+      requested: execution_values(requested),
+      effective: execution_values(effective)
+    }
+  end
+
+  defp execution_values(settings) do
+    %{
+      workspace_root: settings.workspace.root,
+      server_host: settings.server.host,
+      ssh_host_count: length(settings.worker.ssh_hosts),
+      codex: %{
+        approval_policy: approval_category(settings.codex.approval_policy),
+        thread_sandbox: execution_category(settings.codex.thread_sandbox, ~w(read-only workspace-write danger-full-access)),
+        turn_sandbox_type: turn_sandbox_category(settings.codex.turn_sandbox_policy)
+      }
+    }
+  end
+
+  defp approval_category(%{"reject" => _}), do: "reject"
+  defp approval_category(value), do: execution_category(value, ~w(untrusted on-failure on-request never))
+  defp turn_sandbox_category(nil), do: "default"
+  defp turn_sandbox_category(value), do: execution_category(value["type"], ~w(readOnly workspaceWrite dangerFullAccess externalSandbox))
+  defp execution_category(value, allowed), do: if(value in allowed, do: value, else: "custom")
+
+  defp apply_container_overrides(settings, true) do
+    %{
+      settings
+      | workspace: %{settings.workspace | root: "/workspaces"},
+        server: %{settings.server | host: "0.0.0.0"},
+        codex: %{
+          settings.codex
+          | approval_policy: "never",
+            thread_sandbox: "danger-full-access",
+            turn_sandbox_policy: %{"type" => "dangerFullAccess"}
         }
-
-      _ ->
-        settings
-    end
+    }
   end
+
+  defp apply_container_overrides(settings, false), do: settings
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

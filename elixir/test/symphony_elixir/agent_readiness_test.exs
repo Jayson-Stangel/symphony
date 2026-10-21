@@ -29,10 +29,19 @@ defmodule SymphonyElixir.AgentReadinessTest do
     %{root: root, helper: helper, node: node, opts: [node_path: node, helper_path: helper]}
   end
 
-  test "model-free readiness validates exact runtime, profile and attestation metadata", ctx do
+  test "model-free readiness validates protocol, bounded diagnostics, profile and attestation metadata", ctx do
     good = ready()
 
-    for value <- [good, Map.put(good, "profile", "invalid"), Map.put(good, "attested_at", "invalid"), Map.put(good, "sdk", "unqualified"), %{"code" => "auth_required"}, %{"code" => "secret-canary"}] do
+    for value <- [
+          good,
+          Map.put(good, "profile", "invalid"),
+          Map.put(good, "attested_at", "invalid"),
+          Map.put(good, "protocol", 99),
+          Map.put(good, "sdk", String.duplicate("a", 129)),
+          Map.put(good, "cli", nil),
+          %{"code" => "auth_required"},
+          %{"code" => "secret-canary"}
+        ] do
       File.write!(ctx.helper, Jason.encode!(value))
       result = AgentReadiness.check(ctx.opts)
       assert result.ready == (value == good)
@@ -70,6 +79,17 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert %{ready: false, code: "invalid_tool_environment"} = result = AgentReadiness.check(ctx.opts)
     refute inspect(result) =~ "secret-canary"
     assert :ready = AgentPause.current()
+  end
+
+  test "compatible dependency upgrades remain ready under the existing protocol contract", ctx do
+    upgraded = ready() |> Map.put("sdk", "0.999.0") |> Map.put("cli", "9.999.0")
+    File.write!(ctx.helper, Jason.encode!(upgraded))
+    assert %{ready: true, sdk: "0.999.0", cli: "9.999.0", protocol: 1} = AgentReadiness.check(ctx.opts)
+
+    for bad <- [Map.delete(upgraded, "protocol"), Map.put(upgraded, "policy", 99), Map.put(upgraded, "sdk", ""), Map.put(upgraded, "cli", String.duplicate("a", 129))] do
+      File.write!(ctx.helper, Jason.encode!(bad))
+      assert %{ready: false, code: "runtime_unavailable"} = AgentReadiness.check(ctx.opts)
+    end
   end
 
   test "Codex admission and resume ignore retained Claude pauses", ctx do
@@ -528,6 +548,15 @@ defmodule SymphonyElixir.AgentReadinessTest do
   end
 
   defp ready(profile \\ String.duplicate("a", 64)) do
-    %{"ready" => true, "profile" => profile, "sdk" => "0.3.303", "cli" => "2.1.303", "policy" => 1, "overages_disabled_attested" => true, "attested_at" => DateTime.to_iso8601(DateTime.utc_now())}
+    %{
+      "ready" => true,
+      "protocol" => 1,
+      "profile" => profile,
+      "sdk" => "0.3.303",
+      "cli" => "2.1.303",
+      "policy" => 1,
+      "overages_disabled_attested" => true,
+      "attested_at" => DateTime.to_iso8601(DateTime.utc_now())
+    }
   end
 end

@@ -1,10 +1,6 @@
 // Qualification policy only. Production effective-settings validation is CQ-04.
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { realpathSync } from 'node:fs';
-
-const require = createRequire(import.meta.url);
-export const versions = Object.freeze({ sdk: '0.3.303', cli: '2.1.303' });
+import { nativeExecutable, runtime } from '../runtime.mjs';
+export const versions = Object.freeze({ sdk: runtime.sdk, cli: runtime.cli });
 
 export class LabError extends Error {
   constructor(code) { super(code); this.name = 'LabError'; }
@@ -14,8 +10,7 @@ export function executable() {
   if (process.platform !== 'linux' || !['arm64', 'x64'].includes(process.arch)) {
     throw new LabError('lab_requires_supported_linux_container');
   }
-  const pkg = `@anthropic-ai/claude-code-linux-${process.arch}`;
-  return realpathSync(join(dirname(require.resolve(`${pkg}/package.json`)), 'claude'));
+  return nativeExecutable();
 }
 
 export function validateEnvironment(env) {
