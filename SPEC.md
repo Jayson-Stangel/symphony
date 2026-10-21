@@ -2447,8 +2447,12 @@ Explicit input/permission requirements and native turn-limit stops remain blocke
 transient startup protocol/native initialization failures retry only after a
 stopped acknowledgement correlated to the attempted session/request confirms
 owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
-stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
-reported startup failures require matching cleanup proof before retry. Worker loss
+stop; post-start auth/policy/schema/identity failures remain fail-closed. A
+recognized explicit model-free readiness failure before hello uses ordinary
+startup retry without recording a durable pause: no coding session has started.
+Malformed, timed-out or unknown pre-hello outcomes retain their existing gates.
+Historical pause records remain intact without inferred provenance. Helper
+reported post-start failures require matching cleanup proof before retry. Worker loss
 before session publication remains a separate ownership gap described below.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. The
@@ -2547,6 +2551,14 @@ container image, provider, native profile and port before completing the journal
 A candidate created before metadata publication MUST remain recoverable without
 trusting stale cached identity. Existing journal intent and verified rollback
 source evidence remain authoritative until transition completion.
+Before starting a target or a stopped retained rollback source, restore its
+exclusive workspace/state volume ownership: Claude UID/GID11001, Codex UID/GID0.
+The actual retained container/image determines rollback identity; cached target
+intent does not. Ownership mutation MUST refuse active volume users and an active
+retained source. Interrupted preparation leaves the stopped source and journal
+retryable. New-candidate preparation writes drain/unresumed markers before chown.
+Ownership-only rollback MUST preserve cleanup uncertainty and marker semantics;
+it MUST NOT add Git trust exceptions or clear uncertainty merely to restore UID.
 
 ### Shared provider concurrency
 

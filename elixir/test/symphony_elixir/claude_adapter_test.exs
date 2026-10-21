@@ -339,11 +339,70 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "safe native startup cause survives adapter and scheduler re-recording", ctx do
-    helper = Path.join(ctx.root, "rejected-start.mjs")
-    File.write!(helper, ~s|console.log(JSON.stringify({ready: false, code: 'unqualified_auth'}));|)
+  test "recognized pre-start readiness observations retry without creating a durable pause", ctx do
+    helper = Path.join(ctx.root, "readiness-failed.mjs")
 
-    assert {:error, {:agent_pause, :auth_required, %{startup_code: "unqualified_auth", stage: "startup"}} = reason} =
+    for code <- ~w(auth_required unqualified_auth unknown_auth_status unqualified_native_settings native_identity_mismatch
+                   runtime_version_mismatch sdk_version_mismatch invalid_tool_environment nonroot_profile_required
+                   container_profile_required runtime_unavailable) do
+      File.write!(helper, "console.log(" <> Jason.encode!(Jason.encode!(%{ready: false, code: code})) <> ");")
+      assert {:error, {:claude_startup_failed, ^code}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+    end
+
+    # Repaired protocol peer proves the next attempt, not authenticated native recovery.
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    assert :ok = Adapter.stop_session(session)
+  end
+
+  test "unknown explicit pre-start errors remain gated with bounded diagnostics", ctx do
+    helper = Path.join(ctx.root, "unknown-readiness.mjs")
+    File.write!(helper, ~s|console.log(JSON.stringify({ready: false, code: 'secret-canary'}));|)
+    assert {:error, {:agent_pause, :policy_blocked, details}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    assert details == %{startup_code: "runtime_unavailable", stage: "startup"}
+    refute inspect(AgentPause.current()) =~ "secret-canary"
+  end
+
+  test "pre-start observation schedules existing backoff and never clears legacy evidence", ctx do
+    helper = Path.join(ctx.root, "readiness-failed.mjs")
+    File.write!(helper, ~s|console.log(JSON.stringify({ready: false, code: 'auth_required'}));|)
+    assert {:error, reason} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    parent = self()
+
+    {:ok, worker} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :fail ->
+            send(parent, :worker_failed)
+            exit(reason)
+        end
+      end)
+
+    ref = Process.monitor(worker)
+    entry = %{pid: worker, ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    send(worker, :fail)
+    assert_receive :worker_failed
+    assert_receive {:DOWN, ^ref, :process, ^worker, ^reason} = down
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    assert state.retry_attempts[ctx.issue.id].attempt == 1
+    assert state.blocked == %{}
+    Process.cancel_timer(state.retry_attempts[ctx.issue.id].timer_ref)
+
+    assert :ok = AgentPause.record(:auth_required)
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    legacy = File.read!(path)
+    assert {:error, {:claude_startup_failed, "auth_required"}} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+    assert File.read!(path) == legacy
+    assert {:paused, %{"kind" => "auth_required", "profile" => nil}} = AgentPause.current()
+  end
+
+  test "safe post-start schema rejection survives adapter and scheduler re-recording", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "error-start")
+
+    assert {:error, {:agent_pause, :policy_blocked, %{startup_code: "unsupported_tool_schema", stage: "startup"}} = reason} =
              Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
 
     ref = make_ref()
@@ -351,7 +410,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
     assert {:noreply, _state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
 
-    assert {:paused, %{"kind" => "auth_required", "code" => "unqualified_auth", "stage" => "startup"}} =
+    assert {:paused, %{"kind" => "policy_blocked", "code" => "unsupported_tool_schema", "stage" => "startup"}} =
              Task.async(fn -> AgentPause.current() end) |> Task.await()
   end
 
@@ -382,7 +441,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     opts = Keyword.put(ctx.opts, :helper_path, helper)
 
-    for mode <- ["auth-hello", "auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk", "bad-profile", "bad-owned", "bad-pid"] do
+    for mode <- ["auth-start", "error-start", "bad-version", "bad-protocol", "bad-policy", "bad-sdk", "bad-profile", "bad-owned", "bad-pid"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
       assert {:error, {:agent_pause, _, _}} = Adapter.start_session(ctx.workspace, opts)
     end

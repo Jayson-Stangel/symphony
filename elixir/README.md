@@ -40,7 +40,10 @@ frames, unexpected EOF and helper timeouts retry the affected attempt with backo
 The next attempt reads tracker state before writing; Symphony never automatically
 retries a mutation. Unconfirmed cleanup, explicit input/permission requirements and
 authentication/policy stops remain gated. Transient startup failures retry only after a
-matching helper cleanup acknowledgement. Explicit startup policy/identity failures
+matching helper cleanup acknowledgement. Recognized explicit readiness failures
+before the helper's hello also use ordinary retry without persisting a pause; no
+coding session has started. Malformed or unknown pre-hello failures remain gated.
+Explicit post-start policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
 Captured sessions use their common adapter interrupt callback before worker
@@ -611,6 +614,9 @@ preserving the rollback container until the replacement passes readiness. See
 The journal retains transition intent and rollback evidence; selected runner
 metadata is written atomically from the verified container during completion
 and recovery, including an interrupted container creation or rollback.
+Before starting a target or stopped rollback source, the updater restores exclusive
+workspace/state volume ownership to Claude UID11001 or Codex UID0. Ownership-only
+rollback retains cleanup uncertainty and the existing drain markers.
 
 Development verification now also requires Node 24.18.0 (included in mise.toml).
 `make setup` installs only the Elixir dependencies. For Claude development, run

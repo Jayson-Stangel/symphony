@@ -8,6 +8,10 @@ defmodule SymphonyElixir.AgentReadiness do
             runtime_version_mismatch sdk_version_mismatch invalid_tool_environment
             nonroot_profile_required container_profile_required runtime_unavailable)
 
+  @doc false
+  @spec observation_code?(term()) :: boolean()
+  def observation_code?(code), do: code in @codes
+
   @spec check(keyword()) :: map()
   def check(opts \\ []) do
     if Config.coding_agent() == :codex do
