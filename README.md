@@ -5,10 +5,13 @@ work instead of supervising coding agents.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
-_In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+_In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise individual agents; they can manage the work at a higher level._
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
+
+These docs describe this checkout. To test `dev` before production promotion, use
+the [isolated development guide](docs/development.md); installed stable commands follow promoted `main`.
 
 The supplied workflow uses `Blocked` for work requiring external intervention and
 `Human Review` for validated work awaiting human assessment. Workers record available
@@ -42,7 +45,7 @@ Clone the fork you intend to operate into a stable location (the path is a conve
 requirement), then link the command:
 
 ```bash
-git clone git@github.com:Jayson-Stangel/symphony.git ~/src/symphony
+git clone --branch main https://github.com/Jayson-Stangel/symphony.git ~/src/symphony
 ~/src/symphony/scripts/symphony install
 ```
 
@@ -58,8 +61,8 @@ symphony setup --install-prerequisites
 symphony doctor
 ```
 
-`setup` installs the Erlang/Elixir runtime pinned in `elixir/mise.toml`, installs source
-dependencies and builds the local executable. On macOS, `--install-prerequisites` can install
+`setup` installs the Erlang/OTP, Elixir and Node.js tools pinned in `elixir/mise.toml`,
+installs source dependencies and builds the local executable. On macOS, `--install-prerequisites` can install
 missing [mise](https://mise.jdx.dev/); Git comes from the Xcode Command Line Tools and Homebrew
 is required for automatic installation. Source setup and updates do not require or install
 host Codex or GitHub CLI: isolated images supply their own execution tools and authentication.
@@ -88,8 +91,8 @@ A local branch named `main` tracking `dev` is refused before fetching or install
 Local commits outside fetched remote `main` are retained and refused before installation.
 Its fetch prunes stale tracking branches only for that upstream remote, resolving branch-name
 collisions while preserving local branches, tags, and other remotes' tracking refs. Custom fetch
-mappings cannot expand that pruning scope. A typical installation of this fork tracks
-`jayson/main`, not OpenAI's `origin`. Each successful update
+mappings cannot expand that pruning scope. The clone above tracks this fork's
+`origin/main`; an existing installation may use another configured remote for this fork. Each successful update
 repeats idempotent installation and pinned runtime setup, including retries after interrupted setup;
 it also refreshes the global command and skill links
 without changing project credentials or workflows. You do not need to run `symphony setup` after
@@ -110,6 +113,13 @@ directory under `/tmp`; the original configuration-local lock also excludes olde
 updated command after a mixed-version refusal. A crashed updater releases the lock after any
 in-flight command exits. Unknown legacy ownerless
 locks remain refused because their ownership cannot be established safely.
+
+A source-only `symphony update` does not replace existing listener containers or their
+bundled tools. After approving the exact stable rollout, run the installed updater
+from each target repository with `symphony update --agent codex` or
+`symphony update --agent claude` to apply the selected runner image. For this repository,
+`dev` is integration and `main` is production: promotion and stable rollout require
+separate explicit approval for their exact scope, as described in [AGENTS.md](AGENTS.md).
 
 #### Run unattended work in an isolated container
 
@@ -141,8 +151,9 @@ symphony runner doctor
 symphony run --port 4010
 ```
 
-The first command builds and starts the project-specific listener container, verifies its Codex
-session, then proves that Git can create a branch and commit inside it. Use `symphony runner status`
+The doctor checks the prepared image's native login and creates a disposable Git repository
+to prove branch and commit operations. It neither starts a listener nor makes a model request.
+`run` starts the project-specific listener or reuses a matching retained container. Use `symphony runner status`
 at any time to show the container name, loopback dashboard, persistent workspace and log volumes, and
 Codex session volume. `run` reuses that listener; the host CLI only launches and observes it. The
 container receives a
@@ -159,13 +170,14 @@ Stopping or replacing the container retains them. The listener automatically
 returns after a container-engine restart unless explicitly stopped. On startup,
 Symphony reads current tracker state and resumes eligible tickets from their
 existing checkouts, including uncommitted changes and untracked evidence, using
-fresh Codex sessions. Tickets awaiting review or blocked in the tracker retain
+fresh agent sessions. Tickets awaiting review or blocked in the tracker retain
 their workspaces without dispatch. Terminal tickets are cleaned at startup and
 on later successful polls, including tickets completed while Symphony was offline.
 Tracker read failures leave retained workspaces intact until reconciliation succeeds.
 
-`runner stop` allows 30 seconds for graceful shutdown before container removal;
-it retains both named volumes. Empty volumes and historical logs remain available
+`runner stop` allows 30 seconds for graceful shutdown and retains the stopped container,
+its metadata, native login, and both named volumes. A matching `run` can restart it;
+provider/image changes use the installed updater. Empty volumes and historical logs remain available
 after per-ticket checkout cleanup. Volume names include the repository remote's
 identity so repositories with the same name under different owners do not share
 checkouts. Do not run multiple listeners against the same workspace volume.
@@ -274,7 +286,7 @@ symphony init --linear-project my-service-linear-project-slug --local-skill land
 The override is written as `.codex/skills/symphony-land/` and recorded in
 `.codex/symphony-skill-overrides.yml`. It stops receiving global updates until it is removed, so
 keep it small and document why it differs. This namespacing keeps Symphony-specific procedures
-from changing how Codex behaves in unrelated repositories.
+from changing how agents behave in unrelated repositories.
 
 To return one overridden skill to the global version without discarding team changes:
 
@@ -338,22 +350,29 @@ unrelated repositories.
 
 #### Verify and start safely
 
-Verify repository access before starting a listener:
+If the host GitHub CLI is installed, optionally verify repository access before starting a listener.
+Use the credential path printed by `init` in place of `REPOSITORY_IDENTITY`, and replace
+`OWNER/REPOSITORY` with the target repository:
 
 ```bash
+project_env="$HOME/.config/symphony/projects/REPOSITORY_IDENTITY.env"
 set -a
-. ~/.config/symphony/projects/<repository-identity>.env
+. "$project_env"
 set +a
-gh repo view <owner>/<repository>
+gh repo view OWNER/REPOSITORY
 ```
 
-Then start Symphony and its optional local dashboard:
+The host GitHub CLI is optional for isolated execution. `symphony runner doctor` checks
+native login and local Git operations in disposable containers; remote clone/push access
+still depends on the project's repository-scoped Git credential.
+
+Then start Symphony and its local dashboard:
 
 ```bash
 symphony run --port 4010
 ```
 
-Review polling and progress updates stay within the current Codex turn; only completed turns
+Review polling and progress updates stay within the current agent turn; only completed turns
 count toward the worker continuation limit.
 
 Visit `http://localhost:4010` to observe the listener. For a first run, temporarily set
@@ -365,8 +384,7 @@ filter for normal operation.
 
 Tell your favorite coding agent to build Symphony in a programming language of your choice:
 
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
+> Implement Symphony according to this fork's [SPEC.md](SPEC.md).
 
 ### Option 2. Use our experimental reference implementation
 
@@ -374,8 +392,8 @@ Check out [elixir/README.md](elixir/README.md) for instructions on how to set up
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
 help with the setup:
 
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+> Set up Symphony for my repository using this fork's [installation guide](README.md#install-a-stable-runtime)
+> and [Elixir reference guide](elixir/README.md).
 
 ---
 

@@ -22,16 +22,18 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 1. Polls the configured tracker for candidate work (included adapters: Linear, GitHub Issues, Jira
    Cloud, Asana, and GitLab)
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+3. Starts the selected coding agent inside the workspace
+4. Sends a workflow prompt to the agent
+5. Keeps the agent working on the issue until the work is done
 
-During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
+Codex uses [App Server mode](https://developers.openai.com/codex/app-server/);
+Claude uses the [native SDK helper](../docs/claude.md).
+
+During agent sessions, the selected tracker adapter may advertise provider-native tools.
 Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
 `jira_rest`, Asana serves `asana_api`, and GitLab serves `gitlab_api`. Symphony executes those
 tools with configured host-side auth and removes declared tracker-token environment variables from
-the Codex child, so the agent does not need a second tracker login.
+the agent child, so the agent does not need a second tracker login.
 
 Codex and Claude return tracker errors to the agent, following the original Codex
 recovery flow. The agent reads back uncertain writes before retrying and corrects
@@ -75,8 +77,9 @@ new supervision architecture attempts to prove universal quiescence.
 Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
 sessions; ignored user plugin inventory and home-config managed-settings do not
-block readiness. Canonical managed policy, remote cache and enterprise MCP config
-retain the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
+block readiness. Organizational settings remain native-owned; strict-MCP incompatibilities
+are reported during native session initialization and retry with scheduler backoff.
+Model-free readiness does not prove full session compatibility. See [native settings](../docs/claude.md).
 Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
 in the existing project credentials env file. Unselected ambient variables are
 stripped; tracker secrets and native inference/runtime selectors cannot be selected.
@@ -97,7 +100,7 @@ Readiness recovery and workflow reload do not repeat the startup sweep.
 
 The container launcher mounts persistent repository-specific volumes at
 `/workspaces` and `/var/lib/symphony`. Restart recovery uses the tracker and
-existing files, with fresh Codex sessions; in-memory retry counts and session
+existing files, with fresh agent sessions; in-memory retry counts and session
 history are not restored. Completed workspace setup is reused without rerunning
 `after_create`. If shutdown interrupts a local `after_create` hook, a marker in
 `workspace.root/.symphony/bootstrap/<workspace-key>` causes subsequent attempts to fail
@@ -125,7 +128,7 @@ each workspace root, as with existing workspace creation.
 identifier receives a hashed workspace key. Both local and SSH deployments use startup and targeted claimed-issue cleanup
 without polling all terminal history.
 
-If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
+If the agent reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 session details are in memory only; restarting the orchestrator clears those runtime stops, so any
 still-active tracker issue can become a dispatch candidate again after restart.
@@ -150,9 +153,11 @@ Tracker read failures preserve the last successful blocked view until polling re
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+4. Use the globally namespaced Symphony skills installed by the
+   [stable launcher](../README.md#install-a-stable-runtime); avoid copying legacy generic skills
+   into each repository. Use [local overrides](../README.md#local-skill-overrides) only for
+   deliberate project customization. The `symphony-linear` skill expects Symphony's
+   `linear_graphql` tool for raw Linear GraphQL operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
@@ -163,23 +168,32 @@ Tracker read failures preserve the last successful blocked view until polling re
 
 ## Prerequisites
 
-We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
+For normal installed/container operation, follow the [root setup guide](../README.md).
+The source commands below are for a separate development checkout and native Codex debugging.
+Claude execution requires its qualified Linux container; see [development isolation](../docs/development.md).
 
-```bash
-mise install
-mise exec -- elixir --version
-```
+Use [mise](https://mise.jdx.dev/) for the Erlang/OTP, Elixir and Node.js versions in
+`mise.toml`. Native execution also needs Git, an authenticated `codex` command that
+supports app-server mode, and the selected tracker credentials. Install GitHub CLI
+when the target repository's worker procedures require it.
+
+Run the following commands from a directory where you can create a new development checkout.
 
 ## Run
 
+Customize the tracker scope, repository clone and hooks in `WORKFLOW.md` before
+starting the listener. It can dispatch matching tracker work immediately.
+
 ```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
+git clone --branch dev https://github.com/Jayson-Stangel/symphony.git symphony-dev
+git -C symphony-dev switch -c codex/local-development
+cd symphony-dev/elixir
 mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
 
 ## Burrito releases
@@ -198,30 +212,39 @@ Supported release targets:
 `v*` tags publish all four targets with checksums. A manual workflow run builds the same
 artifacts without creating a release.
 
-After downloading the executable for your platform from a release:
+For native Codex execution, download the matching executable and checksum from a
+[release](https://github.com/Jayson-Stangel/symphony/releases). Replace `VERSION` below
+with the downloaded tag (for example `v0.0.3`) and choose your platform:
 
 ```bash
-chmod +x ./symphony-v0.0.1-macos_arm64
-./symphony-v0.0.1-macos_arm64 ./WORKFLOW.md
+chmod +x ./symphony-VERSION-macos_arm64
+./symphony-VERSION-macos_arm64 \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
+
+This direct executable requires the same explicit acknowledgement as the source
+CLI; it does not provide the isolated container or the installed updater.
 
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails /path/to/custom/WORKFLOW.md
 ```
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
-Optional flags:
+Direct executable flags (the installed launcher supplies the acknowledgement for its managed runs):
 
+- `--i-understand-that-this-will-be-running-without-the-usual-guardrails` is required
+- `--agent codex|claude` selects the provider at startup (default: `codex`; Claude requires its container)
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+agent session prompt.
 
 Minimal example:
 
@@ -233,9 +256,7 @@ tracker:
     project_slug: "..."
 workspace:
   root: ~/code/workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+  clone_url: https://github.com/your-org/your-repo.git
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -299,7 +320,8 @@ Notes:
   separate input ceiling; workflow reloads apply to the next attempt. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
   session; it does not permanently block active work or reuse the exhausted session. Tracker state
   and dispatch limits are checked again before another attempt starts.
-  Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
+  Only a successful native turn result completes a turn (`turn/completed` for Codex or
+  a correlated successful SDK result for Claude). Progress messages, review polling, and
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
@@ -312,13 +334,15 @@ Notes:
   continuation behavior. Symphony does not rewrite existing project policy on update.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+- For local clone-only setup, use `workspace.clone_url` as above; it cannot be combined
+  with `hooks.after_create` or SSH workers. Use `hooks.after_create` for custom bootstrap
+  such as cloning a selected branch and installing project dependencies. See the
+  [workspace recovery contract](#how-it-works) for interrupted hooks and retained clone stages.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - For the Linear adapter, `tracker.provider.api_key` reads from `LINEAR_API_KEY` when unset or
   when value is `$LINEAR_API_KEY`. The legacy flat `tracker.api_key` alias behaves the same way.
-- Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if Codex can read that
+- Do not put a literal tracker token in a repo-owned `WORKFLOW.md` if the agent can read that
   workspace. Use `$VAR`/host-side secret references so Symphony can keep the token out of the
   child environment.
 - For path values, `~` is expanded to the home directory.
@@ -368,7 +392,7 @@ codex:
 - Tool: the Linear adapter advertises `linear_graphql`, accepting either a raw query string or an
   object with nonblank `query` and optional object `variables`. Symphony executes it host-side
   with the session-bound endpoint/token and strips declared token environment variables from the
-  Codex child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
+  agent child. `project_slug` scopes scheduler reads, not raw tool calls; the tool can access
   whatever the configured Linear token can access.
 - Evidence downloads: worker tool calls request file URLs signed for five minutes
   with Linear's `public-file-urls-expire-in` header. Workers can retrieve and hash
@@ -403,7 +427,7 @@ codex:
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
   `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
-  credentials and provider authentication aliases from the Codex child, and leaves raw tool access
+  credentials and provider authentication aliases from the agent child, and leaves raw tool access
   limited by that token's GitHub permissions.
 
 ### Jira Cloud adapter
@@ -416,7 +440,7 @@ codex:
 - Blockers: inward `Blocks` links populate `blocked_by`; issues in Jira's `new` status category
   wait until blockers reach configured terminal states, while in-progress categories keep running.
 - Tool: `jira_rest` sends relative `/rest/api/3/` requests host-side with configured Basic auth,
-  strips token environment variables from Codex, and can reach whatever the Jira credential can.
+  strips token environment variables from the agent, and can reach whatever the Jira credential can.
 
 ### Asana adapter
 
@@ -426,7 +450,7 @@ codex:
 - Scope: Symphony polls tasks in the configured project, treats their section as state, and omits
   deleted or out-of-project tasks during ID refreshes.
 - Tool: `asana_api` sends relative Asana REST requests host-side with the configured auth; Symphony
-  strips `ASANA_PAT` and configured token variables from the Codex child, while raw tool calls are
+  strips `ASANA_PAT` and configured token variables from the agent child, while raw tool calls are
   not limited to the configured project.
 
 ### GitLab adapter
@@ -435,11 +459,11 @@ codex:
   `api_key` (default `GITLAB_PAT`); use `opened` and `closed` tracker states.
 - Symphony reads project issues by IID and exposes route-safe `GL-<iid>` identifiers.
 - `gitlab_api` forwards raw GitLab REST requests with host-side auth and keeps configured tracker
-  credentials and provider authentication aliases out of the Codex child.
+  credentials and provider authentication aliases out of the agent child.
 
 ## Web dashboard
 
-The observability UI now runs on a minimal Phoenix stack:
+The web observability UI runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
 - JSON API for operational debugging under `/api/v1/*`
@@ -472,17 +496,32 @@ command flags or native account configuration.
 The JSON state API includes `agent.model`, `agent.model_source` (`configured`
 or `last_session`), and configured `agent.effort` (null for native defaults). Reported Codex identity resets when the runner restarts.
 
+The terminal dashboard also accepts workflow settings under `observability`:
+
+```yaml
+observability:
+  dashboard_enabled: true
+  refresh_ms: 1000
+  render_interval_ms: 16
+```
+
+These are the defaults. Positive intervals control snapshot refresh and minimum
+render spacing; settings reload dynamically. The web dashboard is enabled
+separately by `server.port` or CLI `--port`.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
 - `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.codex/`: repository-local Codex skills and setup helpers
+- `../.codex/`: repository-local agent skills and setup helpers
 
 ## Testing
 
+From the repository root:
+
 ```bash
-make all
+make -C elixir all
 ```
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
@@ -561,8 +600,9 @@ SYMPHONY_RUN_GITLAB_LIVE_E2E=1 mix test test/symphony_elixir/gitlab_live_e2e_tes
 ### Why Elixir?
 
 Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an
-active ecosystem of tools and libraries. It also supports hot code reloading without stopping
-actively running subagents, which is very useful during development.
+active ecosystem of tools and libraries. OTP supervision and timers fit a long-running
+scheduler with independent workers. Symphony reloads workflow configuration dynamically;
+existing native sessions retain their captured startup settings.
 
 ### What's the easiest way to set this up for my own codebase?
 
@@ -674,8 +714,10 @@ ownership coverage is verified on Linux; macOS cannot exercise `/proc` branches.
 Linear tool calls share delivery and redacted diagnostics across Codex and Claude.
 The agent owns outcome reconciliation. Legacy unresolved-call files remain evidence
 for the matching issue's recovery prompt, without blocking dispatch. Authentication and shared policy
-failures still pause the runner. Quota exhaustion uses existing retries with bounded
-backoff and respects reliable reset times; it recovers without manual recheck. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
+failures end the attempt and use ordinary scheduler backoff without creating new durable
+pauses. Historical authentication/policy pauses retain explicit recheck recovery.
+Quota exhaustion uses existing retries with bounded backoff and respects reliable reset
+times; it recovers without manual recheck. See [tracker diagnostics](docs/logging.md#tracker-tool-outcomes)
 and [recovery](../docs/claude.md#pauses-and-recovery).
 
 ## Claude token observability

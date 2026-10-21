@@ -298,7 +298,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-BLOCKED",
                  "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
-                 "error" => "codex turn requires operator input",
+                 "error" => "agent turn requires operator input",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
@@ -360,12 +360,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{
              "status" => "blocked",
-             "last_error" => "codex turn requires operator input",
+             "last_error" => "agent turn requires operator input",
              "blocked" => %{
                "session_id" => "thread-blocked",
                "turn_count" => 0,
                "state" => "In Progress",
-               "error" => "codex turn requires operator input",
+               "error" => "agent turn requires operator input",
                "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0}
              }
            } = json_response(conn, 200)
@@ -763,7 +763,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-BLOCKED",
           issue_url: "https://example.org/issues/MT-BLOCKED",
           state: "In Progress",
-          error: "codex turn requires operator input",
+          error: "agent turn requires operator input",
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",
