@@ -35,10 +35,9 @@ missing Elixir tooling for a project that does not use it.
 ## Steps
 
 1. Inspect status, the current branch and remotes. Derive `integration_host` from
-   the verified remote or PR URL, then check access only to that host with
-   `gh auth status --hostname "$integration_host"`. Establish the repository and
-   integration base from its `AGENTS.md`/integration policy and any existing PR's
-   actual base. Inspect an existing PR by its verified URL:
+   the verified remote or PR URL. Establish the repository and integration base
+   from its `AGENTS.md`/integration policy and any existing PR's actual base.
+   Inspect an existing PR by its verified URL:
    `gh pr view "$pr_url" --json number,url,baseRefName,headRefName`.
    Verify the URL's host and base repository against the remotes, as in
    `symphony-pull`. Retain that host for every subsequent CLI/API operation.
@@ -89,9 +88,6 @@ missing Elixir tooling for a project that does not use it.
 # Identify branch
 branch=$(git branch --show-current)
 
-# Derive integration_host from the verified remote or PR URL before checking access.
-gh auth status --hostname "$integration_host" || exit 1
-
 # Before pushing, run the validation commands discovered in the target repo.
 # For example, use npm run validate only if that repository requires it.
 
@@ -114,7 +110,7 @@ git push --force-with-lease origin HEAD
 # feature_repository is the verified source owner/repo on that same GitHub host.
 # Inspect matching PRs; a failed lookup stops this procedure.
 gh pr list --repo "$integration_host/$integration_repository" --base "$integration_base" --head "$branch" --state all \
-  --json number,state,baseRefName,headRepository,url
+  --json number,state,baseRefName,headRepository,url || exit 1
 # Select the verified source repository and base, excluding unrelated fork/base PRs.
 # Retain the number and state from that same verified result through every mutation.
 # The latest matching PR is first; no matching PR yields an empty row.
