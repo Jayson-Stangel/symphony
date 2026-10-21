@@ -2447,8 +2447,12 @@ Explicit input/permission requirements and native turn-limit stops remain blocke
 transient startup protocol/native initialization failures retry only after a
 stopped acknowledgement correlated to the attempted session/request confirms
 owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
-stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
-reported startup failures require matching cleanup proof before retry. Worker loss
+stop; post-start auth/policy/schema/identity failures remain fail-closed. A
+recognized explicit model-free readiness failure before hello uses ordinary
+startup retry without recording a durable pause: no coding session has started.
+Malformed, timed-out or unknown pre-hello outcomes retain their existing gates.
+Historical pause records remain intact without inferred provenance. Helper
+reported post-start failures require matching cleanup proof before retry. Worker loss
 before session publication remains a separate ownership gap described below.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. The
