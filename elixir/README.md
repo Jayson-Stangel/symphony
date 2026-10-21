@@ -56,6 +56,10 @@ Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
 sessions; managed/remote policy and unqualified installed-plugin metadata retain
 the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
+Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
+in the existing project credentials env file. Unselected ambient variables are
+stripped; tracker secrets and native inference/runtime selectors cannot be selected.
+See [project tool credentials](../docs/claude.md#project-tool-credentials).
 
 See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
 correlation IDs and allowlisted status/codes without parsing GraphQL or inferring

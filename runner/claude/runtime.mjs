@@ -22,12 +22,6 @@ export function nativeExecutable() {
 }
 
 export function approvedEnvironment(source) {
-  const allowed = new Set(['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_DISABLE_FAST_MODE']);
-  for (const [key, value] of Object.entries(source)) {
-    if (value && /^(ANTHROPIC_|CLAUDE_|AWS_|AZURE_|GOOGLE_|VERTEX_|BEDROCK_)/i.test(key) && !allowed.has(key)) {
-      throw new RuntimeError('conflicting_inference_environment');
-    }
-  }
   if (source.HOME !== home || source.CLAUDE_CONFIG_DIR !== nativeConfig || source.CLAUDE_CODE_DISABLE_FAST_MODE !== '1') {
     throw new RuntimeError('native_identity_mismatch');
   }
@@ -37,7 +31,29 @@ export function approvedEnvironment(source) {
   // Only the explicitly selected repository credential is available to Git/gh.
   // Ambient tracker credentials are not copied into the coding environment.
   if (source.SYMPHONY_GIT_TOKEN) env.GH_TOKEN = source.SYMPHONY_GIT_TOKEN;
-  return env;
+  return { ...projectToolEnvironment(source.SYMPHONY_TOOL_ENVIRONMENT, env), ...env };
+}
+
+function projectToolEnvironment(encoded, fixed) {
+  if (!encoded) return {};
+  try {
+    if (encoded.length > 65_536) throw new Error();
+    const { names, values, reserved } = JSON.parse(encoded);
+    if (!Array.isArray(names) || names.length > 128 || !Array.isArray(reserved)
+      || reserved.some(name => typeof name !== 'string') || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error();
+    const blocked = new Set([...Object.keys(fixed), ...reserved, 'GH_TOKEN', 'GITHUB_TOKEN',
+      'NODE_OPTIONS', 'NODE_PATH', 'BUN_OPTIONS'].map(name => name.toUpperCase()));
+    const tools = [];
+    for (const name of names) {
+      if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)
+        || blocked.has(name.toUpperCase()) || /^(ANTHROPIC_|CLAUDE_|SYMPHONY_|LD_|DYLD_)/i.test(name)) throw new Error();
+      if (Object.hasOwn(values, name)) {
+        if (typeof values[name] !== 'string' || values[name].includes('\0')) throw new Error();
+        tools.push([name, values[name]]);
+      }
+    }
+    return Object.fromEntries(tools);
+  } catch { throw new RuntimeError('invalid_tool_environment'); }
 }
 
 export function profileFromStatus(status) {

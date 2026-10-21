@@ -1179,6 +1179,13 @@ Optional provider-native agent tool extension:
   provider and client documentation when identifying credential names and aliases, as these can
   change over time. Literal credentials in a repo-owned `WORKFLOW.md` remain readable to a child
   with workspace access and SHOULD NOT be used when this isolation matters.
+- Explicit project-tool environment selection MAY forward credentials needed by repository tools.
+  Ambient inference variables MUST NOT become admission gates or automatic provider selection.
+  The Claude helper MUST validate selected names at one native environment boundary, exclude
+  tracker-secret names from the captured adapter binding and reserve identity, inference and
+  runtime/preload selectors. Transport selected values as data rather than helper startup variables.
+  Invalid selection diagnostics MUST NOT include values; cleanup MUST NOT receive the selection.
+  Existing project credential files and selected Git forwarding remain the source of operator intent.
 - Unsupported tool names MUST return a structured failure result using the targeted protocol and
   continue the session.
 - Each adapter that ships tools MUST document:

@@ -28,9 +28,10 @@ defmodule SymphonyElixir.Claude.Adapter do
     with {:ok, workspace} <- Workspace.validate_agent_cwd(workspace),
          {:ok, instructions} <- Instructions.context(workspace),
          {:ok, skills} <- Skills.sources(workspace),
-         {:ok, env} <- Config.claude_child_environment(),
+         binding <- Keyword.get_lazy(opts, :tool_binding, &Tracker.bind_agent_tools/0),
+         {:ok, env} <- Config.claude_child_environment(System.get_env(), binding.secret_environment_names),
          {:ok, port} <- start_port(workspace, env, opts) do
-      initialize_or_close(port, workspace, instructions, skills, opts)
+      initialize_or_close(port, workspace, instructions, skills, Keyword.put(opts, :tool_binding, binding))
     end
   end
 
@@ -76,7 +77,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
   defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
     config = Config.settings!().claude
-    binding = Keyword.get(opts, :tool_binding, Tracker.bind_agent_tools())
+    binding = Keyword.fetch!(opts, :tool_binding)
 
     with :ok <-
            write(port, %{
