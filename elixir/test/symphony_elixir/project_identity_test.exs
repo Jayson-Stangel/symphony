@@ -88,6 +88,8 @@ defmodule SymphonyElixir.ProjectIdentityTest do
   test "migration retains credential bytes, stopped old runner and exact storage", ctx do
     repo = hd(ctx.repos)
     {id, old, name} = legacy!(ctx, repo)
+    # Authentication and disposable preflight do not mutate the retained runner.
+    assert {_, 0} = launch(ctx, repo, ["runner", "doctor"])
     credentials = File.read!(Path.join(ctx.root, "config/projects/service.env"))
     assert {message, 0} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     assert message =~ "identity migrated"
@@ -119,6 +121,9 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     assert {_, 97} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     assert {message, 1} = launch(ctx, repo, ["run"])
     assert message =~ "migrate-project-identity"
+    # Canonical logs stay inspectable while the old backup awaits migration.
+    assert {_, 0} = launch(ctx, repo, ["runner", "logs"])
+    assert File.exists?(Path.join(ctx.runtime, "#{old}-before-update.json"))
     assert {_, 0} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     migrated = Path.join(ctx.root, "config/runners/#{id}.transition")
     assert File.read!(Path.join(migrated, "previous.env")) == previous

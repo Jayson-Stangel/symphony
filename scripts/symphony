@@ -1589,7 +1589,6 @@ runner_doctor() {
 runner() {
   local command=${1:-} root agent=codex
   root=$(repo_root)
-  runner_require_identity "$root"
   case "$command" in
     start) runner_start "$root" "${2:-4010}" ;;
     stop) runner_stop "$root" ;;
@@ -1604,6 +1603,7 @@ runner() {
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
       runner_project_lock "$root"
+      runner_require_identity "$root"
       runtime=$(container_runtime)
       runner_owned "$root" "$runtime" "$(runner_id "$root")"
       port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$(runner_id "$root")")
