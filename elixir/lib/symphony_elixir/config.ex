@@ -65,11 +65,11 @@ defmodule SymphonyElixir.Config do
     reserved = secret_names || Tracker.bind_agent_tools().secret_environment_names
 
     case Jason.encode(%{names: names, values: Map.take(environment, names), reserved: reserved}) do
-      {:ok, envelope} ->
+      {:ok, envelope} when byte_size(envelope) <= 65_536 ->
         env = reduced_claude_environment(environment) |> Map.new() |> Map.put("SYMPHONY_TOOL_ENVIRONMENT", envelope)
         {:ok, Enum.to_list(env)}
 
-      {:error, _reason} ->
+      _ ->
         {:error, :invalid_tool_environment}
     end
   end
