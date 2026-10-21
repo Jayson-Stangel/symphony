@@ -52,7 +52,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:before_start, code}} ->
         close_port(port)
-        paused_start(code)
+        startup_failure(code, :ok)
 
       {:error, {:stopped, code}} ->
         close_port(port)
@@ -76,6 +76,9 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:ok, %{"ready" => false, "code" => code}} ->
         {:error, {:readiness_observation, code}}
+
+      {:error, cause} ->
+        {:error, {:before_start, cause}}
 
       _ ->
         {:error, {:before_start, "protocol_error"}}
@@ -134,8 +137,11 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp startup_failure(code, :ok) when code in ["protocol_error", "native_initialization_timeout", "unexpected_native_restart", "native_ownership_unavailable"],
-    do: {:error, {:claude_startup_failed, code}}
+  defp startup_failure({:helper_exited, _status} = cause, :ok), do: {:error, {:claude_startup_failed, cause}}
+
+  defp startup_failure(code, :ok)
+       when code in [:timeout, :invalid_frame, :frame_too_large, :interrupted, "protocol_error", "native_initialization_timeout", "unexpected_native_restart", "native_ownership_unavailable"],
+       do: {:error, {:claude_startup_failed, code}}
 
   defp startup_failure(code, :ok), do: paused_start(code)
 
@@ -192,7 +198,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       {:error, :interrupted} ->
         {:error, :claude_cancelled}
 
-      {:error, :helper_exited} ->
+      {:error, {:helper_exited, _status}} ->
         pending_failure(session, pending, :claude_helper_exited)
 
       {:error, :invalid_frame} ->
@@ -269,6 +275,9 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
+  defp handle_message(%{"type" => "turn_result", "outcome" => "agent_turn_limit"}, session, _request, _event_id, _issue, _callback, _until, pending),
+    do: pending_failure(session, pending, :agent_turn_limit)
+
   defp handle_message(%{"type" => "turn_result", "outcome" => outcome} = message, session, _request, _event_id, _issue, _callback, _until, pending) do
     cond do
       outcome == "protocol_error" ->
@@ -280,7 +289,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       outcome in @pause_kinds ->
         pause(session, outcome, Map.take(message, ["resets_at"]))
 
-      outcome in ["permission_blocked", "agent_turn_limit"] ->
+      outcome == "permission_blocked" ->
         {:error, {:agent_blocked, outcome}}
 
       outcome == "transient_error" ->
@@ -407,7 +416,7 @@ defmodule SymphonyElixir.Claude.Adapter do
     case frame(port, until) do
       {:ok, %{"type" => "stopped", "v" => 1}} -> :ok
       {:ok, _other} -> await_stopped(port, until)
-      {:error, :helper_exited} -> {:error, :unclean_helper_exit}
+      {:error, {:helper_exited, _status}} -> {:error, :unclean_helper_exit}
       error -> error
     end
   end
@@ -466,8 +475,8 @@ defmodule SymphonyElixir.Claude.Adapter do
           {:error, :frame_too_large}
         end
 
-      {^port, {:exit_status, _status}} ->
-        {:error, :helper_exited}
+      {^port, {:exit_status, status}} ->
+        {:error, {:helper_exited, status}}
     after
       wait -> {:error, :timeout}
     end

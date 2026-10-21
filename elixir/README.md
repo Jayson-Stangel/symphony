@@ -41,7 +41,10 @@ initial/retry prompt requires tracker readback before uncertain writes; Symphony
 never automatically replays a mutation. Explicit input/permission and actual
 authentication/policy stops retain their behavior. Transient startup failure keeps
 its retry classification even when the bounded correlated cleanup acknowledgement
-is missing. Captured sessions use the common adapter interrupt callback before
+is missing. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+use the same retry path. Only exact attributed historical pre-hello transport
+pauses are ignored read-only; ambiguous policy evidence remains gated. Captured
+sessions use the common adapter interrupt callback before
 Task retirement and workspace reconciliation. A callback error is logged and does
 not retain an eternal worker/claim. An unpublished session retains Task-only
 recovery without a native cleanup proof.
@@ -59,8 +62,11 @@ protocol failure.
 The existing attempt Task owns normal cleanup once. Both successful and failed
 cleanup preserve the exact original result or exception; bounded diagnostics keep
 primary and cleanup causes separate with issue/session correlation. Claude fallback
-cleanup has a 10-second GNU timeout; captured killed/shutdown/epipe owner loss uses
-existing generation checks before retry. Cleanup uncertainty has no global
+cleanup has a 10-second GNU timeout. Captured-session cancellation and owner-loss
+cleanup run on the existing task supervisor while the scheduler remains responsive.
+The issue keeps its claim and shared capacity until cleanup completes; tracker
+cancellation can supersede pending retry without duplicating cleanup. Captured
+killed/shutdown/epipe owner loss uses existing generation checks before retry. Cleanup uncertainty has no global
 readiness/dispatch latch and never requires container replacement by itself.
 Detached native/shell descendants may survive, particularly before ownership
 publication. This baseline recovery limit is explicit; no guardian/registry or
@@ -289,7 +295,9 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
   Reaching this per-attempt allowance closes the native session normally and schedules the existing
   continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Tracker state and dispatch limits are checked again before another attempt starts.
+  behavior. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
+  session; it does not permanently block active work or reuse the exhausted session. Tracker state
+  and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread
   status notifications remain inside that turn and do not consume continuation turns.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
@@ -601,11 +609,26 @@ canonical files, managed drop-ins and remote policy are not Symphony file-existe
 gates. Explicit user/project/local source isolation and strict MCP remain enabled.
 Native subscription checks do not guarantee request endpoints or billing, and Symphony
 configures no API-key/cloud fallback. Codex keeps its existing native policy behavior.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck
-after repair. A retained quota cooldown resumes polling with `admission.ready=false`
+after repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+ A retained quota cooldown resumes polling with `admission.ready=false`
 and its reset time. The updater reports this as intentionally paused, never as
 operational. Codex ignores retained Claude pause files and leaves their evidence
 untouched when switching providers.

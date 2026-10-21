@@ -41,7 +41,10 @@ hooks:
 agent:
   # Shared by Codex and Claude; use 1 for serial execution.
   # Deprecated claude.max_concurrent_agents is accepted but ignored.
+  # Pre-hello helper transport failures retry normally; they do not pause the project.
   # Healthy explicit auth/policy rechecks restore normal configured capacity.
+  # A zero-worker recheck acknowledges the current qualified native profile;
+  # automatic refresh/resume never accepts an unexpected profile change.
   max_concurrent_agents: 10
   max_turns: 20
 codex:
@@ -483,7 +486,8 @@ Claude configuration lives in a `claude` front-matter mapping. Only `model`
 (sonnet by default; current model IDs and family aliases listed in docs/claude.md),
 `effort` (low, medium, high, xhigh, max; omitted/null uses the model default),
 `max_concurrent_agents` (deprecated and ignored; shared `agent.max_concurrent_agents`
-controls capacity), `max_agentic_turns` (1–100),
+controls capacity), `max_agentic_turns` (1–100; native allowance yields
+after session cleanup to ordinary tracker-revalidated continuation),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider

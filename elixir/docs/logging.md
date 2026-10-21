@@ -29,6 +29,9 @@ When logging Codex execution lifecycle events, include:
 ## Scope Guidance
 
 - `AgentRunner`: log start/completion/failure with issue context, plus `session_id` when known.
+  Native allowance yield and cleanup logs use the captured, sanitized native session identity.
+  Claude turn event IDs are `claude:<session_id>:<request_id>`; the shared session segment
+  correlates those terminal logs with the exhausted session's turn events.
 - `Orchestrator`: log dispatch, retry, terminal/non-active transitions, and worker exits with issue context. Include `session_id` whenever running-entry data has it.
 - `Codex.AppServer`: log session start/completion/error with issue context and `session_id`.
 

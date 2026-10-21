@@ -1147,8 +1147,7 @@ defmodule SymphonyElixir.CoreTest do
         [
           {{:agent_blocked, "protocol_error"}, :turn_input_required, true},
           {{:agent_blocked, "tracker_delivery_failed"}, :approval_required, true},
-          {{:agent_blocked, "permission_blocked"}, nil, true},
-          {{:agent_blocked, "agent_turn_limit"}, nil, true}
+          {{:agent_blocked, "permission_blocked"}, nil, true}
         ]
 
     for {reason, last_event, blocked?} <- cases do
