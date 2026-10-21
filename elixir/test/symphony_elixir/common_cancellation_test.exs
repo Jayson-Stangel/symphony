@@ -101,7 +101,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
 
   test "a captured non-Claude callback interrupts before task retirement and workspace removal", ctx do
     state = capture_session(ctx, ctx.native)
-    state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state)
+    state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state) |> finish_cleanup(ctx.issue.id)
     owner = ctx.owner
     assert_receive {:interrupted, :issue_state_change, true, {:connected, ^owner}}
     refute Process.alive?(owner)
@@ -117,7 +117,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
     entry = Map.put(ctx.entry, :agent_session, session)
     state = %{ctx.state | running: %{ctx.issue.id => entry}}
 
-    state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state)
+    state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state) |> finish_cleanup(ctx.issue.id)
     assert Port.info(ctx.port) == nil
     refute Process.alive?(ctx.owner)
     assert :ok = SymphonyElixir.CodingAgent.interrupt(session, :cancelled)
@@ -135,7 +135,7 @@ defmodule SymphonyElixir.CommonCancellationTest do
 
       log =
         capture_log(fn ->
-          state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state)
+          state = Orchestrator.reconcile_issue_states_for_test([%{ctx.issue | state: "Done"}], state) |> finish_cleanup(ctx.issue.id)
           assert state.running == %{}
           refute MapSet.member?(state.claimed, ctx.issue.id)
         end)
@@ -159,6 +159,13 @@ defmodule SymphonyElixir.CommonCancellationTest do
     assert File.read!(ctx.removed) == "task-only"
     refute File.exists?(ctx.workspace)
     assert state.running == %{}
+  end
+
+  defp finish_cleanup(state, issue_id) do
+    ref = state.running[issue_id].ref
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason} = down, 2_000
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    state
   end
 
   defp capture_session(ctx, native) do

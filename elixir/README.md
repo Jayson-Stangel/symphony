@@ -59,8 +59,11 @@ protocol failure.
 The existing attempt Task owns normal cleanup once. Both successful and failed
 cleanup preserve the exact original result or exception; bounded diagnostics keep
 primary and cleanup causes separate with issue/session correlation. Claude fallback
-cleanup has a 10-second GNU timeout; captured killed/shutdown/epipe owner loss uses
-existing generation checks before retry. Cleanup uncertainty has no global
+cleanup has a 10-second GNU timeout. Captured-session cancellation and owner-loss
+cleanup run on the existing task supervisor while the scheduler remains responsive.
+The issue keeps its claim and shared capacity until cleanup completes; tracker
+cancellation can supersede pending retry without duplicating cleanup. Captured
+killed/shutdown/epipe owner loss uses existing generation checks before retry. Cleanup uncertainty has no global
 readiness/dispatch latch and never requires container replacement by itself.
 Detached native/shell descendants may survive, particularly before ownership
 publication. This baseline recovery limit is explicit; no guardian/registry or

@@ -212,6 +212,7 @@ defmodule SymphonyElixir.ConcurrencyTest do
     assert Presenter.state_payload(__MODULE__, 5_000).agent.admission.reason == "quota_exhausted"
     set_issues(Enum.map(ctx.issues, fn issue -> if issue.id == cancelled.id, do: %{issue | state: "Human Review"}, else: issue end))
     poll(ctx.server)
+    await(fn -> not Map.has_key?(:sys.get_state(ctx.server, 1_000).running, cancelled.id) end)
     refute started?(ctx, queued)
     during = :sys.get_state(ctx.server, 20_000)
     assert map_size(during.running) == 2
@@ -255,7 +256,7 @@ defmodule SymphonyElixir.ConcurrencyTest do
   defp stop_workers(ctx) do
     set_issues(Enum.map(ctx.issues, &%{&1 | state: "Human Review"}))
     poll(ctx.server)
-    assert :sys.get_state(ctx.server, 20_000).running == %{}
+    await(fn -> :sys.get_state(ctx.server, 1_000).running == %{} end)
   end
 
   defp set_issues(issues), do: Application.put_env(:symphony_elixir, :memory_tracker_issues, issues)
