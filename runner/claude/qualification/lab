@@ -35,7 +35,7 @@ verify_image() {
 }
 
 usage() {
-  printf 'Usage: %s build|test|inspect|login|status|live|cancel --confirm-overages-disabled\n' "$0"
+  printf 'Usage: %s build|test|inspect|login|status|live|cancel\n' "$0"
   printf 'Isolated development resources. live sends two model turns; cancel sends one.\n'
 }
 
@@ -55,11 +55,7 @@ case "$command" in
       --entrypoint sh --workdir /opt/symphony-claude-lab/qualification "$lab_image" -c 'node --test test/*.test.mjs'
     ;;
   inspect|login|status|live|cancel)
-    if [ "$command" = live ] || [ "$command" = cancel ]; then
-      [ "$#" = 1 ] && [ "$1" = --confirm-overages-disabled ] || fail 'Live test requires --confirm-overages-disabled after checking Claude account settings.'
-    else
-      [ "$#" = 0 ] || fail "$command takes no arguments"
-    fi
+    [ "$#" = 0 ] || fail "$command takes no arguments"
     verify_image
     owned_volume "$lab_auth"
     owned_volume "$lab_workspace"

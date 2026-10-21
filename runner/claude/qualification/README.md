@@ -52,9 +52,7 @@ tracker credentials or project env files are mounted or forwarded.
 
 ## Native login and bounded live test
 
-The owner first confirms an eligible personal plan and disables paid usage credits/
-overages in the account. Turning off automatic credit reload alone is insufficient.
-Then run in a real terminal:
+Run in a real terminal:
 
 ```bash
 ./lab login
@@ -65,10 +63,10 @@ Choose the Claude subscription account in Anthropic's native sign-in flow. Paste
 sign-in codes only into the native terminal prompt. Host Claude sign-in does not
 authenticate this isolated volume. Do not copy host credential files into it.
 
-After explicit owner authorization:
+After explicit owner authorization (this command sends model requests):
 
 ```bash
-./lab live --confirm-overages-disabled
+./lab live
 ```
 
 This sends two short Sonnet turns in one streaming-input session. Turn one remembers
@@ -99,7 +97,7 @@ lab intentionally exposes no destructive cleanup command.
 The separately authorized cancellation probe is:
 
 ```bash
-./lab cancel --confirm-overages-disabled
+./lab cancel
 ```
 
 It sends one turn with only Bash exposed. A permission callback allows exactly one

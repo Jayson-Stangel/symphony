@@ -3,14 +3,7 @@ import { approvedEnvironment, nativeExecutable, readiness, runtime, RuntimeError
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (!['login', 'check', 'logout', 'attest'].includes(command)) throw new RuntimeError('unknown_auth_command');
-  if (command === 'attest') {
-    if (args.length !== 1 || args[0] !== '--overages-disabled') throw new RuntimeError('explicit_overage_attestation_required');
-    const { identity } = readiness({ requireAttestation: false });
-    console.log(JSON.stringify({ version: 1, policy: runtime.policy, profile: identity.profile,
-      overages_disabled: true, attested_at: new Date().toISOString() }));
-    return;
-  }
+  if (!['login', 'check', 'logout'].includes(command)) throw new RuntimeError('unknown_auth_command');
   if (args.length) throw new RuntimeError('unknown_auth_argument');
   if (command === 'check') {
     const { identity } = readiness();
