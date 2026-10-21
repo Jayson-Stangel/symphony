@@ -31,10 +31,7 @@ export function parseCommand(line) {
 export function classifyEvent(event) {
   if (event.type === 'rate_limit_event') {
     const info = event.rate_limit_info;
-    if (info?.isUsingOverage || ['allowed', 'allowed_warning'].includes(info?.overageStatus) || info?.rateLimitType === 'overage') return { outcome: 'policy_blocked' };
     if (info?.status === 'rejected') {
-      const known = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included'];
-      if (!known.includes(info.rateLimitType)) return { outcome: 'policy_blocked' };
       return { outcome: 'quota_exhausted', resets_at: Number.isSafeInteger(info.resetsAt) && info.resetsAt > 0 ? info.resetsAt : null };
     }
   }

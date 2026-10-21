@@ -137,7 +137,6 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: System.system_time(:second) + 60})
     assert {:paused, %{"kind" => "auth_required"}} = AgentPause.current()
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     assert :ok = AgentPause.record(:some_unknown_error, %{profile: @profile})
     assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
   end
@@ -157,9 +156,8 @@ defmodule SymphonyElixir.AgentPauseTest do
     end
   end
 
-  test "explicit policy recheck checks identity and only clears durably", ctx do
+  test "explicit policy recheck accepts the selected qualified profile and only clears durably", ctx do
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("b", 64))
     File.chmod!(ctx.root, 0o500)
 
     try do
@@ -169,7 +167,7 @@ defmodule SymphonyElixir.AgentPauseTest do
       File.chmod!(ctx.root, 0o700)
     end
 
-    assert :ok = AgentPause.explicit_recheck(@profile)
+    assert :ok = AgentPause.explicit_recheck(String.duplicate("b", 64))
     assert :ready = AgentPause.current()
   end
 
@@ -313,6 +311,8 @@ defmodule SymphonyElixir.AgentPauseTest do
       File.write!(path, data)
       assert {:paused, %{"kind" => "policy_blocked"} = safe} = AgentPause.current()
       refute inspect(safe) =~ "secret-canary"
+      assert {:error, :invalid_pause} = AgentPause.explicit_recheck(@profile)
+      assert File.read!(path) == data
     end
 
     File.rm!(path)

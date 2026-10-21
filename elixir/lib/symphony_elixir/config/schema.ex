@@ -308,7 +308,7 @@ defmodule SymphonyElixir.Config.Schema do
       allowed = Enum.map(@fields, &Atom.to_string/1)
 
       if Enum.any?(Map.keys(attrs), &(&1 not in allowed)) do
-        add_error(changeset, :model, "unsupported Claude setting; authentication and billing policy are runtime-owned")
+        add_error(changeset, :model, "unsupported Claude setting; authentication and billing policy are native-owned")
       else
         changeset
       end

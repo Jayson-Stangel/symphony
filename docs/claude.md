@@ -210,7 +210,7 @@ stops; an unhealthy observation does not introduce cross-worker cancellation or 
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Authentication and shared policy failures reported by actual native sessions still
-require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper
+require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata. Rejected native rate-limit events use ordinary quota recovery regardless of bucket name; actual native billing, authentication and permission failures retain their stop behavior. Established-session protocol, EOF/helper
 timeout and tracker delivery failures use scheduler backoff after bounded cleanup,
 preserving the workspace and requiring tracker readback before uncertain writes.
 No tracker mutation is replayed by the runner. Explicit permission/input stops
@@ -277,6 +277,18 @@ These operations do not perform model probes. They restore normal configured adm
 responses (`admission`) report effective dispatch eligibility, its reason,
 provider/profile and optional quota retry time. Ordinary resume refuses retained
 Claude authentication/policy pauses; explicit recheck follows operator repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+
 Quota cooldown resumes polling with admission false until the reset. Switching to
 Codex ignores Claude pause files without deleting their evidence. Tracker errors do not require runner recheck or operator clearance.
 The legacy `confirm_tools_reconciled` control API option remains available to

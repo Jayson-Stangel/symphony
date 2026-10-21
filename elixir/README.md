@@ -609,11 +609,26 @@ canonical files, managed drop-ins and remote policy are not Symphony file-existe
 gates. Explicit user/project/local source isolation and strict MCP remain enabled.
 Native subscription checks do not guarantee request endpoints or billing, and Symphony
 configures no API-key/cloud fallback. Codex keeps its existing native policy behavior.
+Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
+Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
+actual native billing, authentication and permission failures retain their stop behavior.
 
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck
-after repair. A retained quota cooldown resumes polling with `admission.ready=false`
+after repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
+ A retained quota cooldown resumes polling with `admission.ready=false`
 and its reset time. The updater reports this as intentionally paused, never as
 operational. Codex ignores retained Claude pause files and leaves their evidence
 untouched when switching providers.

@@ -42,7 +42,10 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     actions = %{"drain" => :drain, "resume" => :resume, "recheck" => :recheck}
 
     if get_req_header(conn, "x-symphony-control") == ["1"] and Map.has_key?(actions, action) do
-      case GenServer.call(orchestrator(), {:agent_control, actions[action], params["confirm_tools_reconciled"] == true}, 40_000) do
+      # Recheck may await one existing bounded observation before its own fresh check.
+      timeout = if action == "recheck", do: 75_000, else: 40_000
+
+      case GenServer.call(orchestrator(), {:agent_control, actions[action], params["confirm_tools_reconciled"] == true}, timeout) do
         {:ok, value} -> json(conn, value)
         {:error, reason} -> error_response(conn, 409, to_string(reason), "Agent control refused")
       end

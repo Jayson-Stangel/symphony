@@ -36,6 +36,15 @@ class Probe {
       if (text.startsWith('fable-quota:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
         status: 'rejected', rateLimitType: 'seven_day_overage_included', resetsAt: Number(text.split(':')[1]),
       } });
+      if (text.startsWith('allowed-overage')) {
+        for (const status of ['allowed', 'allowed_warning']) this.push({ type: 'rate_limit_event', rate_limit_info: {
+          status, overageStatus: status, isUsingOverage: true, rateLimitType: 'overage',
+        } });
+        if (text === 'allowed-overage-billing-error') this.push({ type: 'assistant', error: 'billing_error' });
+      }
+      if (text.startsWith('new-bucket:')) this.push({ type: 'rate_limit_event', rate_limit_info: {
+        status: 'rejected', rateLimitType: 'future-native-bucket', resetsAt: Number(text.split(':')[1]),
+      } });
       if (text === 'quota') this.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } });
       if (text === 'auth') this.push({ type: 'assistant', error: 'authentication_failed' });
       if (text === 'linear-recovery') {
