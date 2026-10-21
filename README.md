@@ -351,7 +351,9 @@ work. Redacted diagnostics retain request fingerprints and correlation/status
 fields without an execution-certainty classifier or GraphQL parser dependency.
 Per-attempt turn allowances use the original scheduler continuation path for
 both providers; new workflows do not impose live token/turn circuit breakers.
-Established-session transport/delivery and transient startup failures use bounded
+Helper exit, timeout, malformed frames and incompatible handshakes before hello are
+transient startup failures, not native policy stops. Established-session
+transport/delivery and transient startup failures use bounded
 cleanup and normal scheduler recovery with backoff and tracker readback. Cleanup
 failure retains separate bounded primary/cleanup diagnostics and the original
 outcome; it does not require container replacement or block unrelated dispatch.

@@ -182,6 +182,12 @@ defmodule SymphonyElixir.AgentPause do
   defp public_pause(%{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}), do: :ready
   defp public_pause(%{"kind" => "policy_blocked", "code" => "native_ownership_unavailable", "stage" => "startup"}), do: :ready
 
+  # This exact unscoped startup record was emitted for helper transport failures
+  # before hello. Preserve its bytes, but do not recreate the retired policy gate.
+  defp public_pause(%{"version" => 1, "kind" => "policy_blocked", "profile" => nil, "phase" => "waiting", "resets_at" => nil, "code" => "protocol_error", "stage" => "startup"} = value)
+       when map_size(value) == 7,
+       do: :ready
+
   # The exact original unscoped auth record came only from pre-input observations.
   # Unknown fields or newer diagnostic-bearing auth stops are not legacy matches.
   defp public_pause(%{"version" => 1, "kind" => "auth_required", "profile" => nil, "phase" => "waiting", "resets_at" => nil} = value)

@@ -226,6 +226,34 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ready = AgentPause.current()
   end
 
+  test "only attributable pre-hello transport policy records are retired without erasing evidence", ctx do
+    File.mkdir_p!(ctx.root)
+    path = Path.join(ctx.root, "claude-pause.json")
+    old = %{"version" => 1, "kind" => "policy_blocked", "profile" => nil, "phase" => "waiting", "resets_at" => nil, "code" => "protocol_error", "stage" => "startup"}
+    bytes = Jason.encode!(old)
+    File.write!(path, bytes)
+    assert :ready = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    assert File.read!(path) == bytes
+
+    for value <- [
+          Map.put(old, "profile", @profile),
+          Map.put(old, "unknown", true),
+          Map.put(old, "code", "policy_blocked"),
+          Map.put(old, "code", "unsupported_tool_schema"),
+          Map.put(old, "kind", "auth_required"),
+          old |> Map.put("kind", "quota_exhausted") |> Map.put("resets_at", System.system_time(:second) + 1000),
+          Map.put(old, "stage", "turn"),
+          Map.delete(old, "code"),
+          Map.delete(old, "profile"),
+          Map.put(old, "resets_at", System.system_time(:second) + 1000)
+        ] do
+      bytes = Jason.encode!(value)
+      File.write!(path, bytes)
+      assert {:paused, _} = AgentPause.current()
+      assert File.read!(path) == bytes
+    end
+  end
+
   test "only the exact original unscoped auth observation is retired read-only", ctx do
     File.mkdir_p!(ctx.root)
     path = Path.join(ctx.root, "claude-pause.json")

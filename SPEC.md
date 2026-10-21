@@ -2444,8 +2444,13 @@ workspace. The runner MUST NOT replay tracker mutations; each attempt requires
 live target readback before uncertain writes. Explicit input/permission, actual
 auth/policy/schema/identity and native turn-limit stops retain their own behavior.
 Recognized explicit model-free readiness failures before hello use startup retry
-without a durable pause; malformed or unknown pre-hello failures retain their
-existing classification. Transient startup protocol/native initialization failures
+without a durable pause; unknown explicit readiness errors retain their existing
+classification. Pre-hello helper exit, timeout and malformed/incompatible handshakes
+MUST use ordinary retry rather than a durable policy pause, preserving fixed
+failure categories and the OS helper exit status. Exact attributable
+historical pre-hello transport pause records MAY be ignored without deleting
+their evidence; ambiguous policy records MUST retain explicit recheck.
+Transient startup protocol/native initialization failures
 attempt a correlated bounded stop, then retain their original retry classification
 even when cleanup acknowledgement is missing or foreign. Missing/invalid captured
 ownership metadata aborts startup and uses normal retry, never a global pause;
