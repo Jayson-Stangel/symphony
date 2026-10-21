@@ -489,7 +489,13 @@ defmodule SymphonyElixir.Orchestrator do
 
     token = make_ref()
     timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
-    expected_profile = if control_pending, do: state.expected_profile, else: state.expected_profile || readiness[:profile]
+
+    expected_profile =
+      if control_pending do
+        state.expected_profile
+      else
+        state.expected_profile || readiness[:profile]
+      end
 
     state = %{
       state
@@ -529,7 +535,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | readiness_control: nil}
   end
 
-  defp pin_readiness(%{ready: true, profile: profile} = readiness, expected)
+  defp pin_readiness(%{ready: true, provider: "claude", profile: profile} = readiness, expected)
        when not is_nil(expected) and profile != expected do
     %{readiness | ready: false} |> Map.put(:code, "native_identity_mismatch")
   end
@@ -1921,7 +1927,12 @@ defmodule SymphonyElixir.Orchestrator do
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
          :ok <- resume_admission(admission),
          :ok <- remove_drain() do
-      expected_profile = if action == :recheck, do: readiness[:profile], else: state.expected_profile || readiness[:profile]
+      expected_profile =
+        if action == :recheck do
+          readiness[:profile]
+        else
+          state.expected_profile || readiness[:profile]
+        end
 
       state = %{
         state
