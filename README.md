@@ -357,7 +357,10 @@ transport/delivery and transient startup failures use bounded
 cleanup and normal scheduler recovery with backoff and tracker readback. Cleanup
 failure retains separate bounded primary/cleanup diagnostics and the original
 outcome; it does not require container replacement or block unrelated dispatch.
-Captured process generations limit best-effort cleanup. Detached descendants may
+Captured cancellation and owner-loss cleanup run on the existing task supervisor,
+keeping scheduler controls and sibling workers responsive while each retiring issue
+retains its claim and shared capacity. Captured process generations limit best-effort
+cleanup. Detached descendants may
 survive a crash, especially before ownership publication; baseline recovery does
 not claim universal native-process quiescence. Explicit auth/policy/input stops
 and durable drain retain their own semantics. See [setup, pauses and updater transitions](docs/claude.md)

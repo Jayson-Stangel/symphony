@@ -841,6 +841,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
 
     issue = %{ctx.issue | state: "Human Review", dispatchable: true}
     state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    state = finish_owner_cleanup(state, ctx.issue.id)
     assert state.running == %{}
     refute MapSet.member?(state.claimed, ctx.issue.id)
     assert AgentPause.current() == :ready
@@ -939,6 +940,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     log =
       capture_log(fn ->
         assert {:noreply, state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.blocked == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
@@ -1024,6 +1026,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
 
         assert {:noreply, state} = Orchestrator.handle_info(down, state)
+        state = finish_owner_cleanup(state, ctx.issue.id)
         assert state.running == %{}
         assert state.retry_attempts[ctx.issue.id].attempt == 1
         assert state.blocked == %{}
@@ -1033,6 +1036,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
         refute File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
       end
     end
+  end
+
+  defp finish_owner_cleanup(state, issue_id) do
+    ref = state.running[issue_id].ref
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason} = down, 12_000
+    assert {:noreply, state} = Orchestrator.handle_info(down, state)
+    state
   end
 
   defp cleanup_running_entry(issue, ref, session) do
