@@ -1287,6 +1287,19 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "shared attempt override permits 129 inputs through the production helper Port", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :max_turns, 129))
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", max_turns: 1)
+
+    try do
+      for _ <- 1..129, do: assert({:ok, _} = Adapter.run_turn(session, "ordinary continuation", ctx.issue, []))
+      assert {:error, :claude_attempt_turn_limit} = Adapter.run_turn(session, "attempt overrun", ctx.issue, [])
+      assert :ready = AgentPause.current()
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "native SDK allowance closes its worker and scheduler continues in a renewed session", ctx do
     supervisor = start_supervised!(Task.Supervisor)
     issue = %{ctx.issue | state: "In Progress", dispatchable: true}

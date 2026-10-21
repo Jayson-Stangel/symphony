@@ -19,7 +19,7 @@ for (const mode of ['eof', 'signal', 'owner-death']) test(`Linux owned subproces
   const lines = createInterface({ input: helper.stdout })[Symbol.asyncIterator]();
   assert.equal(JSON.parse((await lines.next()).value).type, 'hello');
   helper.stdin.write(JSON.stringify({ v: 1, type: 'start', session_id: 'session', request_id: 'start', workspace: root,
-    config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 10_000 }, tools: [], instructions: '' }) + '\n');
+    config: { model: 'sonnet', max_turns: 20, max_agentic_turns: 5, turn_timeout_ms: 10_000 }, tools: [], instructions: '' }) + '\n');
   const ready = JSON.parse((await lines.next()).value);
   assert.equal(ready.type, 'ready');
   assert.equal(ready.owned_native.length, 1);
@@ -64,7 +64,7 @@ test('three concurrent helper groups survive another session cleanup independent
     const lines = createInterface({ input: helper.stdout })[Symbol.asyncIterator]();
     assert.equal(JSON.parse((await lines.next()).value).type, 'hello');
     helper.stdin.write(JSON.stringify({ v: 1, type: 'start', session_id: `session-${n}`, request_id: 'start', workspace: root,
-      config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 10_000 }, tools: [], instructions: '' }) + '\n');
+      config: { model: 'sonnet', max_turns: 20, max_agentic_turns: 5, turn_timeout_ms: 10_000 }, tools: [], instructions: '' }) + '\n');
     const ready = JSON.parse((await lines.next()).value);
     assert.equal(ready.type, 'ready');
     assert.equal(ready.owned_native.length, 1);

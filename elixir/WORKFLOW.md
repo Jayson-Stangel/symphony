@@ -491,7 +491,8 @@ after session cleanup to ordinary tracker-revalidated continuation),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider
-selection is fixed across workflow reloads. -->
+selection is fixed across workflow reloads. Shared `agent.max_turns` also bounds helper replay
+history per attempt without an independent request ceiling. -->
 
 Installed updates require a clean local main tracking a configured remote's main. The
 launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME

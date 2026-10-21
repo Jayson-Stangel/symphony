@@ -21,7 +21,7 @@ class FakeQuery {
   interrupt() { this.interrupted = true; return Promise.resolve(); }
 }
 
-async function fixture(t, model = 'sonnet', effort) {
+async function fixture(t, model = 'sonnet', effort, maxTurns = 20) {
   const messages = [];
   let query;
   const helper = new Helper({ identity: { profile: 'test' }, env: {}, binary: '/test/native',
@@ -29,7 +29,7 @@ async function fixture(t, model = 'sonnet', effort) {
     makeQuery: params => { query = new FakeQuery(params); return query; } });
   t.after(() => helper.stop('test_cleanup'));
   await helper.command({ type: 'start', session_id: 'session', request_id: 'start', workspace: process.cwd(),
-    config: { model, effort, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
+    config: { model, effort, max_turns: maxTurns, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
   query.push({ type: 'system', subtype: 'init', session_id: 'native-one' });
   await tick();
   const input = query.params.prompt[Symbol.asyncIterator]();
@@ -272,4 +272,34 @@ test('progress is categorical and only new assistant blocks advance activity', a
   ]);
   assert.ok(!JSON.stringify(progress).includes(secret));
   assert.ok(!JSON.stringify(progress).includes('tool_use'));
+});
+
+
+test('shared attempt allowance permits 129 inputs while bounding replay history', async t => {
+  const ctx = await fixture(t, 'sonnet', undefined, 129);
+  assert.equal(ctx.query.params.options.maxTurns, 5); // Native agentic allowance remains separate.
+  for (let index = 1; index <= 129; index++) {
+    const input = await turn(ctx, `turn-${index}`);
+    const uuid = randomUUID();
+    result(ctx.query, input, { uuid });
+    result(ctx.query, input, { uuid });
+    await tick();
+    assert.equal(ctx.helper.usedRequests.size, index);
+    assert.equal(ctx.helper.terminals.size, index);
+  }
+  assert.equal(ctx.messages.filter(value => value.type === 'turn_result').length, 129);
+  await assert.rejects(() => turn(ctx, 'turn-130'), { message: 'agent_max_turns' });
+  await assert.rejects(() => turn(ctx, 'turn-1'), { message: 'invalid_turn_state' });
+  assert.equal(ctx.helper.usedRequests.size, 129);
+  assert.equal(ctx.helper.terminals.size, 129);
+});
+
+test('stale native IDs cannot grow replay history or complete the current input', async t => {
+  const ctx = await fixture(t);
+  const input = await turn(ctx);
+  result(ctx.query, input, { user_message_uuid: 'stale-input' });
+  await tick();
+  assert.equal(ctx.helper.usedRequests.size, 1);
+  assert.equal(ctx.helper.terminals.size, 0);
+  assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, 'protocol_error');
 });

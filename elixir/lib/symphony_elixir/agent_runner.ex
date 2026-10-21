@@ -94,7 +94,7 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
-    session_opts = [worker_host: worker_host, expected_profile: Keyword.get(opts, :expected_profile)]
+    session_opts = [max_turns: max_turns, worker_host: worker_host, expected_profile: Keyword.get(opts, :expected_profile)]
 
     session_opts =
       case Keyword.fetch(opts, :coding_agent_adapter) do

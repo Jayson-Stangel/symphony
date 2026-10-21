@@ -295,7 +295,8 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
   Reaching this per-attempt allowance closes the native session normally and schedules the existing
   continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
+  behavior. Claude helper replay history uses this same captured attempt allowance, with no
+  separate input ceiling; workflow reloads apply to the next attempt. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
   session; it does not permanently block active work or reuse the exhausted session. Tracker state
   and dispatch limits are checked again before another attempt starts.
   Only `turn/completed` completes a successful turn. Progress messages, review polling, and thread

@@ -5,13 +5,14 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     @behaviour SymphonyElixir.CodingAgent
 
     @impl true
-    def start_session(_workspace, _opts) do
+    def start_session(_workspace, opts) do
       if Process.get(:probe_start_failure) do
         {:error, :probe_startup_failure}
       else
         owner = self()
         {:ok, pid} = Agent.start_link(fn -> owner end)
         send(owner, {:probe_started, pid})
+        send(owner, {:probe_attempt_allowance, Keyword.fetch!(opts, :max_turns)})
 
         native =
           case Process.get(:probe_native_context) do
@@ -103,6 +104,7 @@ defmodule SymphonyElixir.AgentRunnerAdapterTest do
     assert :ok = AgentRunner.run(ctx.issue, nil, coding_agent_adapter: Probe, max_turns: 1, issue_state_fetcher: fn _ -> {:ok, [ctx.issue]} end)
 
     assert_received {:probe_started, pid}
+    assert_received {:probe_attempt_allowance, 1}
     assert_received {:probe_stopped, ^pid}
     refute Process.alive?(pid)
     refute_received {:probe_started, _}
