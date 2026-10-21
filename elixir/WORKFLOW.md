@@ -41,7 +41,7 @@ hooks:
 agent:
   # Shared by Codex and Claude; use 1 for serial execution.
   # Deprecated claude.max_concurrent_agents is accepted but ignored.
-  # An explicit auth/policy recheck retains one recovery owner until success.
+  # Healthy explicit auth/policy rechecks restore normal configured capacity.
   max_concurrent_agents: 10
   max_turns: 20
 codex:
