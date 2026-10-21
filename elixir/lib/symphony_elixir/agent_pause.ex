@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentPause do
-  @moduledoc "Durable agent pause and unresolved tracker-call metadata in the project state volume."
+  @moduledoc "Claude account pauses and issue-local legacy tracker evidence in the project state volume."
 
   alias SymphonyElixir.Config
 
@@ -15,7 +15,7 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec current() :: :ready | {:paused, map()}
   def current do
-    read_pause()
+    if Config.coding_agent() == :claude, do: read_pause(), else: :ready
   end
 
   @doc "Legacy unresolved tracker calls are issue evidence, never a project dispatch gate."
@@ -60,12 +60,14 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec record(atom() | String.t(), map()) :: :ok | {:error, term()}
   def record(kind, details \\ %{}) do
-    kind = to_string(kind)
+    if Config.coding_agent() == :claude do
+      kind = to_string(kind)
 
-    if kind in ["tool_outcome_uncertain", "protocol_error"] do
-      :ok
+      if kind in ["tool_outcome_uncertain", "protocol_error"],
+        do: :ok,
+        else: serialized(fn -> record_pause(kind, details) end)
     else
-      serialized(fn -> record_pause(kind, details) end)
+      :ok
     end
   end
 
@@ -80,12 +82,16 @@ defmodule SymphonyElixir.AgentPause do
 
   @spec explicit_recheck(String.t(), keyword()) :: :ok | {:error, term()}
   def explicit_recheck(profile, opts \\ []) do
-    serialized(fn ->
-      with :ok <- recheck_identity(profile),
-           :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
-        recheck_pause(read_pause(), profile)
-      end
-    end)
+    if Config.coding_agent() == :claude do
+      serialized(fn ->
+        with :ok <- recheck_identity(profile),
+             :ok <- reconcile_legacy_tools(Keyword.get(opts, :confirm_tools_reconciled, false)) do
+          recheck_pause(read_pause(), profile)
+        end
+      end)
+    else
+      :ok
+    end
   end
 
   @doc "Logical Codex tool-state namespace, not an account identity or authentication attestation."
