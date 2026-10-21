@@ -43,6 +43,15 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+The existing attempt task owns normal cleanup once. Successful cleanup preserves
+the original result or exception; failed cleanup reports separate categorical
+primary/cleanup causes and the captured provider. Claude fallback cleanup has a
+10-second GNU timeout; captured killed/shutdown/epipe worker loss reuses generation-checked cleanup
+before retry. Actual cleanup failure remains `cleanup_restart_required` through
+healthy observations and resume/recheck, requiring controlled runtime replacement.
+Untrappable worker death before session publication still lacks captured ownership
+and may retry without native cleanup proof; this original unsafe window remains open.
+
 Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
 sessions; managed/remote policy and unqualified installed-plugin metadata retain
@@ -51,6 +60,7 @@ Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_E
 in the existing project credentials env file. Unselected ambient variables are
 stripped; tracker secrets and native inference/runtime selectors cannot be selected.
 See [project tool credentials](../docs/claude.md#project-tool-credentials).
+
 See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
 correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
 execution certainty. Existing issue-local legacy notices preserve old evidence
