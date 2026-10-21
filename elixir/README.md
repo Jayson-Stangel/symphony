@@ -639,6 +639,11 @@ preserving the rollback container until the replacement passes readiness. See
 The journal retains transition intent and rollback evidence; selected runner
 metadata is written atomically from the verified container during completion
 and recovery, including an interrupted container creation or rollback.
+Retrying an update starts an exactly verified stopped candidate after confirming the
+retained source is inactive and matches the journal. It retains the same image, mounts,
+native login and persistent markers, and must pass current admission before completion.
+Official runner mutations and updater controls share runner ownership even across
+configuration overrides; competing mutations refuse while status and logs remain readable.
 Before starting a target or stopped rollback source, the updater restores exclusive
 workspace/state volume ownership to Claude UID11001 or Codex UID0. Ownership-only
 rollback retains cleanup uncertainty and the existing drain markers.

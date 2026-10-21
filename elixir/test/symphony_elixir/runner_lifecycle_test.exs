@@ -115,7 +115,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         case "$*" in
           *agent-upgrade-unresumed*) test -f "$FIXTURE_STATE.unresumed" && test -f "$FIXTURE_STATE.draining" ;;
         esac ;;
-      stop) echo false > "$FIXTURE_STATE" ;;
+      stop)
+        echo false > "$FIXTURE_STATE"
+        if [ -n "${FIXTURE_STOP_BARRIER:-}" ]; then
+          touch "$FIXTURE_STOP_BARRIER.entered"
+          while [ ! -f "$FIXTURE_STOP_BARRIER.release" ]; do sleep 0.01; done
+        fi ;;
       start)
         if [ -f "${FIXTURE_FAIL_START_FILE:-/nonexistent}" ]; then
           rm "$FIXTURE_FAIL_START_FILE"; exit 1
@@ -136,7 +141,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.chmod!(runtime, 0o755)
     on_exit(fn -> File.rm_rf!(root) end)
 
+    namespace = "test-#{System.pid()}-#{System.unique_integer([:positive])}"
+
     env = [
+      {"SYMPHONY_RUNNER_NAMESPACE", namespace},
       {"PATH", root <> ":" <> System.fetch_env!("PATH")},
       {"SYMPHONY_CONFIG_HOME", config},
       {"SYMPHONY_RUNNER_HOME", Path.join(config, "runners")},
@@ -145,7 +153,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       {"FIXTURE_STATE", Path.join(root, "running")}
     ]
 
-    %{repo: repo, config: config, root: root, env: env, log: Path.join(root, "calls"), state: Path.join(root, "running")}
+    %{repo: repo, config: config, root: root, namespace: namespace, env: env, log: Path.join(root, "calls"), state: Path.join(root, "running")}
   end
 
   for override <- [false, true] do
@@ -155,7 +163,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       File.mkdir_p!(Path.join(selected, "projects"))
       File.cp!(Path.join(ctx.config, "projects/service.env"), Path.join(selected, "projects/service.env"))
       runner_home = if @override, do: Path.join(ctx.root, "explicit-runners"), else: nil
-      env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"SYMPHONY_RUNNER_HOME", runner_home}]
+      env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"SYMPHONY_RUNNER_HOME", runner_home}]
       ready_curl!(ctx)
       assert {_, 0} = launch_args(ctx, ["run"], env ++ [{"SYMPHONY_CONFIG_HOME", selected}])
       assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--config-dir", selected, "--agent", "claude"], env)
@@ -178,7 +186,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "cross-provider completion restores target ownership in both directions", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
@@ -194,7 +202,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     @owner owner
     @position position
     test "#{source} rollback retries after failure #{position} ownership and before source start", ctx do
-      env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+      env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
       ready_curl!(ctx)
       assert {_, 0} = launch_args(ctx, ["run", "--agent", @source], env)
       fail = Path.join(ctx.root, "fail-prepare-once")
@@ -216,7 +224,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "ownership-only Claude rollback preserves cleanup uncertainty", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
     fail = Path.join(ctx.root, "fail-prepare-once")
@@ -264,7 +272,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
     assert {_, 0} = launch(ctx, "start")
     assert {status, 0} = launch(ctx, "status")
-    assert status =~ "Workspaces: /workspaces (volume symphony-service-"
+    assert status =~ "Workspaces: /workspaces (volume symphony-#{ctx.namespace}-service-"
     assert {_, 0} = launch(ctx, "stop")
     assert {_, 0} = launch(ctx, "start")
 
@@ -291,13 +299,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {"Isolated worker: stopped (false)\n", 0} = launch(ctx, "status")
     assert File.read!(Path.join(ctx.config, "runners/service.env")) == metadata
     calls = File.read!(ctx.log)
-    assert calls =~ "stop\t--time\t30\tsymphony-service"
+    assert calls =~ "stop\t--time\t30\tsymphony-#{ctx.namespace}-service"
     refute calls =~ "rm\t"
     assert calls =~ "com.symphony.storage"
   end
 
   test "development updater transitions an officially stopped runner without changing source or global links", ctx do
-    dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     assert {_, 0} = launch_args(ctx, ["run"], dev_env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], dev_env)
     curl = Path.join(ctx.root, "curl")
@@ -308,11 +316,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
     calls = File.read!(ctx.log)
-    assert calls =~ "rename\tsymphony-review-service\tsymphony-review-service-before-update"
+    assert calls =~ "rename\tsymphony-#{ctx.namespace}-service\tsymphony-#{ctx.namespace}-service-before-update"
     assert calls =~ "/state/agent-draining"
     assert calls =~ "com.symphony.agent=claude"
-    assert calls =~ "tag\tfixture-claude-image\tsymphony-review-runner-claude:local"
-    assert calls =~ "rm\tsymphony-review-service-before-update"
+    assert calls =~ "tag\tfixture-claude-image\tsymphony-#{ctx.namespace}-runner-claude:local"
+    assert calls =~ "rm\tsymphony-#{ctx.namespace}-service-before-update"
     refute calls =~ "stop\t"
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
     refute File.exists?(Path.join(ctx.config, "runners/service.transition"))
@@ -320,7 +328,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "legacy listeners require explicit updater pause and migrate to either provider", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
 
     for agent <- ["claude", "codex"] do
       assert {_, 0} = launch_args(ctx, ["run"], env)
@@ -349,7 +357,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "legacy qualification rejects unknown entrypoints and mismatched port metadata", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
     File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
@@ -363,7 +371,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "resuming a transition cannot implicitly stop a restarted legacy listener", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
     File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
@@ -381,7 +389,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "failed legacy migration rolls back through the old state API without resume support", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     File.write!(ctx.state <> ".agent", "<no value>")
     File.write!(Path.join(ctx.config, "runners/service.env"), "SYMPHONY_RUNNER_PORT=4010\n")
@@ -428,7 +436,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "rollback restores a provider-labelled image with the pre-admission state API", ctx do
     ready_curl!(ctx)
     File.chmod!(Path.join(ctx.root, "curl"), 0o755)
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
 
@@ -451,7 +459,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "recheck client allows two serialized bounded observations without extending other controls", ctx do
     ready_curl!(ctx)
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     calls = Path.join(ctx.root, "control-calls")
 
@@ -496,7 +504,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "rollback recovers an API-dead unresumed candidate and refuses unproven or foreign candidates", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
     curl = Path.join(ctx.root, "curl")
@@ -552,14 +560,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.exists?(journal)
     refute File.exists?(ctx.state <> ".backup")
     calls = File.read!(ctx.log)
-    assert calls =~ "stop\t--time\t30\tsymphony-review-service"
-    assert calls =~ "tag\tfixture-claude-image-new\tsymphony-review-runner-claude:local"
+    assert calls =~ "stop\t--time\t30\tsymphony-#{ctx.namespace}-service"
+    assert calls =~ "tag\tfixture-claude-image-new\tsymphony-#{ctx.namespace}-runner-claude:local"
     refute calls =~ "volume\trm"
     assert previous =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image"
   end
 
   test "retry repairs metadata after candidate creation interrupts before metadata publication", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
@@ -579,6 +587,165 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
   end
 
+  test "official mutations share ownership across configuration aliases while reads and unrelated projects proceed",
+       ctx do
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"], env)
+    barrier = Path.join(ctx.root, "stop-barrier")
+
+    update =
+      Task.async(fn ->
+        launch_args(
+          ctx,
+          ["update", "--development-runner", "--agent", "claude"],
+          env ++ [{"FIXTURE_STOP_BARRIER", barrier}]
+        )
+      end)
+
+    on_exit(fn -> File.touch(barrier <> ".release") end)
+    await_file!(barrier <> ".entered")
+    stopped = File.read!(ctx.state)
+    metadata = File.read!(Path.join(ctx.config, "runners/service.env"))
+    alternate = Path.join(ctx.root, "alternate-config")
+    File.mkdir_p!(Path.join(alternate, "projects"))
+
+    File.cp!(
+      Path.join(ctx.config, "projects/service.env"),
+      Path.join(alternate, "projects/service.env")
+    )
+
+    for config <- [ctx.config, alternate],
+        args <- [
+          ["run"],
+          ["runner", "start"],
+          ["runner", "stop"],
+          ["update", "--development-runner", "--pause-runner"],
+          ["update", "--development-runner", "--agent", "claude"],
+          ["update", "--development-runner", "--rollback-runner"],
+          ["runner", "drain"],
+          ["runner", "resume"],
+          ["runner", "recheck"]
+        ] do
+      alias_env = [
+        {"SYMPHONY_CONFIG_HOME", config},
+        {"SYMPHONY_RUNNER_HOME", Path.join(config, "runners")}
+      ]
+
+      assert {message, 1} = launch_args(ctx, args, env ++ alias_env)
+      assert message =~ "another updater is active", inspect({config, args})
+      assert File.read!(ctx.state) == stopped
+      assert File.read!(Path.join(ctx.config, "runners/service.env")) == metadata
+      refute File.exists?(ctx.state <> ".backup")
+    end
+
+    assert {status, 0} = launch_args(ctx, ["runner", "status"], env)
+    assert status =~ "stopped"
+    other_repo = Path.join(ctx.root, "other")
+    File.mkdir_p!(other_repo)
+    assert {_, 0} = System.cmd("git", ["init", "-q", other_repo])
+
+    assert {_, 0} =
+             System.cmd("git", [
+               "-C",
+               other_repo,
+               "remote",
+               "add",
+               "origin",
+               "https://github.com/example/other.git"
+             ])
+
+    File.write!(Path.join(other_repo, "WORKFLOW.md"), "fixture workflow")
+
+    File.cp!(
+      Path.join(ctx.config, "projects/service.env"),
+      Path.join(ctx.config, "projects/other.env")
+    )
+
+    assert {_, 0} =
+             launch_args(
+               %{ctx | repo: other_repo},
+               ["run"],
+               env ++ [{"FIXTURE_STATE", Path.join(ctx.root, "other-running")}]
+             )
+
+    File.touch!(barrier <> ".release")
+    assert {_, 0} = Task.await(update, 10_000)
+    assert File.read!(ctx.state <> ".agent") == "claude"
+    refute File.exists?(ctx.state <> ".backup")
+  end
+
+  for {source, target} <- [{"codex", "claude"}, {"claude", "codex"}] do
+    @source source
+    @target target
+    test "retry restarts stopped #{@target} candidate after interrupted metadata publication",
+         ctx do
+      env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
+      ready_curl!(ctx)
+      assert {_, 0} = launch_args(ctx, ["run", "--agent", @source], env)
+      fail = Path.join(ctx.root, "fail-create-once")
+      File.touch!(fail)
+
+      assert {_, 1} =
+               launch_args(
+                 ctx,
+                 ["update", "--development-runner", "--agent", @target],
+                 env ++ [{"FIXTURE_FAIL_CREATE_FILE", fail}]
+               )
+
+      assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+      assert File.read!(ctx.state) == "false\n"
+      journal = Path.join(ctx.config, "runners/service.transition")
+      previous = File.read!(Path.join(journal, "previous.env"))
+      # Provider/profile are cache fields, not authority for the retained image.
+      stale = previous |> String.replace("SYMPHONY_RUNNER_AGENT=#{@source}", "SYMPHONY_RUNNER_AGENT=#{@target}") |> String.replace(~r/SYMPHONY_RUNNER_PROFILE=.*/, "SYMPHONY_RUNNER_PROFILE=stale")
+      File.write!(Path.join(journal, "previous.env"), stale)
+      File.write!(ctx.log, "")
+
+      assert {message, 0} =
+               launch_args(ctx, ["update", "--development-runner", "--agent", @target], env)
+
+      assert message =~ "Runner transition complete"
+      assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-service\t"
+      refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
+      assert File.read!(ctx.state <> ".agent") == @target
+
+      assert File.read!(ctx.state <> ".volume-owner") ==
+               if(@target == "claude", do: "11001", else: "0")
+
+      assert previous =~ "SYMPHONY_RUNNER_AGENT=#{@source}"
+      refute File.exists?(journal)
+    end
+  end
+
+  for {suffix, value, message} <- [
+        {".storage", "foreign", "foreign runner storage"},
+        {".image", "foreign", "candidate image differs"},
+        {".agent", "codex", "candidate provider differs"},
+        {".port", "4099", "candidate port differs"},
+        {".backup.image", "foreign", "prior image differs"},
+        {".backup.port", "4099", "prior port differs"},
+        {".backup", "true", "prior runner is unexpectedly active"}
+      ] do
+    @suffix suffix
+    @value value
+    @message message
+    test "stopped candidate recovery refuses changed identity #{@suffix} before start", ctx do
+      env = pending_claude_transition!(ctx)
+      ready_curl!(ctx)
+      assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+      File.write!(ctx.state <> @suffix, @value)
+      File.write!(ctx.log, "")
+
+      assert {message, 1} =
+               launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+
+      assert message =~ @message
+      refute File.read!(ctx.log) =~ ~r/(^|\n)(start|stop|rm|rename)\t/
+      assert File.exists?(Path.join(ctx.config, "runners/service.transition"))
+    end
+  end
+
   test "postcommit retry reconstructs metadata from the selected container", ctx do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/service.transition")
@@ -589,6 +756,49 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert File.read!(metadata) =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-claude-image\n"
     refute File.exists?(journal)
+  end
+
+  test "stopped candidate retains rollback evidence when native auth or current admission refuses",
+       ctx do
+    env = pending_claude_transition!(ctx)
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
+    journal = Path.join(ctx.config, "runners/service.transition")
+    previous = File.read!(Path.join(journal, "previous.env"))
+    File.write!(ctx.log, "")
+
+    assert {_, 1} =
+             launch_args(
+               ctx,
+               ["update", "--development-runner", "--agent", "claude"],
+               env ++ [{"FIXTURE_AUTH_FAIL", "true"}]
+             )
+
+    refute File.read!(ctx.log) =~ ~r/(^|\n)start\t/
+    assert File.read!(ctx.state) == "false\n"
+
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_ACTIVE_STORAGE_USER", "foreign-container"}])
+    assert message =~ "retained volume is in use"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)start\t/
+    assert File.read!(ctx.state) == "false\n"
+
+    File.write!(Path.join(ctx.root, "curl"), """
+    #!/bin/sh
+    [ -f "$FIXTURE_STATE" ] && [ "$(cat "$FIXTURE_STATE")" = true ] || exit 1
+    printf '%s' '{"counts":{"running":0},"agent":{"draining":true,"admission":{"ready":false,"reason":"quota"}}}'
+    """)
+
+    assert {message, 1} =
+             launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+
+    assert message =~ "candidate is not ready"
+    assert File.read!(ctx.log) =~ "start\tsymphony-#{ctx.namespace}-service\t"
+    assert File.read!(Path.join(journal, "previous.env")) == previous
+    assert File.exists?(ctx.state <> ".backup")
+    assert File.exists?(ctx.state <> ".unresumed")
+    assert File.exists?(ctx.state <> ".draining")
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
   end
 
   test "rollback restores observed prior identity rather than stale cached fields", ctx do
@@ -654,7 +864,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   defp pending_claude_transition!(ctx) do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", "review"}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
     File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nexit 1\n")
@@ -669,6 +879,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   defp ready_curl!(ctx) do
     File.write!(Path.join(ctx.root, "curl"), """
     #!/bin/sh
+    [ -f "$FIXTURE_STATE" ] && [ "$(cat "$FIXTURE_STATE")" = true ] || exit 1
     case "$*" in
       */api/v1/agent/drain*) touch "$FIXTURE_STATE.api-draining" ;;
       */api/v1/agent/resume*) rm -f "$FIXTURE_STATE.api-draining" ;;
@@ -698,7 +909,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
     assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
-    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-review-service\t/
+    refute File.read!(ctx.log) =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
   end
 
   test "development refresh refuses a running rollback source without replacing either container", ctx do
@@ -720,7 +931,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute message =~ "Refreshed pending development candidate"
     calls = File.read!(ctx.log)
     refute calls =~ "stop\t"
-    refute calls =~ ~r/(^|\n)rm\tsymphony-review-service\t/
+    refute calls =~ ~r/(^|\n)rm\tsymphony-#{ctx.namespace}-service\t/
     assert File.read!(ctx.state <> ".image") == "fixture-claude-image"
   end
 
@@ -763,19 +974,19 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "development namespace separates container, storage, native login and image identities", ctx do
-    dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", "claude-dev"}]
+    dev_env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace <> "-dev"}]
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude", "--port", "14030"], dev_env)
     calls = File.read!(ctx.log)
-    assert calls =~ "symphony-claude-dev-service-"
-    assert calls =~ "--name\tsymphony-claude-dev-service\t"
-    assert calls =~ "symphony-claude-dev-runner-claude:local"
+    assert calls =~ "symphony-#{ctx.namespace}-dev-service-"
+    assert calls =~ "--name\tsymphony-#{ctx.namespace}-dev-service\t"
+    assert calls =~ "symphony-#{ctx.namespace}-dev-runner-claude:local"
     assert calls =~ "-claude-auth:/home/claude"
-    refute calls =~ "symphony-service"
+    refute calls =~ "symphony-#{ctx.namespace}-service"
     refute calls =~ "symphony-runner-claude:local"
 
     File.write!(ctx.log, "")
     assert {_, 0} = launch_args(ctx, ["auth", "codex", "check"], dev_env)
-    assert File.read!(ctx.log) =~ "symphony-claude-dev-codex-auth:/root/.codex"
+    assert File.read!(ctx.log) =~ "symphony-#{ctx.namespace}-dev-codex-auth:/root/.codex"
   end
 
   test "invalid namespaces and unscoped development updates fail before runtime operations", ctx do
@@ -783,7 +994,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert {_, 1} = launch_args(ctx, ["run"], [{"SYMPHONY_RUNNER_NAMESPACE", namespace}])
     end
 
-    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"])
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"SYMPHONY_RUNNER_NAMESPACE", nil}])
     assert message =~ "requires SYMPHONY_RUNNER_NAMESPACE"
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner"], [{"SYMPHONY_RUNNER_NAMESPACE", "test"}])
     assert message =~ "requires --agent"
@@ -836,7 +1047,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert calls =~ "-claude-auth:/home/claude"
     assert calls =~ "--env\tSYMPHONY_GIT_TOKEN\t"
     refute calls =~ "git-secret-canary"
-    refute calls =~ "symphony-codex-auth"
+    refute calls =~ "symphony-#{ctx.namespace}-codex-auth"
     refute File.exists?(Path.join(ctx.repo, "CLAUDE.md"))
     assert File.read!(Path.join(ctx.repo, "WORKFLOW.md")) == "fixture workflow"
   end
@@ -916,6 +1127,18 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     calls = File.read!(ctx.log)
     refute calls =~ "auth.mjs\tlogout"
     refute calls =~ "volume\trm"
+  end
+
+  defp await_file!(path, attempts \\ 500)
+  defp await_file!(_path, 0), do: flunk("runner did not reach the mutation barrier")
+
+  defp await_file!(path, attempts) do
+    if File.exists?(path) do
+      :ok
+    else
+      Process.sleep(10)
+      await_file!(path, attempts - 1)
+    end
   end
 
   defp launch(ctx, command), do: launch_args(ctx, ["runner", command])

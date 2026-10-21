@@ -495,9 +495,14 @@ selection is fixed across workflow reloads. -->
 
 Installed updates require a clean local main tracking a configured remote's main. The
 launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME
-is explicit. Transition advisory locks use the original lock pathname, excluding already-loaded
-older launchers. They release after a crash and any in-flight command
+is explicit. Official runner mutations (start, stop, drain, resume, recheck, updater pause,
+transition and rollback) share advisory ownership for the runtime runner identity regardless
+of configuration overrides. Competing mutations refuse; reads and unrelated projects proceed.
+The original configuration-local lock remains for older updater compatibility. Locks release after a crash and any in-flight command
 exits; unknown legacy ownerless locks remain refused for operator inspection.
+An update retry starts an exactly verified stopped retained candidate while preserving
+its image, mounts, native login and persistent markers. It verifies the inactive retained
+source and current candidate admission before completing or releasing rollback evidence.
 
 An installed update retries idempotent setup even when Git is current. Combined source
 and runner updates hand completion to the newly installed implementation at the exact

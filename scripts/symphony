@@ -834,6 +834,7 @@ runner_report() {
 runner_start() {
   local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume
   validate_agent "$agent"
+  runner_project_lock "$root"
   case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
@@ -1014,6 +1015,44 @@ runner_update_port() {
   printf '%s\n' "$port"
 }
 
+# One project owner covers container changes and controls as well as updater
+# transitions. Nested updater calls reuse the already-held descriptor.
+runner_resource_lock_path() {
+  local directory="/tmp/symphony-runner-locks-$(id -u)"
+  # Config overrides still address the same Docker name. Keep resource ownership
+  # outside caller-selected configuration paths, in a private per-user directory.
+  python3 - "$directory" <<'PYDIRECTORY' || return
+import os, stat, sys
+path = sys.argv[1]
+try:
+    os.mkdir(path, 0o700)
+except FileExistsError:
+    pass
+info = os.lstat(path)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    sys.exit('symphony: unsafe runner lock directory')
+PYDIRECTORY
+  printf '%s/%s.lock\n' "$directory" "$1"
+}
+
+runner_project_lock() {
+  local root=$1 path
+  path=$(runner_resource_lock_path "$(runner_id "$root")")
+  if [ -n "${runner_resource_lock_path:-}" ]; then
+    [ "$runner_resource_lock_path" = "$path" ] || die 'updater already holds a different runner lock'
+    return
+  fi
+  [ ! -L "$path" ] || die 'unsafe runner lock'
+  [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe runner lock'
+  exec 6>>"$path"
+  updater_file_lock "$path" 6
+  runner_resource_lock_path=$path
+  mkdir -p "$runner_home"
+  # Preserve exclusion with older updaters using the configuration-local lock.
+  # Always acquire the resource lock first, then this compatibility lock.
+  runner_transition_lock "$runner_home/$(project_id "$root").transition.lock"
+}
+
 # Keep the original lock pathname as a permanent regular inode. Older launchers
 # also use this pathname, so their mkdir must fail while new code holds flock.
 # Never unlink the inode: that would let a rival lock a different file. Process
@@ -1140,6 +1179,7 @@ runner_wait_idle() {
 
 runner_pause() {
   local root=$1 allow_legacy_stop=${2:-false} runtime name state port
+  runner_project_lock "$root"
   runtime=$(container_runtime); name=$(runner_id "$root"); state=$(runner_status "$root")
   [ "$state" != missing ] || die 'no qualified runner to pause'
   runner_owned "$root" "$runtime" "$name"
@@ -1253,7 +1293,7 @@ runner_transition() (
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   mkdir -p "$runner_home"
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
-  runner_transition_lock "$journal.lock"
+  runner_project_lock "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
@@ -1315,6 +1355,17 @@ runner_transition() (
     runner_owned "$root" "$runtime" "$name"
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
+    [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
+    if [ "$(runner_status "$root")" = false ]; then
+      # The retained container already has the chosen immutable image, mounts and
+      # persistent drain markers. Restart it without recreating or rewriting them.
+      local previous_image
+      previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
+      [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$backup")" = "$previous_image" ] || die 'prior image differs; updater refused'
+      [ "$(runner_update_port "$root" "$runtime" "$backup")" = "$port" ] || die 'prior port differs; updater refused'
+      runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" false
+      "$runtime" start "$name" >/dev/null
+    fi
   fi
   runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
@@ -1328,8 +1379,8 @@ runner_rollback() (
   local root=$1 runtime name backup id journal port previous_agent previous_image state
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
+  runner_project_lock "$root"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
-  runner_transition_lock "$journal.lock"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
@@ -1380,6 +1431,7 @@ runner_rollback() (
 
 runner_stop() {
   local root=$1 runtime name storage_id
+  runner_project_lock "$root"
   runtime=$(container_runtime); name=$(runner_id "$root")
   if "$runtime" inspect "$name" >/dev/null 2>&1; then
     storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
@@ -1427,6 +1479,7 @@ runner() {
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
+      runner_project_lock "$root"
       runtime=$(container_runtime)
       runner_owned "$root" "$runtime" "$(runner_id "$root")"
       port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$(runner_id "$root")")
