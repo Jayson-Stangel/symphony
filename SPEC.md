@@ -2380,8 +2380,13 @@ the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
 scheduling authority. Selection survives workflow reload. Both providers use the
-configured global and per-state concurrency limits, with Sonnet as Claude default. Workflow and helper validation accept the current
-Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
+configured global and per-state concurrency limits, with Sonnet as Claude default.
+Workflow and helper validation accept nonblank model identifiers up to 256
+characters unchanged. Native runtime support validation owns the model catalog;
+wrapper model allowlists MUST NOT duplicate it. SDK/CLI pins are owned by the
+production npm manifest/lock and reused by qualification. Node checks installed
+dependencies against those pins. Elixir checks protocol/policy version 1 and
+bounded diagnostic version strings, rather than dependency literals.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.

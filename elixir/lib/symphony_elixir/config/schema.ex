@@ -279,8 +279,6 @@ defmodule SymphonyElixir.Config.Schema do
       :turn_timeout_ms,
       :stall_timeout_ms
     ]
-    # Keep aligned with runner/claude/protocol.mjs; see docs/claude.md.
-    @models ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1)
 
     embedded_schema do
       field(:model, :string, default: "sonnet")
@@ -298,7 +296,8 @@ defmodule SymphonyElixir.Config.Schema do
       changeset =
         schema
         |> cast(attrs, @fields, empty_values: [])
-        |> validate_inclusion(:model, @models)
+        |> validate_length(:model, min: 1, max: 256)
+        |> validate_format(:model, ~r/(*UCP)\S/u)
         |> validate_inclusion(:effort, ~w(low medium high xhigh max))
         |> validate_number(:max_concurrent_agents, greater_than: 0)
         |> validate_number(:max_agentic_turns, greater_than: 0, less_than_or_equal_to: 100)

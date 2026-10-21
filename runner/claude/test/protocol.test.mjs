@@ -14,15 +14,15 @@ test('protocol rejects versions, unknown options, oversized frames and stale sha
   }
 });
 
-test('start accepts current Claude model IDs and family aliases without rewriting them', () => {
+test('start delegates nonblank model IDs to the native runtime without rewriting them', () => {
   const start = { v: 1, type: 'start', session_id: 'one', request_id: 'two', workspace: '/workspaces/issue',
     config: { model: 'sonnet', max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
   for (const model of ['sonnet', 'opus', 'haiku', 'fable',
-    'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']) {
+    'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'future-native-model-99', 'opusplan', 'Opus']) {
     const command = { ...start, config: { ...start.config, model } };
     assert.deepEqual(parseCommand(JSON.stringify(command)), { ...command, skills: {} });
   }
-  for (const model of ['', 'Opus', 'claude-opus-5-5-typo', 'claude-opus-99', 'opusplan', 'default', 'sonnet[1m]', 123, null, undefined]) {
+  for (const model of ['', '   ', '\u00A0', 'a'.repeat(257), 123, null, undefined]) {
     assert.throws(() => parseCommand(JSON.stringify({ ...start, config: { ...start.config, model } })));
   }
 });
