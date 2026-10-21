@@ -196,7 +196,9 @@ the current checkout; it does not fetch main, install links or run host setup.
 See docs/development.md. Leave the namespace unset for the stable installation.
 
 Credentials created by init are stored outside the repository at:
-  $SYMPHONY_CONFIG_HOME/projects/<repository>.env
+  $SYMPHONY_CONFIG_HOME/projects/<repository-identity>.env
+The identity combines the basename and normalized origin hash. Use the exact
+path printed by init, or by run when credentials are missing.
 
 GitHub tokens should be fine-grained and repository-scoped. Grant Contents and
 Pull requests: Read and write; grant Issues or Workflows only when needed.

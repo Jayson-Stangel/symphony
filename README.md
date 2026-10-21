@@ -210,7 +210,7 @@ contract. Existing workflow and credentials are preserved. Review the generated 
 starting the listener.
 
 Project resources use the repository basename plus the existing 12-character hash of its
-normalized `origin` URL. Credentials (`projects/<identity>.env`), runner metadata and update
+normalized `origin` URL. Credentials (`projects/<repository-identity>.env`), runner metadata and update
 journals, container names, workspace/state volumes and Claude login all share this identity.
 Unrelated repositories named `service` therefore remain independent. SSH and HTTPS spellings of
 the same remote normalize to the same identity; changing the repository origin changes identity.
@@ -232,7 +232,7 @@ storage and unknown metadata are refused before any move. Isolated development i
 use `update --development-runner --migrate-project-identity` with their existing namespace.
 
 A basename-only credential file without an owned retained runner cannot prove its repository.
-Review it explicitly and copy the intended values to the new `projects/<identity>.env` path
+Review it explicitly and copy the intended values to the new `projects/<repository-identity>.env` path
 reported by `init`/`run`; keep the old file until its owner is known. Existing workflows and
 unproven credentials are preserved. A repository gets a new independent credential template even
 if another same-basename repository has old resources or a workflow already exists. Only a retained runner with matching
@@ -311,7 +311,9 @@ clone can retry safely. Existing edited workspaces are preserved. Existing custo
 [workspace recovery details](elixir/README.md).
 
 Initialization stores a private, owner-only credential template outside the repository at
-`~/.config/symphony/projects/<repository>.env`. Add:
+`~/.config/symphony/projects/<repository-identity>.env`. The identity is the basename plus the
+existing normalized `origin` hash. Use the exact credentials path printed by `init` (or by
+`run` when credentials are missing), including any configuration-directory override. Add:
 
 ```dotenv
 LINEAR_API_KEY=lin_api_...
@@ -331,7 +333,7 @@ Verify repository access before starting a listener:
 
 ```bash
 set -a
-. ~/.config/symphony/projects/<repository>.env
+. ~/.config/symphony/projects/<repository-identity>.env
 set +a
 gh repo view <owner>/<repository>
 ```

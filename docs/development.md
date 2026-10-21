@@ -64,8 +64,20 @@ production trackers and production repository credentials out of this workspace.
 The tracker operates on the remote service: a second local clone does not
 isolate issues, comments or pull requests.
 
-Save a fine-grained token restricted to that disposable repository in
-`config/projects/<repository-name>.env`, with `GITHUB_TOKEN=...`. Grant Contents,
+Credentials use `config/projects/<repository-identity>.env`: the basename plus
+Symphony's existing hash of the normalized `origin` URL. `init` and a missing-credentials
+`run` message report the exact path, including configuration overrides. The development
+wrapper deliberately omits `init`; derive the same identity read-only from its source,
+from inside the disposable target clone:
+
+```sh
+repository_identity=$(bash -c 'source "$1/scripts/symphony" --help >/dev/null; project_id "$(repo_root)"' identity "$workspace/source")
+credentials="$workspace/config/projects/$repository_identity.env"
+printf '%s\n' "$credentials"
+```
+
+Save a fine-grained token restricted to that disposable repository in that file,
+with `GITHUB_TOKEN=...`. Grant Contents,
 Issues and Pull requests read/write for a GitHub issue pilot. Set file mode 600.
 Never paste the token into chat, commit it, or use the broad host GitHub login as
 the worker credential.
