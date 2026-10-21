@@ -154,6 +154,50 @@ defmodule SymphonyElixir.ConcurrencyTest do
   end
 
   @tag skip: System.get_env("SYMPHONY_TEST_CLAUDE_CONCURRENCY") != "1"
+  test "unconfirmed captured cleanup retries its real worker without stopping peer sessions", ctx do
+    issues = Enum.take(ctx.issues, 3)
+    set_issues(issues)
+    poll(ctx.server)
+    await(fn -> Enum.all?(issues, &started?(ctx, &1)) end)
+
+    await(fn ->
+      state = :sys.get_state(ctx.server, 20_000)
+      Enum.all?(issues, &match?(%{agent_session: %{native: _}}, state.running[&1.id]))
+    end)
+
+    [failed | retained] = issues
+    before = :sys.get_state(ctx.server, 20_000)
+    original_session = before.running[failed.id].agent_session
+    # Fault the captured cleanup executable only, preserving actual PID/generation
+    # ownership; the real worker dies untrappably while the sibling Tasks stay live.
+    failed_session = put_in(original_session.native.cleanup, "/missing-cleanup")
+    :sys.replace_state(ctx.server, fn state -> put_in(state.running[failed.id].agent_session, failed_session) end)
+
+    try do
+      log =
+        capture_log(fn ->
+          Process.exit(before.running[failed.id].pid, :kill)
+          await(fn -> turn_count(ctx, failed) == 2 end)
+        end)
+
+      assert log =~ "cleanup=cleanup_unconfirmed"
+      after_retry = :sys.get_state(ctx.server, 20_000)
+      assert map_size(after_retry.running) == 3
+      assert after_retry.running[failed.id].pid != before.running[failed.id].pid
+      assert after_retry.running[failed.id].workspace_path == before.running[failed.id].workspace_path
+      for issue <- retained, do: assert(after_retry.running[issue.id].pid == before.running[issue.id].pid)
+      assert Presenter.state_payload(__MODULE__, 5_000).agent.admission.ready
+      assert :ready = SymphonyElixir.AgentPause.current()
+      refute File.exists?(Path.join(Config.agent_state_root(), "claude-cleanup-unconfirmed"))
+    after
+      # The deliberately failed captured command is not a cleanup proof. Reuse the
+      # original generation-checked command for this fixture's remaining resources.
+      assert :ok = SymphonyElixir.CodingAgent.stop_session(original_session)
+      stop_workers(ctx)
+    end
+  end
+
+  @tag skip: System.get_env("SYMPHONY_TEST_CLAUDE_CONCURRENCY") != "1"
   test "shared Claude cooldown gates new starts while other owned sessions stay live", ctx do
     set_issues(ctx.issues)
     poll(ctx.server)

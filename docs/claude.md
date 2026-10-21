@@ -58,7 +58,7 @@ inference routes. Explicitly selected inference selectors are rejected. Unqualif
 runtime versions retain their readiness checks. Recognized explicit readiness
 failures before helper hello do not create durable pauses: periodic readiness and
 the existing retry backoff recognize repair. This does not clear historical pause
-records or relax post-start runtime policy/input and uncertain-cleanup gates.
+records or relax actual post-start runtime policy/input gates.
 
 ## Project tool credentials
 
@@ -194,16 +194,14 @@ stops; an unhealthy observation does not introduce cross-worker cancellation or 
 durable global turn gate. Native session admission validates the current native login without a billing attestation.
 
 Authentication and shared policy failures reported by actual native sessions still
-require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper timeout and tracker
-delivery failures retry the affected attempt with scheduler backoff after confirmed
-cleanup, preserving its workspace and requiring tracker readback before writing.
-No tracker mutation is replayed by the runner. Explicit permission/input and
-native turn-limit stops remain blocked. Transient startup protocol or native initialization failures also retry once the
-helper acknowledges owned-native cleanup for that exact session/request. The
-cleanup wait is bounded; a missing or foreign acknowledgement retains the original
-startup cause and creates the existing cleanup-unconfirmed stop. Explicit startup
-auth/policy/schema/identity failures remain gated. A helper crash before ownership
-handoff still requires recovery because native cleanup cannot be proven. Explicit drains
+require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper
+timeout and tracker delivery failures use scheduler backoff after bounded cleanup,
+preserving the workspace and requiring tracker readback before uncertain writes.
+No tracker mutation is replayed by the runner. Explicit permission/input and native
+turn-limit stops remain blocked. Transient startup protocol/initialization failures
+keep their original retry cause after a bounded correlated stop attempt; missing or
+foreign cleanup acknowledgement is a separate diagnostic. Actual startup auth,
+policy/schema/identity failures retain their independent behavior. Explicit drains
 remain durable and prevent queued retries from dispatching.
 
 Both providers follow the original Codex tool recovery model: tracker responses,
@@ -264,8 +262,10 @@ preserve that evidence and do not require the option.
 
 The control API requires an explicit header; keep its published port on loopback.
 Drain persists through restarts. Existing workers can finish, but new work is
-not dispatched. If process cleanup cannot be confirmed, readiness requires an
-updater-owned container replacement; a recheck alone cannot clear that condition.
+not dispatched. Cleanup uncertainty alone never requires container replacement.
+Retired cleanup markers are ignored/preserved and attributed cleanup-only pauses
+are ignored read-only. Ambiguous untagged policy still uses the existing fresh
+healthy explicit recheck; an old marker cannot turn that into a replacement gate.
 
 For native reauthentication with the same account:
 
@@ -342,25 +342,28 @@ with the current user input. Plain assistant prose, partial EOF and malformed
 frames never establish successful completion or quota resets. Captured process
 generations constrain cleanup to the helper's owned native group.
 
-The existing attempt task owns normal session cleanup. Cleanup success preserves
-its exact primary result or exception; failure reports bounded primary and cleanup
-causes separately with an explicit replacement requirement. When a captured worker
-is killed, shut down or exits with linked-Port `:epipe` without its cleanup, the scheduler reuses generation-safe
-cleanup before retry/release. The fallback command and its own children are bounded
-by a 10-second GNU timeout. A timeout does not prove detached native-group cleanup;
-uncertainty retains the existing marker and `cleanup_restart_required` admission.
-Fresh observations and resume/recheck cannot clear that actual ownership failure.
+The existing attempt Task owns normal session cleanup once. Exact original primary
+returns/exceptions survive both successful and failed cleanup; bounded primary and
+cleanup diagnostics remain separate with available issue/session correlation.
+Scheduler cancellation attempts the captured adapter interrupt before Task
+retirement and workspace reconciliation, even when that callback fails. It does
+not retain an eternal worker/claim because descendant cleanup is unconfirmed.
+Captured killed/shutdown/linked-Port `:epipe` owner loss reuses generation-safe
+cleanup before normal retry. The fallback command and its own children have a
+10-second GNU timeout; detached native groups may survive that deadline or a crash.
+Unpublished worker loss retains the baseline Task-only retry path without an
+ownership proof. No global cleanup pause, readiness latch, mandatory replacement,
+watchdog, native guardian or extra supervision service is introduced.
 
-Marker persistence is best effort if the state filesystem is unavailable; the
-running scheduler still refuses admission until controlled runtime replacement.
-Restart durability cannot be promised when that filesystem cannot persist evidence;
-replace the container rather than restart only its scheduler in that condition.
-Helper-reported startup failure without its matching cleanup acknowledgement
-remains gated. A separate original gap remains: untrappable worker death before
-`worker_agent_session` publication leaves no captured ownership, so the scheduler
-may retry without confirmed native cleanup. This repair does not close that unsafe
-window; future ownership publication needs an explicit design and proof. No
-new supervision service, native guardian or ownership protocol is introduced.
+Old `claude-cleanup-unconfirmed` files are preserved but ignored, including across
+startup, workflow refresh, restart and controls. Attributed `policy_blocked` records
+with code `cleanup_restart_required` and stage `cleanup` are ignored read-only.
+An old untagged policy record is indistinguishable from a real native policy stop;
+it still uses ordinary healthy explicit recheck rather than automatic deletion.
+Historical cleanup may have overwritten an earlier auth/quota/policy record, so
+neither an attributed tag nor an untagged file proves the absence of an older real
+cause. New cleanup never overwrites actual account pauses. The operator chose this
+OpenAI baseline recovery tradeoff; no universal descendant-exit guarantee is claimed.
 
 Token usage appears as Claude reports assistant steps, including cached input.
 Repeated tool blocks sharing a message ID count once. Step-level output counts

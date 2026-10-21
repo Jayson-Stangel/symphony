@@ -347,13 +347,14 @@ work. Redacted diagnostics retain request fingerprints and correlation/status
 fields without an execution-certainty classifier or GraphQL parser dependency.
 Per-attempt turn allowances use the original scheduler continuation path for
 both providers; new workflows do not impose live token/turn circuit breakers.
-Established-session transport and delivery failures retry after confirmed
-cleanup with backoff and tracker readback; startup transient failures retry after
-a matching owned-process cleanup acknowledgement; explicit input/permission and cleanup
-stops retain their gates. Cleanup failures retain separate bounded primary and cleanup
-causes and explicitly require runtime replacement; a healthy check cannot waive
-uncertain captured native ownership. Worker loss before ownership publication
-remains an explicit unsafe retry gap. See [setup, pauses and updater transitions](docs/claude.md)
+Established-session transport/delivery and transient startup failures use bounded
+cleanup and normal scheduler recovery with backoff and tracker readback. Cleanup
+failure retains separate bounded primary/cleanup diagnostics and the original
+outcome; it does not require container replacement or block unrelated dispatch.
+Captured process generations limit best-effort cleanup. Detached descendants may
+survive a crash, especially before ownership publication; baseline recovery does
+not claim universal native-process quiescence. Explicit auth/policy/input stops
+and durable drain retain their own semantics. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Ordinary dispatch excludes terminal history; startup and tracked-issue reconciliation
 retain cleanup, with unclaimed completed workspaces waiting for the next restart.
 Existing stable installations change only through

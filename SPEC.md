@@ -2437,45 +2437,45 @@ retry lifecycle and bounded backoff, extended to a reliable provider reset time
 when supplied. Quota cooldowns expire automatically; unknown resets use backoff.
 No durable consumed-quota-probe gate survives handoff, interruption or restart.
 Legacy consumed probes and expired/unknown quota records do not block dispatch.
-Tracker errors are issue-scoped; the agent owns tracker reconciliation. After
-confirmed session cleanup, established-session protocol errors, unexpected EOF,
-helper timeouts and tracker delivery failures retry the attempt with scheduler
-backoff in its retained workspace. The runner MUST NOT replay tracker mutations.
-The next prompt requires live target readback before uncertain writes are retried.
-Explicit input/permission requirements and native turn-limit stops remain blocked;
-transient startup protocol/native initialization failures retry only after a
-stopped acknowledgement correlated to the attempted session/request confirms
-owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
-stop; post-start auth/policy/schema/identity failures remain fail-closed. A
-recognized explicit model-free readiness failure before hello uses ordinary
-startup retry without recording a durable pause: no coding session has started.
-Malformed, timed-out or unknown pre-hello outcomes retain their existing gates.
-Historical pause records remain intact without inferred provenance. Helper
-reported post-start failures require matching cleanup proof before retry. Worker loss
-before session publication remains a separate ownership gap described below.
-Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
-process cleanup blocks readiness until updater-owned container recovery. The
-existing attempt task owns normal cleanup once. Scheduler cancellation MUST use
-the captured session's common interrupt callback for either provider before worker
-termination/workspace removal, retaining worker ownership if interruption fails.
-An unpublished session retains the existing task-only cancellation path; that path
-does not establish native cleanup. Confirmed cleanup preserves the
-exact primary outcome/exception; failure MUST retain separate bounded categorical
-primary and cleanup causes and expose a replacement-required outcome scoped to its
-captured provider. Killed/shutdown/linked-Port `:epipe` workers with captured ownership use the
-existing generation-safe fallback before retry/release. That fallback command and
-its own process group have a ten-second deadline; timeout does not establish that
-any detached native group was cleaned. Actual Claude cleanup failure retains
-`cleanup_restart_required` through healthy observations and resume/recheck. Existing
-marker persistence remains best effort under filesystem failure; current admission
-stays blocked, but durable recovery requires controlled container replacement when
-evidence cannot be persisted. Helper-reported missing startup cleanup acknowledgement remains gated. A separate
-original gap remains: untrappable worker loss before session publication can retry
-without captured ownership or confirmed native cleanup. This unsafe window remains
-unrepaired; no new process service or ownership protocol is introduced here. Public
+Tracker errors are issue-scoped; the agent owns tracker reconciliation. Established
+session protocol errors, unexpected EOF, helper timeouts and tracker delivery
+failures use ordinary scheduler backoff after bounded cleanup in the retained
+workspace. The runner MUST NOT replay tracker mutations; each attempt requires
+live target readback before uncertain writes. Explicit input/permission, actual
+auth/policy/schema/identity and native turn-limit stops retain their own behavior.
+Recognized explicit model-free readiness failures before hello use startup retry
+without a durable pause; malformed or unknown pre-hello failures retain their
+existing classification. Transient startup protocol/native initialization failures
+attempt a correlated bounded stop, then retain their original retry classification
+even when cleanup acknowledgement is missing or foreign.
+
+The existing attempt task owns normal cleanup once. Scheduler cancellation MUST
+attempt the captured session's common interrupt callback before retiring the Task
+and reconciling its claim/workspace. Callback error or exception MUST NOT retain an
+eternal worker/claim. Bounded cleanup failure is a diagnostic, not a global pause,
+readiness refusal or mandatory-container-replacement requirement. Exact primary
+returns/exceptions survive cleanup failure; bounded primary and cleanup causes
+are logged separately with available issue/session correlation. Captured
+killed/shutdown/linked-Port `:epipe` owner loss reuses generation-checked fallback
+cleanup before ordinary retry. The fallback command and its own process group have
+a ten-second GNU timeout. Unknown ownership before publication keeps the existing
+Task-only recovery path. Neither timeout nor Task exit proves all detached native
+or shell descendants have exited: baseline recovery intentionally accepts that
+limit without a new watchdog, registry, native wrapper or supervision service.
+
+Drain remains durable, account identity remains pinned, and actual auth/quota/policy
+pauses remain independent of cleanup. Retired `claude-cleanup-unconfirmed` files
+MUST be ignored without deleting bytes; uniquely attributed `policy_blocked`
+records with code `cleanup_restart_required` and stage `cleanup` are ignored
+read-only. Untagged policy records are ambiguous with real native policy and retain
+the existing fresh healthy explicit recheck path, never mandatory replacement
+solely because an old marker exists. A retired cleanup tag does not prove that no
+older real pause was overwritten; unknown historical causes cannot be reconstructed.
+Public
 state adds provider/readiness/pause fields without removing legacy token fields.
 Pause records MAY expose optional allowlisted `code`/`stage` diagnostics for
-startup and cleanup failures. Invalid or missing diagnostic metadata MUST NOT
+actual startup pauses. Retired attributed cleanup diagnostics are interpreted only
+for the read-only migration above. Invalid or missing diagnostic metadata MUST NOT
 change pause validity, priority, cooldown or recovery behavior. The effective
 winning pause retains its own diagnostic metadata; legacy records acquire no
 invented cause. Controls MUST preserve bounded readiness/admission refusal causes

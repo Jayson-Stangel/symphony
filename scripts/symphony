@@ -1118,8 +1118,7 @@ runner_prepare_storage() {
         printf "draining\n" > /state/agent-draining
         printf "unresumed\n" > /state/agent-upgrade-unresumed
       fi
-      chown -hR "$3:$3" /workspaces /state
-      if [ "$2" = true ] && [ "$1" = claude ]; then rm -f /state/claude-cleanup-unconfirmed; fi' sh "$agent" "$new_candidate" "$uid"
+      chown -hR "$3:$3" /workspaces /state' sh "$agent" "$new_candidate" "$uid"
 }
 
 runner_transition() (

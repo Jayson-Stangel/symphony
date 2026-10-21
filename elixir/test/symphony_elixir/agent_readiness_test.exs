@@ -114,6 +114,55 @@ defmodule SymphonyElixir.AgentReadinessTest do
     end
   end
 
+  test "retired cleanup state cannot require container replacement across refresh restart and controls", ctx do
+    File.write!(ctx.helper, Jason.encode!(ready()))
+    root = Path.join(ctx.root, "state")
+    File.mkdir_p!(root)
+    marker = Path.join(root, "claude-cleanup-unconfirmed")
+    path = Path.join(root, "claude-pause.json")
+
+    for kind <- [:marker_only, :attributed_cleanup, :ambiguous_policy] do
+      File.write!(marker, "restart-required\n")
+      File.rm(path)
+      evidence = Jason.encode!(%{version: 1, kind: "policy_blocked", profile: String.duplicate("a", 64), phase: "waiting", resets_at: nil})
+      if kind == :ambiguous_policy, do: File.write!(path, evidence)
+
+      if kind == :attributed_cleanup do
+        File.write!(path, Jason.encode!(Map.merge(Jason.decode!(evidence), %{"code" => "cleanup_restart_required", "stage" => "cleanup"})))
+      end
+
+      original = File.read(path)
+
+      for _restart <- 1..2 do
+        {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+        await_check(pid)
+        assert %{ready: true} = Orchestrator.snapshot(__MODULE__.Probe, 5_000).agent.readiness
+        assert %{queued: true} = Orchestrator.request_refresh(__MODULE__.Probe)
+        await_check(pid)
+        assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false})
+
+        if kind == :ambiguous_policy do
+          assert {:error, "policy_blocked"} = GenServer.call(pid, {:agent_control, :resume, false})
+        else
+          assert {:ok, %{admission: %{ready: true}}} = GenServer.call(pid, {:agent_control, :resume, false})
+        end
+
+        assert File.read(path) == original
+        assert File.read!(marker) == "restart-required\n"
+        GenServer.stop(pid)
+      end
+
+      if kind == :ambiguous_policy do
+        {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+        await_check(pid)
+        assert {:ok, %{admission: %{ready: true}}} = GenServer.call(pid, {:agent_control, :recheck, false})
+        refute File.exists?(path)
+        assert File.read!(marker) == "restart-required\n"
+        GenServer.stop(pid)
+      end
+    end
+  end
+
   test "Codex admission and resume ignore retained Claude pauses", ctx do
     for kind <- [:auth_required, :quota_exhausted] do
       Application.put_env(:symphony_elixir, :coding_agent, :claude)
