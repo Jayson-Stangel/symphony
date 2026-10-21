@@ -481,22 +481,26 @@ defmodule SymphonyElixir.Orchestrator do
     control_pending = not is_nil(state.readiness_control)
 
     readiness =
-      if Config.coding_agent() == :codex,
-        do: AgentReadiness.check(),
-        else: pin_readiness(readiness, state.expected_profile)
+      cond do
+        Config.coding_agent() == :codex -> AgentReadiness.check()
+        match?({_, :recheck, _}, state.readiness_control) -> readiness
+        true -> pin_readiness(readiness, state.expected_profile)
+      end
 
     token = make_ref()
     timer = Process.send_after(self(), {:refresh_agent_readiness, token}, @readiness_interval_ms)
+    expected_profile = if control_pending, do: state.expected_profile, else: state.expected_profile || readiness[:profile]
 
     state = %{
       state
       | readiness: readiness,
         readiness_task: nil,
         readiness_timer: {timer, token},
-        expected_profile: state.expected_profile || readiness[:profile]
+        expected_profile: expected_profile
     }
 
     state = finish_readiness_control(state)
+    state = %{state | readiness: pin_readiness(state.readiness, state.expected_profile)}
     notify_dashboard()
 
     if control_pending or previous_admission != agent_admission(state) do
@@ -1917,11 +1921,13 @@ defmodule SymphonyElixir.Orchestrator do
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
          :ok <- resume_admission(admission),
          :ok <- remove_drain() do
+      expected_profile = if action == :recheck, do: readiness[:profile], else: state.expected_profile || readiness[:profile]
+
       state = %{
         state
         | draining: false,
           readiness: readiness,
-          expected_profile: state.expected_profile || readiness[:profile]
+          expected_profile: expected_profile
       }
 
       {state, _coalesced} = queue_poll(state)

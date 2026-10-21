@@ -608,7 +608,16 @@ actual native billing, authentication and permission failures retain their stop 
 Its `admission` result reports effective dispatch eligibility (`ready`, `reason`,
 `provider`, `profile`, and optional `retry_at`), including drain and account pauses.
 Resume refuses retained Claude authentication/policy pauses; use explicit recheck
-after repair. A retained quota cooldown resumes polling with `admission.ready=false`
+after repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+ A retained quota cooldown resumes polling with `admission.ready=false`
 and its reset time. The updater reports this as intentionally paused, never as
 operational. Codex ignores retained Claude pause files and leaves their evidence
 untouched when switching providers.

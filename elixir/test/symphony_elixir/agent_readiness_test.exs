@@ -268,6 +268,87 @@ defmodule SymphonyElixir.AgentReadinessTest do
     GenServer.stop(pid)
   end
 
+  test "only explicit healthy zero-worker recheck adopts a changed profile, including after restart", ctx do
+    first = String.duplicate("a", 64)
+    changed = String.duplicate("b", 64)
+    File.write!(ctx.helper, Jason.encode!(ready(first)))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: first})
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    bytes = File.read!(path)
+    File.write!(ctx.helper, Jason.encode!(%{code: "auth_required"}))
+    assert {:error, "auth_required"} = GenServer.call(pid, {:agent_control, :recheck, false})
+    assert File.read!(path) == bytes
+    assert :sys.get_state(pid).expected_profile == first
+    File.write!(ctx.helper, Jason.encode!(ready(changed)))
+    assert %{queued: true} = GenServer.call(pid, :request_refresh)
+    await_check(pid)
+    assert :sys.get_state(pid).expected_profile == first
+    assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+    assert {:error, "native_identity_mismatch"} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert File.read!(path) == bytes
+    assert {:ok, %{admission: %{ready: true, profile: ^changed}}} = GenServer.call(pid, {:agent_control, :recheck, false})
+    assert :sys.get_state(pid).expected_profile == changed
+    refute File.exists?(path)
+    GenServer.stop(pid)
+
+    # Restart may observe the new profile before a retained old-profile pause.
+    assert :ok = AgentPause.record(:auth_required, %{profile: first})
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    assert {:error, "auth_required"} = GenServer.call(pid, {:agent_control, :resume, false})
+    assert {:ok, %{admission: %{ready: true, profile: ^changed}}} = GenServer.call(pid, {:agent_control, :recheck, false})
+    assert :sys.get_state(pid).expected_profile == changed
+  end
+
+  test "refused profile rechecks preserve quota and unsafe evidence without adopting the profile", ctx do
+    first = String.duplicate("a", 64)
+    changed = String.duplicate("b", 64)
+    File.write!(ctx.helper, Jason.encode!(ready(first)))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    await_check(pid)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    File.write!(ctx.helper, Jason.encode!(ready(changed)))
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: first, resets_at: System.system_time(:second) + 600})
+    path = Path.join(ctx.root, "state/claude-pause.json")
+    tools = Path.join(ctx.root, "state/claude-tools")
+    File.mkdir_p!(tools)
+    pending = Path.join(tools, "retained.json")
+    File.write!(pending, "uncertain tracker write")
+    bytes = File.read!(path)
+    assert {:error, :reset_not_due} = GenServer.call(pid, {:agent_control, :recheck, true})
+    assert File.read!(path) == bytes
+    assert File.read!(pending) == "uncertain tracker write"
+    assert :sys.get_state(pid).expected_profile == first
+    assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+    assert {:error, "native_identity_mismatch"} = GenServer.call(pid, {:agent_control, :resume, false})
+
+    for data <- ["invalid JSON", String.duplicate("x", 4097)] do
+      File.write!(path, data)
+      assert {:error, :invalid_pause} = GenServer.call(pid, {:agent_control, :recheck, true})
+      assert File.read!(path) == data
+      assert File.read!(pending) == "uncertain tracker write"
+      assert :sys.get_state(pid).expected_profile == first
+    end
+
+    File.rm!(path)
+    target = Path.join(ctx.root, "unsafe-pause")
+    File.write!(target, bytes)
+    File.ln_s!(target, path)
+    assert {:error, :invalid_pause} = GenServer.call(pid, {:agent_control, :recheck, true})
+    assert File.read_link!(path) == target
+    assert File.read!(target) == bytes
+    assert :sys.get_state(pid).expected_profile == first
+
+    :sys.replace_state(pid, fn state -> %{state | running: %{"active" => %{}}} end)
+    assert {:error, :workers_active} = GenServer.call(pid, {:agent_control, :recheck, true})
+    assert File.read_link!(path) == target
+    assert :sys.get_state(pid).expected_profile == first
+    :sys.replace_state(pid, fn state -> %{state | running: %{}} end)
+  end
+
   test "resume stays drained if the durable upgrade marker cannot be invalidated", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     guard = Path.join([ctx.root, "state", "agent-upgrade-unresumed"])
@@ -517,25 +598,28 @@ defmodule SymphonyElixir.AgentReadinessTest do
     await(fn -> map_size(:sys.get_state(pid).running) == 0 end)
   end
 
-  test "drain cancels a pending resume and late results cannot undrain or change the pinned profile", ctx do
-    File.write!(ctx.helper, Jason.encode!(ready()))
-    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-    await_check(pid)
-    release = Path.join(ctx.root, "release")
-    started = Path.join(ctx.root, "started")
-    File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
-    File.write!(ctx.node, "#!/bin/sh\ntouch '#{started}'\nwhile [ ! -f '#{release}' ]; do sleep 0.01; done\ncat \"$1\"\n")
-    caller = Task.async(fn -> GenServer.call(pid, {:agent_control, :resume, false}, 2_000) end)
-    await(fn -> File.exists?(started) end)
-    assert {:error, :readiness_check_in_progress} = GenServer.call(pid, {:agent_control, :resume, false}, 200)
-    assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false}, 200)
-    assert {:error, :agent_drained} = Task.await(caller)
-    File.write!(release, "ready")
-    await_check(pid)
-    assert :sys.get_state(pid).draining
-    assert :sys.get_state(pid).expected_profile == String.duplicate("a", 64)
-    assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+  for action <- [:resume, :recheck] do
+    test "drain cancels pending #{action} and late results cannot undrain or change the pinned profile", ctx do
+      action = unquote(action)
+      File.write!(ctx.helper, Jason.encode!(ready()))
+      {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      await_check(pid)
+      release = Path.join(ctx.root, "release")
+      started = Path.join(ctx.root, "started")
+      File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
+      File.write!(ctx.node, "#!/bin/sh\ntouch '#{started}'\nwhile [ ! -f '#{release}' ]; do sleep 0.01; done\ncat \"$1\"\n")
+      caller = Task.async(fn -> GenServer.call(pid, {:agent_control, action, false}, 2_000) end)
+      await(fn -> File.exists?(started) end)
+      assert {:error, :readiness_check_in_progress} = GenServer.call(pid, {:agent_control, :resume, false}, 200)
+      assert {:ok, _} = GenServer.call(pid, {:agent_control, :drain, false}, 200)
+      assert {:error, :agent_drained} = Task.await(caller)
+      File.write!(release, "ready")
+      await_check(pid)
+      assert :sys.get_state(pid).draining
+      assert :sys.get_state(pid).expected_profile == String.duplicate("a", 64)
+      assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+    end
   end
 
   test "task crashes and scheduler restart leave only deadline-bounded native checks", ctx do

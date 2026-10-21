@@ -715,11 +715,10 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
-  test "a real policy pause remains blocked until matching explicit recovery", ctx do
+  test "a real policy pause remains blocked until explicit recovery", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
     other = String.duplicate("b", 64)
     assert :ok = AgentPause.record(:policy_blocked, %{profile: other})
-    assert {:error, :profile_changed} = AgentPause.explicit_recheck(String.duplicate("a", 64))
 
     try do
       assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "must not run", ctx.issue, [])
@@ -1127,6 +1126,32 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert {:ok, _} = Adapter.run_turn(session, "tool", ctx.issue, [])
       assert_received {:bound_tool_executed, "original", %{"query" => "query"}, %{id: "one"}}
       assert AgentPause.current() == :ready
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "allowed native overage crosses the real Port without a pause, but billing failure still stops", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "allowed-overage", ctx.issue, [])
+      assert :ready = AgentPause.current()
+      refute File.exists?(Path.join(ctx.root, "state/claude-pause.json"))
+      assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.run_turn(session, "allowed-overage-billing-error", ctx.issue, [])
+      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "a new native rejected quota bucket retains its authoritative cooldown through the real Port", ctx do
+    reset = System.system_time(:second) + 600
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:error, {:agent_pause, :quota_exhausted, _}} = Adapter.run_turn(session, "new-bucket:#{reset}", ctx.issue, [])
+      assert {:paused, %{"kind" => "quota_exhausted", "resets_at" => ^reset}} = AgentPause.current()
     after
       Adapter.stop_session(session)
     end

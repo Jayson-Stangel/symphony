@@ -338,6 +338,15 @@ providers retain native organizational policy. Claude policy files do not create
 extra Symphony admission gate; native settings may configure permissions and routing.
 Symphony adds no API-key/cloud fallback and does not guarantee native request endpoints
 or billing from a subscription profile.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+
 Native allowed/allowed-warning rate-limit events remain allowed, including overage metadata.
 Rejected native rate-limit events use ordinary quota recovery regardless of bucket name;
 actual native billing, authentication and permission failures retain their stop behavior.

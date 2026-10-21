@@ -2425,8 +2425,17 @@ observation is used between checks; pending explicit controls block admission.
 Unchanged health observations preserve the configured tracker poll cadence.
 Admission transitions and explicit controls request prompt reconciliation,
 coalescing with any poll cycle already in progress.
-Drain cancels a waiting resume, and late results cannot undrain or replace a pinned
-account. Only the exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is a proven pre-input observation and is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their existing recovery requirements.
+Drain cancels a waiting resume/recheck, and late results cannot undrain or replace a pinned
+account.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+ Only the exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is a proven pre-input observation and is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their existing recovery requirements.
 
 Model-free readiness observations govern new admission. Existing native sessions
 retain their captured startup identity/configuration and actual runtime auth/policy

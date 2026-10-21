@@ -264,6 +264,15 @@ These operations do not perform model probes. They restore normal configured adm
 responses (`admission`) report effective dispatch eligibility, its reason,
 provider/profile and optional quota retry time. Ordinary resume refuses retained
 Claude authentication/policy pauses; explicit recheck follows operator repair.
+A healthy explicit `runner recheck` with zero workers acknowledges the currently
+selected qualified native profile, including an account, organization or plan change.
+It clears recoverable authentication/policy pauses through the existing recovery path
+and uses that profile for subsequent sessions. Automatic refresh and ordinary resume
+never adopt an unexpected profile. A future genuine quota reset, malformed/unsafe
+pause evidence or active worker refuses recheck without changing the pinned profile
+or deleting that evidence. Successful recheck clears the old recoverable pause;
+it does not archive it or perform a model request.
+
 Quota cooldown resumes polling with admission false until the reset. Switching to
 Codex ignores Claude pause files without deleting their evidence. Tracker errors do not require runner recheck or operator clearance.
 The legacy `confirm_tools_reconciled` control API option remains available to
