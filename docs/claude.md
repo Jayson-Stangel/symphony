@@ -145,8 +145,14 @@ shows status; edit `WORKFLOW.md` to change the setting.
 `agent.max_turns` bounds continuation turns within one worker attempt for both
 providers. Reaching it closes that session normally; the existing scheduler
 continuation check revalidates active work and can start another attempt in the
-same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn. Claude settings reject
-unknown keys, arbitrary commands, authentication overrides and raw SDK options.
+same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn.
+Reaching this native allowance closes the exhausted session and yields normally;
+the scheduler reads live tracker state and can renew the session in the retained
+workspace. Human Review and terminal work are not redispatched. Recorded denied-tool
+history does not override native success or max-turn results; it does not establish
+an unresolved input request. Native execution failures with permission denials keep
+their blocked outcome. Genuine authentication, quota and policy stops remain distinct.
+Claude settings reject unknown keys, arbitrary commands, authentication overrides and raw SDK options.
 
 Root AGENTS.md and CLAUDE.md are combined without generating tracked files.
 Workers must read applicable directory instructions before editing. Canonical
@@ -207,9 +213,10 @@ Authentication and shared policy failures reported by actual native sessions sti
 require explicit operator recovery. The exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset came only from pre-input observations; it is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their recovery requirements. Legacy operator_recheck, operator_recheck_inflight and probe_inflight scheduler permits are also ignored without deleting evidence. Paid-overage signals remain policy blockers. Established-session protocol, EOF/helper
 timeout and tracker delivery failures use scheduler backoff after bounded cleanup,
 preserving the workspace and requiring tracker readback before uncertain writes.
-No tracker mutation is replayed by the runner. Explicit permission/input and native
-turn-limit stops remain blocked. Pre-hello helper exit, timeout, malformed frames
-and incompatible handshakes use startup retry without a durable policy stop.
+No tracker mutation is replayed by the runner. Explicit permission/input stops
+remain blocked; native turn allowances yield through ordinary continuation.
+Pre-hello helper exit, timeout, malformed frames and incompatible handshakes use
+startup retry without a durable policy stop.
 Retry diagnostics preserve fixed transport causes and the helper exit status. Only
 the exact version-1 seven-field policy_blocked/waiting record with nil profile/reset,
 code protocol_error and stage startup is ignored read-only as an attributable

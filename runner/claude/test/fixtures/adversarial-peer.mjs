@@ -49,6 +49,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     send({ ...base, type: 'turn_result', outcome: type });
   } else if (c.type === 'tool_result') {
+    if (activePrompt === 'tool-turn-limit') { send({ ...active, type: 'turn_result', outcome: 'agent_turn_limit' }); continue; }
     if (activePrompt === 'tool-coded-failure') { send({ ...active, type: 'turn_result', outcome: 'protocol_error', code: 'native_eof', message: 'secret-canary' }); continue; }
     if (['tool-definite-error', 'tool-read-error', 'tool-linear-definite-error', 'tool-linear-server-error', 'tool-linear-partial-error', 'tool-linear-read-error', 'tool-linear-read-timeout', 'tool-linear-local-error'].includes(activePrompt)) send({ ...active, type: 'tool_result_accepted', tool_id: 'one' });
     send({ ...active, type: 'turn_result', outcome: 'completed' }); // Deliberately missing tool ACK.

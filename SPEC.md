@@ -2442,7 +2442,11 @@ session protocol errors, unexpected EOF, helper timeouts and tracker delivery
 failures use ordinary scheduler backoff after bounded cleanup in the retained
 workspace. The runner MUST NOT replay tracker mutations; each attempt requires
 live target readback before uncertain writes. Explicit input/permission, actual
-auth/policy/schema/identity and native turn-limit stops retain their own behavior.
+auth/policy/schema/identity stops retain their own behavior. Claude native SDK
+turn-allowance exhaustion MUST close the exhausted session and return normally
+through shared scheduler continuation; a fresh live tracker read and dispatch
+limits govern session renewal in the retained workspace. It MUST NOT create a
+permanent issue block or reuse the exhausted session.
 Recognized explicit model-free readiness failures before hello use startup retry
 without a durable pause; unknown explicit readiness errors retain their existing
 classification. Pre-hello helper exit, timeout and malformed/incompatible handshakes

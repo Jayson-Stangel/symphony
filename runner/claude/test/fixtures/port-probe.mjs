@@ -1,5 +1,7 @@
 // Credential-free protocol peer using the production framing/state machine.
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { serve } from '../../helper.mjs';
 
 let helper;
@@ -17,6 +19,17 @@ class Probe {
       const text = input.message.content.split('\n', 1)[0];
       if (text.startsWith('effort:') && this.options.effort !== text.slice(7)) throw new Error('effort_mismatch');
       if (text === 'silence') continue;
+      if (text === 'native-allowance') {
+        const path = join(this.options.cwd, 'native-allowance-count');
+        const count = existsSync(path) ? Number(readFileSync(path, 'utf8')) + 1 : 1;
+        writeFileSync(path, String(count));
+        if (count === 1) {
+          this.push({ type: 'result', subtype: 'error_max_turns', is_error: true, uuid: randomUUID(),
+            session_id: 'native-probe', user_message_uuid: input.uuid,
+            permission_denials: [{ tool_name: 'Read', tool_use_id: 'prior-denial', tool_input: {} }] });
+          continue;
+        }
+      }
       if (text === 'event-error') { this.push({ type: 'result', uuid: 'secret-canary', session_id: 'foreign' }); continue; }
       if (text === 'malformed') { process.stdout.write('not JSON\n'); continue; }
       if (text === 'partial') { this.push({ type: 'assistant', message: { content: 'Done' } }); this.close(); continue; }

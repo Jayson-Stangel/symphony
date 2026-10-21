@@ -350,7 +350,9 @@ unresolved failures to the affected issue. Tracker errors do not pause unrelated
 work. Redacted diagnostics retain request fingerprints and correlation/status
 fields without an execution-certainty classifier or GraphQL parser dependency.
 Per-attempt turn allowances use the original scheduler continuation path for
-both providers; new workflows do not impose live token/turn circuit breakers.
+both providers. Claude native SDK turn exhaustion also closes the session and
+yields to the same live tracker check before renewal in the retained workspace.
+New workflows do not impose live token/turn circuit breakers.
 Helper exit, timeout, malformed frames and incompatible handshakes before hello are
 transient startup failures, not native policy stops. Established-session
 transport/delivery and transient startup failures use bounded
