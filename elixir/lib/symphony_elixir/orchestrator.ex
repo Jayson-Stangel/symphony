@@ -1064,7 +1064,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp stop_running_task(pid, ref, task_supervisor, session, reason \\ :scheduler_stop) do
     result =
       case session do
-        %{adapter: SymphonyElixir.Claude.Adapter} -> SymphonyElixir.CodingAgent.interrupt(session, reason)
+        %{adapter: _, native: _} -> SymphonyElixir.CodingAgent.interrupt(session, reason)
         _ -> :ok
       end
 

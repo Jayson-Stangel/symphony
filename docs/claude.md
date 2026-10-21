@@ -49,9 +49,13 @@ from hostile code or an absolute spending firewall. Query startup and native
 authentication commands disable user/project/local settings sources. Their mere
 presence does not block readiness. Strict MCP configuration also ignores project
 `.mcp.json` and user/plugin MCP definitions. This does not enable those settings
-or MCP servers. Managed/remote organizational policy and installed-plugin metadata
-remain an explicit unsupported-settings limitation (`unqualified_native_settings`);
-they are preserved rather than silently removed or overridden. Unselected ambient
+or MCP servers. User plugin inventory and a home-config `managed-settings.json`
+are also ignored native sources and do not block readiness. Canonical Linux policy
+(`/etc/claude-code/managed-settings.json`), account/trust-dependent remote settings,
+and enterprise MCP configuration retain the explicit unsupported-settings limit
+(`unqualified_native_settings`). The native CLI refuses strict MCP mode when an
+enterprise MCP config is present. Real organizational files are preserved rather
+than silently removed or overridden. Unselected ambient
 inference credentials are stripped rather than becoming readiness gates or alternate
 inference routes. Explicitly selected inference selectors are rejected. Unqualified
 runtime versions and expired policy metadata retain their readiness checks.
@@ -70,7 +74,7 @@ AWS_REGION=us-east-1
 
 An unset selected name is omitted (for example an optional session token). Select
 at most 128 names; the encoded selection, values and reserved-name metadata must
-fit within 64 KiB. No other ambient variable is forwarded. Active tracker secret names, native identity
+fit within 64 KiB of UTF-8 bytes. Oversized envelopes are rejected before helper execution. No other ambient variable is forwarded. Active tracker secret names, native identity
 and inference selectors, runtime/preload variables and Git token aliases cannot
 be selected; invalid selections return `invalid_tool_environment` without values.
 Keep the selected Git credential on its existing route. Variable names do not

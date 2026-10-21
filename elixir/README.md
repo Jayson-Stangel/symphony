@@ -43,6 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+Captured sessions use their common adapter interrupt callback before worker
+termination and workspace removal. An interrupt error retains the worker, claim
+and workspace. An unpublished session keeps the existing task-only path, which
+must not be interpreted as confirmed native cleanup.
 Safe optional pause `code` and `stage` fields explain startup and cleanup failures
 across restarts. They do not change pause behavior; old records retain their existing
 meaning without an invented cause. Resume/recheck responses distinguish readiness,
@@ -58,8 +62,9 @@ and may retry without native cleanup proof; this original unsafe window remains 
 
 Claude's excluded user/project/local settings and project MCP files do not block
 startup. Native auth commands use the same disabled settings sources as coding
-sessions; managed/remote policy and unqualified installed-plugin metadata retain
-the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
+sessions; ignored user plugin inventory and home-config managed-settings do not
+block readiness. Canonical managed policy, remote cache and enterprise MCP config
+retain the explicit unsupported-settings limit. See [native settings](../docs/claude.md).
 Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
 in the existing project credentials env file. Unselected ambient variables are
 stripped; tracker secrets and native inference/runtime selectors cannot be selected.
@@ -597,6 +602,9 @@ untouched when switching providers.
 Development updater retries refresh stale pending images from the current checkout,
 preserving the rollback container until the replacement passes readiness. See
 [development updates](../docs/development.md#refresh-the-development-build).
+The journal retains transition intent and rollback evidence; selected runner
+metadata is written atomically from the verified container during completion
+and recovery, including an interrupted container creation or rollback.
 
 Development verification now also requires Node 24.18.0 (included in mise.toml).
 `make setup` installs only the Elixir dependencies. For Claude development, run

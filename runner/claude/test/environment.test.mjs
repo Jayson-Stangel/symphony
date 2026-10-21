@@ -34,3 +34,15 @@ test('reserved tool selections fail with a bounded code and no values', () => {
     assert.throws(() => approvedEnvironment({ ...base, SYMPHONY_TOOL_ENVIRONMENT: encoded }), /invalid_tool_environment/);
   }
 });
+
+
+test('the serialized tool envelope is bounded in UTF-8 bytes while small Unicode remains valid', () => {
+  const value = '日本語 🔑';
+  assert.equal(approvedEnvironment({ ...base,
+    SYMPHONY_TOOL_ENVIRONMENT: envelope(['TOOL_TOKEN'], { TOOL_TOKEN: value }) }).TOOL_TOKEN, value);
+  const encoded = envelope(['TOOL_TOKEN'], { TOOL_TOKEN: '界'.repeat(50_000) });
+  assert.ok(encoded.length < 65_536);
+  assert.ok(Buffer.byteLength(encoded, 'utf8') > 131_072);
+  assert.throws(() => approvedEnvironment({ ...base, SYMPHONY_TOOL_ENVIRONMENT: encoded }),
+    error => error.message === 'invalid_tool_environment' && !String(error).includes('界'));
+});

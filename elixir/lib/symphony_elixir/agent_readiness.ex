@@ -33,6 +33,7 @@ defmodule SymphonyElixir.AgentReadiness do
          {:ok, value} when is_map(value) <- Jason.decode(data) do
       interpret(status, value)
     else
+      {:error, :invalid_tool_environment} -> blocked("invalid_tool_environment")
       _ -> blocked("runtime_unavailable")
     end
   rescue

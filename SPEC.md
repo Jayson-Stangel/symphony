@@ -2448,10 +2448,15 @@ transient startup protocol/native initialization failures retry only after a
 stopped acknowledgement correlated to the attempted session/request confirms
 owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
 stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
-crashes before ownership handoff cannot retry without cleanup proof.
+reported startup failures require matching cleanup proof before retry. Worker loss
+before session publication remains a separate ownership gap described below.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. The
-existing attempt task owns normal cleanup once. Confirmed cleanup preserves the
+existing attempt task owns normal cleanup once. Scheduler cancellation MUST use
+the captured session's common interrupt callback for either provider before worker
+termination/workspace removal, retaining worker ownership if interruption fails.
+An unpublished session retains the existing task-only cancellation path; that path
+does not establish native cleanup. Confirmed cleanup preserves the
 exact primary outcome/exception; failure MUST retain separate bounded categorical
 primary and cleanup causes and expose a replacement-required outcome scoped to its
 captured provider. Killed/shutdown/linked-Port `:epipe` workers with captured ownership use the
@@ -2485,9 +2490,12 @@ API only with native readiness, no drain and no retained pause.
 User/project/local native settings MUST be excluded consistently by coding
 sessions and native authentication probes/commands. Excluded files and project
 MCP configuration MUST NOT become file-existence admission gates. Managed/remote
-organizational policy and unqualified installed-plugin metadata remain preserved,
-explicit unsupported-settings limits until separately qualified; this does not
-silently override organizational policy or enable alternate inference routing.
+organizational policy remains preserved in its canonical Linux path and remote
+cache; enterprise MCP config remains incompatible with strict MCP startup. These
+remain explicit unsupported-settings limits until separately qualified. User
+plugin inventory and home-config managed-settings.json MUST NOT gate admission
+when excluded by the qualified native runtime. This does not silently override
+organizational policy or enable alternate inference routing.
 
 See docs/claude.md for the closed configuration, isolation assumptions and
 qualified transition contract.
@@ -2524,6 +2532,12 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+Selected runner metadata is a derived cache, not transition authority. Successful
+update/recovery and rollback MUST atomically record the verified selected
+container image, provider, native profile and port before completing the journal.
+A candidate created before metadata publication MUST remain recoverable without
+trusting stale cached identity. Existing journal intent and verified rollback
+source evidence remain authoritative until transition completion.
 
 ### Shared provider concurrency
 
