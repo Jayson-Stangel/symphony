@@ -5,7 +5,7 @@ defmodule SymphonyElixir.UpdaterTest do
   @git_env [{"GIT_CONFIG_GLOBAL", "/dev/null"}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_COUNT", nil}]
 
   setup do
-    root = Path.join(System.tmp_dir!(), "symphony-update-#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "symphony-update-#{System.pid()}-#{System.unique_integer([:positive])}")
     seed = Path.join(root, "seed")
     remote = Path.join(root, "upstream.git")
     installation = Path.join(root, "installation")
@@ -14,7 +14,7 @@ defmodule SymphonyElixir.UpdaterTest do
     git!(root, ["init", "--initial-branch=main", seed])
     File.mkdir_p!(Path.join(seed, "scripts"))
     stub = Path.join(seed, "scripts/symphony")
-    File.write!(stub, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$FIXTURE_LOG\"\n")
+    File.write!(stub, fixture_launcher())
     File.chmod!(stub, 0o755)
     git!(seed, ["add", "scripts/symphony"])
     commit!(seed, "Initial installation")
@@ -64,6 +64,18 @@ defmodule SymphonyElixir.UpdaterTest do
     advance!(ctx)
     assert {_output, code} = update(ctx)
     assert code != 0
+    assert git!(ctx.installation, ["rev-parse", "HEAD"]) == local_head
+    assert File.read!(Path.join(ctx.installation, "local.txt")) == "unpushed work"
+    refute File.exists?(ctx.log)
+  end
+
+  test "local main ahead of remote retains its unpushed commit without installation", ctx do
+    File.write!(Path.join(ctx.installation, "local.txt"), "unpushed work")
+    git!(ctx.installation, ["add", "local.txt"])
+    commit!(ctx.installation, "Unpushed local main")
+    local_head = git!(ctx.installation, ["rev-parse", "HEAD"])
+    assert {output, 1} = update(ctx)
+    assert output =~ "outside fetched upstream main"
     assert git!(ctx.installation, ["rev-parse", "HEAD"]) == local_head
     assert File.read!(Path.join(ctx.installation, "local.txt")) == "unpushed work"
     refute File.exists?(ctx.log)
@@ -161,6 +173,94 @@ defmodule SymphonyElixir.UpdaterTest do
     assert File.read!(Path.join(lock, "owner")) == "not-a-pid"
   end
 
+  test "setup failure after fast-forward is retried even when Git is current", ctx do
+    advance!(ctx)
+    fail = Path.join(ctx.root, "fail-setup")
+    File.write!(fail, "once")
+    assert {output, 47} = update(ctx, [], [{"FIXTURE_FAIL_SETUP", fail}])
+    assert output =~ "simulated setup failure"
+    assert git!(ctx.installation, ["rev-parse", "HEAD"]) == git!(ctx.seed, ["rev-parse", "HEAD"])
+    refute output =~ "Updated:"
+    assert {output, 0} = update(ctx)
+    assert output =~ "Updated:"
+    assert File.read!(ctx.log) == "install\nsetup\ninstall\nsetup\n"
+  end
+
+  test "installation failure after fast-forward repeats installation and setup", ctx do
+    advance!(ctx)
+    fail = Path.join(ctx.root, "fail-install")
+    File.write!(fail, "once")
+    assert {_, 46} = update(ctx, [], [{"FIXTURE_FAIL_INSTALL", fail}])
+    assert git!(ctx.installation, ["rev-parse", "HEAD"]) == git!(ctx.seed, ["rev-parse", "HEAD"])
+    assert {_, 0} = update(ctx)
+    assert File.read!(ctx.log) == "install\ninstall\nsetup\n"
+  end
+
+  test "current source still completes idempotent installation and setup", ctx do
+    assert {output, 0} = update(ctx)
+    assert output =~ "Updated: #{ctx.initial} -> #{ctx.initial}"
+    assert File.read!(ctx.log) == "install\nsetup\n"
+  end
+
+  test "cross-revision handoff uses only new functions and preserves resolved paths", ctx do
+    script = Path.join(ctx.seed, "scripts/symphony")
+    File.write!(script, fixture_launcher("NEW "))
+    git!(ctx.seed, ["add", "scripts/symphony"])
+    commit!(ctx.seed, "New transition implementation")
+    git!(ctx.seed, ["push", "origin", "main"])
+    selected = git!(ctx.seed, ["rev-parse", "HEAD"])
+    bin = Path.join(ctx.root, "selected-bin")
+    config = Path.join(ctx.root, "selected-config")
+    skills = Path.join(ctx.root, "selected-skills")
+    runner = Path.join(ctx.root, "explicit-runners")
+    details = Path.join(ctx.root, "details")
+    fetches = Path.join(ctx.root, "fetches")
+    real_git = System.find_executable("git")
+    peer_dir = Path.join(ctx.root, "git-peer")
+    File.mkdir!(peer_dir)
+    File.write!(Path.join(peer_dir, "git"), "#!/bin/bash\nif [ \"${3:-}\" = fetch ]; then printf 'fetch\\n' >> \"$FIXTURE_FETCHES\"; fi\nexec \"$FIXTURE_REAL_GIT\" \"$@\"\n")
+    File.chmod!(Path.join(peer_dir, "git"), 0o755)
+    args = ["--agent", "claude", "--bin-dir", bin, "--config-dir", config, "--skills-dir", skills]
+    env = [{"SYMPHONY_RUNNER_HOME", runner}, {"FIXTURE_DETAILS", details}, {"FIXTURE_FETCHES", fetches}, {"FIXTURE_REAL_GIT", real_git}, {"PATH", peer_dir <> ":" <> System.fetch_env!("PATH")}]
+    assert {output, 0} = update(ctx, args, env)
+    assert output =~ "Updated: #{ctx.initial} -> #{selected}"
+    assert File.read!(ctx.log) == "NEW install\nNEW setup\nNEW transition claude\n"
+    assert File.read!(details) == Enum.join([bin, config, skills, runner, git!(ctx.installation, ["rev-parse", "--show-toplevel"]), selected], "\n") <> "\n"
+    assert File.read!(fetches) == "fetch\n"
+  end
+
+  test "handoff refuses source changes introduced during setup", ctx do
+    marker = Path.join(ctx.installation, "unexpected")
+    assert {output, 1} = update(ctx, ["--agent", "claude"], [{"FIXTURE_DIRTY_SETUP", marker}])
+    assert output =~ "source changed during setup"
+    refute File.read!(ctx.log) =~ "transition"
+    assert File.read!(marker) == "preserved"
+  end
+
+  defp fixture_launcher(prefix \\ "") do
+    [definitions, main] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
+
+    overrides = """
+    install() {
+      printf '#{prefix}install\\n' >> \"$FIXTURE_LOG\"
+      if [ -f \"${FIXTURE_FAIL_INSTALL:-/nonexistent}\" ]; then rm \"$FIXTURE_FAIL_INSTALL\"; exit 46; fi
+    }
+    setup() {
+      printf '#{prefix}setup\\n' >> \"$FIXTURE_LOG\"
+      if [ -f \"${FIXTURE_FAIL_SETUP:-/nonexistent}\" ]; then
+        rm \"$FIXTURE_FAIL_SETUP\"; printf 'simulated setup failure\\n'; exit 47
+      fi
+      if [ -n \"${FIXTURE_DIRTY_SETUP:-}\" ]; then printf preserved > \"$FIXTURE_DIRTY_SETUP\"; fi
+    }
+    runner_transition() {
+      printf '#{prefix}transition %s\\n' \"$2\" >> \"$FIXTURE_LOG\"
+      printf '%s\\n' \"$bin_dir\" \"$config_home\" \"$skills_dir\" \"$runner_home\" \"$1\" \"$(source_revision)\" > \"$FIXTURE_DETAILS\"
+    }
+    """
+
+    definitions <> overrides <> "\ncase \"${1:-}\" in" <> main
+  end
+
   defp launcher_definitions!(ctx) do
     [definitions, _] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
     path = Path.join(ctx.root, "definitions.sh")
@@ -169,7 +269,7 @@ defmodule SymphonyElixir.UpdaterTest do
   end
 
   defp lock_command(ctx, definitions, lock, effect, marker \\ "") do
-    System.cmd("bash", ["-c", "source \"$1\"; runner_transition_lock \"$2\"; " <> effect, "fixture", definitions, lock, marker], env: [{"SYMPHONY_HOME", ctx.installation}], stderr_to_stdout: true)
+    System.cmd("bash", ["-c", ~s(source "$1"; runner_transition_lock "$2"; ) <> effect, "fixture", definitions, lock, marker], env: [{"SYMPHONY_HOME", ctx.installation}], stderr_to_stdout: true)
   end
 
   defp wait_for_file!(path, attempts \\ 100)
@@ -200,8 +300,18 @@ defmodule SymphonyElixir.UpdaterTest do
     String.trim(output)
   end
 
-  defp update(ctx) do
-    env = @git_env ++ [{"SYMPHONY_HOME", ctx.installation}, {"FIXTURE_LOG", ctx.log}]
-    System.cmd("bash", [@launcher, "update"], cd: ctx.installation, env: env, stderr_to_stdout: true)
+  defp update(ctx, args \\ [], extra_env \\ []) do
+    env =
+      @git_env ++
+        [
+          {"SYMPHONY_HOME", ctx.installation},
+          {"FIXTURE_LOG", ctx.log},
+          {"SYMPHONY_BIN_DIR", Path.join(ctx.root, "bin")},
+          {"SYMPHONY_CONFIG_HOME", Path.join(ctx.root, "config")},
+          {"SYMPHONY_SKILLS_DIR", Path.join(ctx.root, "skills")},
+          {"SYMPHONY_RUNNER_HOME", nil}
+        ] ++ extra_env
+
+    System.cmd("bash", [@launcher, "update" | args], cd: ctx.installation, env: env, stderr_to_stdout: true)
   end
 end

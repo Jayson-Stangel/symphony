@@ -676,3 +676,7 @@ Installed updater recovery follows the launcher contract in the root README. A c
 storage unless `SYMPHONY_RUNNER_HOME` is explicit. Transition exclusion uses a stable advisory
 lock file released by process exit, including crashes. Unknown legacy ownerless lock
 directories require operator inspection; a proven-dead legacy owner can be retired on retry.
+
+Every installed update repeats idempotent setup, even when source is already current, so
+retry completes an interrupted setup. Source/runner updates reload the newly installed
+launcher against the exact fetched revision before transitioning; completion never refetches.

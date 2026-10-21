@@ -76,13 +76,18 @@ symphony update
 
 The updater only fast-forwards a clean `main` checkout tracking `refs/heads/main` on a configured remote.
 A local branch named `main` tracking `dev` is refused before fetching or installing.
+Local commits outside fetched remote `main` are retained and refused before installation.
 Its fetch prunes stale tracking branches only for that upstream remote, resolving branch-name
 collisions while preserving local branches, tags, and other remotes' tracking refs. Custom fetch
 mappings cannot expand that pruning scope. A typical installation of this fork tracks
-`jayson/main`, not OpenAI's `origin`. When source changes, it
-automatically rebuilds the pinned runtime; it also refreshes the global command and skill links
+`jayson/main`, not OpenAI's `origin`. Each successful update
+repeats idempotent installation and pinned runtime setup, including retries after interrupted setup;
+it also refreshes the global command and skill links
 without changing project credentials or workflows. You do not need to run `symphony setup` after
-a successful update.
+a successful update. A combined source/runner update hands completion to the newly installed
+launcher at the exact fetched revision, without a second fetch. When updating from a launcher
+that predates this handoff, first run a source-only `symphony update`, then invoke the updated
+command for a runner transition.
 `--config-dir` selects configuration and its derived runner storage; an explicit
 `SYMPHONY_RUNNER_HOME` still takes precedence. Runner transitions use a process-held advisory
 lock: a crashed updater releases it after any in-flight command exits. Unknown legacy ownerless

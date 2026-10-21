@@ -296,13 +296,27 @@ update() {
   # Restrict pruning to this remote's tracking branches, even with custom fetch mappings.
   git -C "$symphony_home" fetch --prune --no-prune-tags --refmap= "$remote" \
     "+refs/heads/*:refs/remotes/$remote/*"
+  git -C "$symphony_home" merge-base --is-ancestor "$before" "$upstream" || die 'local main contains commits outside fetched upstream main; refusing installation'
   git -C "$symphony_home" merge --ff-only "$upstream"
   after=$(git -C "$symphony_home" rev-parse HEAD)
   [ -z "$(git -C "$symphony_home" status --porcelain)" ] || die 'update left unexpected working-tree changes'
-  "$symphony_home/scripts/symphony" install --bin-dir "$bin_dir" --config-dir "$config_home" --skills-dir "$skills_dir"
-  if [ "$before" != "$after" ]; then
-    "$symphony_home/scripts/symphony" setup
-  fi
+  # Reload all functions from the exact source just installed. Re-entering update
+  # would fetch again and could silently select a different production revision.
+  exec env SYMPHONY_HOME="$symphony_home" SYMPHONY_BIN_DIR="$bin_dir" \
+    SYMPHONY_CONFIG_HOME="$config_home" SYMPHONY_SKILLS_DIR="$skills_dir" \
+    SYMPHONY_RUNNER_HOME="$runner_home" \
+    "$symphony_home/scripts/symphony" _complete-update "$before" "$after" "$transition_target"
+}
+
+# Internal continuation of update, invoked only after its source fast-forward.
+# There is no completion marker: rerunning update repeats idempotent install/setup.
+complete_update() {
+  [ "$#" -eq 3 ] || die 'invalid update continuation'
+  local before=$1 after=$2 transition_target=$3
+  [ "$(source_revision)" = "$after" ] && [ "$(source_state)" = clean ] || die 'update source changed before completion; retry update'
+  install --bin-dir "$bin_dir" --config-dir "$config_home" --skills-dir "$skills_dir"
+  setup
+  [ "$(source_revision)" = "$after" ] && [ "$(source_state)" = clean ] || die 'update source changed during setup; retry update'
   if [ -n "$transition_target" ]; then runner_transition "$(repo_root)" "$transition_target"; fi
   printf 'Updated: %s -> %s\n' "$before" "$after"
 }
@@ -1398,6 +1412,7 @@ case "${1:-}" in
   setup) shift; setup "$@" ;;
   doctor) shift; doctor "$@" ;;
   update) shift; update "$@" ;;
+  _complete-update) shift; complete_update "$@" ;;
   init) shift; init "$@" ;;
   skill) shift; skill "$@" ;;
   project) shift; project "$@" ;;

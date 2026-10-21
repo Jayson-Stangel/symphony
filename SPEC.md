@@ -2553,8 +2553,15 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+Installed updates MUST repeat idempotent installation and setup even when Git is already
+current, so retry completes failed setup without persistent completion state. After the
+source fast-forward, combined source/runner updates MUST reload the newly installed
+implementation at that exact revision, preserving resolved paths and transition target.
+Completion MUST NOT fetch again or mix old transition functions with new runner sources.
 Installed source updates MUST validate the configured remote and upstream merge ref
 `refs/heads/main` before fetching or installing; a local branch name alone is insufficient.
+Local HEAD MUST be an ancestor of or equal to fetched remote main before installation;
+otherwise retain the local commits and refuse without resetting the source.
 Runner storage derives from the selected config directory after CLI options are resolved,
 unless an explicit runner-home override is present. Runner transition exclusion uses a
 stable advisory lock inode held through the updater and its in-flight commands. Crashes

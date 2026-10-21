@@ -484,3 +484,7 @@ Installed updates require a clean local main tracking a configured remote's main
 launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME
 is explicit. Transition advisory locks release after a crash and any in-flight command
 exits; unknown legacy ownerless locks remain refused for operator inspection.
+
+An installed update retries idempotent setup even when Git is current. Combined source
+and runner updates hand completion to the newly installed implementation at the exact
+fetched revision, preserving resolved paths and target without fetching again.
