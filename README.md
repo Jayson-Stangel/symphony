@@ -370,6 +370,8 @@ stale pending candidates while retaining their rollback source.
 Update and rollback recovery reconstruct selected runtime metadata from the
 verified container before completing the transition; interrupted metadata writes
 do not require a new listener or manual cache repair.
+Provider changes and rollback restore ownership for the selected runtime so
+retained repositories remain usable by Git when switching back.
 
 Codex and Claude share the configured global and per-state worker limits. Use
 `agent.max_concurrent_agents: 1` for serial work or a larger value for bounded

@@ -1101,10 +1101,31 @@ runner_refresh_pending() {
   printf 'Refreshed pending development candidate: %s -> %s. Rollback source retained.\n' "$old" "$replacement"
 }
 
-runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name storage id env_file journal backup candidate port=4010 state users owner old_agent
+# The caller has verified the retained source and that no candidate is active.
+runner_prepare_storage() {
+  local root=$1 runtime=$2 image=$3 agent=$4 new_candidate=$5 storage volume users uid=0
   validate_agent "$agent"
-  runtime=$(container_runtime); name=$(runner_id "$root"); storage=$(runner_storage_id "$root"); id=$(project_id "$root")
+  if [ "$agent" = claude ]; then uid=11001; fi
+  storage=$(runner_storage_id "$root")
+  for volume in "$storage-workspaces" "$storage-state"; do
+    users=$("$runtime" ps --filter "volume=$volume" --format '{{.ID}}')
+    [ -z "$users" ] || die 'retained volume is in use by another container; updater refused'
+  done
+  "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+    --security-opt no-new-privileges --user 0:0 --entrypoint sh \
+    --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$image" \
+    -ceu 'if [ "$2" = true ]; then
+        printf "draining\n" > /state/agent-draining
+        printf "unresumed\n" > /state/agent-upgrade-unresumed
+      fi
+      chown -hR "$3:$3" /workspaces /state
+      if [ "$2" = true ] && [ "$1" = claude ]; then rm -f /state/claude-cleanup-unconfirmed; fi' sh "$agent" "$new_candidate" "$uid"
+}
+
+runner_transition() (
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 state old_agent
+  validate_agent "$agent"
+  runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   mkdir -p "$runner_home"
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
   runner_transition_lock "$journal.lock"
@@ -1163,21 +1184,8 @@ runner_transition() (
   runner_owned "$root" "$runtime" "$backup"
   [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
   if [ "$(runner_status "$root")" = missing ]; then
-    for owner in "$storage-workspaces" "$storage-state"; do
-      users=$("$runtime" ps --filter "volume=$owner" --format '{{.ID}}')
-      [ -z "$users" ] || die 'retained volume is in use by another container; updater refused'
-    done
-    # A stopped source may never have persisted drain (for example after a host
-    # shutdown). Keep the candidate idle until its readiness has been verified.
-    "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-      --security-opt no-new-privileges --user 0:0 --entrypoint sh \
-      --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$candidate" \
-      -ceu 'printf "draining\n" > /state/agent-draining
-        printf "unresumed\n" > /state/agent-upgrade-unresumed
-        if [ "$1" = claude ]; then
-          chown -hR 11001:11001 /workspaces /state
-          rm -f /state/claude-cleanup-unconfirmed
-        fi' sh "$agent"
+    # Keep a newly created candidate idle until readiness has been verified.
+    runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true
     runner_start "$root" "$port" "$agent" update
   else
     runner_owned "$root" "$runtime" "$name"
@@ -1193,7 +1201,7 @@ runner_transition() (
 )
 
 runner_rollback() (
-  local root=$1 runtime name backup id journal port previous_agent previous_image
+  local root=$1 runtime name backup id journal port previous_agent previous_image state
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
@@ -1206,6 +1214,7 @@ runner_rollback() (
   trap 'rm "$journal.lock/owner"; rmdir "$journal.lock"' EXIT
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
+    [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
     if [ "$(runner_status "$root")" != missing ]; then
       runner_owned "$root" "$runtime" "$name"
       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$(cat "$journal/image")" ] || die 'candidate image differs; rollback refused'
@@ -1219,26 +1228,28 @@ runner_rollback() (
       "$runtime" rm "$name" >/dev/null
     fi
     "$runtime" rename "$backup" "$name"
-    runner_record_observed_metadata "$root" "$runtime" "$name"
-    "$runtime" start "$name" >/dev/null
   else
     runner_owned "$root" "$runtime" "$name"
-    local previous_image
     previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
     [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
-    runner_record_observed_metadata "$root" "$runtime" "$name"
-    if [ "$(runner_status "$root")" != true ]; then "$runtime" start "$name" >/dev/null; fi
   fi
+  previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  if runner_is_legacy "$runtime" "$name"; then previous_agent=codex
+  else previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name"); fi
+  state=$(runner_status "$root")
+  if [ "$state" != true ]; then
+    [ "$("$runtime" inspect --format '{{.State.Running}}' "$name")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
+    runner_prepare_storage "$root" "$runtime" "$previous_image" "$previous_agent" false
+  fi
+  runner_record_observed_metadata "$root" "$runtime" "$name"
+  if [ "$state" != true ]; then "$runtime" start "$name" >/dev/null; fi
   port=$(cat "$journal/port")
   if runner_is_legacy "$runtime" "$name"; then
     # The previous API has no agent readiness or resume endpoint.
     runner_resume_when_ready "$port" true || die 'prior legacy runner retained but not ready; retry rollback when healthy'
-    previous_agent=codex
   else
     runner_resume_when_ready "$port" false true || die 'prior runner retained but not ready; repair authentication then retry recovery'
-    previous_agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
   fi
-  previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
   "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"
   runner_finish_journal "$journal"
   printf 'Prior runner restored; workspaces, unpushed commits and logs retained.\n'

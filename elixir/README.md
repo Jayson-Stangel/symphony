@@ -601,6 +601,9 @@ preserving the rollback container until the replacement passes readiness. See
 The journal retains transition intent and rollback evidence; selected runner
 metadata is written atomically from the verified container during completion
 and recovery, including an interrupted container creation or rollback.
+Before starting a target or stopped rollback source, the updater restores exclusive
+workspace/state volume ownership to Claude UID11001 or Codex UID0. Ownership-only
+rollback retains cleanup uncertainty and the existing drain markers.
 
 Development verification now also requires Node 24.18.0 (included in mise.toml).
 `make setup` installs only the Elixir dependencies. For Claude development, run
