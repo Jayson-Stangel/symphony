@@ -8,6 +8,7 @@ export const toolSpec = z.object({ name: z.string().regex(/^[A-Za-z][A-Za-z0-9_]
 
 // Native model support is runtime-owned; preserve identifiers without a second catalog.
 const settings = z.object({ model: z.string().max(256).refine(value => value.trim().length > 0), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullish(),
+  max_turns: z.number().int().positive().safe(),
   max_agentic_turns: z.number().int().positive().max(100),
   turn_timeout_ms: z.number().int().positive().max(3_600_000) }).strict();
 

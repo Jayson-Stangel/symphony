@@ -50,7 +50,8 @@ export class Helper {
       return;
     }
     if (this.state !== 'ready' || this.active || this.usedRequests.has(command.request_id)) throw new RuntimeError('invalid_turn_state');
-    if (this.usedRequests.size >= 128) throw new RuntimeError('attempt_turn_limit');
+    // The worker owns this attempt allowance; retain replay history only within it.
+    if (this.usedRequests.size >= this.config.max_turns) throw new RuntimeError('agent_max_turns');
     this.usedRequests.add(command.request_id);
     this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set(), progressEvents: new Set() };
     this.pendingInput.push({ type: 'user', session_id: '', uuid: this.active.uuid, parent_tool_use_id: null,
@@ -136,8 +137,8 @@ export class Helper {
           throw new RuntimeError('uncorrelated_native_result');
         }
         if (this.terminals.has(event.uuid)) continue;
-        this.terminals.add(event.uuid);
         if (event.user_message_uuid !== this.active.uuid) throw new RuntimeError('stale_native_result');
+        this.terminals.add(event.uuid);
         const totals = usageTotals(event.modelUsage);
         // modelUsage already includes earlier turns and auxiliary calls. Never sum results.
         if (totals) this.reportUsage(totals);
@@ -267,7 +268,7 @@ export function serve(context, options = {}) {
     closing = true;
     process.stdin.pause();
     buffer = Buffer.alloc(0);
-    const code = error instanceof RuntimeError && ['unsupported_tool_schema', 'duplicate_tool_name', 'native_ownership_unavailable', 'native_initialization_timeout', 'unexpected_native_restart'].includes(error.message) ? error.message : 'protocol_error';
+    const code = error instanceof RuntimeError && ['unsupported_tool_schema', 'duplicate_tool_name', 'native_ownership_unavailable', 'native_initialization_timeout', 'unexpected_native_restart', 'agent_max_turns'].includes(error.message) ? error.message : 'protocol_error';
     try { send({ v: 1, type: 'error', code }); } catch { /* Broken or full output. */ }
     void helper.stop(helper.startRequest ?? 'protocol_error');
   };

@@ -423,6 +423,8 @@ read back uncertain writes before retrying, correct rejected requests, and conta
 unresolved failures to the affected issue. Tracker errors do not pause unrelated
 work. Redacted diagnostics retain request fingerprints and correlation/status
 fields without an execution-certainty classifier or GraphQL parser dependency.
+Claude continuation has no independent helper request ceiling; replay history is bounded by the
+shared `agent.max_turns` captured when an attempt starts.
 Per-attempt turn allowances use the original scheduler continuation path for
 both providers. Claude native SDK turn exhaustion also closes the session and
 yields to the same live tracker check before renewal in the retained workspace.

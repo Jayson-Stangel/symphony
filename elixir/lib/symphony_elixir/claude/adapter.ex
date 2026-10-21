@@ -86,7 +86,9 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
-    config = Config.settings!().claude
+    settings = Config.settings!()
+    config = settings.claude
+    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
     binding = Keyword.fetch!(opts, :tool_binding)
 
     with :ok <-
@@ -96,7 +98,7 @@ defmodule SymphonyElixir.Claude.Adapter do
              session_id: id,
              request_id: start_id,
              workspace: workspace,
-             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]),
+             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]) |> Map.put(:max_turns, max_turns),
              tools: binding.tool_specs,
              skills: skills,
              instructions: instructions
@@ -201,11 +203,12 @@ defmodule SymphonyElixir.Claude.Adapter do
       {:error, {:helper_exited, _status}} ->
         pending_failure(session, pending, :claude_helper_exited)
 
-      {:error, :invalid_frame} ->
-        pending_failure(session, pending, :claude_invalid_frame)
+      {:error, cause} when cause in [:invalid_frame, :frame_too_large] ->
+        causes = %{invalid_frame: :claude_invalid_frame, frame_too_large: :claude_frame_too_large}
+        pending_failure(session, pending, causes[cause])
 
-      {:error, :frame_too_large} ->
-        pending_failure(session, pending, :claude_frame_too_large)
+      {:ok, %{"v" => 1, "type" => "error", "code" => "agent_max_turns"}} ->
+        pending_failure(session, pending, :claude_attempt_turn_limit)
 
       {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
         handle_message(message, session, request, event_id, issue, callback, until, pending)
