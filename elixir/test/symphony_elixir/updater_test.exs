@@ -121,8 +121,8 @@ defmodule SymphonyElixir.UpdaterTest do
     lock = Path.join(ctx.root, "transition.lock")
     assert {_, 137} = lock_command(ctx, definitions, lock, "runner_transition_lock \"$2\"; kill -KILL $$")
     assert {_, 0} = lock_command(ctx, definitions, lock, "printf recovered")
-    assert File.regular?(lock <> ".guard")
-    refute File.exists?(lock)
+    assert File.regular?(lock)
+    refute File.exists?(lock <> ".guard")
   end
 
   test "active updater and its in-flight child retain exclusion", ctx do
@@ -156,21 +156,150 @@ defmodule SymphonyElixir.UpdaterTest do
     assert {pid, 0} = System.cmd("bash", ["-c", "printf '%s' $$"])
     File.write!(Path.join(lock, "owner"), pid)
     assert {_, 0} = lock_command(ctx, definitions, lock, ":")
-    refute File.exists?(lock)
+    assert File.regular?(lock)
   end
 
   test "symlink and unknown legacy lock records are refused without deletion", ctx do
     definitions = launcher_definitions!(ctx)
     lock = Path.join(ctx.root, "transition.lock")
-    File.ln_s!(ctx.seed, lock <> ".guard")
+    File.ln_s!(ctx.seed, lock)
     assert {output, 1} = lock_command(ctx, definitions, lock, ":")
     assert output =~ "unsafe updater lock"
-    File.rm!(lock <> ".guard")
+    File.rm!(lock)
     File.mkdir!(lock)
     File.write!(Path.join(lock, "owner"), "not-a-pid")
     assert {output, 1} = lock_command(ctx, definitions, lock, ":")
     assert output =~ "invalid updater lock owner"
     assert File.read!(Path.join(lock, "owner")) == "not-a-pid"
+  end
+
+  for order <- [:legacy_first, :new_first] do
+    @order order
+    test "mixed updater exclusion #{@order} uses the original lock pathname", ctx do
+      current = launcher_definitions!(ctx)
+      legacy = Path.expand("../fixtures/legacy_updater_lock.sh", __DIR__)
+      {first, second} = if @order == :legacy_first, do: {legacy, current}, else: {current, legacy}
+      lock = Path.join(ctx.root, "transition.lock")
+      acquired = Path.join(ctx.root, "acquired")
+
+      task =
+        Task.async(fn ->
+          lock_command(ctx, first, lock, ~s|printf held > "$3"; for attempt in $(seq 1 500); do [ -f "$3.release" ] && exit 0; sleep .01; done; exit 1|, acquired)
+        end)
+
+      try do
+        wait_for_file!(acquired)
+        assert {_output, code} = lock_command(ctx, second, lock, "printf incorrectly-acquired")
+        assert code != 0
+      after
+        File.write!(acquired <> ".release", "release")
+      end
+
+      assert {_, 0} = Task.await(task, 10_000)
+      assert {_, 0} = lock_command(ctx, current, lock, ":")
+      assert File.regular?(lock)
+      refute File.exists?(lock <> ".guard")
+    end
+  end
+
+  test "death after creating the new lock file recovers without owner publication", ctx do
+    definitions = launcher_definitions!(ctx)
+    lock = Path.join(ctx.root, "transition.lock")
+    script = ~s|source "$1"; python3() { kill -KILL $$; }; runner_transition_lock "$2"|
+    assert {_, 137} = System.cmd("bash", ["-c", script, "fixture", definitions, lock], env: [{"SYMPHONY_HOME", ctx.installation}], stderr_to_stdout: true)
+    assert File.regular?(lock)
+    assert {_, 0} = lock_command(ctx, definitions, lock, ":")
+  end
+
+  test "legacy death before owner publication remains refused without deleting evidence", ctx do
+    legacy = Path.expand("../fixtures/legacy_updater_lock.sh", __DIR__)
+    lock = Path.join(ctx.root, "transition.lock")
+    script = ~s|source "$1"; mkdir() { command mkdir "$@"; kill -KILL $$; }; runner_transition_lock "$2"|
+    assert {_, 137} = System.cmd("bash", ["-c", script, "fixture", legacy, lock], stderr_to_stdout: true)
+    assert File.dir?(lock)
+    refute File.exists?(Path.join(lock, "owner"))
+    assert {output, 1} = lock_command(ctx, launcher_definitions!(ctx), lock, ":")
+    assert output =~ "no verifiable owner"
+    assert File.dir?(lock)
+  end
+
+  test "legacy acquisition replacing an observed dead directory is preserved", ctx do
+    current = launcher_definitions!(ctx)
+    legacy = Path.expand("../fixtures/legacy_updater_lock.sh", __DIR__)
+    lock = Path.join(ctx.root, "transition.lock")
+    File.mkdir!(lock)
+    assert {dead_pid, 0} = System.cmd("bash", ["-c", "printf '%s' $$"])
+    File.write!(Path.join(lock, "owner"), dead_pid)
+    paused = Path.join(ctx.root, "paused")
+    acquired = Path.join(ctx.root, "legacy-acquired")
+    peer_dir = Path.join(ctx.root, "python-peer")
+    File.mkdir!(peer_dir)
+    # Execute the real production helper, pausing at owner unlink after native
+    # PID, directory identity and contents checks. The exact baseline helper then
+    # replaces the directory; relative unlink must preserve its new owner.
+    peer = """
+    #!#{System.find_executable("python3")}
+    import os, pathlib, sys, time
+    program = sys.stdin.read()
+    patch = '''import os, pathlib, time
+    native_unlink = os.unlink
+    def paused_unlink(path, *args, **kwargs):
+        marker = pathlib.Path(os.environ['FIXTURE_PAUSED'])
+        marker.write_text('validated')
+        deadline = time.monotonic() + 5
+        while not pathlib.Path(str(marker) + '.release').exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('fixture release timed out')
+            time.sleep(.01)
+        return native_unlink(path, *args, **kwargs)
+    os.unlink = paused_unlink
+    '''
+    os.execv(sys.executable, [sys.executable, '-c', patch + program, *sys.argv[2:]])
+    """
+
+    File.write!(Path.join(peer_dir, "python3"), peer)
+    File.chmod!(Path.join(peer_dir, "python3"), 0o755)
+
+    newer =
+      Task.async(fn ->
+        System.cmd("bash", ["-c", ~s(source "$1"; runner_transition_lock "$2"), "fixture", current, lock],
+          env: [{"SYMPHONY_HOME", ctx.installation}, {"PATH", peer_dir <> ":" <> System.fetch_env!("PATH")}, {"FIXTURE_PAUSED", paused}],
+          stderr_to_stdout: true
+        )
+      end)
+
+    wait_for_file!(paused)
+
+    older =
+      Task.async(fn ->
+        lock_command(ctx, legacy, lock, ~s|printf held > "$3"; for attempt in $(seq 1 500); do [ -f "$3.release" ] && exit 0; sleep .01; done; exit 1|, acquired)
+      end)
+
+    try do
+      wait_for_file!(acquired)
+      owner = File.read!(Path.join(lock, "owner"))
+      File.write!(paused <> ".release", "release")
+      assert {output, 1} = Task.await(newer, 10_000)
+      assert output =~ "legacy updater lock changed"
+      assert File.read!(Path.join(lock, "owner")) == owner
+      assert File.dir?(lock)
+    after
+      File.write!(paused <> ".release", "release")
+      File.write!(acquired <> ".release", "release")
+    end
+
+    assert {_, 0} = Task.await(older, 10_000)
+    assert {_, 0} = lock_command(ctx, current, lock, ":")
+    assert File.regular?(lock)
+  end
+
+  test "hardlinked lock inode is preserved and refused", ctx do
+    lock = Path.join(ctx.root, "transition.lock")
+    File.write!(lock, "retained")
+    File.ln!(lock, lock <> ".other")
+    assert {output, 1} = lock_command(ctx, launcher_definitions!(ctx), lock, ":")
+    assert output =~ "unknown or foreign updater lock"
+    assert File.read!(lock) == "retained"
   end
 
   test "setup failure after fast-forward is retried even when Git is current", ctx do

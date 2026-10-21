@@ -2564,7 +2564,10 @@ Local HEAD MUST be an ancestor of or equal to fetched remote main before install
 otherwise retain the local commits and refuse without resetting the source.
 Runner storage derives from the selected config directory after CLI options are resolved,
 unless an explicit runner-home override is present. Runner transition exclusion uses a
-stable advisory lock inode held through the updater and its in-flight commands. Crashes
+stable regular-file advisory lock inode at the original legacy lock pathname, held through
+the updater and its in-flight commands. Older mkdir-based launchers MUST be excluded in
+both acquisition orders. Retiring a proven-dead legacy directory MUST preserve a newly
+acquired replacement directory and its owner. Crashes
 release it without separately published owner metadata. Unknown legacy ownerless locks
 remain refused; only a provably absent legacy owner may be retired on ordinary retry.
 Selected runner metadata is a derived cache, not transition authority. Successful

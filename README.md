@@ -90,7 +90,9 @@ that predates this handoff, first run a source-only `symphony update`, then invo
 command for a runner transition.
 `--config-dir` selects configuration and its derived runner storage; an explicit
 `SYMPHONY_RUNNER_HOME` still takes precedence. Runner transitions use a process-held advisory
-lock: a crashed updater releases it after any in-flight command exits. Unknown legacy ownerless
+lock at the original lock pathname, excluding already-loaded older launchers too. Rerun the
+updated command after a mixed-version refusal. A crashed updater releases the lock after any
+in-flight command exits. Unknown legacy ownerless
 locks remain refused because their ownership cannot be established safely.
 
 #### Run unattended work in an isolated container

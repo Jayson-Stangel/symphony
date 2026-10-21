@@ -674,7 +674,8 @@ the effective global setting as `agent.max_concurrent_agents`.
 Installed updater recovery follows the launcher contract in the root README. A clean local
 `main` must track a configured remote's `main`; `--config-dir` also selects derived runner
 storage unless `SYMPHONY_RUNNER_HOME` is explicit. Transition exclusion uses a stable advisory
-lock file released by process exit, including crashes. Unknown legacy ownerless lock
+regular file at the original lock pathname, excluding older mkdir-based launchers. Process
+exit releases its lock, including crashes. Unknown legacy ownerless lock
 directories require operator inspection; a proven-dead legacy owner can be retired on retry.
 
 Every installed update repeats idempotent setup, even when source is already current, so

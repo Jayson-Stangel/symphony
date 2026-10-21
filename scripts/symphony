@@ -963,42 +963,41 @@ runner_update_port() {
   printf '%s\n' "$port"
 }
 
-# Keep the guard inode: unlinking a locked file would allow a second updater
-# to lock a different inode. flock is released when the updater and its children
-# close FD 9, including on crashes; there is no separate owner publication.
+# Keep the original lock pathname as a permanent regular inode. Older launchers
+# also use this pathname, so their mkdir must fail while new code holds flock.
+# Never unlink the inode: that would let a rival lock a different file. Process
+# exit releases flock after any in-flight commands close inherited FD 9.
 runner_transition_lock() {
   local path=$1
   if [ -n "${runner_lock_path:-}" ]; then
     [ "$runner_lock_path" = "$path" ] || die 'updater already holds a different project lock'
     return
   fi
-  [ ! -L "$path.guard" ] || die 'unsafe updater lock'
-  [ ! -e "$path.guard" ] || [ -f "$path.guard" ] || die 'unsafe updater lock'
-  exec 9>>"$path.guard"
-  python3 - "$path" <<'PYLOCK'
-import fcntl, os, pathlib, stat, sys
+  [ ! -L "$path" ] || die 'unsafe updater lock'
+  if [ -d "$path" ]; then
+    # Only a proven-dead legacy directory can retire. Directory-relative unlink
+    # cannot remove the owner of a replacement directory acquired by old code.
+    python3 - "$path" <<'PYLEGACY'
+import os, stat, sys
 
 def refuse(message):
     sys.exit('symphony: ' + message)
 
-info = os.fstat(9)
-if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
-    refuse('unknown or foreign updater lock; inspect it before recovery')
+path = sys.argv[1]
 try:
-    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    refuse('another updater is active')
-
-# Accept only a provably abandoned lock from the previous launcher. Preserve
-# ownerless/foreign records for inspection rather than guessing their ownership.
-path = pathlib.Path(sys.argv[1])
-if path.is_symlink():
-    refuse('unsafe updater lock')
-if path.exists():
-    owner = path / 'owner'
-    if not path.is_dir() or path.stat().st_uid != os.geteuid() or owner.is_symlink() or not owner.is_file():
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    info = os.fstat(directory)
+    if info.st_uid != os.geteuid():
+        refuse('unknown or foreign updater lock; inspect it before recovery')
+    try:
+        owner = os.open('owner', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+    except FileNotFoundError:
         refuse('updater lock has no verifiable owner; inspect it before recovery')
-    pid = owner.read_text().strip()
+    owner_info = os.fstat(owner)
+    if not stat.S_ISREG(owner_info.st_mode) or owner_info.st_uid != os.geteuid() or owner_info.st_nlink != 1:
+        refuse('unknown or foreign updater lock owner; inspect it before recovery')
+    with os.fdopen(owner) as stream:
+        pid = stream.read().strip()
     if not pid.isascii() or not pid.isdecimal() or int(pid) <= 0:
         refuse('invalid updater lock owner')
     try:
@@ -1009,10 +1008,35 @@ if path.exists():
         refuse('updater lock owner cannot be verified; inspect it before recovery')
     else:
         refuse('another updater is active')
-    if set(path.iterdir()) != {owner}:
+    current = os.stat(path, follow_symlinks=False)
+    if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+        refuse('legacy updater lock changed during recovery; retry update')
+    if os.listdir(directory) != ['owner']:
         refuse('unknown updater lock metadata; inspect it before recovery')
-    owner.unlink()
-    path.rmdir()
+    os.unlink('owner', dir_fd=directory)
+    os.rmdir(path)
+except OSError:
+    refuse('legacy updater lock changed or cannot be verified; retry after inspection')
+PYLEGACY
+  fi
+  [ ! -L "$path" ] || die 'unsafe updater lock'
+  [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe updater lock'
+  # If an old updater's mkdir wins first, opening the directory fails. If this
+  # O_CREAT wins first, its permanent regular file makes the old mkdir fail.
+  exec 9>>"$path"
+  python3 - "$path" <<'PYLOCK'
+import fcntl, os, stat, sys
+
+info = os.fstat(9)
+current = os.stat(sys.argv[1], follow_symlinks=False)
+if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(current.st_mode)
+        or info.st_uid != os.geteuid() or info.st_nlink != 1
+        or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+    sys.exit('symphony: unknown or foreign updater lock; inspect it before recovery')
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit('symphony: another updater is active')
 PYLOCK
   runner_lock_path=$path
 }

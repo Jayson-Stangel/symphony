@@ -482,7 +482,8 @@ selection is fixed across workflow reloads. -->
 
 Installed updates require a clean local main tracking a configured remote's main. The
 launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME
-is explicit. Transition advisory locks release after a crash and any in-flight command
+is explicit. Transition advisory locks use the original lock pathname, excluding already-loaded
+older launchers. They release after a crash and any in-flight command
 exits; unknown legacy ownerless locks remain refused for operator inspection.
 
 An installed update retries idempotent setup even when Git is current. Combined source
