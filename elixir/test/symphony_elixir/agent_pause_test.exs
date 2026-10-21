@@ -131,6 +131,12 @@ defmodule SymphonyElixir.AgentPauseTest do
     assert :ready = AgentPause.current()
   end
 
+  test "a fresh project needs no legacy tracker recovery notice", ctx do
+    assert AgentPause.recovery_notice("new-issue") == ""
+    assert :ready = AgentPause.current()
+    refute File.exists?(ctx.root)
+  end
+
   test "legacy tracker evidence survives without blocking dispatch or global recovery", ctx do
     tools = Path.join(ctx.root, "claude-tools")
     File.mkdir_p!(tools)
@@ -189,6 +195,7 @@ defmodule SymphonyElixir.AgentPauseTest do
 
     for value <- [
           Map.put(old, "profile", @profile),
+          Map.put(old, "profile", 12),
           Map.put(old, "kind", "policy_blocked"),
           Map.put(old, "stage", "startup"),
           Map.put(old, "unknown", true),
@@ -207,6 +214,8 @@ defmodule SymphonyElixir.AgentPauseTest do
 
   test "failed filesystem operations never clear blockers or pending tools", ctx do
     assert {:error, :invalid_profile} = AgentPause.explicit_recheck(12)
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: 12})
+    assert {:paused, %{"kind" => "policy_blocked", "profile" => nil}} = AgentPause.current()
     assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
     assert :ok = AgentPause.explicit_recheck(@profile)
     assert :ok = AgentPause.record(:auth_required, %{profile: @profile})
