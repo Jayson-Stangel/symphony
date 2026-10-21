@@ -126,10 +126,18 @@ those requirements from its `AGENTS.md`, development docs, and ticket. Do not
 apply Symphony's Elixir checks to another project unless that project explicitly
 requires them. A missing tool matters only when required for that project's work.
 
+For branch creation, synchronization and PR creation, verify the integration
+repository, remote and base from target-repository policy and any existing PR's
+actual base metadata. Resolve mismatches under that repository's instructions;
+do not infer `origin/main` or the remote default when the base is unknown. Record
+the selected base with synchronization evidence. For Symphony itself, `AGENTS.md`
+requires feature integration through `dev`; `main` is production. Promotion and
+stable rollout retain their separate approvals for the exact scope and revisions.
+
 - `symphony-linear`: interact with Linear during this Symphony session.
 - `symphony-commit`: produce clean, logical commits during implementation.
 - `symphony-push`: keep the current branch published and its pull request current.
-- `symphony-pull`: merge the latest `origin/main` into the current branch before handoff.
+- `symphony-pull`: merge the latest verified integration base into the current branch before handoff.
 - `symphony-land`: when a ticket reaches `Merging`, explicitly open and follow
   the globally installed `symphony-land` skill, which includes the land loop.
   A repository may deliberately override it with `.codex/skills/symphony-land`.
@@ -222,7 +230,7 @@ If launch fails, capture the actual command and error before treating it as bloc
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
+   - Create a fresh branch from the latest verified policy integration base and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
@@ -272,9 +280,9 @@ when the project supplies a custom workflow.
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run `symphony-pull` to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
+9.  Run `symphony-pull` to sync with the latest verified integration base before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `symphony-pull` evidence note with:
-      - merge source(s),
+      - verified base repository/remote/ref and merge source(s),
       - result (`clean` or `conflicts resolved`),
       - resulting `HEAD` short SHA.
 10. Compact context and proceed to execution.
@@ -353,7 +361,7 @@ Use this only when completion is blocked by missing required tools or missing au
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
+9.  Merge the latest verified integration base into the branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
@@ -394,7 +402,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
+5. Create a fresh branch from the latest verified policy integration base.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
@@ -415,7 +423,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new branch from the latest verified policy integration base and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
@@ -474,7 +482,8 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 Claude configuration lives in a `claude` front-matter mapping. Only `model`
 (sonnet by default; current model IDs and family aliases listed in docs/claude.md),
 `effort` (low, medium, high, xhigh, max; omitted/null uses the model default),
-`max_concurrent_agents` (1), `max_agentic_turns` (1–100),
+`max_concurrent_agents` (deprecated and ignored; shared `agent.max_concurrent_agents`
+controls capacity), `max_agentic_turns` (1–100),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider

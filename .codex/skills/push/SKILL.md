@@ -35,20 +35,30 @@ missing Elixir tooling for a project that does not use it.
 
 ## Steps
 
-1. Identify current branch and confirm remote state.
+1. Inspect status, the current branch and remotes. Establish the target repository
+   and integration base from its `AGENTS.md`/integration policy and any existing
+   PR's actual base (`gh pr view --json number,url,baseRefName,headRefName`).
+   Verify the PR base repository against the remotes, as in `symphony-pull`.
+   Resolve policy/base mismatches before publishing; do not infer `main` or the
+   remote default branch when no base is established. Symphony feature PRs target
+   `dev`; its `main` promotion and stable rollout retain separate exact approvals.
 2. Run the target repository's required validation before pushing.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:
    - If the failure is a non-fast-forward or sync problem, run the `symphony-pull`
-     skill to merge `origin/main`, resolve conflicts, and rerun validation.
-   - Push again; use `--force-with-lease` only when history was rewritten.
+     skill to synchronize the verified PR/policy integration base, resolve
+     conflicts, and rerun required validation and review.
+   - Retry a normal push. Rewriting published history and using
+     `--force-with-lease` require explicit authorization.
    - If the failure is due to auth, permissions, or workflow restrictions on
      the configured remote, stop and surface the exact error instead of
      rewriting remotes or switching protocols as a workaround.
 
 5. Ensure a PR exists for the branch:
-   - If no PR exists, create one.
+   - If no PR exists, create one with the verified integration repository and base
+     explicitly selected. A failed lookup is not proof that no PR exists; surface
+     auth/network/permission failures instead of falling back to a default base.
    - If a PR exists and is open, update it.
    - If branch is tied to a closed/merged PR, create a new branch + PR.
    - Write a proper PR title that clearly describes the change outcome
@@ -88,11 +98,20 @@ git push -u origin HEAD
 # If the configured remote rejects the push for auth, permissions, or workflow
 # restrictions, stop and surface the exact error.
 
-# Only if history was rewritten locally:
+# Only when rewriting published history and this force push are explicitly authorized:
 git push --force-with-lease origin HEAD
 
 # Ensure a PR exists (create only if missing)
-pr_state=$(gh pr view --json state -q .state 2>/dev/null || true)
+# integration_repository and integration_base come from verified policy/PR metadata.
+# feature_repository is the verified source repository for the configured push remote.
+# Inspect matching PRs; a failed lookup stops this procedure.
+gh pr list --repo "$integration_repository" --head "$branch" --state all \
+  --json number,state,baseRefName,headRepository,url
+# Select the verified source repository, excluding same-named branches in other forks.
+# The latest matching PR is first; no matching PR yields an empty state.
+pr_state=$(gh pr list --repo "$integration_repository" --head "$branch" --state all \
+  --json state,headRepository \
+  --jq "map(select(.headRepository.nameWithOwner == \"$feature_repository\")) | .[0].state // \"\"") || exit 1
 if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
   echo "Current branch is tied to a closed PR; create a new branch + PR." >&2
   exit 1
@@ -101,11 +120,11 @@ fi
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
 if [ -z "$pr_state" ]; then
-  gh pr create --title "$pr_title"
+  gh pr create --repo "$integration_repository" --base "$integration_base" --title "$pr_title"
 else
   # REST avoids deprecated Projects (classic) queries in older gh pr edit.
-  pr_number=$(gh pr view --json number -q .number)
-  gh api --method PATCH "repos/{owner}/{repo}/pulls/$pr_number" \
+  pr_number=$(gh pr view --repo "$integration_repository" --json number -q .number)
+  gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
     -f title="$pr_title" --jq .html_url
 fi
 
@@ -114,14 +133,14 @@ fi
 # 1) draft the body and run the repo's documented body validator, if any
 # 2) publish the validated file via REST (preserves actual newlines)
 # 3) re-read the published title/body and compare with the current diff
-pr_number=$(gh pr view --json number -q .number)
-gh api --method PATCH "repos/{owner}/{repo}/pulls/$pr_number" \
+pr_number=$(gh pr view --repo "$integration_repository" --json number -q .number)
+gh api --method PATCH "repos/$integration_repository/pulls/$pr_number" \
   -F body=@/tmp/pr_body.md --jq .html_url
 
-gh pr view --json title,body
+gh pr view --repo "$integration_repository" --json title,body
 
 # Show PR URL for the reply
-gh pr view --json url -q .url
+gh pr view --repo "$integration_repository" --json url -q .url
 ```
 
 ## Notes
@@ -133,7 +152,8 @@ gh pr view --json url -q .url
   repository dependency. Check `gh --version` inside the worker; the host's
   version does not establish the container's version. Do not silently ignore
   unrelated auth, permission, or network failures.
-- Do not use `--force`; only use `--force-with-lease` as the last resort.
+- Do not use `--force`. Use `--force-with-lease` only with explicit authorization
+  to rewrite the published history; normal synchronization uses merges.
 - Distinguish sync problems from remote auth/permission problems:
   - Use the `symphony-pull` skill for non-fast-forward or stale-branch issues.
   - Surface auth, permissions, or workflow restrictions directly instead of
