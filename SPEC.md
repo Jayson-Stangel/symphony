@@ -2507,6 +2507,12 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+Selected runner metadata is a derived cache, not transition authority. Successful
+update/recovery and rollback MUST atomically record the verified selected
+container image, provider, native profile and port before completing the journal.
+A candidate created before metadata publication MUST remain recoverable without
+trusting stale cached identity. Existing journal intent and verified rollback
+source evidence remain authoritative until transition completion.
 
 ### Shared provider concurrency
 

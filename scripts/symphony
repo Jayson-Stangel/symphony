@@ -866,8 +866,14 @@ runner_start() {
     --volume "$codex_auth_volume:/root/.codex" \
     "$image_id" >/dev/null
   fi
+  runner_write_metadata "$root" "$port" "$agent" "$image_id" "$profile"
+  printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
+}
+
+# The selected runtime cache is written atomically; the journal retains intent.
+runner_write_metadata() (
+  local root=$1 port=$2 agent=$3 image_id=$4 profile=$5 metadata_tmp
   umask 077
-  local metadata_tmp
   metadata_tmp=$(mktemp "$runner_home/.runner.XXXXXX")
   cat >"$metadata_tmp" <<EOF
 SYMPHONY_RUNNER_PORT=$port
@@ -875,8 +881,23 @@ SYMPHONY_RUNNER_AGENT=$agent
 SYMPHONY_RUNNER_IMAGE_ID=$image_id
 SYMPHONY_RUNNER_PROFILE=$profile
 EOF
-  mv "$metadata_tmp" "$env_file"
-  printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
+  mv "$metadata_tmp" "$(runner_env_file "$root")"
+)
+
+# Call only after updater ownership and expected-image checks have passed.
+runner_record_observed_metadata() {
+  local root=$1 runtime=$2 name=$3 agent image profile=none port
+  port=$(runner_update_port "$root" "$runtime" "$name")
+  image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  [ -n "$image" ] || die 'observed runner image is missing; updater refused'
+  if runner_is_legacy "$runtime" "$name"; then agent=codex
+  else agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name"); validate_agent "$agent"; fi
+  if [ "$agent" = claude ]; then
+    profile=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")
+    case "$profile" in ''|*[!a-f0-9]*) die 'observed native profile is invalid; updater refused' ;; esac
+    [ "${#profile}" = 64 ] || die 'observed native profile is invalid; updater refused'
+  fi
+  runner_write_metadata "$root" "$port" "$agent" "$image" "$profile"
 }
 
 # Runner transitions are owned by the installed updater. Every failure retains
@@ -1075,7 +1096,7 @@ runner_refresh_pending() {
     state=$("$runtime" inspect --format '{{.Image}}' "$name")
     [ "$state" = "$old" ] || [ "$state" = "$previous" ] || die 'pending source image differs; updater refused'
     if [ "$state" = "$old" ] && [ "$state" != "$previous" ]; then
-      [ "$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$(runner_env_file "$root")")" = "$state" ] || die 'committed candidate metadata differs; updater refused'
+      runner_record_observed_metadata "$root" "$runtime" "$name"
       cp "$(runner_env_file "$root")" "$journal/previous.env.next"
       mv "$journal/previous.env.next" "$journal/previous.env"
     fi
@@ -1135,6 +1156,7 @@ runner_transition() (
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ]; then
       runner_owned "$root" "$runtime" "$name"
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
+      runner_record_observed_metadata "$root" "$runtime" "$name"
       "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
       runner_finish_journal "$journal"
       printf 'Previously completed runner transition recovered.\n'
@@ -1168,6 +1190,7 @@ runner_transition() (
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
   fi
   runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  runner_record_observed_metadata "$root" "$runtime" "$name"
   "$runtime" tag "$candidate" "$(runner_local_image "$agent")"
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
@@ -1175,9 +1198,9 @@ runner_transition() (
 )
 
 runner_rollback() (
-  local root=$1 runtime name backup id journal port env_file previous_agent previous_image
+  local root=$1 runtime name backup id journal port previous_agent previous_image
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
-  journal="$runner_home/$id.transition"; env_file=$(runner_env_file "$root")
+  journal="$runner_home/$id.transition"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
   runner_transition_lock "$journal.lock"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
@@ -1201,14 +1224,14 @@ runner_rollback() (
       "$runtime" rm "$name" >/dev/null
     fi
     "$runtime" rename "$backup" "$name"
-    cp "$journal/previous.env" "$env_file"
+    runner_record_observed_metadata "$root" "$runtime" "$name"
     "$runtime" start "$name" >/dev/null
   else
     runner_owned "$root" "$runtime" "$name"
     local previous_image
     previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
     [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
-    cp "$journal/previous.env" "$env_file"
+    runner_record_observed_metadata "$root" "$runtime" "$name"
     if [ "$(runner_status "$root")" != true ]; then "$runtime" start "$name" >/dev/null; fi
   fi
   port=$(cat "$journal/port")
