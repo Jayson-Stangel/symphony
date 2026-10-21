@@ -47,6 +47,10 @@ Captured sessions use their common adapter interrupt callback before worker
 termination and workspace removal. An interrupt error retains the worker, claim
 and workspace. An unpublished session keeps the existing task-only path, which
 must not be interpreted as confirmed native cleanup.
+Safe optional pause `code` and `stage` fields explain startup and cleanup failures
+across restarts. They do not change pause behavior; old records retain their existing
+meaning without an invented cause. Resume/recheck responses distinguish readiness,
+account pause, recheck refusal and state-write failure using bounded error codes.
 The existing attempt task owns normal cleanup once. Successful cleanup preserves
 the original result or exception; failed cleanup reports separate categorical
 primary/cleanup causes and the captured provider. Claude fallback cleanup has a

@@ -313,6 +313,22 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "safe native startup cause survives adapter and scheduler re-recording", ctx do
+    helper = Path.join(ctx.root, "rejected-start.mjs")
+    File.write!(helper, ~s|console.log(JSON.stringify({ready: false, code: 'unqualified_auth'}));|)
+
+    assert {:error, {:agent_pause, :auth_required, %{startup_code: "unqualified_auth", stage: "startup"}} = reason} =
+             Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
+
+    ref = make_ref()
+    entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+    state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+    assert {:noreply, _state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
+
+    assert {:paused, %{"kind" => "auth_required", "code" => "unqualified_auth", "stage" => "startup"}} =
+             Task.async(fn -> AgentPause.current() end) |> Task.await()
+  end
+
   test "account changes cannot switch the listener's pinned native identity", ctx do
     assert {:error, {:agent_pause, :policy_blocked, _}} =
              Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :expected_profile, String.duplicate("b", 64)))
@@ -377,11 +393,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     for mode <- ["lost-start", "wrong-stop", "wrong-session-stop", "silent-stop"] do
       File.write!(Path.join(ctx.workspace, "peer-mode"), mode)
 
-      assert {:error, {:agent_pause, :policy_blocked, %{startup_code: "protocol_error", cleanup: :unconfirmed}}} =
+      assert {:error, {:agent_pause, :policy_blocked, %{startup_code: "protocol_error", cleanup: :unconfirmed}} = reason} =
                Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :helper_path, helper))
 
+      ref = make_ref()
+      entry = %{ref: ref, identifier: ctx.issue.identifier, issue: ctx.issue, started_at: DateTime.utc_now()}
+      state = %Orchestrator.State{running: %{ctx.issue.id => entry}, claimed: MapSet.new([ctx.issue.id]), codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}}
+      assert {:noreply, _state} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, state)
       assert File.exists?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
-      assert {:paused, %{"kind" => "policy_blocked"}} = AgentPause.current()
+      assert {:paused, %{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}} = AgentPause.current()
     end
   end
 
@@ -757,7 +777,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     Process.cancel_timer(elem(state.readiness_timer, 0))
 
     for action <- [:resume, :recheck] do
-      assert {:reply, {:error, :agent_not_ready}, ^state} =
+      assert {:reply, {:error, "cleanup_restart_required"}, ^state} =
                Orchestrator.handle_call({:agent_control, action, false}, {self(), make_ref()}, state)
     end
   end

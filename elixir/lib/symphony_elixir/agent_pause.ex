@@ -5,6 +5,8 @@ defmodule SymphonyElixir.AgentPause do
 
   @kinds ~w(quota_exhausted auth_required policy_blocked protocol_error tool_outcome_uncertain)
   @stored_kinds @kinds ++ ["operator_recheck", "operator_recheck_inflight", "probe_inflight"]
+  @startup_codes ~w(auth_required unqualified_auth unknown_auth_status unsupported_tool_schema duplicate_tool_name
+                    native_ownership_unavailable native_initialization_timeout unexpected_native_restart policy_blocked protocol_error runtime_unavailable)
   @rank %{
     "operator_recheck" => 0,
     "operator_recheck_inflight" => 0,
@@ -46,6 +48,19 @@ defmodule SymphonyElixir.AgentPause do
     "\nLegacy recovery evidence: #{count} tracker call(s) for this issue lack confirmed delivery. Read back the current targets before replaying any write. These records do not prove whether a write executed.\n"
   end
 
+  @doc false
+  @spec safe_startup_code(term()) :: String.t()
+  def safe_startup_code(code), do: if(code in @startup_codes, do: code, else: "runtime_unavailable")
+
+  defp diagnostics(details) do
+    code = details[:code] || details["code"] || details[:startup_code] || details["startup_code"]
+    stage = details[:stage] || details["stage"]
+
+    if (stage == "startup" and code in @startup_codes) or (stage == "cleanup" and code == "cleanup_restart_required"),
+      do: %{"code" => code, "stage" => stage},
+      else: %{}
+  end
+
   @spec record(atom() | String.t(), map()) :: :ok | {:error, term()}
   def record(kind, details \\ %{}) do
     kind = to_string(kind)
@@ -63,7 +78,7 @@ defmodule SymphonyElixir.AgentPause do
     profile = safe_profile(details[:profile] || details["profile"])
     reset = future_reset(details[:resets_at] || details["resets_at"])
     value = %{"version" => 1, "kind" => kind, "profile" => profile, "phase" => "waiting", "resets_at" => reset}
-    atomic_write(pause_path(), merge_pause(old, value))
+    atomic_write(pause_path(), merge_pause(old, Map.merge(value, diagnostics(details))))
   end
 
   @doc "Consumes only an explicit authentication/policy recheck before sending input."
@@ -214,12 +229,12 @@ defmodule SymphonyElixir.AgentPause do
     reset = value["resets_at"]
 
     if is_integer(reset) and reset > System.system_time(:second),
-      do: {:paused, Map.take(value, ~w(version kind phase profile resets_at))},
+      do: {:paused, Map.merge(Map.take(value, ~w(version kind phase profile resets_at)), diagnostics(value))},
       else: :ready
   end
 
   defp public_pause(value) do
-    {if(value["phase"] == "probe", do: :probe, else: :paused), Map.take(value, ~w(version kind phase profile resets_at))}
+    {if(value["phase"] == "probe", do: :probe, else: :paused), Map.merge(Map.take(value, ~w(version kind phase profile resets_at)), diagnostics(value))}
   end
 
   defp valid_phase?("operator_recheck", phase), do: phase == "probe"

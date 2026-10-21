@@ -21,6 +21,51 @@ defmodule SymphonyElixir.AgentPauseTest do
     %{root: root}
   end
 
+  test "safe startup causes survive a fresh reader and stronger winning pauses", ctx do
+    details = %{profile: @profile, startup_code: AgentPause.safe_startup_code("unqualified_auth"), stage: "startup"}
+    assert :ok = AgentPause.record(:auth_required, details)
+
+    assert {:paused, %{"kind" => "auth_required", "code" => "unqualified_auth", "stage" => "startup"}} =
+             Task.async(fn -> AgentPause.current() end) |> Task.await()
+
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile, code: "cleanup_restart_required", stage: "cleanup"})
+    winning = AgentPause.current()
+    assert :ok = AgentPause.record(:auth_required, details)
+    assert AgentPause.current() == winning
+    assert {:paused, %{"kind" => "policy_blocked", "code" => "cleanup_restart_required", "stage" => "cleanup"}} = winning
+    refute File.read!(Path.join(ctx.root, "claude-pause.json")) =~ "startup_code"
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: @profile})
+    assert {:paused, replaced} = AgentPause.current()
+    refute Map.has_key?(replaced, "code")
+  end
+
+  test "cooldown merge retains metadata from the winning reset", ctx do
+    reset = System.system_time(:second) + 60
+    # Optional metadata is observational; it never changes the existing reset policy.
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: reset, code: "runtime_unavailable", stage: "startup"})
+    winning = AgentPause.current()
+    assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile, resets_at: reset - 10, code: "protocol_error", stage: "startup"})
+    assert AgentPause.current() == winning
+    path = Path.join(ctx.root, "claude-pause.json")
+    value = path |> File.read!() |> Jason.decode!() |> Map.put("resets_at", reset - 120)
+    File.write!(path, Jason.encode!(value))
+    assert :ready = AgentPause.current()
+  end
+
+  test "invalid optional diagnostics neither change pause semantics nor persist provider text", ctx do
+    assert AgentPause.safe_startup_code("secret-canary") == "runtime_unavailable"
+    assert :ok = AgentPause.record(:auth_required, %{profile: @profile, code: "secret-canary", stage: "startup"})
+    assert {:paused, value} = AgentPause.current()
+    refute Map.has_key?(value, "code")
+    path = Path.join(ctx.root, "claude-pause.json")
+    refute File.read!(path) =~ "secret-canary"
+
+    for metadata <- [%{"code" => %{"secret-canary" => true}, "stage" => "startup"}, %{"code" => "auth_required", "stage" => "secret-canary"}, %{}] do
+      File.write!(path, Jason.encode!(Map.merge(value, metadata)))
+      assert {:paused, ^value} = Task.async(fn -> AgentPause.current() end) |> Task.await()
+    end
+  end
+
   test "unknown quota resets leave backoff to the orchestrator, including after restart", ctx do
     assert :ok = AgentPause.record(:quota_exhausted, %{profile: @profile})
     assert File.regular?(Path.join(ctx.root, "claude-pause.json"))
