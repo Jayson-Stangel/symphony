@@ -352,6 +352,11 @@ a matching owned-process cleanup acknowledgement; explicit input/permission and 
 stops retain their gates. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
+Container execution keeps its fixed workspace, bind address and outer-container
+permission boundary. Requested SSH execution is rejected instead of silently removed.
+`/api/v1/state` exposes `agent.execution` with safe requested/effective bindings,
+also logged when container workflow settings load.
+
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh
