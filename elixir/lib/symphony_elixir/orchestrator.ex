@@ -189,8 +189,6 @@ defmodule SymphonyElixir.Orchestrator do
               finish_session_cleanup(state, issue_id, entry, reason)
 
             lost_owner_cleanup?(reason, entry) ->
-              state = record_session_completion_totals(state, entry)
-
               begin_owner_loss_cleanup(state, issue_id, entry, reason)
 
             true ->
@@ -276,10 +274,7 @@ defmodule SymphonyElixir.Orchestrator do
               "Issue blocked by live Codex budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
             )
 
-            state =
-              state
-              |> record_session_completion_totals(updated_running_entry)
-              |> stop_and_block_issue(issue_id, updated_running_entry, error)
+            state = stop_and_block_issue(state, issue_id, updated_running_entry, error)
 
             notify_dashboard()
             {:noreply, state}
@@ -339,6 +334,10 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.warning("Agent cleanup task exited issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} cleanup=cleanup_unconfirmed; retiring task")
       terminate_task(entry.cleanup_owner_pid, state.task_supervisor)
     end
+
+    # The running entry has been removed: move its elapsed time to completed
+    # totals exactly once, regardless of the final cancellation/retry outcome.
+    state = record_session_completion_totals(state, entry)
 
     case entry.cleanup_action do
       {:down, reason} ->
@@ -912,8 +911,6 @@ defmodule SymphonyElixir.Orchestrator do
         %{state | running: Map.put(state.running, issue_id, entry)}
 
       %{agent_session: %{adapter: _, native: _}} = entry ->
-        state = record_session_completion_totals(state, entry)
-
         begin_session_cleanup(state, issue_id, entry, {:cancel, cleanup_workspace}, fn ->
           stop_running_task(issue_id, entry, state.task_supervisor, reason)
         end)
@@ -970,7 +967,6 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
 
         state
-        |> record_session_completion_totals(running_entry)
         |> stop_and_block_issue(issue_id, running_entry, error)
       else
         Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
@@ -1146,6 +1142,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       _ ->
         stop_running_task(issue_id, running_entry, state.task_supervisor)
+        state = record_session_completion_totals(state, running_entry)
         block_issue_from_entry(state, issue_id, running_entry, error)
     end
   end

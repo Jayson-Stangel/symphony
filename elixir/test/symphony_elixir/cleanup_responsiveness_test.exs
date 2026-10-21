@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CleanupResponsivenessTest do
   use SymphonyElixir.TestSupport
+  require Phoenix.LiveViewTest
 
   defmodule InterruptProbe do
     @behaviour SymphonyElixir.CodingAgent
@@ -21,6 +22,7 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
 
       Port.close(native.port)
       File.write!(Path.join(native.workspace, "cleanup-complete"), "complete")
+      if native[:outcome] == :raise, do: raise("cleanup fixture error")
       :ok
     end
   end
@@ -124,17 +126,34 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     writeFileSync(#{Jason.encode!(ctx.root)} + '/complete-' + id, 'complete');
     """)
 
+    config = [tracker_kind: "memory", workspace_root: ctx.workspaces, codex_stall_timeout_ms: 0]
+    write_workflow_file!(Workflow.workflow_file_path(), config)
     entries = install_workers(ctx, ["1", "2", "3"], {:claude, cleanup})
+
+    :sys.replace_state(ctx.server, fn state ->
+      running =
+        Map.new(state.running, fn {id, entry} ->
+          {id, %{entry | started_at: DateTime.add(DateTime.utc_now(), -3_600)}}
+        end)
+
+      %{state | running: running}
+    end)
+
+    assert_accounting_snapshot(10_800, 0)
     for {_id, entry} <- entries, do: Process.exit(entry.pid, :kill)
     await(fn -> Enum.all?(1..3, &File.exists?(Path.join(ctx.root, "started-#{&1}"))) end)
     assert length(Orchestrator.snapshot(__MODULE__, 200).running) == 3
     assert {:ok, %{draining: true}} = GenServer.call(ctx.server, {:agent_control, :drain, false}, 200)
     state = :sys.get_state(ctx.server, 200)
     assert state.retry_attempts == %{}
+    during = assert_accounting_snapshot(10_800, 0)
+    assert during.codex_totals.seconds_running == 0
     for n <- 1..3, do: File.write!(Path.join(ctx.root, "release-#{n}"), "release")
     await(fn -> map_size(:sys.get_state(ctx.server, 200).retry_attempts) == 3 end)
     state = :sys.get_state(ctx.server, 200)
     assert state.running == %{}
+    after_cleanup = assert_accounting_snapshot(10_800, 0)
+    assert after_cleanup.codex_totals.seconds_running >= 10_800
 
     for n <- 1..3 do
       assert File.exists?(Path.join(ctx.root, "complete-#{n}"))
@@ -201,6 +220,94 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     assert is_map(Orchestrator.snapshot(scheduler, 200))
     refute Process.alive?(entries["restart"].pid)
     assert Task.Supervisor.children(tasks) == []
+  end
+
+  for outcome <- [:cancel, :cleanup_error, :retry, :live_block, :input_block, :terminal_override] do
+    @accounting_outcome outcome
+    test "runtime and token totals stay continuous across #{@accounting_outcome} cleanup", ctx do
+      verify_cleanup_accounting(ctx, @accounting_outcome)
+    end
+  end
+
+  defp verify_cleanup_accounting(ctx, outcome) do
+    stall_timeout = if outcome in [:retry, :input_block], do: 1, else: 0
+    token_limit = if outcome in [:live_block, :terminal_override], do: 14, else: 0
+    config = [tracker_kind: "memory", workspace_root: ctx.workspaces, codex_stall_timeout_ms: stall_timeout]
+    config = Keyword.put(config, :codex_live_max_total_tokens, token_limit)
+    write_workflow_file!(Workflow.workflow_file_path(), config)
+    entries = install_workers(ctx, ["accounting"], :probe)
+
+    :sys.replace_state(ctx.server, fn state ->
+      entry = %{
+        state.running["accounting"]
+        | started_at: DateTime.add(DateTime.utc_now(), -3_600),
+          codex_input_tokens: 11,
+          codex_output_tokens: 3,
+          codex_total_tokens: 14,
+          last_codex_event: if(outcome == :input_block, do: :turn_input_required)
+      }
+
+      session = put_in(entry.agent_session.native[:outcome], if(outcome == :cleanup_error, do: :raise))
+      totals = %{input_tokens: 11, output_tokens: 3, total_tokens: 14, seconds_running: 0}
+      %{state | running: %{"accounting" => session}, codex_totals: totals}
+    end)
+
+    before = assert_accounting_snapshot(3_600, 14)
+    issue = entries["accounting"].issue
+
+    case outcome do
+      kind when kind in [:live_block, :terminal_override] ->
+        send(ctx.server, {:codex_worker_update, issue.id, %{event: :token_usage_updated, timestamp: DateTime.utc_now()}})
+
+      kind when kind in [:retry, :input_block] ->
+        poll(ctx.server, [issue])
+
+      _ ->
+        poll(ctx.server, [%{issue | state: "Human Review"}])
+    end
+
+    assert_receive {:cleanup_started, "accounting", cleanup, _reason}, 500
+    during = assert_accounting_snapshot(3_600, 14)
+    assert during.codex_totals.seconds_running == 0
+    assert during.codex_totals == before.codex_totals
+    ref = :sys.get_state(ctx.server, 200).running["accounting"].ref
+
+    if outcome == :terminal_override do
+      poll(ctx.server, [%{issue | state: "Done"}])
+      Process.exit(cleanup, :kill)
+    else
+      send(cleanup, :finish_cleanup)
+    end
+
+    await(fn -> :sys.get_state(ctx.server, 200).running == %{} end)
+    after_cleanup = assert_accounting_snapshot(3_600, 14)
+    assert after_cleanup.codex_totals.seconds_running >= 3_600
+    state = :sys.get_state(ctx.server, 200)
+    assert Map.has_key?(state.retry_attempts, issue.id) == (outcome == :retry)
+    assert Map.has_key?(state.blocked, issue.id) == outcome in [:live_block, :input_block]
+    # A duplicate completion cannot transfer the same attempt to totals twice.
+    send(ctx.server, {:DOWN, ref, :process, cleanup, :normal})
+    assert :sys.get_state(ctx.server, 200).codex_totals == after_cleanup.codex_totals
+  end
+
+  defp assert_accounting_snapshot(expected_seconds, expected_tokens) do
+    snapshot = Orchestrator.snapshot(__MODULE__, 200)
+    seconds = snapshot.codex_totals.seconds_running + Enum.sum(Enum.map(snapshot.running, & &1.runtime_seconds))
+    assert seconds >= expected_seconds and seconds <= expected_seconds + 2
+    assert snapshot.codex_totals.total_tokens == expected_tokens
+    assert snapshot.codex_totals.input_tokens + snapshot.codex_totals.output_tokens == expected_tokens
+    payload = SymphonyElixirWeb.Presenter.state_payload(__MODULE__, 200)
+    html = Phoenix.LiveViewTest.render_component(&SymphonyElixirWeb.DashboardLive.render/1, payload: payload, now: DateTime.utc_now())
+
+    card =
+      html
+      |> Floki.parse_fragment!()
+      |> Floki.find(".metric-card")
+      |> Enum.find(fn node -> node |> Floki.find(".metric-label") |> Floki.text() == "Runtime" end)
+
+    rendered = card |> Floki.find(".metric-value") |> Floki.text()
+    assert rendered in Enum.map(expected_seconds..(expected_seconds + 2), &"#{div(&1, 60)}m #{rem(&1, 60)}s")
+    snapshot
   end
 
   defp install_workers(ctx, ids, adapter) do
