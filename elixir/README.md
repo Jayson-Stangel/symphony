@@ -617,6 +617,9 @@ never adopt an unexpected profile. A future genuine quota reset, malformed/unsaf
 pause evidence or active worker refuses recheck without changing the pinned profile
 or deleting that evidence. Successful recheck clears the old recoverable pause;
 it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
  A retained quota cooldown resumes polling with `admission.ready=false`
 and its reset time. The updater reports this as intentionally paused, never as
 operational. Codex ignores retained Claude pause files and leaves their evidence

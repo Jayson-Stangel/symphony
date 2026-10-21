@@ -349,6 +349,37 @@ defmodule SymphonyElixir.AgentReadinessTest do
     :sys.replace_state(pid, fn state -> %{state | running: %{}} end)
   end
 
+  for scenario <- [:healthy, :unhealthy, :quota, :old_failure] do
+    test "explicit recheck starts a new observation after an older snapshot: #{scenario}", ctx do
+      assert_fresh_recheck(ctx, unquote(scenario))
+    end
+  end
+
+  test "drain cancels recheck queued behind a prior observation without starting another check", ctx do
+    first = String.duplicate("a", 64)
+    File.write!(ctx.helper, Jason.encode!(ready(first)))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    assert :ok = AgentPause.record(:policy_blocked, %{profile: first})
+    pause = Path.join(ctx.root, "state/claude-pause.json")
+    evidence = File.read!(pause)
+    File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
+    {started, release, calls} = blocking_snapshot_check!(ctx)
+    assert %{queued: true} = GenServer.call(pid, :request_refresh)
+    await(fn -> File.exists?(started) end)
+    caller = Task.async(fn -> GenServer.call(pid, {:agent_control, :recheck, false}, 3_000) end)
+    await(fn -> not is_nil(:sys.get_state(pid).readiness_control) end)
+    assert {:ok, %{draining: true}} = GenServer.call(pid, {:agent_control, :drain, false})
+    assert {:error, :agent_drained} = Task.await(caller)
+    File.write!(release, "ready")
+    await_check(pid)
+    assert :sys.get_state(pid).draining
+    assert :sys.get_state(pid).expected_profile == first
+    assert File.read!(pause) == evidence
+    assert calls |> File.read!() |> String.split("\n", trim: true) |> length() == 1
+  end
+
   test "resume stays drained if the durable upgrade marker cannot be invalidated", ctx do
     File.write!(ctx.helper, Jason.encode!(ready()))
     guard = Path.join([ctx.root, "state", "agent-upgrade-unresumed"])
@@ -605,6 +636,9 @@ defmodule SymphonyElixir.AgentReadinessTest do
       {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
       await_check(pid)
+      assert :ok = AgentPause.record(:policy_blocked, %{profile: String.duplicate("a", 64)})
+      pause = Path.join(ctx.root, "state/claude-pause.json")
+      evidence = File.read!(pause)
       release = Path.join(ctx.root, "release")
       started = Path.join(ctx.root, "started")
       File.write!(ctx.helper, Jason.encode!(ready(String.duplicate("b", 64))))
@@ -619,6 +653,7 @@ defmodule SymphonyElixir.AgentReadinessTest do
       assert :sys.get_state(pid).draining
       assert :sys.get_state(pid).expected_profile == String.duplicate("a", 64)
       assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+      assert File.read!(pause) == evidence
     end
   end
 
@@ -833,6 +868,74 @@ defmodule SymphonyElixir.AgentReadinessTest do
       Process.sleep(5)
       await(check, attempts - 1)
     end
+  end
+
+  defp assert_fresh_recheck(ctx, scenario) do
+    first = String.duplicate("a", 64)
+    captured = String.duplicate("b", 64)
+    selected = String.duplicate("c", 64)
+    File.write!(ctx.helper, Jason.encode!(ready(first)))
+    {:ok, pid} = Orchestrator.start_link(name: __MODULE__.Probe, readiness_opts: ctx.opts)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    await_check(pid)
+    kind = if scenario == :quota, do: :quota_exhausted, else: :policy_blocked
+    assert :ok = AgentPause.record(kind, %{profile: first, resets_at: System.system_time(:second) + 600})
+    pause = Path.join(ctx.root, "state/claude-pause.json")
+    evidence = File.read!(pause)
+    File.write!(ctx.helper, Jason.encode!(ready(captured)))
+    {started, release, calls} = blocking_snapshot_check!(ctx, if(scenario == :old_failure, do: 7, else: 0))
+    assert %{queued: true} = GenServer.call(pid, :request_refresh)
+    await(fn -> File.exists?(started) end)
+    old_task = :sys.get_state(pid).readiness_task
+    current = if scenario == :unhealthy, do: %{code: "auth_required"}, else: ready(selected)
+    File.write!(ctx.helper, Jason.encode!(current))
+    caller = Task.async(fn -> GenServer.call(pid, {:agent_control, :recheck, false}, 3_000) end)
+    await(fn -> not is_nil(:sys.get_state(pid).readiness_control) end)
+    assert :sys.get_state(pid).readiness_task.ref == old_task.ref
+    assert File.read!(pause) == evidence
+    assert :sys.get_state(pid).expected_profile == first
+    File.write!(release, "ready")
+
+    case scenario do
+      :unhealthy ->
+        assert {:error, "auth_required"} = Task.await(caller)
+        assert File.read!(pause) == evidence
+        assert :sys.get_state(pid).expected_profile == first
+
+      :quota ->
+        assert {:error, :reset_not_due} = Task.await(caller)
+        assert File.read!(pause) == evidence
+        assert :sys.get_state(pid).expected_profile == first
+        assert %{ready: false, code: "native_identity_mismatch"} = :sys.get_state(pid).readiness
+
+      _ ->
+        assert {:ok, %{admission: %{ready: true, profile: ^selected}}} = Task.await(caller)
+        assert :sys.get_state(pid).expected_profile == selected
+        refute File.exists?(pause)
+    end
+
+    assert calls |> File.read!() |> String.split("\n", trim: true) |> length() == 2
+    assert is_nil(:sys.get_state(pid).readiness_task)
+  end
+
+  defp blocking_snapshot_check!(ctx, old_status \\ 0) do
+    started = Path.join(ctx.root, "captured")
+    release = Path.join(ctx.root, "release")
+    calls = Path.join(ctx.root, "check-calls")
+
+    File.write!(ctx.node, """
+    #!/bin/sh
+    value=$(cat "$1")
+    printf '%s\\n' "$$" >> '#{calls}'
+    if [ ! -f '#{started}' ]; then
+      touch '#{started}'
+      while [ ! -f '#{release}' ]; do sleep 0.01; done
+      if [ #{old_status} -ne 0 ]; then exit #{old_status}; fi
+    fi
+    printf '%s' "$value"
+    """)
+
+    {started, release, calls}
   end
 
   defp ready(profile \\ String.duplicate("a", 64)) do

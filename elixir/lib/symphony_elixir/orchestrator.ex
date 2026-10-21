@@ -476,6 +476,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp finish_readiness_check(%{readiness_control: {from, :recheck_after_readiness, reconcile}} = state, _readiness) do
+    state = %{state | readiness_task: nil, readiness_control: {from, :recheck, reconcile}}
+    refresh_agent_readiness(state)
+  end
+
   defp finish_readiness_check(state, readiness) do
     previous_admission = agent_admission(state)
     control_pending = not is_nil(state.readiness_control)
@@ -1910,6 +1915,7 @@ defmodule SymphonyElixir.Orchestrator do
     if Config.coding_agent() == :codex do
       resume_agent(%{state | readiness: AgentReadiness.check()}, action, reconcile)
     else
+      action = if action == :recheck and not is_nil(state.readiness_task), do: :recheck_after_readiness, else: action
       readiness = %{ready: false, provider: "claude", code: "checking"}
       state = %{state | readiness_control: {from, action, reconcile}, readiness: readiness}
       {:noreply, refresh_agent_readiness(state)}

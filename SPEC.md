@@ -2435,6 +2435,9 @@ never adopt an unexpected profile. A future genuine quota reset, malformed/unsaf
 pause evidence or active worker refuses recheck without changing the pinned profile
 or deleting that evidence. Successful recheck clears the old recoverable pause;
 it does not archive it or perform a model request.
+If another readiness observation is running, recheck waits for it and then starts
+a fresh bounded check. The recheck API allows 75 seconds and the launcher 80 seconds
+for these two sequential checks; each native check remains limited to 35 seconds.
  Only the exact original five-field version-1 auth_required/waiting record with explicit nil profile and reset is a proven pre-input observation and is ignored read-only. Profiled auth, policy, malformed and diagnostic-bearing records retain their existing recovery requirements.
 
 Model-free readiness observations govern new admission. Existing native sessions
