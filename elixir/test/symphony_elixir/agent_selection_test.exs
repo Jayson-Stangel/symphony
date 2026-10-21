@@ -47,16 +47,17 @@ defmodule SymphonyElixir.AgentSelectionTest do
     assert_raise ArgumentError, "Unsupported coding agent", fn -> Config.coding_agent() end
   end
 
-  test "Claude schema preserves current model IDs and family aliases, with Sonnet as the default" do
+  test "Claude schema delegates nonblank model IDs to native runtime, with Sonnet as default" do
     assert {:ok, defaults} = Schema.parse(%{})
     assert defaults.claude.model == "sonnet"
+    assert {:ok, %{claude: %{model: "sonnet"}}} = Schema.parse(%{"claude" => %{"model" => nil}})
 
-    for model <- ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1) do
+    for model <- ~w(sonnet opus haiku fable claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-1 future-native-model-99 opusplan Opus) do
       assert {:ok, config} = Schema.parse(%{"claude" => %{"model" => model}})
       assert config.claude.model == model
     end
 
-    for model <- ["", "Opus", "claude-opus-5-5-typo", "claude-opus-99", "opusplan", "default", "sonnet[1m]", 123] do
+    for model <- ["", "  ", "\u00A0", String.duplicate("a", 257), %{}, 123] do
       assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"claude" => %{"model" => model}})
       assert message =~ "claude.model"
     end
@@ -129,7 +130,7 @@ defmodule SymphonyElixir.AgentSelectionTest do
     assert config.claude.max_concurrent_agents == 9
     assert config.codex.live_max_total_tokens == 0
 
-    for settings <- [%{"api_key" => "secret-canary"}, %{"command" => "injected"}, %{"max_concurrent_agents" => 0}, %{"model" => "unqualified-model"}] do
+    for settings <- [%{"api_key" => "secret-canary"}, %{"command" => "injected"}, %{"max_concurrent_agents" => 0}, %{"model" => ""}] do
       assert {:error, {:invalid_workflow_config, message}} = Schema.parse(%{"claude" => settings})
       assert message =~ "claude."
       refute message =~ "secret-canary"

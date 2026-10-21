@@ -301,7 +301,7 @@ async function main() {
   if (!['serve', 'check', 'profile'].includes(command) || process.argv.length > 3) throw new RuntimeError('unknown_command');
   const context = readiness({ workspace: command === 'serve' ? process.cwd() : undefined, requireAttestation: command !== 'profile' });
   if (command !== 'serve') {
-    console.log(JSON.stringify({ ready: true, ...context.identity, model_requests: 0 }));
+    console.log(JSON.stringify({ ready: true, protocol: runtime.protocol, ...context.identity, model_requests: 0 }));
     return;
   }
   serve(context);

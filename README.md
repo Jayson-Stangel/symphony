@@ -334,8 +334,9 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 Codex remains the default. A qualified personal Claude profile adds isolated
 Claude workers through pinned Claude Code/Agent SDK and native subscription login.
-Sonnet remains the default; current model IDs, family aliases and reasoning effort
-are configurable. Terminal and web dashboards show the configured Claude effort.
+Sonnet remains the default; nonblank model identifiers pass unchanged to the
+native runtime, which validates support. Reasoning effort is configurable.
+Terminal and web dashboards show the configured Claude effort.
 The dashboard updates input tokens during Claude steps and confirms output tokens
 at turn completion; session totals include cached input and avoid duplicate tool blocks.
 It requires disabled-overage owner attestation, project-scoped credentials and
@@ -355,6 +356,11 @@ uncertain captured native ownership. Worker loss before ownership publication
 remains an explicit unsafe retry gap. See [setup, pauses and updater transitions](docs/claude.md)
 for the contract and its limits. Existing stable installations change only through
 reviewed promotion and the installed `symphony update` command.
+Container execution keeps its fixed workspace, bind address and outer-container
+permission boundary. Requested SSH execution is rejected instead of silently removed.
+`/api/v1/state` exposes `agent.execution` with safe requested/effective bindings,
+also logged when container workflow settings load.
+
 For integration testing before promotion, use a [dedicated development workspace](docs/development.md)
 with separate configuration, Docker resource names and a separate dashboard port.
 Development update retries rebuild from the current checkout and safely refresh

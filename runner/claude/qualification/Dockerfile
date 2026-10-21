@@ -9,9 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /opt/symphony-claude-lab
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
-COPY *.mjs ./
-COPY lab ./lab
-COPY test ./test
+COPY runtime.mjs ./
+COPY qualification ./qualification
 RUN chmod -R a-w /opt/symphony-claude-lab
 
 ENV HOME=/home/claude \
@@ -20,5 +19,5 @@ ENV HOME=/home/claude \
     DISABLE_AUTOUPDATER=1
 USER 11001:11001
 WORKDIR /lab-workspace
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "node", "/opt/symphony-claude-lab/lab.mjs"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "node", "/opt/symphony-claude-lab/qualification/lab.mjs"]
 CMD ["inspect"]

@@ -667,6 +667,21 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.live_max_total_tokens`: integer, default `0` (disabled)
 - `codex.live_max_turns`: integer, default `0` (disabled)
 
+### Container Execution Bindings
+
+When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
+server bind address and Codex container permission bindings. Requested nonempty
+SSH hosts MUST be rejected before normalization removes unsupported values.
+Native execution behavior is unchanged.
+
+The finalized settings carry an internal requested/effective execution projection,
+updated atomically with the existing last-known-good workflow settings and exposed
+as `agent.execution` in state snapshots. It contains only workspace root, server
+host, SSH host count and categorical Codex approval/sandbox values; arbitrary map
+contents and credentials MUST NOT be copied. Invalid reloads retain both the prior
+bindings and their projection. This is observational metadata, not a new workflow
+profile, registry or mutable configuration source.
+
 ## 7. Orchestration State Machine
 
 The orchestrator is the only component that mutates scheduling state. All worker outcomes are
@@ -2373,8 +2388,13 @@ the default and keeps the app-server contract above. The qualified Claude
 container profile uses a pinned native SDK helper through a bounded versioned
 stdio protocol; OTP retains workspace, continuation, tracker binding and
 scheduling authority. Selection survives workflow reload. Both providers use the
-configured global and per-state concurrency limits, with Sonnet as Claude default. Workflow and helper validation accept the current
-Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 model IDs and their family aliases.
+configured global and per-state concurrency limits, with Sonnet as Claude default.
+Workflow and helper validation accept nonblank model identifiers up to 256
+characters unchanged. Native runtime support validation owns the model catalog;
+wrapper model allowlists MUST NOT duplicate it. SDK/CLI pins are owned by the
+production npm manifest/lock and reused by qualification. Node checks installed
+dependencies against those pins. Elixir checks protocol/policy version 1 and
+bounded diagnostic version strings, rather than dependency literals.
 Optional `claude.effort` selects low, medium, high, xhigh or max for new sessions;
 omission preserves the model default. Terminal and web dashboards expose the
 configured effort, also available as `agent.effort` in the state API.
