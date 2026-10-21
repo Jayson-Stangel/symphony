@@ -145,12 +145,17 @@ try:
     time.sleep(.05)
    refusal=launch('run','--port',str(port),expected=1)
    assert 'another updater is active' in refusal
+   for action in ['login','remove']:
+    calls=(root/'docker-calls.jsonl').read_text()
+    refusal=launch('auth','claude',action,expected=1)
+    assert 'another updater is active' in refusal
+    assert (root/'docker-calls.jsonl').read_text()==calls,'auth touched runtime before acquiring transition ownership'
   finally:
    (root/'hold-stop').unlink(missing_ok=True)
    try:result=update.wait(timeout=90)
    except subprocess.TimeoutExpired:update.kill();update.wait();raise
  print((root/'held-update.log').read_text(),flush=True);assert result==97
- print('PASS real stop-before-rename competing run refuses existing updater ownership',flush=True)
+ print('PASS real stop-before-rename competing run and Claude login/logout refuse existing updater ownership',flush=True)
  assert selected()==before;assert inspect(name,'{{.Image}}')==v1;assert inspect(name+'-before-update','{{.Image}}')==base
  assert inspect(name+'-before-update','{{.State.ExitCode}}') in ['0','1']
  assert inspect(name+'-before-update','{{.State.OOMKilled}}')=='false'

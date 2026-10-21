@@ -98,6 +98,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             if [ -f "${FIXTURE_FAIL_CREATE_FILE:-/nonexistent}" ]; then
               rm "$FIXTURE_FAIL_CREATE_FILE"; exit 1
             fi ;;
+          *"auth.mjs login"*|*"auth.mjs logout"*)
+            if [ -n "${FIXTURE_AUTH_BARRIER:-}" ]; then
+              touch "$FIXTURE_AUTH_BARRIER.entered"
+              while [ ! -f "$FIXTURE_AUTH_BARRIER.release" ]; do sleep 0.01; done
+            fi ;;
           *"auth.mjs check"*)
             [ "${FIXTURE_AUTH_FAIL:-false}" != true ] || exit 1
             if [ -n "${FIXTURE_AUTH_JSON:-}" ]; then
@@ -616,6 +621,82 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(metadata) =~ "SYMPHONY_RUNNER_PROFILE=#{String.duplicate("a", 64)}\n"
     assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
+  end
+
+  test "Claude credential mutations refuse the stopped-source transition window while checks and unrelated projects proceed", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    barrier = Path.join(ctx.root, "auth-transition-barrier")
+
+    update =
+      Task.async(fn ->
+        launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"FIXTURE_STOP_BARRIER", barrier}])
+      end)
+
+    on_exit(fn -> File.touch(barrier <> ".release") end)
+    await_file!(barrier <> ".entered")
+    assert File.read!(ctx.state) == "false\n"
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
+    alternate = Path.join(ctx.root, "auth-config-alias")
+
+    for config <- [ctx.config, alternate], action <- ["login", "remove"] do
+      calls = File.read!(ctx.log)
+
+      assert {message, 1} =
+               launch_args(ctx, ["auth", "claude", action], [
+                 {"SYMPHONY_CONFIG_HOME", config},
+                 {"SYMPHONY_RUNNER_HOME", Path.join(config, "runners")}
+               ])
+
+      assert message =~ "another updater is active"
+      # Ownership is acquired before image, volume, or native-login prerequisites.
+      assert File.read!(ctx.log) == calls
+      assert File.read!(ctx.state) == "false\n"
+      assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.env")) == metadata
+    end
+
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "check"])
+    other_repo = Path.join(ctx.root, "auth-other-project")
+    File.mkdir_p!(other_repo)
+    assert {_, 0} = System.cmd("git", ["init", "-q", other_repo])
+    assert {_, 0} = System.cmd("git", ["-C", other_repo, "remote", "add", "origin", "https://github.com/example/other.git"])
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"])
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"])
+
+    File.touch!(barrier <> ".release")
+    # The updater invokes native readiness internally while holding the same lock.
+    assert {_, 0} = Task.await(update, 10_000)
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "login"])
+    assert {_, 0} = launch_args(ctx, ["auth", "claude", "remove"])
+    calls = File.read!(ctx.log)
+    assert calls =~ "auth.mjs\tlogin"
+    assert calls =~ "auth.mjs\tlogout"
+  end
+
+  for action <- ["login", "remove"] do
+    @action action
+    test "Claude #{@action} retains project ownership through native credential mutation", ctx do
+      barrier = Path.join(ctx.root, "native-auth-barrier")
+
+      mutation =
+        Task.async(fn ->
+          launch_args(ctx, ["auth", "claude", @action], [{"FIXTURE_AUTH_BARRIER", barrier}])
+        end)
+
+      on_exit(fn -> File.touch(barrier <> ".release") end)
+      await_file!(barrier <> ".entered")
+      calls = File.read!(ctx.log)
+
+      for args <- [["runner", "start"], ["update", "--development-runner", "--agent", "claude"], ["auth", "claude", "login"], ["auth", "claude", "remove"]] do
+        assert {message, 1} = launch_args(ctx, args)
+        assert message =~ "another updater is active"
+        assert File.read!(ctx.log) == calls
+      end
+
+      File.touch!(barrier <> ".release")
+      assert {_, 0} = Task.await(mutation, 10_000)
+      assert {_, 0} = launch_args(ctx, ["auth", "claude", "check"])
+    end
   end
 
   test "official mutations share ownership across configuration aliases while reads and unrelated projects proceed",
@@ -1152,12 +1233,16 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "foreign native volumes and active profile removal fail before native mutation", ctx do
     assert {_, 1} = launch_args(ctx, ["auth", "claude", "login"], [{"FIXTURE_FOREIGN_VOLUME", "true"}])
     refute File.read!(ctx.log) =~ "auth.mjs\tlogin"
-    File.write!(ctx.log, "")
-    assert {message, 1} = launch_args(ctx, ["auth", "claude", "remove"], [{"FIXTURE_PROFILE_IN_USE", "active-container"}])
-    assert message =~ "profile is in use"
-    calls = File.read!(ctx.log)
-    refute calls =~ "auth.mjs\tlogout"
-    refute calls =~ "volume\trm"
+
+    for action <- ["login", "remove"] do
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["auth", "claude", action], [{"FIXTURE_PROFILE_IN_USE", "active-container"}])
+      assert message =~ "profile is in use"
+      calls = File.read!(ctx.log)
+      refute calls =~ "auth.mjs\tlogin"
+      refute calls =~ "auth.mjs\tlogout"
+      refute calls =~ "volume\trm"
+    end
   end
 
   defp project_id!(repo) do
