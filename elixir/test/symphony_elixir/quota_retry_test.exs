@@ -37,8 +37,13 @@ defmodule SymphonyElixir.QuotaRetryTest do
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
     server = start_supervised!({Orchestrator, name: __MODULE__})
-    # The initial poll sees no issues; all later transitions use the memory tracker.
-    poll(server)
+    # Observe the actual initial cycle before publishing an eligible issue. A
+    # manually injected cycle can leave init's delayed cycle queued behind it.
+    await(fn ->
+      state = :sys.get_state(server)
+      not state.poll_check_in_progress and state.next_poll_due_at_ms > System.monotonic_time(:millisecond) + 1_000
+    end)
+
     issue = %Issue{id: "quota-recovery", identifier: "JAY-625", title: "Quota recovery", state: "In Progress", dispatchable: true}
     %{server: server, issue: issue, root: root, turns: turns}
   end
@@ -190,6 +195,8 @@ defmodule SymphonyElixir.QuotaRetryTest do
       end)
 
     :sys.replace_state(server, fn state ->
+      # Never overwrite a live native worker when injecting the quota outcome.
+      assert state.running == %{}
       # Observe an actual worker DOWN, just as the provider adapter reports quota.
       entry = %{
         pid: worker,
