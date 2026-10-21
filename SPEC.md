@@ -2448,10 +2448,15 @@ transient startup protocol/native initialization failures retry only after a
 stopped acknowledgement correlated to the attempted session/request confirms
 owned-native cleanup. Missing confirmation MUST remain a bounded, durable cleanup
 stop; startup auth/policy/schema/identity failures remain fail-closed. Helper
-crashes before ownership handoff cannot retry without cleanup proof.
+reported startup failures require matching cleanup proof before retry. Worker loss
+before session publication remains a separate ownership gap described below.
 Drain is durable and prevents queued retries from dispatching, account identity is pinned, and unconfirmed
 process cleanup blocks readiness until updater-owned container recovery. The
-existing attempt task owns normal cleanup once. Confirmed cleanup preserves the
+existing attempt task owns normal cleanup once. Scheduler cancellation MUST use
+the captured session's common interrupt callback for either provider before worker
+termination/workspace removal, retaining worker ownership if interruption fails.
+An unpublished session retains the existing task-only cancellation path; that path
+does not establish native cleanup. Confirmed cleanup preserves the
 exact primary outcome/exception; failure MUST retain separate bounded categorical
 primary and cleanup causes and expose a replacement-required outcome scoped to its
 captured provider. Killed/shutdown/linked-Port `:epipe` workers with captured ownership use the
