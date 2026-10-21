@@ -31,7 +31,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       *-before-update) state=$FIXTURE_STATE.backup ;;
     esac
     case "$1:${!#}" in
-      inspect:symphony*-service|inspect:symphony*-service-before-update) exit 1 ;;
+      inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
     esac
     case "$1" in
       inspect)
