@@ -2584,6 +2584,34 @@ image identity, drain/stop the previous candidate before replacement, retain the
 rollback source and volumes until readiness succeeds, and persist the replacement
 image atomically before starting it. Interrupted refreshes must remain retryable.
 Stable update recovery retains its recorded candidate image.
+Installed updates MUST repeat idempotent installation and setup even when Git is already
+current, so retry completes failed setup without persistent completion state. After the
+source fast-forward, combined source/runner updates MUST reload the newly installed
+implementation at that exact revision, preserving resolved paths and transition target.
+Completion MUST NOT fetch again or mix old transition functions with new runner sources.
+Cooperating installed source updaters sharing a checkout MUST hold one process-held advisory
+ownership from before fetch through exec handoff, install/setup and any selected transition.
+The source lock inode lives in Git metadata and uses a descriptor separate from project
+transition ownership. Handoff MUST retain the same open description and validate its owned,
+regular, single-link inode and existing exclusive ownership without reopening it. Internal
+completion without held source ownership MUST refuse. Competing source-only or different-
+project updates MUST refuse before mutating source. Process/child exit releases ownership
+without completion state. Older callers and manual Git operations do not participate in
+this ownership; exact-revision checks remain required and source-only adoption requires
+finishing older calls. Non-mutating pause/rollback and isolated development-runner behavior
+remain unchanged.
+Installed source updates MUST validate the configured remote and upstream merge ref
+`refs/heads/main` before fetching or installing; a local branch name alone is insufficient.
+Local HEAD MUST be an ancestor of or equal to fetched remote main before installation;
+otherwise retain the local commits and refuse without resetting the source.
+Runner storage derives from the selected config directory after CLI options are resolved,
+unless an explicit runner-home override is present. Runner transition exclusion uses a
+stable regular-file advisory lock inode at the original legacy lock pathname, held through
+the updater and its in-flight commands. Older mkdir-based launchers MUST be excluded in
+both acquisition orders. Retiring a proven-dead legacy directory MUST preserve a newly
+acquired replacement directory and its owner. Crashes
+release it without separately published owner metadata. Unknown legacy ownerless locks
+remain refused; only a provably absent legacy owner may be retired on ordinary retry.
 Selected runner metadata is a derived cache, not transition authority. Successful
 update/recovery and rollback MUST atomically record the verified selected
 container image, provider, native profile and port before completing the journal.
