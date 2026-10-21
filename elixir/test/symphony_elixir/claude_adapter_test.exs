@@ -770,6 +770,13 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     session = Map.delete(failed, :identity)
     captured = %{adapter: Adapter, native: session}
     assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
+    # A transport exception with a still-valid captured identity retains that
+    # profile in the existing marker/pause rather than losing its ownership scope.
+    invalid_port = %{failed | port: nil}
+    captured = %{adapter: Adapter, native: invalid_port}
+    assert {:error, :cleanup_unconfirmed} = SymphonyElixir.CodingAgent.stop_session(captured)
+    assert {:paused, %{"profile" => profile}} = AgentPause.current()
+    assert profile == failed.identity["profile"]
     assert File.regular?(Path.join(ctx.root, "state/claude-cleanup-unconfirmed"))
   end
 
