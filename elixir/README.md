@@ -417,6 +417,20 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+`/api/v1/state` also exposes `agent.execution.mode`, `requested` and `effective`
+for the selected runtime's execution environment. These show workspace root,
+server host, SSH host count and categorical Codex approval/sandbox settings.
+Arbitrary policy-map contents and tracker credentials are excluded; custom values
+are represented as `custom`, and an implicit turn sandbox as `default`.
+Container settings retain `/workspaces`, `0.0.0.0` and the existing Codex
+container sandbox/approval bindings. Requested nonempty `worker.ssh_hosts` is
+unsupported inside a container and is rejected before transformation for either
+provider. Native Codex SSH support is unchanged; native Claude SSH remains
+unsupported. A rejected reload retains the previous effective settings and their
+requested/effective snapshot together. Container bindings are also logged on
+successful settings load. This metadata is computed internally, not a workflow
+option or a second configuration store.
+
 Both the web and terminal dashboards show the selected coding agent and model
 near the top, including while idle. Claude displays its configured model alias
 or ID (`sonnet` by default), plus configured reasoning effort or “Model default”.

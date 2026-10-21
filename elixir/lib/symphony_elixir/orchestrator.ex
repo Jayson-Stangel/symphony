@@ -1857,20 +1857,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    settings = Config.settings!()
+
     configured_model =
-      if Config.coding_agent() == :claude, do: Config.settings!().claude.model, else: Config.settings!().codex.model
+      if Config.coding_agent() == :claude, do: settings.claude.model, else: settings.codex.model
 
     configured_effort =
       if Config.coding_agent() == :claude do
-        Config.settings!().claude.effort
+        settings.claude.effort
       else
-        Config.settings!().codex.reasoning_effort
+        settings.codex.reasoning_effort
       end
 
     {:reply,
      %{
        agent: %{
          provider: Config.coding_agent(),
+         execution: settings.execution,
          max_concurrent_agents: state.max_concurrent_agents,
          model: configured_model || state.agent_model,
          effort: configured_effort,

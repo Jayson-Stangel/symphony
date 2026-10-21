@@ -667,6 +667,21 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.live_max_total_tokens`: integer, default `0` (disabled)
 - `codex.live_max_turns`: integer, default `0` (disabled)
 
+### Container Execution Bindings
+
+When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
+server bind address and Codex container permission bindings. Requested nonempty
+SSH hosts MUST be rejected before normalization removes unsupported values.
+Native execution behavior is unchanged.
+
+The finalized settings carry an internal requested/effective execution projection,
+updated atomically with the existing last-known-good workflow settings and exposed
+as `agent.execution` in state snapshots. It contains only workspace root, server
+host, SSH host count and categorical Codex approval/sandbox values; arbitrary map
+contents and credentials MUST NOT be copied. Invalid reloads retain both the prior
+bindings and their projection. This is observational metadata, not a new workflow
+profile, registry or mutable configuration source.
+
 ## 7. Orchestration State Machine
 
 The orchestrator is the only component that mutates scheduling state. All worker outcomes are

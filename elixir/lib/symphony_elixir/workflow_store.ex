@@ -159,6 +159,10 @@ defmodule SymphonyElixir.WorkflowStore do
          {:ok, settings} <- Schema.parse(workflow.config),
          :ok <- Config.validate_settings(settings),
          {:ok, stamp} <- current_stamp(path) do
+      if settings.execution.mode == "container" do
+        Logger.info("Container execution bindings: #{inspect(settings.execution)}")
+      end
+
       {:ok, %State{path: path, stamp: stamp, workflow: workflow, settings: settings}}
     else
       {:error, reason} ->
