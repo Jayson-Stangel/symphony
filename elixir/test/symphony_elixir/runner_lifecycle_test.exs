@@ -51,6 +51,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
           *Mounts*)
             case "$*" in
+              *'{{json .Mounts}}'*) printf '[{"Type":"bind","Source":"%s/WORKFLOW.md","Destination":"/etc/symphony/WORKFLOW.md","RW":false}]\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *Source*) printf '%s/WORKFLOW.md /etc/symphony/WORKFLOW.md false\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n%s /root/.codex\\n' "$storage" "$storage" "symphony${SYMPHONY_RUNNER_NAMESPACE:+-$SYMPHONY_RUNNER_NAMESPACE}-codex-auth" ;;
             esac ;;

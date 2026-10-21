@@ -220,6 +220,44 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     assert container(ctx, old <> "-before-update") == foreign
   end
 
+  for agent <- ["codex", "<no value>"] do
+    @mount_agent agent
+    test "Darwin projected workflow binds preserve both namespaces for #{@mount_agent}", ctx do
+      repo = hd(ctx.repos)
+      {_, old, name} = legacy!(ctx, repo)
+      uname!(ctx, "Darwin")
+      data = container(ctx, old) |> Map.put("agent", @mount_agent)
+      write_container(ctx, old, Map.put(data, "workflow", "/host_mnt" <> data["workflow"]))
+      write_container(ctx, old <> "-before-update", data)
+      assert {_, 0} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
+      assert container(ctx, name)["workflow"] == "/host_mnt" <> data["workflow"]
+      assert container(ctx, name <> "-before-update")["workflow"] == data["workflow"]
+    end
+  end
+
+  test "workflow projection never admits a foreign, writable or non-bind workflow", ctx do
+    repo = hd(ctx.repos)
+    {_, old, name} = legacy!(ctx, repo)
+    data = container(ctx, old)
+
+    cases = [
+      {"Darwin", %{data | "workflow" => "/host_mnt" <> data["workflow"] <> ".foreign"}},
+      {"Darwin", Map.put(data, "workflow_rw", true)},
+      {"Darwin", Map.put(data, "workflow_type", "volume")},
+      {"Darwin", Map.put(data, "workflow_destination", "/etc/foreign/WORKFLOW.md")},
+      {"Linux", %{data | "workflow" => "/host_mnt" <> data["workflow"]}}
+    ]
+
+    for {platform, candidate} <- cases do
+      uname!(ctx, platform)
+      write_container(ctx, old, candidate)
+      assert {message, 1} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
+      assert message =~ "workflow mount differs"
+      refute File.exists?(Path.join(ctx.runtime, name <> ".json"))
+      assert File.exists?(Path.join(ctx.root, "config/projects/service.env"))
+    end
+  end
+
   test "unproven basename credentials are never automatically adopted", ctx do
     repo = hd(ctx.repos)
     File.mkdir_p!(Path.join(ctx.root, "config/projects"))
@@ -229,6 +267,12 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     # A new same-basename repository is independent, even with legacy config present.
     assert {_, 0} = launch(ctx, repo, ["init", "--linear-project", "fresh"])
     refute File.read!(Path.join(ctx.root, "config/projects/#{identity(ctx, repo)}.env")) =~ "unproven"
+  end
+
+  defp uname!(ctx, platform) do
+    path = Path.join(ctx.root, "uname")
+    File.write!(path, "#!/bin/sh\nprintf '%s\\n' '#{platform}'\n")
+    File.chmod!(path, 0o755)
   end
 
   defp legacy!(ctx, repo) do

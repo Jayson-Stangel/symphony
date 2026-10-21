@@ -1000,6 +1000,27 @@ runner_record_observed_metadata() {
   runner_write_metadata "$root" "$port" "$agent" "$image" "$profile"
 }
 
+# Docker Desktop may report a Darwin host bind through its VM's /host_mnt
+# projection. Compare only that exact projection of the expected host file;
+# destination, bind type and read-only ownership remain mandatory.
+runner_workflow_mount_owned() {
+  local root=$1 runtime=$2 name=$3 mounts
+  mounts=$("$runtime" inspect --format '{{json .Mounts}}' "$name") || return
+  printf '%s\n' "$mounts" | python3 -c '
+import json, sys
+try:
+    expected, platform = sys.argv[1:]
+    mounts = [m for m in json.load(sys.stdin) if m.get("Destination") == "/etc/symphony/WORKFLOW.md"]
+    valid = {expected}
+    if platform == "Darwin":
+        valid.add("/host_mnt" + expected)
+    owned = (len(mounts) == 1 and mounts[0].get("Type") == "bind"
+             and mounts[0].get("RW") is False and mounts[0].get("Source") in valid)
+except (ValueError, TypeError, AttributeError):
+    owned = False
+sys.exit(0 if owned else 1)' "$root/WORKFLOW.md" "$(uname -s)"
+}
+
 # Runner transitions are owned by the installed updater. Every failure retains
 # volumes and leaves a drain marker; rollback is a separate updater operation.
 runner_owned() {
@@ -1014,8 +1035,7 @@ runner_owned() {
       [ "$("$runtime" inspect --format '{{join .Config.Entrypoint " "}}' "$name")" = /usr/local/bin/symphony-runner ] || die 'unknown legacy entrypoint; updater refused'
       mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
       printf '%s\n' "$mounts" | grep -Fxq -- "$codex_auth_volume /root/.codex" || die 'legacy Codex login mount differs; updater refused'
-      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$name")
-      printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'legacy workflow mount differs; updater refused'
+      runner_workflow_mount_owned "$root" "$runtime" "$name" || die 'legacy workflow mount differs; updater refused'
       runner_update_port "$root" "$runtime" "$name" "$metadata" >/dev/null
       ;;
     *) validate_agent "$agent" ;;
@@ -1323,7 +1343,7 @@ runner_prepare_storage() {
 # File and container renames are individually atomic and retriable after any
 # interruption. Storage/auth volumes and WORKFLOW.md are never moved or rewritten.
 runner_migrate_identity() (
-  local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target mounts old_lock new_lock
+  local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target old_lock new_lock
   runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
   name=$(runner_id "$root"); previous="$runtime_prefix-$old"
   mkdir -p "$runner_home"
@@ -1380,14 +1400,12 @@ PYIDENTITY
     if "$runtime" inspect "$source" >/dev/null 2>&1; then
       ! "$runtime" inspect "$target" >/dev/null 2>&1 || die 'both legacy and repository identity containers exist; migration refused'
       runner_owned "$root" "$runtime" "$source" "$metadata"
-      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$source")
-      printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'workflow mount differs; identity migration refused'
+      runner_workflow_mount_owned "$root" "$runtime" "$source" || die 'workflow mount differs; identity migration refused'
       anchor=true
       if [ -z "$suffix" ]; then move_runner=true; else move_backup=true; fi
     elif "$runtime" inspect "$target" >/dev/null 2>&1; then
       runner_owned "$root" "$runtime" "$target" "$metadata"
-      mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}' "$target")
-      printf '%s\n' "$mounts" | grep -Fxq -- "$root/WORKFLOW.md /etc/symphony/WORKFLOW.md false" || die 'workflow mount differs; identity migration refused'
+      runner_workflow_mount_owned "$root" "$runtime" "$target" || die 'workflow mount differs; identity migration refused'
       anchor=true
     fi
   done

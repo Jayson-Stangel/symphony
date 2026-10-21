@@ -28,7 +28,9 @@ if cmd == 'inspect':
         elif 'State.Restarting' in fmt: print('false')
         elif 'State.Pid' in fmt: print('42')
         elif 'Mounts' in fmt:
-            if '.Source' in fmt: print(data['workflow'] + ' /etc/symphony/WORKFLOW.md false')
+            if '{{json .Mounts}}' in fmt:
+                print(json.dumps([{'Type': data.get('workflow_type', 'bind'), 'Source': data['workflow'], 'Destination': data.get('workflow_destination', '/etc/symphony/WORKFLOW.md'), 'RW': data.get('workflow_rw', False)}]))
+            elif '.Source' in fmt: print(data['workflow'] + ' /etc/symphony/WORKFLOW.md false')
             else: print(data['storage'] + '-workspaces /workspaces\n' + data['storage'] + '-state /var/lib/symphony\n' + os.environ['SYMPHONY_RUNNER_NAMESPACE'].join(['symphony-', '-codex-auth']) + ' /root/.codex')
         elif '{{.Image}}' in fmt: print(data['image'])
         elif 'com.symphony.' in fmt:

@@ -149,9 +149,11 @@ finally:
  try:print('FINAL ACTUAL HTTP SNAPSHOT '+json.dumps(state(),sort_keys=True),flush=True)
  except Exception as e:print('FINAL SNAPSHOT UNAVAILABLE '+str(e),flush=True)
  if (root/'http.jsonl').exists():print('ACTUAL CONTROL HTTP '+(root/'http.jsonl').read_text(),flush=True)
- for n in [name,name+'-before-update']:
+ for n in [name,name+'-before-update',prefix+'-service',prefix+'-service-before-update']:
   subprocess.run([real,'logs',n],stdout=open(root/(n+'.log'),'w'),stderr=subprocess.STDOUT)
-  subprocess.run([real,'rm','-f',n],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  owner=subprocess.run([real,'inspect','--format','{{index .Config.Labels \"com.symphony.storage\"}}',n],text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  if owner.returncode==0 and owner.stdout.strip()==name:
+   subprocess.run([real,'rm','-f',n],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  volumes=subprocess.check_output([real,'volume','ls','--format','{{.Name}}'],text=True).splitlines()
  for v in volumes:
   if v.startswith(prefix+'-'):subprocess.run([real,'volume','rm',v],stdout=subprocess.DEVNULL)
