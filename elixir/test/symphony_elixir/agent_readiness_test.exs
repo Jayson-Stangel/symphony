@@ -54,11 +54,12 @@ defmodule SymphonyElixir.AgentReadinessTest do
     assert %{ready: false, code: "runtime_unavailable"} = AgentReadiness.check(Keyword.put(ctx.opts, :node_path, 123))
     File.chmod!(ctx.node, 0o644)
     assert %{ready: false} = AgentReadiness.check(ctx.opts)
+    File.chmod!(ctx.node, 0o755)
     previous = System.get_env("ANTHROPIC_API_KEY")
 
     try do
       System.put_env("ANTHROPIC_API_KEY", "secret-canary")
-      assert %{ready: false, code: "conflicting_inference_environment"} = AgentReadiness.check(ctx.opts)
+      assert %{ready: true} = AgentReadiness.check(ctx.opts)
     after
       restore_env("ANTHROPIC_API_KEY", previous)
     end

@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentReadiness do
 
   @codes ~w(auth_required unqualified_auth unknown_auth_status unqualified_native_settings
             overage_attestation_required overage_attestation_expired native_identity_mismatch
-            runtime_version_mismatch sdk_version_mismatch conflicting_inference_environment
+            runtime_version_mismatch sdk_version_mismatch invalid_tool_environment
             nonroot_profile_required container_profile_required runtime_unavailable)
 
   @spec check(keyword()) :: map()
@@ -33,7 +33,6 @@ defmodule SymphonyElixir.AgentReadiness do
          {:ok, value} when is_map(value) <- Jason.decode(data) do
       interpret(status, value)
     else
-      {:error, :conflicting_inference_environment} -> blocked("conflicting_inference_environment")
       _ -> blocked("runtime_unavailable")
     end
   rescue

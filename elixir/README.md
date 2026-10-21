@@ -43,6 +43,10 @@ authentication/policy stops remain gated. Transient startup failures retry only 
 matching helper cleanup acknowledgement. Explicit startup policy/identity failures
 and missing cleanup confirmation remain fail-closed. Every initial/retry
 prompt includes tracker recovery instructions, including for custom workflows.
+Claude tools can receive explicitly named project variables via `SYMPHONY_TOOL_ENV`
+in the existing project credentials env file. Unselected ambient variables are
+stripped; tracker secrets and native inference/runtime selectors cannot be selected.
+See [project tool credentials](../docs/claude.md#project-tool-credentials).
 See [tracker diagnostics](docs/logging.md). Those logs retain request fingerprints,
 correlation IDs and allowlisted status/codes without parsing GraphQL or inferring
 execution certainty. Existing issue-local legacy notices preserve old evidence
