@@ -2589,6 +2589,18 @@ current, so retry completes failed setup without persistent completion state. Af
 source fast-forward, combined source/runner updates MUST reload the newly installed
 implementation at that exact revision, preserving resolved paths and transition target.
 Completion MUST NOT fetch again or mix old transition functions with new runner sources.
+Official runner mutations MUST share advisory ownership by runner identity, including
+start, stop, drain, resume, recheck and updater pause, transition and rollback. Configuration
+path overrides MUST NOT allow two owners of the same runtime runner. Nested updater
+operations reuse their held ownership. Competing mutations refuse before container or
+control changes; read-only commands and unrelated projects remain concurrent. The original
+configuration-local updater lock remains for compatibility with older launchers.
+
+An update retry with a stopped retained candidate MUST verify its provider, image,
+storage, mounts and port, and the inactive retained source's journal identity before
+starting that container. Preserve its image, volumes, authentication and persistent markers;
+current admission checks still gate completion and removal of rollback evidence.
+
 Cooperating installed source updaters sharing a checkout MUST hold one process-held advisory
 ownership from before fetch through exec handoff, install/setup and any selected transition.
 The source lock inode lives in Git metadata and uses a descriptor separate from project

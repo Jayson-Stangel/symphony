@@ -93,8 +93,11 @@ update refuses immediately. Finish already-running older launchers before adopti
 Manual Git changes and older launchers do not participate in this ownership; revision checks
 continue to reject source changes they can observe.
 `--config-dir` selects configuration and its derived runner storage; an explicit
-`SYMPHONY_RUNNER_HOME` still takes precedence. Runner transitions use a process-held advisory
-lock at the original lock pathname, excluding already-loaded older launchers too. Rerun the
+`SYMPHONY_RUNNER_HOME` still takes precedence. Official runner start, stop, drain, resume,
+recheck and updater actions share one process-held advisory lock per runner, including
+commands using different configuration paths. A competing mutation refuses immediately;
+status, logs and unrelated projects remain available. The lock lives in a private per-user
+directory under `/tmp`; the original configuration-local lock also excludes older updaters. Rerun the
 updated command after a mixed-version refusal. A crashed updater releases the lock after any
 in-flight command exits. Unknown legacy ownerless
 locks remain refused because their ownership cannot be established safely.
@@ -413,6 +416,10 @@ stale pending candidates while retaining their rollback source.
 Update and rollback recovery reconstruct selected runtime metadata from the
 verified container before completing the transition; interrupted metadata writes
 do not require a new listener or manual cache repair.
+If an interrupted transition's verified candidate was stopped, retrying the updater starts
+that retained container and checks current admission before completing. Its workspace,
+state, native login and drain markers remain intact; the prior runner remains available
+for rollback until readiness succeeds.
 Provider changes and rollback restore ownership for the selected runtime so
 retained repositories remain usable by Git when switching back.
 
