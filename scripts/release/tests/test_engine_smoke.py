@@ -18,8 +18,13 @@ FIXTURE = '''#!PYTHON
 import faulthandler, sys
 faulthandler.enable()
 print("fixture interpreter", sys.version, sys.executable, flush=True)
-import http.server, json, os, signal, socketserver, time
+import http.server, json, os, signal, socket, socketserver, time
 MODE = "MODE_VALUE"
+if MODE == "dns_forbidden":
+    # Guard only this disposable fixture process, never the product or controller.
+    def reject_reverse_dns(*args):
+        raise RuntimeError("loopback fixture attempted reverse DNS")
+    socket.getfqdn = reject_reverse_dns
 if MODE == "banner":
     print("This Symphony implementation is a low key engineering preview.")
     sys.exit(1)
@@ -114,6 +119,11 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertFalse(result["forced_cleanup"])
         self.assertEqual(result["exit_code"], 0)
         self.assertTrue(result["listener_pids"])
+
+    def test_loopback_fixture_works_when_reverse_dns_is_forbidden(self):
+        result = self.execute("dns_forbidden")
+        self.assertTrue(result["passed"])
+        self.assertFalse(result["forced_cleanup"])
 
     def test_banner_exit_cannot_pass(self):
         self.assertFalse(self.execute("banner", "exited before qualification")["passed"])
