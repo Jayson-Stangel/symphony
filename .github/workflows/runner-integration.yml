@@ -2,30 +2,8 @@ name: runner-integration
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      # Production image inputs and the launcher exercised by the updater smoke.
-      - .dockerignore
-      - scripts/symphony
-      - runner/Dockerfile
-      - .github/actions/build-runner/**
-      - runner/Dockerfile.dockerignore
-      - runner/entrypoint.sh
-      - runner/updater-smoke.py
-      - runner/browser/package*.json
-      - runner/browser/smoke.cjs
-      - runner/claude/*.mjs
-      - runner/claude/*.sh
-      - runner/claude/package*.json
-      - runner/claude/test/**
-      - elixir/lib/**
-      - elixir/config/**
-      - elixir/priv/**
-      - elixir/mix.exs
-      - elixir/mix.lock
-      # Skills are packaged into both production images, including their prose.
-      - .codex/skills/**
-      - .github/workflows/runner-integration.yml
+  push:
+    branches: [dev, main]
   workflow_dispatch:
 
 concurrency:
@@ -33,25 +11,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/change-classification.yml
   listener-and-cleanup:
+    needs: changes
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
       - name: Checkout
+        if: needs.changes.outputs.code != 'false'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build production Claude image
+        if: needs.changes.outputs.code != 'false'
         uses: ./.github/actions/build-runner
         with:
           target: claude
           tags: symphony-claude-smoke
           revision: ${{ github.sha }}
       - name: Verify credential-free listener and owned subprocess cleanup
+        if: needs.changes.outputs.code != 'false'
         run: bash runner/claude/smoke.sh symphony-claude-smoke
       - name: Build production Codex image using shared layers
+        if: needs.changes.outputs.code != 'false'
         uses: ./.github/actions/build-runner
         with:
           target: codex
           tags: symphony-codex-smoke
           revision: ${{ github.sha }}
       - name: Verify isolated updater, rollback and project identity lifecycle
+        if: needs.changes.outputs.code != 'false'
         run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
+      - name: Documentation-only qualification decision
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

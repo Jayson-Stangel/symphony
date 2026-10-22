@@ -2,17 +2,35 @@ name: Package checks
 on:
   pull_request:
   push:
-    branches: [dev]
+    branches: [dev, main]
 jobs:
+  changes:
+    uses: ./.github/workflows/change-classification.yml
   macos-package:
+    needs: changes
+    if: ${{ always() }}
     runs-on: macos-14
     steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.code != 'false'
       - name: Build both supported host architectures
+        if: needs.changes.outputs.code != 'false'
         run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
       - name: Source-independent installation and host-helper regressions
+        if: needs.changes.outputs.code != 'false'
         env:
           SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
         run: python3 scripts/package/test-package.py -v
       - name: Release selection and interrupted packaged update regressions
+        if: needs.changes.outputs.code != 'false'
         run: python3 -m unittest discover -s scripts/release/tests -v
+      - name: Documentation-only qualification decision
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

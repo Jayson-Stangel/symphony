@@ -5,19 +5,33 @@ on:
   push:
     branches:
       - main
+      - dev
 
 jobs:
+  changes:
+    uses: ./.github/workflows/change-classification.yml
   make-all:
+    needs: changes
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
-
     steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
       - name: Checkout
+        if: needs.changes.outputs.code != 'false'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Workflow and metadata regressions
+        if: needs.changes.outputs.code != 'false'
+        run: python3 -m unittest discover -s scripts/ci/tests -v
+
       - name: Set up mise tools
+        if: needs.changes.outputs.code != 'false'
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
@@ -25,6 +39,7 @@ jobs:
           working_directory: elixir
 
       - name: Cache deps and build
+        if: needs.changes.outputs.code != 'false'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -35,4 +50,9 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify make all
+        if: needs.changes.outputs.code != 'false'
+        working-directory: elixir
         run: make all
+      - name: Documentation-only qualification decision
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
