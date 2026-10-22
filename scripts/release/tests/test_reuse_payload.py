@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
+from unittest import mock
 import unittest
 import zipfile
 
@@ -40,6 +42,33 @@ class ActualPayloadTests(unittest.TestCase):
         return payload.retrieve(self.record, self.origin, destination,
                                 verify=verify or (lambda record: copy.deepcopy(self.origin)),
                                 fetch=fetch or downloaded)
+
+    def test_manual_candidate_override_cannot_be_granted_by_a_plan_or_ordinary_event(self):
+        for event in ('pull_request', 'push', None):
+            with self.assertRaisesRegex(ValueError, 'explicit manual'):
+                payload.origin_verifier(123, event)
+        record = {'qualification': {'run_id': 123}}
+        with mock.patch.object(payload, 'verify_origin') as verify:
+            payload.origin_verifier(None, 'pull_request')(record)
+            verify.assert_called_once_with(record, candidate_run=None)
+            verify.reset_mock()
+            payload.origin_verifier(123, 'workflow_dispatch')(record)
+            verify.assert_called_once_with(record, candidate_run=123)
+            verify.reset_mock()
+            payload.origin_verifier(456, 'workflow_dispatch')(record)
+            verify.assert_called_once_with(record, candidate_run=None)
+
+    def test_real_download_stream_is_bounded_and_child_failure_propagates(self):
+        original_popen = subprocess.Popen
+        for code, bound, error in (("import sys;sys.stdout.buffer.write(b'x'*10)", 8, ValueError),
+                                   ("import sys;sys.stdout.buffer.write(b'x');sys.exit(7)", 20, subprocess.CalledProcessError)):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temporary:
+                def child(*args, **kwargs):
+                    return original_popen([sys.executable, '-c', code], **kwargs)
+                with mock.patch.object(payload.subprocess, 'Popen', side_effect=child), mock.patch.object(payload, 'MAX_ARTIFACT_BYTES', bound):
+                    with self.assertRaises(error):
+                        payload.download(123, Path(temporary) / 'partial.zip')
+                self.assertLessEqual((Path(temporary) / 'partial.zip').stat().st_size, bound)
 
     def test_actual_bytes_retained_with_original_record_and_no_foreign_extraction(self):
         with tempfile.TemporaryDirectory() as temporary:

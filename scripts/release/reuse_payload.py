@@ -9,15 +9,19 @@ these archives with the current manager package.
 import argparse
 import hashlib
 import json
+import os
+import selectors
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 
 from component_provenance import REPOSITORY, require, verify_origin
 
 MAX_ARCHIVE_BYTES = 64 * 1024 ** 3
+MAX_ARTIFACT_BYTES = MAX_ARCHIVE_BYTES + 1024 ** 3
 
 
 def checksum(path):
@@ -30,9 +34,41 @@ def checksum(path):
 
 def download(artifact_id, path):
     require(type(artifact_id) is int and artifact_id > 0, 'invalid payload artifact ID')
-    with path.open('xb') as output:
-        subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip'],
-                       stdout=output, check=True, timeout=1800)
+    command = ['gh', 'api', f'repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip']
+    with path.open('xb') as output, subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+        try:
+            deadline, received = time.monotonic() + 1800, 0
+            with selectors.DefaultSelector() as ready:
+                ready.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, 1800)
+                    if not ready.select(timeout=remaining):
+                        raise subprocess.TimeoutExpired(command, 1800)
+                    block = os.read(process.stdout.fileno(), 1024 * 1024)
+                    if not block:
+                        break
+                    received += len(block)
+                    require(received <= MAX_ARTIFACT_BYTES, 'downloaded artifact exceeds consumer bound')
+                    output.write(block)
+            code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            if code:
+                raise subprocess.CalledProcessError(code, command)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def origin_verifier(baseline_run, event):
+    # Only explicit manual diagnostics may use a selected pre-merge native run.
+    # A downloaded plan's baseline_selection never grants this authorization.
+    if baseline_run is not None:
+        require(type(baseline_run) is int and baseline_run > 0 and event == 'workflow_dispatch',
+                'candidate baseline override requires an explicit manual diagnostic')
+    return lambda record: verify_origin(record, candidate_run=(baseline_run if
+        record['qualification']['run_id'] == baseline_run else None))
 
 
 def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=download):
@@ -88,8 +124,10 @@ def main():
     parser.add_argument('--architecture', choices=('x86_64', 'arm64'), required=True)
     parser.add_argument('--destination', required=True, type=Path)
     parser.add_argument('--prior', action='store_true')
+    parser.add_argument('--baseline-run', type=int, help='explicit authorized manual candidate run only')
     args = parser.parse_args()
     try:
+        verify = origin_verifier(args.baseline_run, os.environ.get('GITHUB_EVENT_NAME'))
         revision = subprocess.check_output(['git', '-C', args.root, 'rev-parse', 'HEAD'], text=True).strip()
         entry = selected(json.loads(args.plan.read_text()), args.provider, args.architecture, revision)
         from runner_inputs import identity
@@ -97,7 +135,9 @@ def main():
                 'effective inputs changed after planning')
         record_key, origin_key = ('prior_record', 'prior_origin') if args.prior else ('record', 'origin')
         require(record_key in entry and origin_key in entry, 'distinct original prior qualification is unavailable')
-        print(retrieve(entry[record_key], entry[origin_key], args.destination))
+        if args.prior:
+            require(entry[record_key]['image'] != entry['record']['image'], 'prior qualification must select a distinct image')
+        print(retrieve(entry[record_key], entry[origin_key], args.destination, verify=verify))
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         parser.exit(1, f'runner payload reuse: {type(error).__name__}; actual original payload not authorized\n')
 
