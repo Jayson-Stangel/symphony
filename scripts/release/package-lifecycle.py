@@ -422,6 +422,7 @@ fi
             activation_links = {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
                                 for path in ('current', 'previous')}
             containers_before = {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names}
+            assert not list((root / "config/runners").glob("*.transition*")), "unexpected pending transition before negative fixture"
             try:
                 metadata[0].write_bytes(substituted)
                 failed = client_run([str(command), "update", *update_args], cwd=repo, expected=1)
@@ -429,6 +430,7 @@ fi
                 assert {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
                         for path in ('current', 'previous')} == activation_links
                 assert {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names} == containers_before
+                assert not list((root / "config/runners").glob("*.transition*")), "incompatible runner created a project transition"
                 assert metadata[0].read_bytes() == substituted and metadata[1].read_bytes() == second_metadata
                 assert inspect(names[1], "{{.Image}}") == second_image
                 unchanged()
