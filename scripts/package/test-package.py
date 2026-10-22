@@ -145,6 +145,29 @@ class PackageTest(unittest.TestCase):
             self.file.write_text(json.dumps(invalid))
             self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
 
+    def test_schema1_bridge_original_components_preserve_strict_native_proof(self):
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('bridge_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value=manifest();originals={}
+        for provider in ('codex','claude'):
+            originals[provider]={}
+            for arch in ('arm64','x86_64'):
+                original=fixture.record(provider,arch)
+                original['source_revision']=value['source_revision']
+                original['qualification']['source_revision']=value['source_revision']
+                originals[provider][arch]=original
+                selected=copy.deepcopy(original)
+                selected['image']='ghcr.io/distribution/'+provider+'@'+original['image'].split('@')[1]
+                selected.pop('qualification')
+                value['runners'][provider][arch]=selected
+        value['original_components']=originals
+        self.file.write_text(json.dumps(value));self.assertOK(self.helper('validate-manifest',self.file))
+        for mutate in (lambda m:m['runners']['codex']['arm64'].update(image='ghcr.io/changed@sha256:'+'0'*64),
+                       lambda m:m['original_components']['claude']['x86_64']['qualification'].update(run_id=True)):
+            broken=copy.deepcopy(value);mutate(broken);self.file.write_text(json.dumps(broken))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
+
     def test_recovered_component_records_keep_failed_job_and_separate_origins(self):
         sys.path.insert(0, str(ROOT / 'scripts/release'))
         import artifacts

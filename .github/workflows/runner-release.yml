@@ -3,6 +3,10 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      component_plan_artifact:
+        description: Exact same-run source-bound component plan from the ordinary caller
+        type: string
+        default: ''
       baseline_run:
         description: Exact manually authorized record run; rejected outside workflow_dispatch
         type: string
@@ -10,7 +14,7 @@ on:
       manifest_schema:
         description: Candidate metadata schema; independent components use schema 2
         type: string
-        default: '1'
+        default: '2'
       compose_packages:
         description: Assemble native manager packages in this producer (ordinary integration composes separately)
         type: boolean
@@ -112,19 +116,34 @@ jobs:
       build_matrix: ${{ steps.plan.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.component_plan_artifact != ''
+        with:
+          name: ${{ inputs.component_plan_artifact }}
+          path: selected-plan
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          MANIFEST_SCHEMA: ${{ inputs.manifest_schema }}
+          SELECTED_PLAN_ARTIFACT: ${{ inputs.component_plan_artifact }}
         run: |
           test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
           args=()
+          if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--same-source-bridge); fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
-          python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
+          if [ -n "$SELECTED_PLAN_ARTIFACT" ]; then
+            test "$MANIFEST_SCHEMA" = 2
+            cp selected-plan/component-plan.json component-plan.json
+          else
+            python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
+          fi
           python3 - <<'PYCODE'
           import json, os
           plan = json.load(open('component-plan.json'))
+          assert plan.get('manager_source_revision') == os.environ['GITHUB_SHA'] and plan.get('planning_complete') is True
+          assert type(plan['has_builds']) is bool
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('has_builds=' + str(plan['has_builds']).lower() + '\n')
               output.write('build_matrix=' + json.dumps(plan['build_matrix'], separators=(',', ':')) + '\n')
@@ -207,78 +226,58 @@ jobs:
           retention-days: 30
 
   publication-preflight:
-    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
-    needs: [component-plan, candidate-metadata]
+    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    needs: [component-plan, candidate-metadata, candidate-qualification]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: runner-component-plan
-      - name: Refuse unsupported mixed-component publication before any image push
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runner-candidate-metadata
+          path: metadata
+      - name: Verify every original and public reuse digest before any image push
         env:
-          MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
-          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
-        run: |
-          test "$COMPOSE_PACKAGES" = true
-          python3 - <<'PYCODE'
-          import json, os
-          plan = json.load(open('component-plan.json'))
-          assert os.environ['MANIFEST_SCHEMA'] == '1', 'independent-component production publication requires integrated lifecycle qualification'
-          assert all(item['action'] == 'build' for group in plan['components'].values() for item in group.values()), 'mixed/reused production image publication is not qualified'
-          PYCODE
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/component_publication.py --plan plan/component-plan.json --metadata metadata/release.json --output prepared/publication-plan.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-distribution-plan
+          path: prepared/publication-plan.json
+          if-no-files-found: error
 
   publish:
-    if: ${{ always() && !cancelled() && needs.candidate.result == 'success' && needs.publication-preflight.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
-    needs: [candidate, publication-preflight, candidate-qualification]
+    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    needs: publication-preflight
     environment: production-release
     permissions:
       contents: read
+      actions: read
       packages: write
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        provider: [codex, claude]
-        architecture: [arm64, x86_64]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: candidate
-      - name: Publish tested image and verify anonymous digest pull
+          name: runner-distribution-plan
+          path: prepared
+      - name: Transfer only missing new components and preserve original image identities
         env:
           GH_TOKEN: ${{ github.token }}
-          PROVIDER: ${{ matrix.provider }}
-          ARCHITECTURE: ${{ matrix.architecture }}
-        run: |
-          (cd candidate && sha256sum --check ./*.sha256)
-          gzip -dc "candidate/$PROVIDER-$ARCHITECTURE.docker.tar.gz" | docker load
-          repository="ghcr.io/${GITHUB_REPOSITORY,,}-$PROVIDER"
-          image="$repository:$GITHUB_REF_NAME-$ARCHITECTURE"
-          docker tag "localhost:5000/symphony-$PROVIDER:candidate" "$image"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker push "$image"
-          digest=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -F "$repository@sha256:")
-          docker logout ghcr.io
-          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate"
-          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
-          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
-          docker pull "$digest"
-          bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
-          mkdir -p dist
-          python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
-            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
+          SYMPHONY_PRODUCTION_RELEASES: ${{ vars.SYMPHONY_PRODUCTION_RELEASES }}
+        run: python3 scripts/release/component_publication.py --prepared prepared/publication-plan.json --output stable/release.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: runner-stable-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: dist/*.json
+          name: runner-stable-metadata
+          path: stable/release.json
           if-no-files-found: error
 
   candidate-metadata:
@@ -329,9 +328,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: runner-stable-*
-          path: records
-          merge-multiple: true
+          name: runner-stable-metadata
+          path: metadata
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ format('native-host-helper-{0}-{1}', matrix.platform, github.sha) }}
+          path: ${{ runner.temp }}/qualified-helper
+      - name: Verify original native helper checksum before restoring executable mode
+        run: |
+          cd "$RUNNER_TEMP/qualified-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod 755 symphony-host
       - name: Assemble native manager archive from tested stable image identities
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -339,11 +347,7 @@ jobs:
           test -f scripts/release/package.sh || { echo 'Packaged manager prerequisite is not integrated; refusing incomplete stable release.' >&2; exit 1; }
           version=$(python3 scripts/release/manager_version.py)
           mkdir -p dist
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel stable --platform-bundles --output "$RUNNER_TEMP/release.json" records/*.json
-          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host"
-          else bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"; cp "$RUNNER_TEMP/linux-helper/symphony-host" "$RUNNER_TEMP/symphony-host"; fi
-          bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist "$RUNNER_TEMP/symphony-host"
+          bash scripts/release/build-manager-package.sh "$PWD/metadata/release.json" "$PWD/dist" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$RUNNER_TEMP/qualified-helper/symphony-host"
       - uses: actions/upload-artifact@v4
         with:
           name: packaged-release-platform-${{ matrix.platform }}
@@ -359,9 +363,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: runner-stable-*
-          path: records
-          merge-multiple: true
+          name: runner-stable-metadata
+          path: metadata
       - uses: actions/download-artifact@v4
         with:
           pattern: packaged-release-platform-*
@@ -370,9 +373,7 @@ jobs:
       - name: Bind matching Linux and legacy macOS manager archives
         run: |
           version=$(python3 scripts/release/manager_version.py)
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel stable --bundle "dist/symphony-$version-macos.tar.gz" \
-            --linux-bundle "dist/symphony-$version-linux_x86_64.tar.gz" --output dist/release.json records/*.json
+          python3 scripts/release/finalize-manager-packages.py metadata/release.json dist
           python3 scripts/release/artifacts.py validate dist/release.json
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
       - uses: actions/upload-artifact@v4
