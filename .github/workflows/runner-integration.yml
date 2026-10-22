@@ -44,6 +44,7 @@ jobs:
     with:
       preflight_revision: ${{ needs.portable.outputs.qualified_revision }}
       manifest_schema: '2'
+      component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
       publish: false
