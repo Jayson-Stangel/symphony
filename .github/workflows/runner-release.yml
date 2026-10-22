@@ -82,7 +82,7 @@ jobs:
     if: inputs.preflight_revision == ''
     uses: ./.github/workflows/release-preflight.yml
   package-inputs:
-    if: ${{ !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     needs: qualification
     uses: ./.github/workflows/package-checks.yml
     with:
@@ -113,7 +113,7 @@ jobs:
           fi
   candidate:
     needs: qualification
-    if: ${{ !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -171,7 +171,7 @@ jobs:
           retention-days: 30
 
   publish:
-    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    if: ${{ always() && !cancelled() && needs.candidate.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
     needs: [candidate, candidate-qualification]
     environment: production-release
     permissions:
@@ -225,6 +225,7 @@ jobs:
           if-no-files-found: error
 
   candidate-metadata:
+    if: ${{ always() && !cancelled() && needs.candidate.result == 'success' }}
     needs: candidate
     runs-on: ubuntu-24.04
     steps:
@@ -255,6 +256,7 @@ jobs:
           path: dist/**
 
   packaged-release-platform:
+    if: ${{ always() && !cancelled() && needs.publish.result == 'success' }}
     needs: publish
     strategy:
       fail-fast: false
@@ -291,6 +293,7 @@ jobs:
           if-no-files-found: error
 
   packaged-release:
+    if: ${{ always() && !cancelled() && needs.packaged-release-platform.result == 'success' }}
     needs: packaged-release-platform
     runs-on: ubuntu-24.04
     environment: production-release
@@ -321,6 +324,7 @@ jobs:
           if-no-files-found: error
 
   packaged-candidate:
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' }}
     needs: [candidate-metadata, package-inputs]
     strategy:
       fail-fast: false
@@ -383,6 +387,7 @@ jobs:
           retention-days: 30
 
   packaged-candidate-metadata:
+    if: ${{ always() && !cancelled() && needs.packaged-candidate.result == 'success' }}
     needs: packaged-candidate
     runs-on: ubuntu-24.04
     steps:
@@ -427,7 +432,7 @@ jobs:
           retention-days: 30
 
   ubuntu-package-lifecycle:
-    if: inputs.previous_revision != ''
+    if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && inputs.previous_revision != '' }}
     needs: packaged-candidate-metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -454,7 +459,7 @@ jobs:
 
   lifecycle-diagnostic:
     needs: qualification
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     permissions:
       contents: read
       actions: read
@@ -520,7 +525,7 @@ jobs:
           echo 'Exact-head preflight, native fixtures, all four provider/platform images and native package archives succeeded. Two-source lifecycle is required when a prior revision was requested.' >> "$GITHUB_STEP_SUMMARY"
   cache-probe:
     needs: qualification
-    if: inputs.cache_probe && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60

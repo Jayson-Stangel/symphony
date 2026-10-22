@@ -110,6 +110,39 @@ class RetainedDiagnosticContractTest(unittest.TestCase):
         self.assertNotIn('inputs.controller_only', packages)
 
 
+class ReusedPreflightSchedulingTest(unittest.TestCase):
+    def test_fanout_joins_override_implicit_ancestor_skip_and_require_success(self):
+        # A real caller-owned preflight leaves the local portable job skipped.
+        # Actions' implicit success() can suppress its descendants even after
+        # qualification succeeds. Every fanout/join needs an explicit status
+        # function and direct successful artifact dependencies instead.
+        root = Path(__file__).resolve().parents[3]
+        import re
+        expected = {
+            'runner-release.yml': {
+                'package-inputs': ['qualification'], 'candidate': ['qualification'],
+                'publish': ['candidate', 'candidate-qualification'],
+                'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publish'],
+                'packaged-release': ['packaged-release-platform'],
+                'packaged-candidate': ['candidate-metadata', 'package-inputs'],
+                'packaged-candidate-metadata': ['packaged-candidate'],
+                'ubuntu-package-lifecycle': ['packaged-candidate-metadata'],
+                'lifecycle-diagnostic': ['qualification'], 'cache-probe': ['qualification']},
+            'package-checks.yml': {
+                'native': ['changes', 'qualification'],
+                'native-host-package': ['changes', 'qualification', 'host-policy']}}
+        for filename, jobs in expected.items():
+            text = (root / '.github/workflows' / filename).read_text()
+            for name, needed in jobs.items():
+                with self.subTest(workflow=filename, job=name):
+                    block = re.search(r'^  '+name+r':\n(?:(?!^  [a-z]).*\n)*', text, re.M).group(0)
+                    condition = re.search(r'^    if: (.*)$', block, re.M).group(1)
+                    self.assertIn('always()', condition)
+                    self.assertIn('!cancelled()', condition)
+                    for predecessor in needed:
+                        self.assertIn('needs.'+predecessor+".result == 'success'", condition)
+
+
 class NativeHelperInvocationTest(unittest.TestCase):
     def test_actual_current_mac_helper_step_passes_native_to_the_builder(self):
         root = Path(__file__).resolve().parents[3]

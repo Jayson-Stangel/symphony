@@ -61,7 +61,7 @@ jobs:
           fi
   native:
     needs: [changes, qualification]
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.changes.outputs.code == 'true' }}
     uses: ./.github/workflows/release-native.yml
   host-policy:
     needs: changes
@@ -69,7 +69,7 @@ jobs:
     uses: ./.github/workflows/host-policy.yml
   native-host-package:
     needs: [changes, qualification, host-policy]
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.code == 'true' }}
     name: native-host-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
