@@ -74,5 +74,21 @@ class WorkflowGuardTest(unittest.TestCase):
                 self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **{key: result})), 0)
 
 
+class RetainedDiagnosticContractTest(unittest.TestCase):
+    def test_retention_crosses_reusable_workflow_boundary_explicitly(self):
+        root = Path(__file__).resolve().parents[3]
+        runner = (root / '.github/workflows/runner-release.yml').read_text()
+        packages = (root / '.github/workflows/package-checks.yml').read_text()
+        burrito = (root / '.github/workflows/burrito-release.yml').read_text()
+        for text in (runner, packages):
+            call = text.split('  workflow_call:', 1)[1].split('  pull_request:', 1)[0].split('  workflow_dispatch:', 1)[0]
+            self.assertIn('      retain_diagnostic:', call)
+            self.assertIn("inputs.retain_diagnostic && github.run_id || 'latest'", text)
+        nested = runner.split('  package-inputs:', 1)[1].split('  qualification:', 1)[0]
+        self.assertIn('retain_diagnostic: ${{ inputs.retain_diagnostic }}', nested)
+        self.assertIn('retain_diagnostic: ${{ inputs.controller_only }}', burrito)
+        self.assertNotIn('inputs.controller_only', packages)
+
+
 if __name__ == '__main__':
     unittest.main()

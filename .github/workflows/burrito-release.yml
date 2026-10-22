@@ -28,6 +28,7 @@ jobs:
     if: ${{ !inputs.controller_only }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      retain_diagnostic: ${{ inputs.controller_only }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
       publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
     permissions:
