@@ -3,6 +3,10 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      previous_revision:
+        description: Optional full prior Linux-capable source for actual two-revision package lifecycle
+        type: string
+        default: ''
       retain_diagnostic:
         description: Preserve this caller-owned diagnostic and its package checks
         type: boolean
@@ -75,7 +79,7 @@ jobs:
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
         run: |
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
-          if [ -n "${PREVIOUS_REVISION:-}" ]; then [[ "$PREVIOUS_REVISION" =~ ^[0-9a-f]{40}$ ]]; fi
+          if [ -n "${PREVIOUS_REVISION:-}" ]; then [[ "$PREVIOUS_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1; fi
           if [ -n "$CALLER_REVISION" ]; then
             test "$LOCAL_RESULT" = skipped
             test "$CALLER_REVISION" = "$GITHUB_SHA"

@@ -62,6 +62,8 @@ class WorkflowGuardTest(unittest.TestCase):
             dict(LOCAL_RESULT='success', LOCAL_REVISION='b'*40, CALLER_REVISION='')), 0)
         self.assertEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='a'*40)), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', PREVIOUS_REVISION='invalid')), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', CACHE_PROBE='true', DIAGNOSTIC_ARTIFACT_RUN='123')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
 
@@ -102,7 +104,9 @@ class RetainedDiagnosticContractTest(unittest.TestCase):
             self.assertIn("inputs.retain_diagnostic && github.run_id || 'latest'", text)
         nested = runner.split('  package-inputs:', 1)[1].split('  qualification:', 1)[0]
         self.assertIn('retain_diagnostic: ${{ inputs.retain_diagnostic }}', nested)
-        self.assertIn('retain_diagnostic: ${{ inputs.controller_only }}', burrito)
+        self.assertIn('retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}', burrito)
+        self.assertIn('previous_revision: ${{ inputs.previous_revision }}', burrito)
+        self.assertIn('      previous_revision:', runner.split('  workflow_call:', 1)[1].split('  workflow_dispatch:', 1)[0])
         self.assertNotIn('inputs.controller_only', packages)
 
 
