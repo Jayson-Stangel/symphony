@@ -1,0 +1,153 @@
+# Getting started
+
+This guide installs the stable, source-backed Symphony command and runs a first
+Linear issue in an isolated container. One installation can serve multiple target
+repositories. Each repository has its own workflow, credentials, runner, and workspaces.
+
+For macOS release bundles without host build tools, use
+[packaged installation](packaged-install.md). For an existing source installation,
+start with [operations](operations.md). To test changes
+to Symphony before promotion, use the [development guide](development.md).
+
+## Prerequisites
+
+- Git and [mise](https://mise.jdx.dev/) on the host.
+- A running Docker-compatible engine: Docker Desktop or OrbStack on macOS, or Docker
+  Engine or rootless Podman on Unix. Set `SYMPHONY_CONTAINER_RUNTIME=docker` or `podman`
+  to select one explicitly.
+- A target repository with a pushed commit and an `origin` remote the worker can clone.
+- Access to a Linear project and a repository-scoped GitHub token.
+- A Codex login, or a supported native Claude subscription login for the
+  [Claude runner](claude.md).
+
+Source setup installs the Erlang/OTP, Elixir, and Node.js versions pinned in
+`elixir/mise.toml`. Target repositories do not need Elixir or mise. Container images
+supply the agent CLI, GitHub CLI, Git, and browser tools; host Codex and GitHub CLI
+are optional for host debugging and manual access checks.
+
+## Install a stable runtime
+
+Choose a dedicated location that will remain available to the global command:
+
+```bash
+git clone --branch main https://github.com/Jayson-Stangel/symphony.git ~/src/symphony
+~/src/symphony/scripts/symphony install
+```
+
+`install` creates private configuration storage, links `~/.local/bin/symphony` to
+this checkout, and links the shared Symphony skills into `~/.codex/skills/`. It is
+safe to rerun and refuses to replace an existing unrelated file or symlink. Ensure
+`~/.local/bin` is on your `PATH`, then build the runtime and check the installation:
+
+```bash
+symphony setup
+symphony doctor
+```
+
+On macOS, `symphony setup --install-prerequisites` can install missing mise through
+Homebrew. Git requires the Xcode Command Line Tools; Homebrew must already be installed.
+On other systems, install Git and mise yourself before running setup. Setup does not
+install a container engine.
+
+Keep this stable checkout separate from development. Once installed, apply stable
+changes through [the updater](operations.md#update-the-stable-installation).
+
+## Initialize a repository
+
+Run project commands from the target repository, rather than the Symphony source:
+
+```bash
+cd /path/to/my-service
+symphony init --linear-project YOUR_LINEAR_PROJECT_SLUG
+```
+
+Use the slug from your Linear project's URL. Initialization creates `WORKFLOW.md`
+from the supplied operating contract and prints the path to a private credential
+file outside the repository. Existing workflows and credential files are preserved.
+
+Review and commit `WORKFLOW.md` as repository policy. Before starting a listener:
+
+- Confirm the tracker project and states. The supplied workflow uses `Todo`,
+  `In Progress`, `Rework`, and `Merging` as active states; `Blocked` and `Human Review`
+  need corresponding tracker statuses for its handoff policy.
+- Check the clone URL, setup hooks, validation commands, review requirements,
+  and merge rules against your repository.
+- Restrict the first run to one disposable issue. Under the existing `tracker:`
+  mapping, set `required_labels: ["symphony-smoke-test"]` and give only that issue
+  the matching label. Under `agent:`, set `max_concurrent_agents: 1` for a serial pilot.
+
+The listener can dispatch matching issues immediately. See the
+[workflow template](../elixir/WORKFLOW.md) for worker instructions and the
+[configuration reference](../elixir/README.md#configuration) for tracker adapters,
+workspace setup, models, reasoning effort, and concurrency.
+
+## Configure credentials
+
+Open the exact credential path printed by `init`. By default it is
+`~/.config/symphony/projects/<repository-identity>.env`, where the identity combines
+the repository basename and a hash of its normalized `origin` URL. Do not infer the
+path from the basename alone. Add the values locally:
+
+```dotenv
+LINEAR_API_KEY=YOUR_LINEAR_API_KEY
+GH_TOKEN=YOUR_REPOSITORY_SCOPED_GITHUB_TOKEN
+```
+
+Keep this file private and outside version control. The template is created with
+owner-only permissions. The Git credential may also be named `GITHUB_TOKEN`.
+
+Use a Linear personal API key with access to the selected project. For GitHub, use a
+[fine-grained token](https://github.com/settings/personal-access-tokens/new) restricted
+to the managed repository. Grant `Contents` and `Pull requests` read/write; add `Issues`
+only for issue comments or labels, and `Workflows` only for changes to
+`.github/workflows/`. Avoid unrelated repository or administrative access.
+
+Agent authentication is separate from tracker and Git credentials. Complete the
+native login flow in your terminal; keep login codes and credentials out of issues,
+workpads, and chat.
+
+## Authenticate and run
+
+For the default Codex runner, run these commands from the initialized repository:
+
+```bash
+symphony auth codex login
+symphony auth codex check
+symphony runner doctor --agent codex
+symphony run --port 4010
+```
+
+The first login prepares the runner image and stores the native session in a
+Docker-managed volume separate from the host Codex home. `auth check` and
+`runner doctor` make no model requests. The runner doctor verifies native login
+and branch/commit operations in a disposable local Git repository; remote clone
+and push access still depend on the project's Git credential.
+
+For Claude, follow the [Claude setup instructions](claude.md#set-up-a-fresh-project),
+using `auth claude`, `runner doctor --agent claude`, and `run --agent claude`.
+
+Open [the local dashboard](http://127.0.0.1:4010) and inspect the pilot issue's
+workspace, tracker updates, validation results, and pull request. Use a different
+`--port` for each concurrently running project. Remove or widen the label filter
+only after reviewing the pilot.
+
+## Finish the pilot
+
+The container listener runs independently of the launching terminal. To let current
+work finish while preventing new dispatch:
+
+```bash
+symphony runner drain
+symphony runner status
+```
+
+Wait until the dashboard shows zero active workers, then stop the runner:
+
+```bash
+symphony runner stop
+```
+
+Stopping retains the container, workspaces, logs, and native login. Restart it with
+a matching `symphony run`, then use `symphony runner resume` to clear the explicit drain
+when ready. Read [operations](operations.md) for persistence, recovery,
+updates, and deliberate local skill overrides.

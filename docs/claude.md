@@ -17,8 +17,8 @@ resources as well as the checkout, configuration and dashboard port.
 
 After the feature has passed review, been promoted to main, and been installed
 through the existing stable `symphony update` command, run these commands from the
-target repository. First [initialize its workflow](../README.md#initialize-a-repository)
-and [configure repository-scoped credentials](../README.md#configure-credentials).
+target repository. First [initialize its workflow](getting-started.md#initialize-a-repository)
+and [configure repository-scoped credentials](getting-started.md#configure-credentials).
 Choose a disposable tracker scope for a pilot before starting the listener:
 
 ```sh
