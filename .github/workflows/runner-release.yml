@@ -13,13 +13,18 @@ on:
         type: string
         required: false
 
+      transfer_replay_run:
+        description: Existing successful transfer benchmark run ID for replay/digest proof only (no export)
+        type: string
+        required: false
+
 permissions:
   contents: read
   actions: read
 
 jobs:
   candidate:
-    if: ${{ !inputs.transfer_diagnostic_run }}
+    if: ${{ !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -179,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   transfer-benchmark:
-    if: ${{ inputs.transfer_diagnostic_run != '' }}
+    if: ${{ inputs.transfer_diagnostic_run != '' && !inputs.transfer_replay_run }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -259,6 +264,7 @@ jobs:
           if-no-files-found: warn
 
   transfer-replay:
+    if: ${{ always() && (inputs.transfer_replay_run != '' || needs.transfer-benchmark.result == 'success') }}
     needs: transfer-benchmark
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -274,9 +280,36 @@ jobs:
             runner: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify completed benchmark source before replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.transfer_replay_run || github.run_id }}
+          BENCHMARK_RUN: ${{ inputs.transfer_diagnostic_run }}
+          REPLAY_RUN: ${{ inputs.transfer_replay_run }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re, subprocess
+          from pathlib import Path
+          assert not (os.environ['BENCHMARK_RUN'] and os.environ['REPLAY_RUN']), 'choose benchmark or replay source'
+          run_id = os.environ['SOURCE_RUN']
+          assert re.fullmatch('[0-9]+', run_id), 'invalid immutable replay run ID'
+          repo = os.environ['GITHUB_REPOSITORY']
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['head_repository']['full_name'] == repo, 'foreign benchmark source'
+          jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
+          name = 'transfer-benchmark (' + os.environ['PROVIDER'] + ', ' + os.environ['ARCHITECTURE'] + ')'
+          producer = [job for job in jobs if job['name'] == name]
+          assert len(producer) == 1 and producer[0]['conclusion'] == 'success', 'benchmark producer did not pass'
+          Path('evidence').mkdir()
+          Path('evidence/transport-source.txt').write_text(json.dumps({'run':run, 'producer':producer[0]}, indent=2))
+          PYTHON
       - name: Download improved image payloads
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.transfer_replay_run || github.run_id }}
           name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
           path: replay
       - name: Real checksum, Docker load and model-free runtime proof

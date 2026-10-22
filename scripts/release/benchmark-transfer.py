@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Nonpublishing, build-free benchmark of verified candidate image archives."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,9 @@ import re
 import subprocess
 import tarfile
 import time
+import uuid
+from urllib.error import URLError
+from urllib.request import urlopen
 
 SPEC = importlib.util.spec_from_file_location('image_export', Path(__file__).with_name('export-image.py'))
 EXPORT = importlib.util.module_from_spec(SPEC)
@@ -71,6 +75,62 @@ def load(archive, image_ids):
             raise ValueError('Docker loaded a different image config')
     metrics['total_wall_seconds'] = time.monotonic() - start
     return metrics
+
+
+@contextmanager
+def digest_registry():
+    """Use the existing candidate route; never contact a publication registry."""
+    token = uuid.uuid4().hex
+    name = 'symphony-transfer-digest-' + token
+    container = subprocess.check_output(['docker', 'run', '-d', '--name', name,
+        '--label', 'com.symphony.transfer-digest=' + token,
+        '-p', '127.0.0.1:5000:5000', 'registry:3'], text=True, timeout=120).strip()
+    if not re.fullmatch('[a-f0-9]{64}', container):
+        raise ValueError('isolated registry has no exact owned container identity')
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with urlopen('http://127.0.0.1:5000/v2/', timeout=1) as response:
+                    if response.status == 200:
+                        break
+            except (OSError, URLError):
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError('owned test registry did not become ready within 30 seconds')
+            time.sleep(0.1)
+        yield
+    finally:
+        owner = subprocess.check_output(['docker', 'inspect', '--format',
+            '{{index .Config.Labels "com.symphony.transfer-digest"}}', container], text=True, timeout=30).strip()
+        if owner != token:
+            raise ValueError('refusing to remove foreign registry container')
+        subprocess.run(['docker', 'rm', '-f', container], check=True, timeout=30)
+        remaining = subprocess.check_output(['docker', 'ps', '-a', '--no-trunc',
+            '--filter', 'id=' + container, '--format', '{{.ID}}'], text=True, timeout=30).strip()
+        if remaining:
+            raise ValueError('owned registry remains after cleanup')
+
+
+def prove_digests(images, provider):
+    results = []
+    repository = 'localhost:5000/symphony-' + provider
+    for image in images:
+        expected = image['record']['image']
+        if (not re.fullmatch(re.escape(repository) + r'@sha256:[a-f0-9]{64}', expected) or
+                image['tag'] not in (repository + ':candidate', repository + ':previous')):
+            raise ValueError('digest proof permits only the original isolated local registry route')
+        subprocess.run(['docker', 'push', image['tag']], check=True, timeout=600)
+        actual = inspect(image['tag']).get('RepoDigests', [])
+        if expected not in actual:
+            raise ValueError('transport changed the original distribution digest; refusing relabeling')
+        subprocess.run(['docker', 'pull', expected], check=True, timeout=600)
+        config = inspect(expected)
+        if (config['Id'] != image['image_id'] or
+                config['Config']['Labels']['org.opencontainers.image.revision'] != image['record']['source_revision']):
+            raise ValueError('original digest resolved to a different source/config')
+        results.append({'image': expected, 'observed_repo_digests': actual, 'image_id': config['Id']})
+    return results
 
 
 def checksum_record(path, archive_name):
@@ -173,10 +233,13 @@ def main():
         else:
             # Startup and browser checks execute real loaded artifacts, with no
             # credentials, host mounts, model calls, or new registry service.
-            for image_id in image_ids:
-                subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'git', image_id, '--version'], check=True, timeout=30)
-                subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'node', image_id, '/opt/symphony/browser/smoke.cjs'], check=True, timeout=90)
-                subprocess.run(['bash', str(Path(__file__).with_name('runner-startup.sh')), image_id, args.provider], check=True, timeout=180)
+            with digest_registry():
+                result['original_distribution_digest_proof'] = prove_digests(images, args.provider)
+                for qualified in result['original_distribution_digest_proof']:
+                    image = qualified['image']
+                    subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'git', image, '--version'], check=True, timeout=30)
+                    subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'node', image, '/opt/symphony/browser/smoke.cjs'], check=True, timeout=90)
+                    subprocess.run(['bash', str(Path(__file__).with_name('runner-startup.sh')), image, args.provider], check=True, timeout=180)
             result['actual_runtime_checks'] = 'git/browser/empty-tracker startup/graceful shutdown passed'
         result['status'] = 'complete'
     (args.output / 'transfer-results.txt').write_text(json.dumps(results, indent=2, sort_keys=True) + '\n')

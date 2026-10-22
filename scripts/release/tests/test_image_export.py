@@ -153,6 +153,34 @@ class ExportTransport(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'checksum record differs'):
                     BENCH.checksum_record(path, filename)
 
+    def test_distribution_digest_mismatch_cannot_be_relabelled_or_pulled(self):
+        image = {'tag': 'localhost:5000/symphony-codex:candidate', 'image_id': 'sha256:' + 'a'*64,
+                 'record': {'image': 'localhost:5000/symphony-codex@sha256:' + 'b'*64,
+                            'source_revision': 'c'*40}}
+        with mock.patch.object(BENCH.subprocess, 'run') as commands, mock.patch.object(BENCH, 'inspect', return_value={'RepoDigests': ['localhost:5000/symphony-codex@sha256:' + 'd'*64]}):
+            with self.assertRaisesRegex(ValueError, 'changed the original distribution digest'):
+                BENCH.prove_digests([image], 'codex')
+            self.assertEqual(commands.call_count, 1)
+            self.assertEqual(commands.call_args.args[0], ['docker', 'push', image['tag']])
+
+    def test_digest_proof_refuses_public_registry_before_any_command(self):
+        image = {'tag': 'ghcr.io/foreign/runner:candidate', 'image_id': 'sha256:' + 'a'*64,
+                 'record': {'image': 'ghcr.io/foreign/runner@sha256:' + 'b'*64}}
+        with mock.patch.object(BENCH.subprocess, 'run') as commands:
+            with self.assertRaisesRegex(ValueError, 'only the original isolated local registry'):
+                BENCH.prove_digests([image], 'codex')
+            commands.assert_not_called()
+
+    def test_registry_cleanup_never_removes_foreign_container(self):
+        token = mock.Mock(hex='a'*32)
+        response = mock.MagicMock()
+        response.__enter__.return_value.status = 200
+        with mock.patch.object(BENCH.uuid, 'uuid4', return_value=token), mock.patch.object(BENCH, 'urlopen', return_value=response), mock.patch.object(BENCH.subprocess, 'check_output', side_effect=['b'*64, 'foreign']), mock.patch.object(BENCH.subprocess, 'run') as commands:
+            with self.assertRaisesRegex(ValueError, 'foreign registry container'):
+                with BENCH.digest_registry():
+                    pass
+            commands.assert_not_called()
+
     def test_source_failure_cannot_be_hidden_by_successful_gzip(self):
         with tempfile.TemporaryFile() as stream:
             with self.assertRaises(subprocess.CalledProcessError):

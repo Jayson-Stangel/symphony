@@ -139,3 +139,16 @@ python3 -m unittest discover -s scripts/release/tests -p test_image_export.py -v
 
 Those fixtures exercise actual gzip/tar bytes and subprocess failure propagation;
 they do not replace native production-image benchmark/replay evidence.
+
+To consume an already completed benchmark without repeating export/compression,
+set `transfer_replay_run` to that immutable benchmark run ID instead. The replay
+checks the successful matching provider/architecture producer and available
+payload. It uses the existing candidate lifecycle's isolated loopback `registry:3`
+route: push the retained candidate/previous tags, require each observed digest to
+equal the original qualified record exactly, pull that original digest, and run
+Git/browser/startup/graceful-stop against the digest. A changed distribution
+digest fails; config-ID equality alone is insufficient. Only `localhost:5000`
+references are permitted, and registry cleanup verifies the owned container label
+and actual absence. No public registry publication, credentials or image rebuild
+is involved. The input source-run revision and original image revisions remain
+separate, truthful provenance.
