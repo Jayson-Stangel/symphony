@@ -1,0 +1,278 @@
+# Packaged macOS installation
+
+On macOS 14 or later, install Symphony from a completed stable
+[GitHub release](https://github.com/Jayson-Stangel/symphony/releases). The manager
+uses prebuilt Linux runner images and a bundled macOS helper; end users need no
+Symphony source checkout, host Git, Python, Node, Codex, Claude, mise, Erlang,
+Elixir, Swift or Xcode Command Line Tools.
+
+## Prerequisites
+
+- Install Docker Desktop or OrbStack separately and start its engine in the macOS
+  account that will run Symphony. Docker installation and Homebrew are not part
+  of the Symphony installer.
+- Prepare an existing target project checkout with an explicit `origin` remote
+  that the worker can clone and push to. Preparing that checkout is separate from
+  installing Symphony; the packaged manager reads its identity without host Git.
+- Have access to a tracker project, a repository-scoped GitHub credential and a
+  native Codex or Claude login. Start with a disposable issue.
+
+If Docker Desktop is already in Applications, open it in this macOS account and
+complete its first-run prompts. Wait for its engine to report running before
+using Symphony. A working Docker CLI alone does not prove the engine is running.
+For example, with Docker Desktop:
+
+```sh
+/Applications/Docker.app/Contents/Resources/bin/docker info
+```
+
+If the client reports that it cannot connect, open Docker Desktop and check its
+engine and active context. Do not change socket or Homebrew ownership to fix an
+engine-startup error. Other engines may use their own executable/context; set
+`SYMPHONY_CONTAINER_RUNTIME` to that executable when needed.
+
+## Download, verify and install
+
+From one completed stable release, download `symphony-VERSION-macos.tar.gz` and
+its accompanying `release.json`. Replace `VERSION` below with that same release's
+version. Verify the archive's printed SHA256 against `bundle.sha256` in the
+metadata; stop if they differ. Use a new download directory:
+
+```sh
+shasum -a 256 symphony-VERSION-macos.tar.gz
+# Compare the result with bundle.sha256 in the same release's release.json.
+mkdir symphony-download
+tar -xzf symphony-VERSION-macos.tar.gz -C symphony-download
+cd symphony-download
+./install.sh
+export PATH="$HOME/.local/bin:$PATH" # if the installer reports PATH is missing
+symphony --version
+symphony doctor
+```
+
+Installation needs no sudo and does not run `symphony setup` or build an image.
+The archive carries a universal Apple Silicon/Intel host helper. Apple Silicon
+selects the Linux ARM64 runner; Intel selects Linux AMD64. Missing artifacts or
+failed pulls stop without choosing a different provider or architecture.
+`--version` and `doctor` report release identity without a Symphony `.git` directory.
+
+The installer stores immutable releases under
+`~/.local/share/symphony/releases/VERSION-REVISION`. Its `current` link selects the
+manager and bundled skills. The global command and managed skill links go through
+that release. Rerunning the same unmodified version verifies its inventory.
+Existing user-owned command paths or skill links are refused before activation;
+a source installation is not repointed or migrated automatically.
+
+## Connect and run a project
+
+Follow [project initialization](getting-started.md#initialize-a-repository) from
+the target checkout:
+
+```sh
+cd /path/to/existing/project
+symphony init --linear-project YOUR-LINEAR-PROJECT-SLUG
+```
+
+Edit the exact private credentials-file path printed by `init`, adding
+`LINEAR_API_KEY` and a repository-scoped `GH_TOKEN`. The default configuration root
+is `~/.config/symphony`; `SYMPHONY_CONFIG_HOME` and a runner namespace can change it.
+A file in another configuration root will not be used. Keep credentials outside
+Git and chat. Repeated `init` preserves existing workflows, overrides and credentials.
+
+Before starting a listener, review the workflow's tracker project, active states,
+hooks and validation commands. Require a label assigned only to the disposable
+issue and set `agent.max_concurrent_agents: 1`. Starting a listener can immediately
+execute matching issues with authenticated model requests.
+
+For Claude:
+
+```sh
+symphony auth claude login
+symphony auth claude check
+symphony runner doctor --agent claude
+symphony run --agent claude --port 4010
+```
+
+For the default Codex provider instead:
+
+```sh
+symphony auth codex login
+symphony auth codex check
+symphony runner doctor --agent codex
+symphony run --port 4010
+```
+
+Complete native sign-in yourself. Login is separate from the tracker/Git credential
+file and remains in Docker-managed auth storage. No host agent CLI, SSH keys or
+host home copy is needed. Auth check and runner doctor make no model requests;
+they do not prove remote repository access or a real issue-to-PR run.
+
+Open the loopback dashboard at `http://127.0.0.1:4010`, then inspect the disposable
+issue's tracker updates, validation and PR before widening dispatch. Use a distinct
+port per running project. Read [Claude setup](claude.md) for its native profile,
+[getting started](getting-started.md) for credential scopes, and
+[operations](operations.md) for retained workspaces and controls.
+
+## Stop and restart
+
+```sh
+symphony runner drain
+symphony runner status
+# Wait for zero active workers in the dashboard, then:
+symphony runner stop
+# Restart the same provider and port; for Codex omit --agent claude.
+symphony run --agent claude --port 4010
+symphony runner resume
+```
+
+Stopping retains workspaces, state/logs and native login. An explicit drain remains
+in place until resumed. Use the installed updater for provider/image transitions;
+`run` refuses to change an existing runner's provider, image, port or native profile.
+
+## Repository identity
+
+The project must already be a Git checkout with a remotely accessible, explicit
+`origin` URL. The packaged manager
+finds the repository and its local origin without host Git. Normal Git-generated
+configuration, quoted URLs, linked worktrees and repository paths with spaces are
+supported. Identity must be explicit: repository or external Git configuration
+using includes, URL rewrite rules, external `remote.origin` definitions, or
+per-worktree configuration is refused before choosing credentials or storage.
+Ordinary global user name/email and credential-helper settings remain supported.
+The manager inspects `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` (defaulting to
+`~/.config/git/config`) and standard Apple/Homebrew system config locations; it
+honors explicit `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and the boolean
+`GIT_CONFIG_NOSYSTEM`. It never opens include targets or prints configuration
+contents. Where multiple Git distributions have system configurations, select the
+intended one explicitly to avoid ambiguity.
+
+Remove identity indirection and use the repository's explicit origin, or select
+non-indirect global/system files for the same environment used with Git. Explicit
+`/dev/null` config selection is supported. Unset Git discovery/relocation and
+config-injection overrides such as `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+`GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS`; the
+packaged manager refuses these rather than silently assigning a different
+repository identity. Cloning the target project and managing Docker installation
+are outside the installer.
+
+Different repositories with the same basename have distinct configuration,
+containers, workspace and state identities.
+
+## Isolated candidate installation
+
+Use approved candidate artifacts only in separate application/configuration,
+command and skill paths with a separate runner namespace. Keep this environment
+for every candidate command and choose a distinct dashboard port:
+
+```sh
+export SYMPHONY_RUNNER_NAMESPACE=candidate-install
+export SYMPHONY_APP_HOME="$HOME/.local/share/symphony-candidate"
+export SYMPHONY_CONFIG_HOME="$HOME/.config/symphony-candidate"
+export SYMPHONY_BIN_DIR="$HOME/.local/bin/symphony-candidate"
+export SYMPHONY_SKILLS_DIR="$HOME/.codex/skills-candidate"
+./install.sh
+export PATH="$SYMPHONY_BIN_DIR:$PATH"
+```
+
+Candidate validation does not authorize production publication or a stable rollout.
+Use the [development guide](development.md) for source development. Automatic
+migration of source installations is deferred. Older project identity migration
+must be completed through the original source updater before adopting packaged
+storage.
+
+## Building and checking a candidate
+
+On a macOS development/CI host, create an internal release manifest with the
+JAY-686 tooling, then build the universal helper and archive:
+
+```sh
+bash scripts/release/package.sh /path/to/internal-release.json /tmp/candidate-output
+python3 scripts/package/test-package.py -v
+```
+
+The optional third packer argument supplies a prebuilt host helper. Use
+`build-host-helper.sh OUTPUT --native` only for local native-architecture checks;
+release builds omit `--native` and use `lipo` for both supported host layouts.
+Python and Swift are build/test dependencies, never installed-user dependencies.
+The archive inventory verifies manager, helper, workflow and skill bytes before
+staging. `install.sh --stage-only` verifies and stages an immutable release without
+activating command or skills; the packaged updater uses that same staging
+boundary. An existing project's pinned image remains selected when another
+project activates a shared manager release, until the installed updater performs
+that project's explicit runner transition.
+
+Tests with a stub container CLI prove command selection, conflict/failure paths,
+source independence and host-tool exclusion. Native helper compilation and
+cross-architecture layout checks do not prove an actual clean Intel Mac or fresh
+macOS user installation. Container lifecycle observations, native authentication,
+authenticated inference and clean-Mac evidence must be recorded separately.
+
+Fresh-user qualification used Apple Silicon, Docker Desktop and native Claude
+login for a real issue-to-PR run and packaged update/recovery. Native Linux ARM64
+and AMD64 runner qualification and universal-helper builds are separate evidence.
+An actual Intel Mac walkthrough remains operator-deferred; OrbStack execution
+was not part of this fresh-user qualification.
+
+## Updating a packaged installation
+
+Use the installed command from an initialized project. Ordinary `update` changes
+the shared manager and skills; `--agent` also transitions only that project's
+runner. Other projects keep their qualified image and retained storage until
+their own explicit transition.
+
+```sh
+symphony update                         # latest completed production manager
+symphony update --agent codex           # manager and this project's runner
+# Select a specific completed release (replace VERSION):
+symphony update --release VERSION --agent codex
+```
+
+The updater selects one non-draft, non-prerelease GitHub release, verifies its
+manifest and archive checksum, checks the bundle inventory, and stages the exact
+version without activating it. Downloads stay pinned to that release tag. The
+selected image must match the release revision, provider and architecture.
+Packaged updates use no host Git, build tools, Python, or local image build.
+Source installations retain their existing source updater.
+
+A runner transition uses the existing project ownership, drain/idle checks,
+admission checks and recovery journal. The shared manager changes only after
+the selected runner passes admission. Workflows, credentials, native login,
+dirty tracked files, untracked evidence, workspace/state volumes and repository
+ownership remain retained. A failed download or verification leaves the current
+manager and listener usable. A pending transition excludes another shared
+manager update, including one using alternate configuration paths.
+
+```sh
+# Retry an interrupted transition at its already selected release, without
+# consulting latest or requiring the original archive again:
+symphony update --agent codex
+# Restore the retained prior runner and its compatible manager after failure:
+symphony update --rollback-runner
+# After a completed update, transition back to the previous retained release:
+symphony update --rollback-release --agent codex
+```
+
+For a Claude project, substitute `--agent claude` for `--agent codex` in the
+update/retry/rollback examples. Use the same provider as the retained project when
+restoring a completed release. `--rollback-release` without `--agent` restores only the shared manager;
+project image pins remain unchanged. A previous release directory is retained
+and verified before recovery. An unfinished transition must first be retried or
+rolled back before selecting another release. Recovery refuses unknown owners,
+altered release bytes, incompatible images and unrelated current-manager links.
+Do not manually repoint `current`, remove transition metadata, or manipulate
+retained runner containers to bypass an updater refusal.
+
+For isolated candidate qualification, keep the separate namespace/application/
+configuration environment above and supply both build artifacts:
+
+```sh
+symphony update --candidate-manifest /tmp/candidate/release.json \
+  --candidate-bundle /tmp/candidate/symphony-VERSION-macos.tar.gz --agent codex
+python3 -m unittest discover -s scripts/release/tests -v
+```
+
+The candidate override requires a nonempty development namespace. It does not
+publish a release or authorize a stable rollout. Portable updater fixtures prove
+selection, verification, exclusion, interrupted activation, retry, and rollback
+control flow. Actual installed native/container observations and clean-machine
+and authenticated account acceptance remain separate evidence.

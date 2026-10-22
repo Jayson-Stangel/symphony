@@ -1,0 +1,170 @@
+name: runner-release
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+        architecture: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify release version and run metadata tests
+        run: |
+          python3 -m unittest discover -s scripts/release/tests -v
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Build exact runner and test a digest pull from an isolated registry
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          mkdir -p dist
+          docker run -d --name candidate-registry -p 127.0.0.1:5000:5000 registry:3
+          image="localhost:5000/symphony-$PROVIDER:candidate"
+          docker build --target "$PROVIDER" -f runner/Dockerfile \
+            --build-arg SYMPHONY_VERSION="$VERSION" --build-arg SYMPHONY_REVISION="$GITHUB_SHA" \
+            -t "$image" .
+          docker push "$image"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
+          docker image rm "$image"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
+          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
+          docker pull "$digest"
+          bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
+          python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
+            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
+          docker tag "$digest" "$image"
+          docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
+          (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
+          docker logs candidate-registry > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    needs: candidate
+    environment: production-release
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: candidate
+      - name: Publish tested image and verify anonymous digest pull
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          (cd candidate && sha256sum --check ./*.sha256)
+          gzip -dc "candidate/$PROVIDER-$ARCHITECTURE.docker.tar.gz" | docker load
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}-$PROVIDER"
+          image="$repository:$GITHUB_REF_NAME-$ARCHITECTURE"
+          docker tag "localhost:5000/symphony-$PROVIDER:candidate" "$image"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$image"
+          digest=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -F "$repository@sha256:")
+          docker logout ghcr.io
+          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
+          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
+          docker pull "$digest"
+          bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
+          mkdir -p dist
+          python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
+            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-stable-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: dist/*.json
+          if-no-files-found: error
+
+  candidate-metadata:
+    needs: candidate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runner-candidate-*
+          path: candidate
+          merge-multiple: true
+      - name: Assemble source-independent candidate metadata
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          mkdir -p dist
+          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
+            --channel candidate --output dist/release.json candidate/*.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-candidate-metadata
+          path: dist/release.json
+
+  packaged-release:
+    needs: publish
+    runs-on: macos-14
+    environment: production-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runner-stable-*
+          path: records
+          merge-multiple: true
+      - name: Assemble matching manager bundle and checksums
+        run: |
+          test -f scripts/release/package.sh || { echo 'Packaged manager prerequisite is not integrated; refusing incomplete stable release.' >&2; exit 1; }
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          mkdir -p dist
+          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
+            --channel stable --output "$RUNNER_TEMP/release.json" records/*.json
+          bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist
+          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
+            --channel stable --bundle "dist/symphony-$version-macos.tar.gz" --output dist/release.json records/*.json
+          python3 scripts/release/artifacts.py validate dist/release.json
+          (cd dist && shasum -a 256 ./*.tar.gz ./release.json > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packaged-release
+          path: dist/*
+          if-no-files-found: error

@@ -15,11 +15,13 @@ To test the integration branch before a production release, follow the
 [dedicated development workspace guide](development.md). It isolates Docker
 resources as well as the checkout, configuration and dashboard port.
 
-After the feature has passed review, been promoted to main, and been installed
-through the existing stable `symphony update` command, run these commands from the
-target repository. First [initialize its workflow](../README.md#initialize-a-repository)
-and [configure repository-scoped credentials](../README.md#configure-credentials).
-Choose a disposable tracker scope for a pilot before starting the listener:
+Install a completed [macOS release bundle](packaged-install.md) or use your
+approved source installation, updated through the installed `symphony update`
+command. No host Claude CLI is needed for either container flow.
+From the target repository, [initialize its workflow](getting-started.md#initialize-a-repository)
+and [configure repository-scoped credentials](getting-started.md#configure-credentials).
+Choose one disposable issue and restrict its labels and concurrency before starting
+the listener, as described in the [first-run guide](getting-started.md#initialize-a-repository):
 
 ```sh
 symphony auth claude login
@@ -39,6 +41,10 @@ credentials file. The listener keeps tracker credentials; its explicitly selecte
 Git credential and named project-tool variables can reach the coding process. Credentials are never
 copied from the host Claude or Codex home. Native login lives in a project-scoped
 Docker volume; workspace and state/log volumes are separate and retained.
+Use `symphony run --agent claude --port PORT` to restart the same project and port;
+clear a deliberate drain with `symphony runner resume` when ready. For packaged
+updates use `symphony update --agent claude`; see
+[update and rollback](packaged-install.md#updating-a-packaged-installation).
 
 The Claude image uses UID/GID 11001, a read-only root filesystem, no Linux
 capabilities, no-new-privileges and a private process namespace. Coding tools are

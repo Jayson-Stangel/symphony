@@ -1,17 +1,14 @@
 # Symphony Elixir
 
-The workflow template asks workers to record actual validation results and durable
-acceptance evidence. Publish artifacts needed for review or explicitly required by
-the repository/ticket; temporary logs do not all require upload. Evidence must match
-the stated revision and remain accessible after workspace cleanup. Existing project
-workflows are preserved; adopt `Evidence for review` deliberately when changing policy.
+This directory contains Symphony's Elixir/OTP orchestration service. It polls the
+configured tracker, manages per-issue workspaces, and runs Codex or Claude workers
+according to the repository's workflow. The service contract is documented in
+[`SPEC.md`](../SPEC.md).
 
-This directory contains the current Elixir/OTP implementation of Symphony, based on
-[`SPEC.md`](../SPEC.md) at the repository root.
-
-> [!WARNING]
-> Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
+For installation and a first project, use [getting started](../docs/getting-started.md).
+For container lifecycle and stable updates, use [operations](../docs/operations.md).
+This guide covers implementation behavior, configuration, native development,
+and testing. Symphony is engineering preview software for trusted environments.
 
 ## Screenshot
 
@@ -154,8 +151,8 @@ Tracker read failures preserve the last successful blocked view until polling re
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Use the globally namespaced Symphony skills installed by the
-   [stable launcher](../README.md#install-a-stable-runtime); avoid copying legacy generic skills
-   into each repository. Use [local overrides](../README.md#local-skill-overrides) only for
+   [stable launcher](../docs/getting-started.md#install-a-stable-runtime); avoid copying legacy generic skills
+   into each repository. Use [local overrides](../docs/operations.md#shared-skills-and-local-overrides) only for
    deliberate project customization. The `symphony-linear` skill expects Symphony's
    `linear_graphql` tool for raw Linear GraphQL operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
@@ -168,7 +165,7 @@ Tracker read failures preserve the last successful blocked view until polling re
 
 ## Prerequisites
 
-For normal installed/container operation, follow the [root setup guide](../README.md).
+For normal installed/container operation, follow the [getting started guide](../docs/getting-started.md).
 The source commands below are for a separate development checkout and native Codex debugging.
 Claude execution requires its qualified Linux container; see [development isolation](../docs/development.md).
 
@@ -209,8 +206,10 @@ Supported release targets:
 - `linux_arm64`
 - `linux_x86_64`
 
-`v*` tags publish all four targets with checksums. A manual workflow run builds the same
-artifacts without creating a release.
+`v*` tags qualify all four targets and the matching prebuilt runners before approved
+publication. A manual workflow run builds candidate artifacts without creating a release.
+See the [release artifact contract](../scripts/release/README.md) for registry setup,
+production environment approval and the source-independent manager bundle contract.
 
 For native Codex execution, download the matching executable and checksum from a
 [release](https://github.com/Jayson-Stangel/symphony/releases). Replace `VERSION` below
@@ -688,7 +687,7 @@ identity already used by retained storage volumes. Basename-era installations mi
 through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
 namespace). Migration preserves volume names, credential bytes, workflow files and pending
 rollback evidence; it requires an owned retained container and refuses mixed or foreign
-resources. See the [installation migration procedure](../README.md) for credentials without
+resources. See the [installation migration procedure](../docs/operations.md#migrate-an-older-project-identity) for credentials without
 verifiable ownership. Codex native login remains namespace-shared; Claude login stays scoped
 to the unchanged repository storage identity.
 
@@ -774,3 +773,11 @@ per-project transition ownership; competing updated updaters refuse before chang
 Already-running older launchers and manual Git operations do not honor this ownership.
 Finish older calls before source-only adoption. Development-runner operations keep their
 existing isolated-checkout and per-project behavior.
+
+For container use without a Symphony source checkout or host build tools, install
+the macOS release bundle using [the packaged installation guide](../docs/packaged-install.md).
+The source `mise`/Mix instructions above remain the development and optional host
+execution path.
+Packaged updates select a verified production archive and immutable runner digest,
+retain per-project image pins, and reuse the existing drain/transition/recovery
+contract; see the guide for retry and prior-release rollback commands.
