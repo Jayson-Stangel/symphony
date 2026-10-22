@@ -332,7 +332,7 @@ jobs:
             helper="$RUNNER_TEMP/qualified-helper/symphony-host"
             if [ "$selection" = previous ]; then
               helper="$destination/symphony-host"
-              if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper"
+              if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
               else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
             fi
             bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
