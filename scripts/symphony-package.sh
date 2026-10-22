@@ -82,8 +82,10 @@ package_stage_bundle() {
   revision=$(package_helper get "$source/release.json" source_revision)
   package_helper verify-files "$source" || return
   destination="$package_app_home/releases/$version-$revision"
-  (umask 077; mkdir -p "$package_app_home/releases")
-  package_helper lock-directory "$package_app_home" || return
+  # Validate each owned storage boundary before following it for staging.
+  # mkdir-p would follow an existing (including dangling) releases symlink.
+  package_helper owned-directory "$package_app_home" || return
+  package_helper lock-directory "$package_app_home/releases" || return
   if [ -e "$destination" ]; then
     [ ! -L "$destination" ] && [ -d "$destination" ] || die "conflicting release path: $destination"
     cmp -s "$source/release.json" "$destination/release.json" || die 'same release identity has different metadata'

@@ -171,6 +171,39 @@ PY
         self.assertFalse(canary.exists())
         self.assertIn("bundle checksum mismatch", result.stderr)
 
+    def test_release_storage_conflicts_do_not_write_through_links(self):
+        bundle = self.bundle(); env = self.environment()
+        app = self.root / "app"; app.mkdir(mode=0o700)
+        foreign = self.root / "foreign"; foreign.mkdir()
+        canary = foreign / "keep"; canary.write_text("untouched")
+        releases = app / "releases"
+        for target in (foreign, self.root / "missing-target"):
+            with self.subTest(target=target.name):
+                releases.symlink_to(target)
+                result = call([bundle / "install.sh"], env=env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("unsafe or foreign metadata", result.stderr)
+                self.assertEqual(list(foreign.iterdir()), [canary])
+                self.assertEqual(canary.read_text(), "untouched")
+                self.assertFalse((self.root / "missing-target").exists())
+                self.assertFalse((app / "current").exists())
+                releases.unlink()
+        releases.write_text("owned file")
+        result = call([bundle / "install.sh", "--stage-only"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(releases.read_text(), "owned file")
+        releases.unlink(); releases.mkdir(mode=0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list(releases.iterdir()))
+        self.assertFalse((app / "current").exists())
+        # Canonical parent aliases may be intentional; only managed storage
+        # components themselves must be real owned directories.
+        releases.chmod(0o700)
+        alias = self.root / "parent-alias"; alias.symlink_to(self.root, target_is_directory=True)
+        self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
+        self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
+
     def test_host_layouts_missing_engine_and_source_bound_archive(self):
         mismatch = manifest(revision="c" * 40)
         self.file.write_text(json.dumps(mismatch))
