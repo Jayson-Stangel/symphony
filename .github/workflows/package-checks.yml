@@ -13,6 +13,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Build both supported host architectures
         run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
       - name: Source-independent installation and host-helper regressions
@@ -27,6 +29,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Build static source-bound helper
         run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"
       - name: Native shared helper contracts
