@@ -1,6 +1,17 @@
 name: retained-transfer-timing
 
 on:
+  workflow_call:
+    inputs:
+      source_run:
+        type: string
+        required: true
+      provider:
+        type: string
+        default: claude
+      architecture:
+        type: string
+        default: x86_64
   workflow_dispatch:
     inputs:
       source_run:
@@ -36,6 +47,8 @@ jobs:
           python3 - <<'PYTHON'
           import json, os, re, subprocess
           from pathlib import Path
+          assert os.environ['PROVIDER'] in ('codex', 'claude'), 'unsupported provider'
+          assert os.environ['ARCHITECTURE'] in ('arm64', 'x86_64'), 'unsupported native architecture'
           run_id, repo = os.environ['RUN_ID'], os.environ['GITHUB_REPOSITORY']
           assert re.fullmatch('[0-9]+', run_id), 'invalid immutable run ID'
           run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}']))

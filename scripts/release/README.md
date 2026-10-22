@@ -154,7 +154,9 @@ is involved. The input source-run revision and original image revisions remain
 separate, truthful provenance.
 
 For one bounded measurement of a retained original gzip candidate payload, use
-`transfer-timing.yml` with its exact `source_run`, provider and architecture.
+`runner-release.yml` with `transfer_timing_run`, `transfer_timing_provider` and
+`transfer_timing_architecture`. Its existing dispatch entry calls the reusable
+`transfer-timing.yml`; candidate builds, benchmarks and runtime replays skip.
 This diagnostic currently requires the legacy combined image/record artifact
 layout, such as run `39857032359`; split record/payload layouts fail closed
 until their normal integration. It verifies the successful completed producer
@@ -169,6 +171,7 @@ baseline with potentially different compressed bytes. A representative dispatch
 for the retained Claude x86-64 payload is:
 
 ```sh
-gh workflow run transfer-timing.yml --ref codex/faster-image-transfer \
-  -f source_run=39857032359 -f provider=claude -f architecture=x86_64
+gh workflow run runner-release.yml --ref codex/faster-image-transfer \
+  -f transfer_timing_run=39857032359 \
+  -f transfer_timing_provider=claude -f transfer_timing_architecture=x86_64
 ```

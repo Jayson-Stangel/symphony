@@ -18,13 +18,26 @@ on:
         type: string
         required: false
 
+      transfer_timing_run:
+        description: Existing legacy combined payload run ID for one read-only checksum/identity timing job
+        type: string
+        required: false
+      transfer_timing_provider:
+        type: choice
+        options: [claude, codex]
+        default: claude
+      transfer_timing_architecture:
+        type: choice
+        options: [x86_64, arm64]
+        default: x86_64
+
 permissions:
   contents: read
   actions: read
 
 jobs:
   candidate:
-    if: ${{ !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run }}
+    if: ${{ !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -183,8 +196,16 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  retained-transfer-timing:
+    if: ${{ inputs.transfer_timing_run != '' }}
+    uses: ./.github/workflows/transfer-timing.yml
+    with:
+      source_run: ${{ inputs.transfer_timing_run }}
+      provider: ${{ inputs.transfer_timing_provider }}
+      architecture: ${{ inputs.transfer_timing_architecture }}
+
   transfer-benchmark:
-    if: ${{ inputs.transfer_diagnostic_run != '' && !inputs.transfer_replay_run }}
+    if: ${{ inputs.transfer_diagnostic_run != '' && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -264,7 +285,7 @@ jobs:
           if-no-files-found: warn
 
   transfer-replay:
-    if: ${{ always() && (inputs.transfer_replay_run != '' || needs.transfer-benchmark.result == 'success') }}
+    if: ${{ always() && !inputs.transfer_timing_run && (inputs.transfer_replay_run != '' || needs.transfer-benchmark.result == 'success') }}
     needs: transfer-benchmark
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
