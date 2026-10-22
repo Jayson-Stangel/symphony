@@ -67,6 +67,18 @@ class ReusePlannerTest(unittest.TestCase):
         empty = runner_reuse.plan(self.root, {"runners": {}}, self.verify, self.inputs)
         self.assertTrue(all(item["action"] == "build" for group in empty["components"].values() for item in group.values()))
 
+    def test_browser_reuse_requires_matching_root_and_agent_user_original_qualifications(self):
+        for group in self.baseline['runners'].values():
+            for original in group.values():
+                original['browser_input_identity'] = 'd'*64
+        result = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, browser_inputs=self.inputs)
+        self.assertTrue(all(item['action'] == 'reuse' and set(item['qualifications']) == {'codex','claude'}
+                            for item in result['browser'].values()))
+        self.baseline['runners']['claude']['arm64']['browser_input_identity'] = 'e'*64
+        result = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, browser_inputs=self.inputs)
+        self.assertEqual(result['browser']['arm64']['action'], 'build')
+        self.assertEqual(result['browser']['x86_64']['action'], 'reuse')
+
     def test_unknown_effective_input_closure_cannot_fall_back_to_whole_head_reuse(self):
         def unknown(*args):
             raise ValueError("unknown effective COPY input")

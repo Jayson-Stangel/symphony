@@ -273,6 +273,22 @@ def identity(root, provider, architecture, build_args=None):
     return {"input_identity": digest(canonical(value)), "inputs": value}
 
 
+def project(root, target, architecture, effective_options):
+    """Project actual production build options onto another selected stage closure."""
+    stages = stage_graph((Path(root) / "runner/Dockerfile").read_bytes())
+    require(target in stages, "projection target is missing")
+    selected = set()
+    def visit(name):
+        if name not in selected:
+            selected.add(name)
+            for dependency in stages[name]["dependencies"]:
+                visit(dependency)
+    visit(target)
+    keys = {body.partition("=")[0] for name in selected for operation, body in stages[name]["instructions"]
+            if operation == "ARG"} - METADATA_ARGS - {"TARGETARCH"}
+    return identity(root, target, architecture, {key: value for key, value in effective_options.items() if key in keys})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")

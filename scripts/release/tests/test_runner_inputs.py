@@ -70,6 +70,15 @@ LABEL com.symphony.agent=codex com.symphony.protocol=1
         self.commit()
         self.assertNotEqual(before, INPUTS.identity(self.root, "browser-tools", "arm64")["input_identity"])
 
+    def test_browser_projection_preserves_actual_shared_build_argument_overrides(self):
+        recipe = self.root / "runner/Dockerfile"
+        recipe.write_text(recipe.read_text().replace("AS browser\n", "AS browser-tools\nARG BROWSER_VERSION=1\n").replace("FROM browser AS common", "FROM browser-tools AS common"))
+        self.commit()
+        production = INPUTS.identity(self.root, "codex", "arm64", {"BROWSER_VERSION": "2", "CODEX_VERSION": "3"})
+        browser = INPUTS.project(self.root, "browser-tools", "arm64", production['inputs']['build_args'])
+        self.assertEqual(browser['inputs']['build_args'], {'BROWSER_VERSION': '2'})
+        self.assertNotEqual(browser['input_identity'], INPUTS.identity(self.root, "browser-tools", "arm64")['input_identity'])
+
     def test_manager_revision_and_unconsumed_docs_do_not_change_runtime_identity(self):
         before = self.identities()
         self.write("scripts/package/host.swift", "actual manager/helper change\n")

@@ -62,7 +62,7 @@ def main():
         if not inventory or any(not key or not value for key, value in inventory.items()):
             parser.error("original resolved OS dependency inventory is incomplete")
         result.update(input_identity=snapshot["input_identity"], protocol=1,
-                      browser_input_identity=runner_inputs.identity(args.source_root, "browser-tools", args.architecture)["input_identity"],
+                      browser_input_identity=runner_inputs.project(args.source_root, "browser-tools", args.architecture, snapshot["inputs"]["build_args"])["input_identity"],
                       dependencies={"resolution_policy": "retain-original-qualified-resolution",
                                     "base_images": sorted({stage["base"] for stage in snapshot["inputs"]["recipe"].values()
                                                            if "@sha256:" in stage["base"]}),

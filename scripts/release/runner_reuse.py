@@ -28,9 +28,11 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
     choices = {}
     builds, reuses = [], []
     browser = {}
+    browser_evidence = {}
     for architecture in artifacts.ARCHITECTURES:
         if browser_inputs:
             snapshot = browser_inputs(root, "browser-tools", architecture)
+            browser_evidence[architecture] = {}
             browser[architecture] = {"action": "build", "input_identity": snapshot["input_identity"],
                                      "reason": "no matching verified browser closure", "inputs": snapshot["inputs"]}
     for provider in artifacts.PROVIDERS:
@@ -53,9 +55,8 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                     if matches:
                         decision["reason"] = "original immutable native evidence/payload unavailable or incompatible; verified-input rebuild required"
                     continue
-                if matches_browser and browser[architecture]["action"] == "build":
-                    browser[architecture].update(action="reuse", reason="unchanged browser closure; original native qualification retained",
-                                                 record=record, origin=receipt)
+                if matches_browser and provider not in browser_evidence[architecture]:
+                    browser_evidence[architecture][provider] = {"record": record, "origin": receipt}
                 if matches and decision["action"] == "build":
                     original = {key: value for key, value in record.items() if key not in ("provider", "architecture")}
                     decision.update(action="reuse", reason="unchanged declared inputs; original qualified resolution retained",
@@ -81,6 +82,11 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                 reuses.append(entry)
             else:
                 builds.append(entry)
+    for architecture, evidence in browser_evidence.items():
+        if set(evidence) == set(artifacts.PROVIDERS):
+            primary = evidence["claude"]
+            browser[architecture].update(action="reuse", reason="unchanged browser closure; original root and agent-user native qualifications retained",
+                                         record=primary["record"], origin=primary["origin"], qualifications=evidence)
     return {"schema_version": 1, "manager_source_revision": manager, "planning_complete": True,
             "has_builds": bool(builds), "all_reuse_verified": not builds,
             "build_matrix": {"include": builds}, "reuse_matrix": {"include": reuses},
