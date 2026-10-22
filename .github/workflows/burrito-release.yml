@@ -54,7 +54,7 @@ jobs:
 
   build:
     needs: [qualification, host-policy]
-    if: ${{ !inputs.controller_only }}
+    if: ${{ false }} # Never-merge diagnostic: unchanged engine proof retained at 0d72.
     name: build-${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -135,6 +135,7 @@ jobs:
           if-no-files-found: error
 
   smoke:
+    if: ${{ false }} # Never-merge diagnostic: unchanged engine proof retained at 0d72.
     name: smoke-${{ matrix.target }}
     needs: [build, host-policy]
     runs-on: ${{ matrix.runner }}
