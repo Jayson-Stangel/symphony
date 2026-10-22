@@ -7,12 +7,22 @@ on:
         type: boolean
         default: false
   workflow_dispatch:
+    inputs:
+      cache_probe:
+        description: Only run bounded native cold/warm/changed-input cache qualification
+        type: boolean
+        default: false
+      cache_probe_restore:
+        description: Skip cold build and import the previous completed probe run from a fresh builder
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   candidate:
+    if: ${{ !inputs.cache_probe }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -34,6 +44,13 @@ jobs:
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
           if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$(python3 scripts/release/manager_version.py)"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Build exact native candidate with reusable dependency layers
+        uses: ./.github/actions/build-runner
+        with:
+          target: ${{ matrix.provider }}
+          tags: localhost:5000/symphony-${{ matrix.provider }}:candidate
+          version: ${{ env.VERSION }}
+          revision: ${{ github.sha }}
       - name: Build exact runner and test a digest pull from an isolated registry
         env:
           PROVIDER: ${{ matrix.provider }}
@@ -42,9 +59,6 @@ jobs:
           mkdir -p dist
           docker run -d --name candidate-registry -p 127.0.0.1:5000:5000 registry:3
           image="localhost:5000/symphony-$PROVIDER:candidate"
-          docker build --target "$PROVIDER" -f runner/Dockerfile \
-            --build-arg SYMPHONY_VERSION="$VERSION" --build-arg SYMPHONY_REVISION="$GITHUB_SHA" \
-            -t "$image" .
           docker push "$image"
           digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
           docker image rm "$image"
@@ -168,3 +182,105 @@ jobs:
           name: packaged-release
           path: dist/*
           if-no-files-found: error
+
+  cache-probe:
+    if: inputs.cache_probe && github.event_name == 'workflow_dispatch'
+    name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Prepare isolated registry and evidence
+        id: registry
+        run: |
+          mkdir -p "$RUNNER_TEMP/runner-cache-measurements"
+          id=$(docker run -d --label "com.symphony.cache-probe=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -p 127.0.0.1:5000:5000 registry:3)
+          printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+      - name: Actual cold native image
+        if: ${{ !inputs.cache_probe_restore }}
+        uses: ./.github/actions/build-runner
+        with:
+          target: ${{ matrix.provider }}
+          tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
+          revision: ${{ github.sha }}
+          no-cache: 'true'
+          evidence-name: cold
+      - name: Qualify cold image and measure transfer
+        if: ${{ !inputs.cache_probe_restore }}
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: python3 scripts/release/runner-cache-probe.py cold
+      - name: Commit real packaging-only source change
+        id: warm-source
+        run: |
+          printf 'Nonpublishing native cache probe at %s.\n' "$GITHUB_SHA" > docs/cache-probe-marker.txt
+          git add docs/cache-probe-marker.txt
+          git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe packaging-only revision'
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Actual warm image at a new source revision
+        uses: ./.github/actions/build-runner
+        with:
+          target: ${{ matrix.provider }}
+          tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
+          revision: ${{ steps.warm-source.outputs.revision }}
+          evidence-name: warm
+      - name: Qualify warm image and measure transfer
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: python3 scripts/release/runner-cache-probe.py warm
+      - name: Commit actual dependency-build recipe change
+        id: changed-source
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          path = Path('runner/Dockerfile')
+          source = path.read_text()
+          before = '  && npm cache clean --force\nCOPY runner/browser/smoke.cjs'
+          after = '  && npm cache clean --force && git --version\nCOPY runner/browser/smoke.cjs'
+          assert source.count(before) == 1
+          path.write_text(source.replace(before, after))
+          PYCODE
+          git add runner/Dockerfile
+          git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe changes effective dependency build recipe'
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Actual invalidated dependency build
+        uses: ./.github/actions/build-runner
+        with:
+          target: ${{ matrix.provider }}
+          tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
+          revision: ${{ steps.changed-source.outputs.revision }}
+          evidence-name: changed
+          cache-variant: changed
+          export-cache: 'false'
+      - name: Qualify changed-input image and measure transfer
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: python3 scripts/release/runner-cache-probe.py changed
+      - name: Retain native build and transfer measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-cache-${{ matrix.provider }}-${{ matrix.architecture }}-${{ github.sha }}
+          path: ${{ runner.temp }}/runner-cache-measurements/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove test-owned registry
+        if: ${{ always() && steps.registry.outputs.id != '' }}
+        env:
+          REGISTRY_ID: ${{ steps.registry.outputs.id }}
+        run: |
+          test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker rm -f "$REGISTRY_ID"

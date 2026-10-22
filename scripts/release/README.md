@@ -162,3 +162,49 @@ reported verified-input rebuild. Unknown source closure stops before any reuse.
 A `--require-reuse` diagnostic fails if any rebuild would be needed. Reused records
 preserve every original digest/label/source and never cause export/upload just to
 associate the image with a new manager head.
+
+## Native Docker layer cache
+
+Candidate, listener and browser jobs use `.github/actions/build-runner`. BuildKit
+retains one `mode=max` snapshot per native architecture, provider/target and ref
+namespace in the bounded GitHub Actions cache service. It imports compatible
+common browser/Elixir layers across providers. Dockerfile instructions, pinned
+base digests, package locks, COPY contents and effective build arguments remain
+BuildKit's cache keys; an absent or evicted entry builds cold. Source revision
+and version labels are applied after the final production layers, so identity
+changes do not invalidate dependency compilation. The final image still reports
+its actual source revision and runs the same immutable-digest qualification.
+
+Only pushes or manual runs on `dev`/`main` write the trusted namespace. PRs write
+their own PR namespace and other refs write a stable hash of their ref. GitHub's
+cache ref restrictions also prevent a PR merge-ref cache from replacing a base
+branch cache. No cache job receives publication credentials. Cache receipts and
+hits prove reuse, not agent/browser/engine behavior or artifact availability.
+
+For a bounded nonpublishing benchmark, manually run `runner-release` with
+`cache_probe=true`. It skips the normal candidate/package pipeline and runs both
+providers on native Linux AMD64 and ARM64. Each job builds with `no-cache`, commits
+an actual documentation-only source change and rebuilds warm, then commits a real
+browser dependency-build recipe change and rebuilds again. All three actual
+images retain their own source labels, push only to a disposable loopback registry
+and execute the normal Git/browser/empty-tracker/graceful-stop qualification.
+These synthetic source commits are diagnostics, never release candidates. After
+that run completes, run the same branch again with both `cache_probe=true` and
+`cache_probe_restore=true`. The second isolated run skips the cold build and
+imports the first run's exported GHA cache into a fresh builder. Inspect actual
+cache-import and layer-hit logs before claiming persistent cross-run reuse; a
+same-job hit alone is insufficient. The changed-recipe build imports the baseline
+snapshot but disables cache export, preserving the original dependency graph and
+avoiding an extra large snapshot that could evict the next run's warm baseline.
+Every build action also creates its own builder, so the ordinary three-phase probe exercises the cache service rather
+than relying on a previously populated daemon builder.
+
+Retained `runner-cache-*` artifacts contain source/digest records, qualification
+logs and measured build/load, archive export/compression CPU/wall time, size and
+checksum costs. Docker build records and CI logs retain per-layer cache outcomes;
+job metadata supplies queue and critical-path times. The probe deletes its large
+measurement archives after hashing and does not claim payload upload/download
+or archive replay evidence. Those remain the candidate/lifecycle consumers' proof.
+Compare actual results before reporting an improvement; unexecuted targets remain
+open acceptance. No production publication, installed manager or existing runtime
+is involved.
