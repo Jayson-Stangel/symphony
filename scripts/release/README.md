@@ -353,3 +353,15 @@ current/prior packages and x86-64 images, then uses the selected controller head
 Evidence records the controller SHA, package SHA and diagnostic artifact run
 separately. This never publishes and does not replace final same-head native
 build and lifecycle acceptance in `runner-release`.
+
+The real current/prior candidate controller uses `build-runner-cached.sh` through
+an explicit executable callback. Each source context retains its actual Git
+revision, version, recipe and native platform; both roles receive persistent
+layer imports. Current and prior exports use separate bounded snapshots so a
+prior build cannot replace the current graph. The local Actions runtime bridge
+masks the standard cache token and passes it only to BuildKit's cache service;
+it never becomes a Docker build argument or container environment variable.
+The GitHub cache quota is shared across these bounded snapshots. Missing or
+partly evicted blobs can force dependency rebuilding even after an initial
+`CACHED` marker; report the later errors and actual timings, not marker counts
+alone. No other workflow's cache is deleted to make a probe succeed.
