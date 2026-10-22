@@ -66,6 +66,14 @@ def load(archive, image_ids):
     return metrics
 
 
+def checksum_record(path, archive_name):
+    fields = path.read_text().strip().split()
+    if (len(fields) != 2 or not re.fullmatch('[0-9a-f]{64}', fields[0]) or
+            fields[1] not in (archive_name, './' + archive_name)):
+        raise ValueError('candidate archive checksum record differs')
+    return fields[0]
+
+
 def verified_checksum(archive, expected):
     if EXPORT.checksum(archive) != expected:
         raise ValueError('candidate archive checksum mismatch before Docker load')
@@ -114,23 +122,21 @@ def main():
         records = [json.loads(path.read_text()) for path in record_files]
         if not records:
             raise ValueError('missing original qualification records')
-        check = archive.with_name(prefix + '.sha256').read_text().strip().split()
-        if len(check) != 2 or check[1] != archive.name:
-            raise ValueError('candidate archive checksum record differs')
-        verified_checksum(archive, check[0])
+        digest = checksum_record(archive.with_name(prefix + '.sha256'), archive.name)
+        verified_checksum(archive, digest)
         if index == 0 and not any(record.get('source_revision') == args.source_revision for record in records):
             raise ValueError('current record differs from selected run source')
         corruption = None
         if args.mode == 'replay':
             start = time.monotonic()
-            corruption_probe(archive, check[0])
-            corruption = {'refused_before_load': True, 'restored_original_sha256': check[0],
+            corruption_probe(archive, digest)
+            corruption = {'refused_before_load': True, 'restored_original_sha256': digest,
                           'wall_seconds': time.monotonic() - start}
         images = identities(archive, records, args.provider, args.architecture)
         image_ids = [value['image_id'] for value in images]
         tags = [value['tag'] for value in images]
         result = {'original_records': records, 'input_archive': str(archive),
-                  'input_bytes': archive.stat().st_size, 'input_sha256': check[0], 'image_ids': image_ids,
+                  'input_bytes': archive.stat().st_size, 'input_sha256': digest, 'image_ids': image_ids,
                   'input_load': load(archive, image_ids), 'actual_corruption_probe': corruption}
         result['status'] = 'loaded; remaining qualification incomplete'
         results.append(result)

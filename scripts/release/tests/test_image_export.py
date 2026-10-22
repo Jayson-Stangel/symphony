@@ -141,6 +141,18 @@ class ExportTransport(unittest.TestCase):
             self.assertFalse(pairs[1][1].exists())
             self.assertEqual(pairs[2][1].read_text(), 'foreign raced destination')
 
+    def test_existing_sha256sum_dot_prefix_is_accepted_without_path_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'candidate.sha256'
+            filename = 'codex-x86_64.docker.tar.gz'
+            for name in (filename, './' + filename):
+                path.write_text('a' * 64 + '  ' + name + '\n')
+                self.assertEqual(BENCH.checksum_record(path, filename), 'a' * 64)
+            for name in ('../' + filename, '/tmp/' + filename, 'other.tar.gz', './other/' + filename):
+                path.write_text('a' * 64 + '  ' + name + '\n')
+                with self.assertRaisesRegex(ValueError, 'checksum record differs'):
+                    BENCH.checksum_record(path, filename)
+
     def test_source_failure_cannot_be_hidden_by_successful_gzip(self):
         with tempfile.TemporaryFile() as stream:
             with self.assertRaises(subprocess.CalledProcessError):
