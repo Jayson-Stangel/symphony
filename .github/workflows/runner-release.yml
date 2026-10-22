@@ -59,6 +59,7 @@ jobs:
       - name: Configure native cache for actual current and prior source builds
         uses: ./.github/actions/configure-runner-cache
       - name: Build exact native runner candidates and verify digest pulls
+        id: native-build
         env:
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
@@ -79,6 +80,14 @@ jobs:
           path: |
             dist/*.json
             dist/previous/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain attempted native registry cleanup evidence
+        if: ${{ always() && steps.native-build.outcome != 'skipped' && steps.native-build.outcome != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: dist/*.registry-state.json
           if-no-files-found: error
           retention-days: 30
 
