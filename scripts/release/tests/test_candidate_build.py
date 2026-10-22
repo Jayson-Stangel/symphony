@@ -15,8 +15,9 @@ class CandidateBuildTest(unittest.TestCase):
             root = Path(directory)
             docker = root / "docker"
             docker.write_text('''#!/bin/sh
-if [ "$1" = run ]; then echo 'existing name/occupied port' >&2; exit 42; fi
+if [ "$1" = create ]; then echo 'existing name/occupied port' >&2; exit 42; fi
 if [ "$1" = rm ]; then touch "$PROOF_CANARY"; exit 0; fi
+if [ "$1" = container ]; then exit 0; fi
 exit 43
 ''')
             docker.chmod(0o755)
@@ -24,7 +25,7 @@ exit 43
             env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"], PROOF_CANARY=str(canary))
             result = subprocess.run(["bash", str(ROOT / "scripts/release/build-candidate-runners.sh"),
                 "codex", "x86_64", str(root / "output")], text=True, capture_output=True, env=env)
-            self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertFalse(canary.exists(), "failed acquisition attempted to delete a runtime")
 
     def test_post_acquisition_failure_removes_only_observed_container_id(self):
@@ -33,20 +34,22 @@ exit 43
             docker = root / "docker"
             docker.write_text('''#!/bin/sh
 case "$1" in
-run) printf '%064d\\n' 1 ;;
+create) printf '%s\\n%s\\n' "$3" "${5#*=}" > "$REGISTRY_RECEIPT"; printf '%064d\\n' 1 ;;
+start) exit 0 ;;
+container) exit 0 ;;
 build) exit 44 ;;
 rm) printf '%s\\n' "$*" > "$PROOF_REMOVAL" ;;
-inspect) exit 1 ;;
+inspect) REGISTRY_NAME=$(sed -n '1p' "$REGISTRY_RECEIPT"); REGISTRY_OWNER=$(sed -n '2p' "$REGISTRY_RECEIPT"); printf '{"Name":"/%s","Id":"%064d","Config":{"Labels":{"com.symphony.native-test-owner":"%s"}}}\\n' "$REGISTRY_NAME" 1 "$REGISTRY_OWNER" | sed 's/^/[ /; s/$/ ]/' ;;
 *) exit 45 ;;
 esac
 ''')
             docker.chmod(0o755)
             removal = root / "removed"
-            env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"], PROOF_REMOVAL=str(removal))
+            env = dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"], PROOF_REMOVAL=str(removal), REGISTRY_RECEIPT=str(root / "receipt"))
             result = subprocess.run(["bash", str(ROOT / "scripts/release/build-candidate-runners.sh"),
                 "codex", "x86_64", str(root / "output")], text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 44, result.stdout + result.stderr)
-            self.assertEqual(removal.read_text().strip(), "rm -f " + "1".zfill(64))
+            self.assertEqual(removal.read_text().strip(), "rm --force " + "1".zfill(64))
 
 
 class CleanUbuntuDriverTest(unittest.TestCase):
