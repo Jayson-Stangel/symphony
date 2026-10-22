@@ -86,8 +86,9 @@ package_stage_bundle() {
   # mkdir-p would follow an existing (including dangling) releases symlink.
   package_helper owned-directory "$package_app_home" || return
   package_helper lock-directory "$package_app_home/releases" || return
-  if [ -e "$destination" ]; then
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
     [ ! -L "$destination" ] && [ -d "$destination" ] || die "conflicting release path: $destination"
+    package_helper owned-directory "$destination" || return
     cmp -s "$source/release.json" "$destination/release.json" || die 'same release identity has different metadata'
     cmp -s "$source/files.sha256" "$destination/files.sha256" || die 'same release identity has different bundle content'
     package_helper verify-files "$destination" || return

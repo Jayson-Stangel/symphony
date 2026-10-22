@@ -200,9 +200,29 @@ PY
         # Canonical parent aliases may be intentional; only managed storage
         # components themselves must be real owned directories.
         releases.chmod(0o700)
+        version_path = releases / (manifest()["version"] + "-" + manifest()["source_revision"])
+        version_path.symlink_to(self.root / "missing-release")
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(version_path.is_symlink())
+        self.assertFalse((self.root / "missing-release").exists())
+        version_path.unlink()
         alias = self.root / "parent-alias"; alias.symlink_to(self.root, target_is_directory=True)
         self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
         self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
+
+    def test_failed_stage_directory_creation_never_attempts_copy(self):
+        bundle = self.bundle(); env = self.environment()
+        tools = self.root / "tools"
+        (tools / "mktemp").write_text("#!/bin/sh\nexit 73\n"); (tools / "mktemp").chmod(0o755)
+        copied = self.root / "copy-called"
+        (tools / "cp").write_text(f"#!/bin/sh\ntouch {copied}\nexit 97\n"); (tools / "cp").chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(copied.exists())
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
 
     def test_failed_stage_rename_never_activates_and_preserves_existing_install(self):
         bundle = self.bundle(); env = self.environment()
