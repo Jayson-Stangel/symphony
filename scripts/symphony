@@ -1571,6 +1571,9 @@ runner_transition() (
   runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
+  # Keep the qualified prior container until packaged manager activation has
+  # succeeded. A failed atomic link must remain eligible for retained rollback.
+  if "$packaged_install"; then package_finish_transition "$journal"; fi
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
   printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"

@@ -108,8 +108,10 @@ runner_rollback() {
   local journal="$runner_home/$(project_id "$1").transition"
   [ -d "$journal" ] || die 'no retained transition'
   package_finish_transition "$journal"
-  package_remove_transition_fields "$journal"
-  rm "$journal/target"; rmdir "$journal"
+  mv "$journal" "$journal.complete"
+  if [ -f "$package_app_home/fail-rollback-cleanup" ]; then rm "$package_app_home/fail-rollback-cleanup"; exit 94; fi
+  package_remove_transition_fields "$journal.complete"
+  rm "$journal.complete/target"; rmdir "$journal.complete"
 }
 case "${1:-}" in
   update) shift; package_update "$@" ;;
@@ -245,6 +247,19 @@ class PackageUpdateTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertFalse((self.app / "pending-transition").exists())
 
+    def test_completed_rollback_cleanup_recovers_prior_manager_without_reselection(self):
+        (self.app / "fail-transition").touch()
+        result = self.candidate("--agent", "codex")
+        self.assertEqual(result.returncode, 91, result.stdout)
+        (self.app / "fail-rollback-cleanup").touch()
+        result = self.run_update("--rollback-runner")
+        self.assertEqual(result.returncode, 94, result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        result = self.run_update("--rollback-runner")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        self.assertFalse((self.app / "pending-transition").exists())
+
     def test_archive_links_and_traversal_are_rejected_before_extraction(self):
         for name, kind in (("../escape", tarfile.REGTYPE), ("evil", tarfile.SYMTYPE)):
             with self.subTest(name=name):
@@ -331,6 +346,65 @@ shutil.copyfile(mapping[url], args[args.index('--output')+1])
             except subprocess.TimeoutExpired:
                 process.kill(); process.communicate(); raise
         self.assertEqual(process.returncode, 0, output)
+
+    def test_real_launcher_retains_prior_runner_when_package_activation_fails(self):
+        # Execute the repository's real transition and rollback functions. Only
+        # Docker/readiness/activation boundaries are peers; ordering is real.
+        script = r'''
+set -euo pipefail
+source "$1/scripts/symphony" --help >/dev/null
+packaged_install=true
+runner_home="$2/runners"; mkdir "$runner_home"
+printf old >"$2/current"
+printf 'SYMPHONY_RUNNER_IMAGE_ID=old\n' >"$runner_home/project.env"
+container_runtime() { echo fixture_runtime; }
+runner_id() { echo project; }; project_id() { echo project; }
+runner_env_file() { echo "$runner_home/project.env"; }
+runner_project_lock() { :; }; runner_require_identity() { :; }
+runner_status() { if [ -f "$2/current" ]; then echo true; else echo missing; fi; }
+runner_owned() { :; }; runner_is_legacy() { return 1; }
+runner_update_port() { echo 4010; }; package_image() { echo candidate; }
+runner_build_image() { :; }; runner_doctor() { :; }; runner_pause() { :; }
+runner_prepare_storage() { :; }; runner_start() { printf new >"$fixture/current"; }
+runner_resume_when_ready() { :; }; runner_record_observed_metadata() { :; }
+package_write_transition() { :; }; package_remove_transition_fields() { :; }
+package_finish_transition() { die 'injected manager activation failure'; }
+fixture_runtime() {
+  case "$1" in
+    image) echo new ;;
+    inspect)
+      case "${!#}" in
+        project-before-update)
+          [ -f "$fixture/backup" ] || return 1
+          case "$*" in *State.Running*) echo false ;; *com.symphony.agent*) echo codex ;; *'{{.Image}}'*) cat "$fixture/backup" ;; esac ;;
+        project)
+          [ -f "$fixture/current" ] || return 1
+          case "$*" in *com.symphony.agent*) echo codex ;; *'{{.Image}}'*) cat "$fixture/current" ;; esac ;;
+      esac ;;
+    rename)
+      if [ "$2" = project ]; then mv "$fixture/current" "$fixture/backup"
+      else mv "$fixture/backup" "$fixture/current"; fi ;;
+    rm)
+      if [ "$2" = project-before-update ]; then touch "$fixture/removed-backup"; rm "$fixture/backup"
+      else rm "$fixture/current"; fi ;;
+    exec) return 1 ;;
+  esac
+}
+fixture=$2
+# Explicit positional root lets runner_status avoid ambient process cwd.
+runner_status() { if [ -f "$fixture/current" ]; then echo true; else echo missing; fi; }
+if runner_transition "$fixture" codex; then exit 20; fi
+[ -f "$fixture/backup" ] && [ ! -e "$fixture/removed-backup" ]
+package_finish_transition() { :; }
+runner_rollback "$fixture"
+[ "$(cat "$fixture/current")" = old ]
+[ ! -e "$runner_home/project.transition" ]
+'''
+        result = subprocess.run(["bash", "-c", script, "fixture", str(REPOSITORY), str(self.root)],
+                                env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("activation failure", result.stdout)
+        self.assertIn("Prior runner restored", result.stdout)
 
 
 if __name__ == "__main__":

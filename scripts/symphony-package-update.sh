@@ -54,9 +54,11 @@ package_pending_transition() {
 package_recover_completed_transition() {
   local complete=$1 selected
   package_helper owned-directory "$complete" || return
-  if [ -f "$complete/package.target" ]; then
-    selected=$(package_verified_home "$(cat "$complete/package.target")") || return
+  if [ -f "$complete/package.committed" ]; then
+    selected=$(package_verified_home "$(cat "$complete/package.committed")") || return
     [ "$(package_current_home)" = "$selected" ] || die 'completed transition manager differs; recovery refused'
+  elif [ -f "$complete/package.target" ]; then
+    die 'completed packaged transition has no verified committed manager; recovery refused'
   fi
   package_remove_transition_fields "$complete"
   rm -f "$complete/target" "$complete/port" "$complete/previous.env" "$complete/image" \
@@ -130,11 +132,14 @@ package_finish_transition() {
   if [ "$current" != "$target" ]; then
     package_activate_home "$target" "$current"
   fi
+  printf '%s\n' "$target" >"$journal/package.committed.next"
+  mv "$journal/package.committed.next" "$journal/package.committed"
 }
 
 package_remove_transition_fields() {
   local pointer="$package_app_home/pending-transition" original=${1%.complete}
-  rm -f "$1/package.target" "$1/package.previous" "$1/package.revision"
+  rm -f "$1/package.target" "$1/package.previous" "$1/package.revision" \
+    "$1/package.committed" "$1/package.committed.next"
   if [ -L "$pointer" ] && [ "$(readlink "$pointer")" = "$original" ]; then rm "$pointer"; fi
 }
 
@@ -294,6 +299,7 @@ package_update() {
     else target=$(package_stage_download "$requested" "$candidate_manifest" "$candidate_bundle") || return; fi
   fi
   # Re-enter the exact verified manager without resolving latest a second time.
+  unset SYMPHONY_RUNNER_IMAGE
   exec env SYMPHONY_HOME="$target" SYMPHONY_APP_HOME="$package_app_home" \
     SYMPHONY_BIN_DIR="$bin_dir" SYMPHONY_CONFIG_HOME="$config_home" \
     SYMPHONY_SKILLS_DIR="$skills_dir" SYMPHONY_RUNNER_HOME="$runner_home" \
