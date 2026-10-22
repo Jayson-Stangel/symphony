@@ -236,14 +236,16 @@ Portable release metadata and package-input/shell checks run once before native
 qualification. Native process and shell-updater fixtures run once per OS/CPU,
 separately from provider image qualification. New unclassified release suites
 conservatively enter the native group. Missing native prerequisites or skipped
-fixtures fail qualification. Package/helper checks produce an exact source receipt;
-image fan-out starts only after these succeed. Engine builds and runner builds
-then run independently. Final manifests join verified runner records; standalone
+fixtures fail qualification. Portable preflight produces an exact source output. Native fixtures, package/helper
+checks, image fan-out and engine builds then start independently; no image or engine
+job waits for an unrelated macOS helper queue. Final qualification joins the required
+native and helper evidence. Final manifests join verified runner records; standalone
 smokes consume actual built engines. No placeholder records replace artifacts.
 
-The Burrito caller owns package qualification and passes its successful exact-head
+The Burrito caller owns portable qualification and passes its successful exact-head
 output to the runner workflow, avoiding a second qualification. A direct runner
-candidate performs its own qualification. The runner workflow rejects absent,
+candidate performs its own portable qualification. Native/helper checks run concurrently
+with images in the runner workflow, and its terminal verdict requires their success. The runner workflow rejects absent,
 failed, cancelled, skipped or wrong-head qualification, except its explicitly
 caller-owned path; its final verdict also requires all images and metadata.
 The shell/controller tests support early feedback, not native image acceptance.

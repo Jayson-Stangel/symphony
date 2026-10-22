@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import os
+import subprocess
 import unittest
 
 SPEC = importlib.util.spec_from_file_location('release_tests', Path(__file__).parents[1] / 'release_tests.py')
@@ -29,6 +31,47 @@ class ReleasePreflightTest(unittest.TestCase):
 
     def test_portable_metadata_suite_runs(self):
         self.assertTrue(self.execute('portable', 'test_artifacts.py', '    def test_policy(self): self.assertTrue(True)\n'))
+
+
+class WorkflowGuardTest(unittest.TestCase):
+    def guard(self, filename, name, values):
+        root = Path(__file__).resolve().parents[3]
+        text = (root / '.github/workflows' / filename).read_text()
+        section = text.split('      - name: ' + name + '\n', 1)[1]
+        script = section.split('        run: |\n', 1)[1].split('\n      - ', 1)[0]
+        # Execute the actual workflow shell, including failure/cancellation checks.
+        lines = []
+        for line in script.splitlines():
+            if line.strip() and not line.startswith('          '):
+                break
+            lines.append(line[10:])
+        script = '\n'.join(lines)
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, GITHUB_SHA='a' * 40, GITHUB_STEP_SUMMARY=str(Path(directory) / 'summary'), **values)
+            return subprocess.run(['bash', '-e', '-c', script], cwd=directory, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+
+    def test_source_output_never_accepts_failed_missing_or_wrong_head(self):
+        name = 'Require exact successful local or caller-owned preflight'
+        for result in ('failure', 'cancelled', 'skipped', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', name,
+                dict(LOCAL_RESULT=result, LOCAL_REVISION='a'*40, CALLER_REVISION='')), 0)
+        self.assertEqual(self.guard('runner-release.yml', name,
+            dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='')), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name,
+            dict(LOCAL_RESULT='success', LOCAL_REVISION='b'*40, CALLER_REVISION='')), 0)
+        self.assertEqual(self.guard('runner-release.yml', name,
+            dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='a'*40)), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name,
+            dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
+
+    def test_terminal_requires_every_requested_native_package_and_image_result(self):
+        name = 'Require all requested candidate work without accepting omitted failures'
+        good = dict(PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success')
+        self.assertEqual(self.guard('runner-release.yml', name, good), 0)
+        for key in good:
+            for result in ('failure', 'cancelled', 'skipped', ''):
+                self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **{key: result})), 0)
 
 
 if __name__ == '__main__':

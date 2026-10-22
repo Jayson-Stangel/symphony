@@ -1,6 +1,11 @@
 name: Package checks
 on:
   workflow_call:
+    inputs:
+      portable_revision:
+        description: Successful exact-source output from caller-owned portable preflight
+        type: string
+        default: ''
     outputs:
       qualified_revision:
         description: Exact source that passed portable, native and package-input checks
@@ -13,19 +18,34 @@ concurrency:
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !inputs.controller_only && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  preflight:
+  portable:
+    if: inputs.portable_revision == ''
     uses: ./.github/workflows/release-preflight.yml
-  macos-package:
-    needs: preflight
+  qualification:
+    needs: portable
     if: ${{ always() }}
-    outputs:
-      qualified_revision: ${{ steps.qualified.outputs.revision }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful exact-head portable preflight
+        env:
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.portable_revision }}
+        run: |
+          if [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
+  native:
+    needs: qualification
+    uses: ./.github/workflows/release-native.yml
+  host-package:
+    needs: qualification
     runs-on: macos-14
     steps:
-      - name: Require successful portable and native preflight
-        env:
-          RESULT: ${{ needs.preflight.result }}
-        run: test "$RESULT" = success
       - uses: actions/checkout@v4
       - name: Build both supported host architectures
         run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
@@ -33,6 +53,22 @@ jobs:
         env:
           SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
         run: python3 scripts/package/test-package.py -v
+  macos-package:
+    needs: [qualification, native, host-package]
+    if: ${{ always() }}
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every native and package-input qualification
+        env:
+          PORTABLE: ${{ needs.qualification.result }}
+          NATIVE: ${{ needs.native.result }}
+          PACKAGE: ${{ needs.host-package.result }}
+        run: |
+          test "$PORTABLE" = success
+          test "$NATIVE" = success
+          test "$PACKAGE" = success
       - id: qualified
         name: Bind successful qualification to the exact source
         run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

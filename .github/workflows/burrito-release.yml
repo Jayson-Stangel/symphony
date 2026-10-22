@@ -22,7 +22,7 @@ concurrency:
 jobs:
   qualification:
     if: ${{ !inputs.controller_only }}
-    uses: ./.github/workflows/package-checks.yml
+    uses: ./.github/workflows/release-preflight.yml
   runners:
     needs: qualification
     if: ${{ !inputs.controller_only }}

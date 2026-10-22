@@ -24,6 +24,7 @@ def run(kind, directory):
     for module in modules:
         spec = importlib.util.spec_from_file_location(module.stem + '_' + str(id(module)), module)
         loaded = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = loaded
         spec.loader.exec_module(loaded)
         suite.addTests(unittest.TestLoader().loadTestsFromModule(loaded))
     start = time.monotonic()

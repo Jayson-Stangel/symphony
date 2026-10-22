@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       preflight_revision:
-        description: Exact successful caller-owned package-checks output; empty runs qualification here
+        description: Exact successful caller-owned portable preflight output; empty runs it here
         type: string
         default: ''
       publish:
@@ -25,18 +25,23 @@ concurrency:
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  package-inputs:
+  portable:
     if: inputs.preflight_revision == ''
+    uses: ./.github/workflows/release-preflight.yml
+  package-inputs:
+    needs: qualification
     uses: ./.github/workflows/package-checks.yml
+    with:
+      portable_revision: ${{ github.sha }}
   qualification:
-    needs: package-inputs
+    needs: portable
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require exact successful local or caller-owned preflight
         env:
-          LOCAL_RESULT: ${{ needs.package-inputs.result }}
-          LOCAL_REVISION: ${{ needs.package-inputs.outputs.qualified_revision }}
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
           CALLER_REVISION: ${{ inputs.preflight_revision }}
         run: |
           if [ -n "$CALLER_REVISION" ]; then
@@ -101,7 +106,7 @@ jobs:
 
   publish:
     if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
-    needs: candidate
+    needs: [candidate, package-inputs]
     environment: production-release
     permissions:
       contents: read
@@ -204,17 +209,19 @@ jobs:
           if-no-files-found: error
 
   candidate-qualification:
-    needs: [qualification, candidate, candidate-metadata]
+    needs: [qualification, package-inputs, candidate, candidate-metadata]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require all requested candidate work without accepting omitted failures
         env:
           PREFLIGHT: ${{ needs.qualification.result }}
+          PACKAGES: ${{ needs.package-inputs.result }}
           RUNNERS: ${{ needs.candidate.result }}
           METADATA: ${{ needs.candidate-metadata.result }}
         run: |
           test "$PREFLIGHT" = success
+          test "$PACKAGES" = success
           test "$RUNNERS" = success
           test "$METADATA" = success
           echo 'Exact-head preflight, native fixtures, all four provider/platform images and final metadata succeeded.' >> "$GITHUB_STEP_SUMMARY"
