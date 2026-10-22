@@ -135,6 +135,32 @@ class PackageTest(unittest.TestCase):
             self.file.write_text(json.dumps(invalid))
             self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
 
+    def test_recovered_component_records_keep_failed_job_and_separate_origins(self):
+        sys.path.insert(0, str(ROOT / 'scripts/release'))
+        import artifacts
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('recovery_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider in ('codex', 'claude'):
+            for arch in ('arm64', 'x86_64'):
+                record = fixture.record(provider, arch)
+                value['runners'][provider][arch] = {key: field for key, field in record.items() if key not in ('provider','architecture')}
+        proof = value['runners']['codex']['arm64']['qualification']
+        proof.update(record_origin={'run_id':789,'run_attempt':1,'controller_revision':'c'*40,'job_name':'recover-codex-arm64'},
+                     payload_origin={'run_id':123,'controller_revision':'a'*40},
+                     native_step_recovery={'job_id':1234,'original_job_conclusion':'failure','qualification_step_number':6,
+                         'payload_step_number':7,'failure_step_number':8,'cleanup_step_number':10,
+                         'failure_reason':'bare-upload-artifact-sha256','log_sha256':'e'*64})
+        artifacts.validate(value, require_bundle=False)
+        self.file.write_text(json.dumps(value)); self.assertOK(self.helper('validate-manifest',self.file))
+        for field, invalid_value in (('job_id',True),('qualification_step_number',1.0),('original_job_conclusion','success'),('failure_reason','runtime-failure')):
+            changed = copy.deepcopy(value)
+            changed['runners']['codex']['arm64']['qualification']['native_step_recovery'][field] = invalid_value
+            self.file.write_text(json.dumps(changed))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
+
     def test_additive_platform_manifest_and_legacy_mac_contract(self):
         value = manifest()
         self.assertOK(self.helper("validate-manifest", self.file))

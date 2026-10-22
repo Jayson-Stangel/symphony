@@ -114,6 +114,30 @@ def validate_component(runner, provider, architecture):
             (f"{provider}-{architecture}.json", f"previous/{provider}-{architecture}.json"),
             "native record target differs")
     require(re.fullmatch(r"[a-f0-9]{64}", proof.get("archive_sha256", "")), "missing native archive checksum")
+    if "record_origin" in proof:
+        origin = proof["record_origin"]
+        require(isinstance(origin, dict) and set(origin) == {"run_id", "run_attempt", "controller_revision", "job_name"}, "invalid small-record origin")
+        require(all(type(origin.get(key)) is int and origin[key] > 0 for key in ("run_id", "run_attempt")), "invalid small-record run identity")
+        require(REVISION.fullmatch(origin.get("controller_revision", "")), "invalid small-record controller")
+        require(origin.get("job_name") in (f"recover-{provider}-{architecture}", f"native-record-recovery / recover-{provider}-{architecture}",
+                                          f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}"), "unknown small-record native job")
+    if "payload_origin" in proof:
+        origin = proof["payload_origin"]
+        require(isinstance(origin, dict) and set(origin) == {"run_id", "controller_revision"} and
+                type(origin.get("run_id")) is int and origin["run_id"] == proof["run_id"] and
+                origin.get("controller_revision") == proof["controller_revision"], "invalid original payload origin")
+    if "native_step_recovery" in proof:
+        recovery = proof["native_step_recovery"]
+        expected = {"job_id", "original_job_conclusion", "qualification_step_number", "payload_step_number",
+                    "failure_step_number", "cleanup_step_number", "failure_reason", "log_sha256"}
+        require(isinstance(recovery, dict) and set(recovery) == expected and "record_origin" in proof and "payload_origin" in proof,
+                "missing independent recovery origins")
+        require(all(type(recovery.get(key)) is int and recovery[key] > 0 for key in
+                    ("job_id", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number")),
+                "invalid successful-stage recovery identity")
+        require(recovery.get("original_job_conclusion") == "failure" and recovery.get("failure_reason") == "bare-upload-artifact-sha256" and
+                re.fullmatch(r"[a-f0-9]{64}", recovery.get("log_sha256", "")), "unknown native recovery failure")
+
 
 
 def assemble(args, verifier=None):

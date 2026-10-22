@@ -83,6 +83,31 @@ func validateManifest(_ path: String) throws -> [String: Any] {
                       let archive = proof["archive_filename"] as? String,
                       ["\(provider)-\(arch).docker.tar.gz", "previous/\(provider)-\(arch).docker.tar.gz"].contains(archive),
                       let archiveDigest = proof["archive_sha256"] as? String, matches(archiveDigest, "^[a-f0-9]{64}$") else { fail("invalid original runner qualification or compatibility") }
+                if let raw = proof["record_origin"] {
+                    let origin = object(raw)
+                    guard Set(origin.keys) == Set(["run_id", "run_attempt", "controller_revision", "job_name"]),
+                          let recordRun = integer(origin["run_id"]), recordRun > 0,
+                          let recordAttempt = integer(origin["run_attempt"]), recordAttempt > 0,
+                          let recordController = origin["controller_revision"] as? String, matches(recordController, "^[a-f0-9]{40}$"),
+                          ["recover-\(provider)-\(arch)", "native-record-recovery / recover-\(provider)-\(arch)",
+                           "runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)"].contains(origin["job_name"] as? String ?? "") else { fail("invalid separate native record origin") }
+                }
+                if let raw = proof["payload_origin"] {
+                    let origin = object(raw)
+                    guard Set(origin.keys) == Set(["run_id", "controller_revision"]), integer(origin["run_id"]) == run,
+                          origin["controller_revision"] as? String == controller else { fail("invalid original native payload origin") }
+                }
+                if let raw = proof["native_step_recovery"] {
+                    let recovery = object(raw)
+                    let keys = Set(["job_id", "original_job_conclusion", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number", "failure_reason", "log_sha256"])
+                    guard Set(recovery.keys) == keys, proof["record_origin"] != nil, proof["payload_origin"] != nil,
+                          ["job_id", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number"].allSatisfy({ (integer(recovery[$0]) ?? 0) > 0 }),
+                          recovery["original_job_conclusion"] as? String == "failure", recovery["failure_reason"] as? String == "bare-upload-artifact-sha256",
+                          let logDigest = recovery["log_sha256"] as? String, matches(logDigest, "^[a-f0-9]{64}$") else { fail("invalid successful-native-stage recovery evidence") }
+                }
+                if let recordFile = proof["record_filename"] {
+                    guard let name = recordFile as? String, ["\(provider)-\(arch).json", "previous/\(provider)-\(arch).json"].contains(name) else { fail("invalid original native record filename") }
+                }
             }
         }
     }

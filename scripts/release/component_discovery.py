@@ -49,7 +49,7 @@ def discover(fetch=api, candidate_run=None):
                         require(proof.get("record_filename", f"{provider}-{arch}.json") == name,
                                 "discovered record path differs from original proof")
                         if candidate_run is not None:
-                            require(proof.get("run_id") == candidate_run, "foreign selected candidate run")
+                            require(proof.get("record_origin", {}).get("run_id", proof.get("run_id")) == candidate_run, "foreign selected candidate run")
                         candidates.append(record)
             except (ValueError, KeyError, TypeError, zipfile.BadZipFile, RuntimeError):
                 # Corrupt/old records cannot authorize reuse; keep searching within the bound.

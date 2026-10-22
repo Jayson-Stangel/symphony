@@ -6,7 +6,7 @@ receipt. The large image payload must still exist with its original digest;
 actual loading/qualification belongs to the selected lifecycle consumer.
 """
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import io
 import json
@@ -55,35 +55,135 @@ def trusted_lineage(revision, fetch=api):
     raise ValueError("source/controller is outside verified fork dev/main history")
 
 
-def verify_origin(record, fetch=api, now=None, candidate_run=None):
+NATIVE_STEP = "Build exact runner and test a digest pull from an isolated registry"
+SEAL_STEP = "Seal original native record against immutable uploaded payload"
+CLEANUP_STEP = "Remove only the qualification registry owned by this job"
+SEAL_FORMAT_ERROR = "component provenance: missing immutable artifact digest;"
+MAX_JOB_LOG_BYTES = 8 * 1024 * 1024
+
+
+def recovery_eligibility(job, raw_log):
+    """Narrowly recover one known downstream seal-format failure, never a failed smoke."""
+    require(job.get("status") == "completed" and job.get("conclusion") == "failure", "original job is not the recoverable sealing failure")
+    require(type(job.get("id")) is int and job["id"] > 0, "missing original native job ID")
+    steps = job.get("steps", [])
+    failures = [step for step in steps if step.get("conclusion") == "failure"]
+    require(len(failures) == 1 and failures[0].get("name") == SEAL_STEP, "failure was not exclusively downstream sealing")
+    require(not any(step.get("conclusion") in ("cancelled", "timed_out", "action_required") for step in steps), "cancelled native work cannot be recovered")
+    def successful(name):
+        found = [step for step in steps if step.get("name") == name]
+        require(len(found) == 1 and found[0].get("status") == "completed" and found[0].get("conclusion") == "success",
+                "original required native stage did not pass: " + name)
+        return found[0]
+    native = successful(NATIVE_STEP)
+    cleanup = successful(CLEANUP_STEP)
+    failed = failures[0]
+    uploads = [step for step in steps if step.get("name", "").startswith("Run actions/upload-artifact@") and
+               native["number"] < step.get("number", 0) < failed["number"] and
+               step.get("status") == "completed" and step.get("conclusion") == "success"]
+    require(len(uploads) == 1 and cleanup["number"] > failed["number"], "native payload upload or cleanup ordering differs")
+    require(isinstance(raw_log, bytes) and len(raw_log) <= MAX_JOB_LOG_BYTES, "original native log is unavailable or oversized")
+    start = datetime.fromisoformat(failed["started_at"].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(failed["completed_at"].replace("Z", "+00:00")) + timedelta(seconds=1)
+    known_error = False
+    for line in raw_log.decode("utf-8-sig").splitlines():
+        timestamp, _, message = line.partition(" ")
+        if SEAL_FORMAT_ERROR not in message:
+            continue
+        when = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        known_error = known_error or start <= when <= end
+    require(known_error, "failed sealing was not the known immutable-digest format error")
+    return {"job_id": job["id"], "original_job_conclusion": "failure", "qualification_step_number": native["number"],
+            "payload_step_number": uploads[0]["number"], "failure_step_number": failed["number"],
+            "cleanup_step_number": cleanup["number"], "failure_reason": "bare-upload-artifact-sha256",
+            "log_sha256": hashlib.sha256(raw_log).hexdigest()}
+
+
+def run_identity(run_id, controller, fetch, current_context=None):
+    run = fetch(f"actions/runs/{run_id}")
+    current = current_context if current_context and run_id == current_context["run_id"] else None
+    require(run.get("id") == run_id, "qualification run identity differs")
+    require(run.get("repository", {}).get("full_name") == REPOSITORY, "foreign qualification repository")
+    if current:
+        require(controller == current["controller_revision"] and run.get("event") == current["event"],
+                "current-run qualification context differs")
+        require(run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml",
+                                     ".github/workflows/runner-integration.yml"), "unqualified current-run workflow")
+        if run.get("head_sha") != controller:
+            require(current["event"] == "pull_request", "current controller differs from run source")
+            commit = fetch(f"commits/{controller}")
+            require(commit.get("sha") == controller and len(commit.get("parents", [])) == 2 and run.get("head_sha") in
+                    [parent.get("sha") for parent in commit.get("parents", [])],
+                    "current PR merge is not bound to this run head")
+    else:
+        require(run.get("head_sha") == controller, "qualification run identity differs")
+        require(run.get("head_repository", {}).get("full_name") == REPOSITORY, "foreign qualification repository")
+        require(run.get("event") in ("workflow_dispatch", "push") and
+                run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml"),
+                "unqualified native workflow origin")
+    return run
+
+
+def selected_job(run_id, attempt, name, architecture, fetch):
+    jobs = fetch(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
+    require(jobs.get("total_count", 0) <= 100, "incomplete native job discovery")
+    selected = [job for job in jobs.get("jobs", []) if job.get("name") == name]
+    require(len(selected) == 1, "original native qualification is missing or ambiguous")
+    native_label = "ubuntu-24.04-arm" if architecture == "arm64" else "ubuntu-24.04"
+    require(native_label in selected[0].get("labels", []), "original qualification was not on the selected native platform")
+    return selected[0]
+
+
+def verify_origin(record, fetch=api, now=None, candidate_run=None, current_context=None):
     provider, architecture = record["provider"], record["architecture"]
     artifacts.validate_component(record, provider, architecture)
     proof = record["qualification"]
     run_id, attempt = proof["run_id"], proof["run_attempt"]
-    run = fetch(f"actions/runs/{run_id}")
-    require(run.get("id") == run_id and run.get("head_sha") == proof["controller_revision"], "qualification run identity differs")
-    require(run.get("repository", {}).get("full_name") == REPOSITORY and
-            run.get("head_repository", {}).get("full_name") == REPOSITORY, "foreign qualification repository")
-    require(run.get("event") in ("workflow_dispatch", "push") and
-            run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml"),
-            "unqualified native workflow origin")
-    if candidate_run is not None:
-        require(type(candidate_run) is int and candidate_run == run_id and run.get("event") == "workflow_dispatch",
+    controller = proof["controller_revision"]
+    origin = proof.get("record_origin", {})
+    record_run = origin.get("run_id", run_id)
+    record_attempt = origin.get("run_attempt", attempt)
+    record_controller = origin.get("controller_revision", controller)
+    record_job = origin.get("job_name", proof["job_name"])
+    native_run = run_identity(run_id, controller, fetch, current_context)
+    metadata_run = run_identity(record_run, record_controller, fetch, current_context)
+    payload_origin = proof.get("payload_origin", {})
+    payload_run = payload_origin.get("run_id", run_id)
+    payload_controller = payload_origin.get("controller_revision", controller)
+    require(payload_run == run_id and payload_controller == controller, "payload did not originate in the qualified native run")
+    if current_context is not None:
+        require(record_run == current_context["run_id"] and run_id == record_run and
+                record_controller == current_context["controller_revision"], "current-run verifier cannot authorize a foreign run")
+        if record["source_revision"] != controller:
+            trusted_lineage(record["source_revision"], fetch)
+    elif candidate_run is not None:
+        require(type(candidate_run) is int and candidate_run == record_run and metadata_run.get("event") == "workflow_dispatch",
                 "explicit candidate origin differs from the selected manual run")
+        if record_controller != controller:
+            ancestry = fetch(f"compare/{controller}...{record_controller}")
+            require(ancestry.get("status") in ("ahead", "identical") and ancestry.get("merge_base_commit", {}).get("sha") == controller,
+                    "original native controller is outside selected recovery lineage")
+        if record["source_revision"] != controller:
+            ancestry = fetch(f"compare/{record['source_revision']}...{controller}")
+            require(ancestry.get("status") in ("ahead", "identical") and ancestry.get("merge_base_commit", {}).get("sha") == record["source_revision"],
+                    "original source is outside selected native controller lineage")
     else:
-        for revision in set((proof["controller_revision"], record["source_revision"])):
+        for revision in set((controller, record_controller, record["source_revision"])):
             trusted_lineage(revision, fetch)
-    jobs = fetch(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
-    require(jobs.get("total_count", 0) <= 100, "incomplete native job discovery")
-    selected = [job for job in jobs.get("jobs", []) if job.get("name") == proof["job_name"]]
-    require(len(selected) == 1 and selected[0].get("status") == "completed"
-            and selected[0].get("conclusion") == "success", "original native qualification did not pass")
-    native_label = "ubuntu-24.04-arm" if architecture == "arm64" else "ubuntu-24.04"
-    require(native_label in selected[0].get("labels", []), "original qualification was not on the selected native platform")
+    selected = selected_job(run_id, attempt, proof["job_name"], architecture, fetch)
+    recovery = proof.get("native_step_recovery")
+    if recovery is not None:
+        actual = recovery_eligibility(selected, fetch(f"actions/jobs/{selected['id']}/logs", binary=True))
+        require(recovery == actual, "original successful-stage evidence differs")
+        require(bool(origin) and bool(payload_origin), "recovery requires independent record and payload origins")
+    else:
+        require(selected.get("status") == "completed" and selected.get("conclusion") == "success", "original native qualification did not pass")
+    metadata_job = selected_job(record_run, record_attempt, record_job, architecture, fetch)
+    require(metadata_job.get("status") == "completed" and metadata_job.get("conclusion") == "success", "small-record recovery job did not pass")
     now = now or datetime.now(timezone.utc)
     payload = fetch(f"actions/artifacts/{proof['artifact_id']}")
-    available(payload, proof["artifact_name"], proof["artifact_digest"], run_id, proof["controller_revision"], now)
-    inventory = fetch(f"actions/runs/{run_id}/artifacts?per_page=100")
+    available(payload, proof["artifact_name"], proof["artifact_digest"], payload_run, native_run["head_sha"], now)
+    inventory = fetch(f"actions/runs/{record_run}/artifacts?per_page=100")
     require(inventory.get("total_count", 0) <= 100, "incomplete origin artifact discovery")
     record_name = f"runner-records-{provider}-{architecture}"
     candidates = [item for item in inventory.get("artifacts", []) if item.get("name") == record_name]
@@ -91,7 +191,7 @@ def verify_origin(record, fetch=api, now=None, candidate_run=None):
     metadata = candidates[0]
     require(type(metadata.get("size_in_bytes")) is int and metadata["size_in_bytes"] <= MAX_RECORD_BYTES,
             "qualification record artifact is too large")
-    available(metadata, record_name, metadata.get("digest"), run_id, proof["controller_revision"], now)
+    available(metadata, record_name, metadata.get("digest"), record_run, metadata_run["head_sha"], now)
     require(isinstance(metadata.get("digest"), str) and metadata["digest"].startswith("sha256:"), "missing record artifact digest")
     data = fetch(f"actions/artifacts/{metadata['id']}/zip", binary=True)
     require(len(data) <= MAX_RECORD_BYTES and "sha256:" + hashlib.sha256(data).hexdigest() == metadata["digest"],
@@ -107,10 +207,29 @@ def verify_origin(record, fetch=api, now=None, candidate_run=None):
         raise ValueError("corrupt or unsupported original record archive; reuse refused") from None
     require(original == record, "record differs from the original native qualification")
     return {"run_id": run_id, "artifact_id": payload["id"], "artifact_digest": payload["digest"],
+            "record_run_id": record_run, "record_run_attempt": record_attempt,
+            "record_controller_revision": record_controller, "record_job_name": record_job,
+            "native_qualification_scope": "successful-native-step-before-seal-failure" if recovery else "successful-native-job",
+            "original_job_conclusion": selected["conclusion"],
             "record_artifact_id": metadata["id"], "record_artifact_digest": metadata["digest"],
             "run_attempt": attempt, "controller_revision": proof["controller_revision"],
             "job_name": proof["job_name"], "archive_filename": proof["archive_filename"],
             "archive_sha256": proof["archive_sha256"], "record_filename": name}
+
+
+def verify_current_origin(record, fetch=api, root="."):
+    """Same-run test composition only; ordinary discovery never calls this helper."""
+    require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "current-run repository differs")
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    require(event in ("pull_request", "push", "workflow_dispatch"), "unsupported current-run event")
+    revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    require(revision == os.environ.get("GITHUB_SHA"), "current manager checkout differs from workflow source")
+    run_id = int(os.environ["GITHUB_RUN_ID"])
+    record_run = record["qualification"].get("record_origin", {}).get("run_id", record["qualification"]["run_id"])
+    if record_run != run_id:
+        return verify_origin(record, fetch=fetch)
+    return verify_origin(record, fetch=fetch, current_context={"run_id": run_id,
+                         "controller_revision": revision, "event": event})
 
 
 def artifact_digest(value):

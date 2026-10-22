@@ -111,10 +111,39 @@ class ComponentProofTest(unittest.TestCase):
             self.verify()
 
 
+class CurrentRunProofTest(unittest.TestCase):
+    setUp = ComponentProofTest.setUp
+    fetch = ComponentProofTest.fetch
+    def test_current_pr_merge_is_ephemeral_and_not_a_future_baseline(self):
+        self.run.update(event='pull_request', path='.github/workflows/runner-integration.yml',head_sha='c'*40,
+                        head_repository={'full_name':'contributor/untrusted-fork'})
+        self.record['source_revision']='a'*40
+        self.record['qualification']['source_revision']='a'*40
+        self.payload['workflow_run']['head_sha']='c'*40
+        self.metadata['workflow_run']={'id':123,'head_sha':'c'*40}
+        buffer=io.BytesIO()
+        with zipfile.ZipFile(buffer,'w') as archive:
+            archive.writestr('codex-arm64.json',json.dumps(self.record))
+        self.zip=buffer.getvalue()
+        self.metadata.update(digest='sha256:'+hashlib.sha256(self.zip).hexdigest(),size_in_bytes=len(self.zip))
+        def fetch(path,binary=False):
+            if path=='commits/'+'a'*40:
+                return {'sha':'a'*40,'parents':[{'sha':'c'*40},{'sha':'b'*40}]}
+            return self.fetch(path,binary)
+        context={'run_id':123,'controller_revision':'a'*40,'event':'pull_request'}
+        value=provenance.verify_origin(self.record,fetch=fetch,now=self.now,current_context=context)
+        self.assertEqual(value['artifact_id'],987)
+        with self.assertRaises(ValueError):
+            provenance.verify_origin(self.record,fetch=fetch,now=self.now)
+        for changed in (dict(context,run_id=456),dict(context,controller_revision='f'*40),dict(context,event='push')):
+            with self.assertRaises(ValueError):
+                provenance.verify_origin(self.record,fetch=fetch,now=self.now,current_context=changed)
+
+
 class NativeSealTest(unittest.TestCase):
     def test_upload_action_bare_digest_normalizes_to_service_digest_strictly(self):
         # Actual upload-artifact output format from failed baseline run39867029678.
-        bare = "7c5b8d5c6ffbbefb848103f6f18bf2a418adbf07b4f592212ae5b49881132d39"
+        bare = "604dd89e912f8b9213606cbf04aefd7f3ae0d839d67912d83ba32d8f6ebeb0ec"
         self.assertEqual(provenance.artifact_digest(bare), 'sha256:' + bare)
         self.assertEqual(provenance.artifact_digest('sha256:' + bare), 'sha256:' + bare)
         for invalid in ('', bare+'0', bare.upper(), 'sha256:'+bare+'\n', 'sha512:'+bare):
