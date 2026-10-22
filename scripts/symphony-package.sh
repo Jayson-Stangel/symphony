@@ -1,19 +1,21 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
 packaged_install=true
 [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
-symphony_home=$(cd "$symphony_home" && pwd -P)
-package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
-package_helper validate-manifest "$symphony_home/release.json" || exit 1
-package_version=$(package_helper get "$symphony_home/release.json" version)
-package_revision=$(package_helper get "$symphony_home/release.json" source_revision)
-[ "$(package_helper build-revision)" = "$package_revision" ] || die 'bundled helper does not match release source revision'
-package_channel=$(package_helper get "$symphony_home/release.json" channel)
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64|Darwin/aarch64) package_platform=macos; package_arch=arm64 ;;
   Darwin/x86_64) package_platform=macos; package_arch=x86_64 ;;
   Linux/x86_64) package_platform=linux_x86_64; package_arch=x86_64 ;;
   *) die 'unsupported host architecture or OS; packaged installs support macOS ARM64/Intel and Linux x86-64' ;;
 esac
+symphony_home=$(cd "$symphony_home" && pwd -P)
+IFS= read -r bundle_platform < "$symphony_home/host-platform" || die 'bundle is missing its host platform marker'
+[ "$bundle_platform" = "$package_platform" ] || die 'bundle platform does not match this host'
+package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
+package_helper validate-manifest "$symphony_home/release.json" || exit 1
+package_version=$(package_helper get "$symphony_home/release.json" version)
+package_revision=$(package_helper get "$symphony_home/release.json" source_revision)
+[ "$(package_helper build-revision)" = "$package_revision" ] || die 'bundled helper does not match release source revision'
+package_channel=$(package_helper get "$symphony_home/release.json" channel)
 package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
 [ "$(package_manifest_platform "$symphony_home/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
 [ "$(package_helper host-platform)" = "$package_platform" ] || die 'helper platform does not match this host'

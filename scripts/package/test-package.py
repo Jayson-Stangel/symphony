@@ -496,6 +496,23 @@ PY
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(json.loads(result.stdout)["ready"])
 
+    def test_unsupported_host_and_wrong_os_refuse_before_native_helper(self):
+        bundle = self.bundle(); env = self.environment()
+        canary = self.root / "wrong-platform-helper-executed"
+        (bundle / "libexec/symphony-host").write_text(f"#!/bin/sh\ntouch '{canary}'\nexit 99\n")
+        uname = self.root / "tools/uname"
+        other_os = "Linux" if sys.platform == "darwin" else "Darwin"
+        for system, architecture, reason in (("Linux", "aarch64", "unsupported host"),
+                                            ("Windows_NT", "x86_64", "unsupported host"),
+                                            (other_os, "x86_64", "bundle platform")):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; *) echo {architecture} ;; esac\n')
+            uname.chmod(0o755)
+            for command in ([bundle / "install.sh"], [bundle / "scripts/symphony", "--version"]):
+                refused = call(command, env=env)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(reason, refused.stderr)
+                self.assertFalse(canary.exists(), "unsupported platform executed native helper")
+
     def test_mutable_or_foreign_image_overrides_are_rejected(self):
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))

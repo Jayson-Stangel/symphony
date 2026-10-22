@@ -30,6 +30,7 @@ value=json.load(open(sys.argv[1]))
 value["package_platform"]=sys.argv[3]
 with open(sys.argv[2],"w") as output: json.dump(value,output,indent=2,sort_keys=True); output.write("\n")
 PYMANIFEST
+printf '%s\n' "$platform" > "$bundle/host-platform"
 cp "$root/scripts/symphony" "$root/scripts/symphony-package.sh" "$bundle/scripts/"
 if [ -f "$root/scripts/symphony-package-update.sh" ]; then cp "$root/scripts/symphony-package-update.sh" "$bundle/scripts/"; fi
 cp "$root/elixir/WORKFLOW.md" "$bundle/elixir/"
@@ -38,6 +39,13 @@ cat > "$bundle/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "$0")" && pwd)
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64|Darwin/aarch64|Darwin/x86_64) host_platform=macos ;;
+  Linux/x86_64) host_platform=linux_x86_64 ;;
+  *) echo 'symphony: unsupported host architecture or OS; packaged installs support macOS ARM64/Intel and Linux x86-64' >&2; exit 1 ;;
+esac
+IFS= read -r bundle_platform < "$root/host-platform" || { echo 'symphony: bundle is missing its host platform marker' >&2; exit 1; }
+[ "$host_platform" = "$bundle_platform" ] || { echo 'symphony: bundle platform does not match this host' >&2; exit 1; }
 "$root/libexec/symphony-host" verify-files "$root"
 exec "$root/scripts/symphony" install "$@"
 INSTALL
