@@ -173,3 +173,42 @@ use a unique development namespace and are removed. Local diagnostic files are
 retained in the printed temporary directory. No stable command, host login mount,
 native positive authentication or model request is used. Successful mixed-provider
 UID migration and authenticated inference remain separate qualification.
+
+### Native standalone engine qualification
+
+The `burrito-release` workflow can be manually dispatched on a feature branch.
+A branch dispatch builds candidate artifacts and runs all four existing native
+smoke targets (Linux x86-64/ARM64, macOS Intel/Apple Silicon), without publishing
+a GitHub release or GHCR images. Production publication still requires its tag,
+repository variable and protected environment gates. Dispatch the exact reviewed
+head and record the workflow/job URLs; any subsequent commit requires another
+candidate run. A skipped or unavailable native runner is an acceptance gap.
+
+Each build retains the executable, SHA-256 sidecar and `.source.json` identity
+(source revision, target, artifact name and checksum). On a matching native host:
+
+```sh
+python3 scripts/release/engine-smoke.py /path/to/symphony-REV-linux_x86_64 \
+  --source-revision FULL_SOURCE_SHA --target linux_x86_64 \
+  --evidence-dir /tmp/engine-evidence
+python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
+```
+
+Python 3 and `lsof` are test controller dependencies, separate from the engine's
+bundled runtime. The controller checks native OS/CPU and artifact identity, copies
+the executable outside the checkout, clears ambient credentials and runtime paths,
+and uses temporary homes, extraction/cache, logs, workspaces and an empty memory
+tracker. It observes actual dashboard content and typed empty JSON state for a
+bounded period, attributes the loopback listener to the new process session, then
+requires a zero exit after SIGTERM and disappearance of that session and listener.
+Forced cleanup always fails qualification. Evidence artifacts retain identity,
+state, dashboard, startup/application logs and shutdown/cleanup results.
+
+The fixture selects Claude with no native helper installed and requires truthful
+`runtime_unavailable` readiness. No issue is dispatched and no authenticated model
+request is made. Engine buildability, native server liveness, native-agent login,
+and installed-manager lifecycle are separate claims: this check proves the first
+two, and deliberately does not claim authenticated inference or issue-to-PR proof.
+Regression subprocess fixtures demonstrate rejection of early/banner exits, bad
+HTTP/state, false readiness, startup/shutdown timeouts and surviving children;
+those fixtures are controller tests, not substitutes for native artifact execution.
