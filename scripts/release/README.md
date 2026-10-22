@@ -152,3 +152,19 @@ references are permitted, and registry cleanup verifies the owned container labe
 and actual absence. No public registry publication, credentials or image rebuild
 is involved. The input source-run revision and original image revisions remain
 separate, truthful provenance.
+
+For one bounded measurement of a retained original gzip candidate payload, use
+`transfer-timing.yml` with its exact `source_run`, provider and architecture.
+It downloads only that original artifact, checks its original checksum and
+source/config identities, and measures real checksum, identity inspection and
+archive verification CPU/wall time. It never loads, rebuilds or re-exports an
+image, starts a registry, or schedules another provider/architecture. Receipts
+name the retained archive SHA and byte count. These are measurements of the
+existing original payload, not reconstructed timings for a deleted benchmark
+baseline with potentially different compressed bytes. A representative dispatch
+for the retained Claude x86-64 payload is:
+
+```sh
+gh workflow run transfer-timing.yml --ref codex/faster-image-transfer \
+  -f source_run=39857032359 -f provider=claude -f architecture=x86_64
+```

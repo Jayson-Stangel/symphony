@@ -97,6 +97,46 @@ class ExportTransport(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'differs from original'):
                 BENCH.identities(archive, records, 'claude', 'x86_64')
 
+    def test_timing_only_reads_real_gzip_without_loading_or_reexporting(self):
+        revision = 'a'*40
+        config = json.dumps({'architecture': 'amd64', 'config': {'Labels': {
+            'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64',
+            'org.opencontainers.image.revision': revision}}}).encode()
+        identity = hashlib.sha256(config).hexdigest()
+        manifest = [{'Config': identity+'.json', 'RepoTags': ['fixture:candidate'], 'Layers': ['layer.tar']}]
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode='w') as bundle:
+            for name, content in [(identity+'.json', config), ('layer.tar', b'retained original layer'),
+                                  ('manifest.json', json.dumps(manifest).encode())]:
+                entry = tarfile.TarInfo(name); entry.size = len(content)
+                bundle.addfile(entry, io.BytesIO(content))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / 'codex-x86_64.docker.tar.gz'
+            original = gzip.compress(raw.getvalue())
+            archive.write_bytes(original)
+            checksum = hashlib.sha256(original).hexdigest()
+            archive.with_name('codex-x86_64.sha256').write_text(checksum+'  ./'+archive.name+'\n')
+            archive.with_name('codex-x86_64.json').write_text(json.dumps({
+                'provider': 'codex', 'architecture': 'x86_64', 'platform': 'linux/amd64',
+                'source_revision': revision, 'image': 'localhost:5000/codex@sha256:'+'b'*64}))
+            output = root / 'timing'
+            args = ['benchmark-transfer.py', 'timing', '--input', str(root), '--output', str(output),
+                    '--provider', 'codex', '--architecture', 'x86_64', '--source-revision', revision]
+            with mock.patch.object(sys, 'argv', args), mock.patch.object(BENCH, 'load', side_effect=AssertionError('no Docker load')), mock.patch.object(BENCH.EXPORT, 'export', side_effect=AssertionError('no re-export')), mock.patch.object(BENCH, 'digest_registry', side_effect=AssertionError('no registry')):
+                BENCH.main()
+            result = json.loads((output/'transfer-results.txt').read_text())[0]
+            self.assertEqual(result['status'], 'complete')
+            self.assertEqual(result['input_sha256'], checksum)
+            self.assertEqual(result['image_ids'], ['sha256:'+identity])
+            self.assertNotIn('baseline', result)
+            self.assertNotIn('input_load', result)
+            self.assertIn('retained original', result['measurement_scope'])
+            for operation in ('input_checksum', 'input_identity_verification', 'archive_verification'):
+                self.assertGreater(result[operation]['wall_seconds'], 0)
+                self.assertGreaterEqual(result[operation]['cpu_seconds'], 0)
+            self.assertEqual(archive.read_bytes(), original)
+
     def test_failed_second_or_third_publication_cleans_owned_outputs_and_retries(self):
         for failure_at in (2, 3):
             with self.subTest(failure_at=failure_at), tempfile.TemporaryDirectory() as directory:

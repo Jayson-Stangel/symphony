@@ -187,7 +187,7 @@ def corruption_probe(archive, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('benchmark', 'replay'))
+    parser.add_argument('mode', choices=('benchmark', 'replay', 'timing'))
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--provider', choices=('codex', 'claude'), required=True)
@@ -220,8 +220,17 @@ def main():
         tags = [value['tag'] for value in images]
         result = {'original_records': records, 'input_archive': str(archive),
                   'input_bytes': archive.stat().st_size, 'input_sha256': digest, 'image_ids': image_ids,
-                  'input_load': load(archive, image_ids), 'actual_corruption_probe': corruption,
+                  'actual_corruption_probe': corruption,
                   'input_checksum': input_checksum, 'input_identity_verification': identity_verification}
+        if args.mode == 'timing':
+            # Measure an existing original gzip payload, never recreate the
+            # deleted benchmark baseline or imply identical compressed bytes.
+            _, result['archive_verification'] = observed(EXPORT.verify_tar, archive, image_ids)
+            result['measurement_scope'] = 'retained original candidate gzip payload; no export/compression/load/runtime'
+            result['status'] = 'complete'
+            results.append(result)
+            continue
+        result['input_load'] = load(archive, image_ids)
         result['status'] = 'loaded; remaining qualification incomplete'
         results.append(result)
         (args.output / 'transfer-results.txt').write_text(json.dumps(results, indent=2, sort_keys=True) + '\n')
