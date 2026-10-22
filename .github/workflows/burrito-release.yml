@@ -38,6 +38,11 @@ jobs:
   host-policy:
     uses: ./.github/workflows/host-policy.yml
 
+  engine-fixtures:
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
+    uses: ./.github/workflows/release-native.yml
+
   runners:
     needs: qualification
     if: ${{ !inputs.controller_only && !inputs.engine_only }}
