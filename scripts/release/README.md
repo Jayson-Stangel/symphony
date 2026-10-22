@@ -115,3 +115,24 @@ executed in clean Ubuntu 26.04 without Swift, Git or scripting runtimes. The
 retained artifact includes SHA-256 and clean-container evidence, bound to the
 workflow source SHA. CI controller utilities are distinct from helper runtime
 requirements. Cross-compiling a binary does not prove native execution.
+
+
+### Linux and macOS bundle metadata
+
+`artifacts.py assemble --platform-bundles` creates internal metadata with both
+native archive slots. Final assembly supplies `--bundle MACOS_ARCHIVE` and
+`--linux-bundle LINUX_ARCHIVE`, binding both SHA-256 checksums to the same source
+and immutable runner identities. Schema1, `host_architectures` and legacy `bundle`
+remain unchanged: the old macOS updater still selects its ordinary macOS archive.
+The additive `bundles` map mirrors that macOS entry and adds `linux_x86_64`.
+Each archive records `package_platform`; new Linux managers require this marker
+and select the Linux field. Prior macOS manifests without the marker remain usable.
+
+The manual `runner-release` workflow accepts an optional full `previous_revision`
+SHA. When supplied, it builds actual current/prior runner images and platform
+archives, then performs the native clean-Ubuntu two-revision installed lifecycle
+proof. Candidate artifacts/evidence remain workflow artifacts only. Production
+publication still requires a production tag, enabled release variable and the
+protected environment; the production manager artifact now contains both native
+archives and the backwards-compatible combined manifest. No test controller can
+satisfy an unavailable native platform by replacing it with a compile or mock.

@@ -67,7 +67,7 @@ merging. Existing workflows are preserved when Symphony is initialized or update
 
 ## Get started
 
-On macOS 14 or later, download the manager bundle and `release.json` from a
+On macOS 14 or later, or Ubuntu 26.04 x86-64 when its archive is available, download the matching manager bundle and `release.json` from a
 [completed stable release](https://github.com/Jayson-Stangel/symphony/releases).
 Install and start Docker Desktop or OrbStack separately, then follow the
 [packaged installation guide](docs/packaged-install.md) to verify and install the
@@ -109,7 +109,7 @@ itself or test `dev`, use a [separate development environment](docs/development.
 | I want to… | Read |
 | --- | --- |
 | Connect a project, authenticate an agent, and run a first issue | [Getting started](docs/getting-started.md) |
-| Install a macOS release bundle without host build tools | [Packaged installation](docs/packaged-install.md) |
+| Install a macOS/Ubuntu release bundle without host build tools | [Packaged installation](docs/packaged-install.md) |
 | Inspect, drain, stop, update, or recover a runner | [Operations](docs/operations.md) |
 | Configure trackers, workspaces, hooks, models, or concurrency | [Configuration reference](elixir/README.md#configuration) |
 | Use Claude, configure its tools, or resolve native login and quota issues | [Claude runner guide](docs/claude.md) |

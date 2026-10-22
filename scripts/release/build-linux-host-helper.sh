@@ -6,7 +6,10 @@ output=${1:?Usage: build-linux-host-helper.sh OUTPUT_DIRECTORY}
 [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] || { echo 'run this build on native Linux x86-64' >&2; exit 1; }
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
-docker run --rm -v "$root:$root" -v "$output:/output" -w "$root" \
+git_common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)
+# Linked worktrees point outside their source root; mount only their common Git
+# metadata at its original path so revision and dirty-input checks remain real.
+docker run --rm -v "$root:$root" -v "$git_common:$git_common:ro" -v "$output:/output" -w "$root" \
   -e BUILD_UID="$(id -u)" -e BUILD_GID="$(id -g)" swift:6.1.2-noble bash -euc '
     git config --global --add safe.directory "$PWD"
     swift --version
@@ -21,3 +24,5 @@ if readelf -l "$output/symphony-host" | grep -q INTERP || readelf -d "$output/sy
   echo 'Linux helper unexpectedly requires a dynamic runtime' >&2; exit 1
 fi
 (cd "$output" && sha256sum symphony-host > symphony-host.sha256)
+printf 'source_revision=%s\nos_arch=%s\ntoolchain=Swift 6.1.2\nsdk=swift-6.1.2-RELEASE_static-linux-0.0.1\n' \
+  "$(git -C "$root" rev-parse HEAD)" "$(uname -sm)" > "$output/build.txt"
