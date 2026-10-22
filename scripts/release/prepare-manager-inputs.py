@@ -2,6 +2,7 @@
 """Join exact ordinary-event decisions; retrieve original payloads only locally."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import shutil
@@ -14,7 +15,7 @@ from runner_inputs import identity
 from reuse_payload import retrieve
 
 
-def _prepare(root, plan, built, output, payloads, verify):
+def _prepare(root, plan, built, output, payloads, verify, distribution_alias=False):
     revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     artifacts.require(plan.get('planning_complete') is True and plan.get('manager_source_revision') == revision,
                       'ordinary-event plan belongs to another manager source')
@@ -60,10 +61,18 @@ def _prepare(root, plan, built, output, payloads, verify):
         artifacts.assemble(SimpleNamespace(records=files, schema_version=2, platform_bundles=True,
                            version=manager_version.read(root), revision=revision, channel='candidate',
                            bundle=None, output=str(output / 'release.json')), verifier=verify)
+    if distribution_alias:
+        path = output / 'release.json'
+        manifest = json.loads(path.read_text())
+        manifest['distribution'] = {provider: {architecture:
+            'localhost:5000/symphony-distribution-' + provider + '@' + manifest['runners'][provider][architecture]['image'].split('@', 1)[1]
+            for architecture in artifacts.ARCHITECTURES} for provider in artifacts.PROVIDERS}
+        artifacts.validate(manifest, require_bundle=False)
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
     return records
 
 
-def prepare(root, plan, built, output, payloads, verify):
+def prepare(root, plan, built, output, payloads, verify, distribution_alias=False):
     artifacts.require(not output.exists() and (payloads is None or not payloads.exists()),
                       'refusing existing manager preparation destinations')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +82,7 @@ def prepare(root, plan, built, output, payloads, verify):
         staging = Path(temporary)
         staged_output = staging / 'metadata'
         staged_payloads = staging / 'payloads' if payloads is not None else None
-        records = _prepare(root, plan, built, staged_output, staged_payloads, verify)
+        records = _prepare(root, plan, built, staged_output, staged_payloads, verify, distribution_alias)
         published = None
         try:
             if payloads is not None:
@@ -96,14 +105,17 @@ def main():
     parser.add_argument('--built-metadata', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--payloads', type=Path)
+    parser.add_argument('--distribution-alias', action='store_true', help='explicit manual isolated same-digest distribution proof')
     parser.add_argument('--baseline-run', type=int, help='explicit manual original-record run only')
     args = parser.parse_args()
+    if args.distribution_alias:
+        artifacts.require(os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch', 'distribution alias diagnostic requires explicit manual invocation')
     # Producer-owned policy verifies this exact active run, protected history,
     # or an explicitly selected original-record run in manual diagnostics.
     from component_provenance import selection_verifier
     prepare(args.root, json.loads(args.plan.read_text()),
             json.loads(args.built_metadata.read_text()) if args.built_metadata else None,
-            args.output, args.payloads, selection_verifier(args.baseline_run, root=args.root))
+            args.output, args.payloads, selection_verifier(args.baseline_run, root=args.root), args.distribution_alias)
 
 
 if __name__ == '__main__':

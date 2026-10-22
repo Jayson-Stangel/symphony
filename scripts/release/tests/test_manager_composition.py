@@ -156,6 +156,23 @@ class ManagerComposition(unittest.TestCase):
             self.assertEqual(final['runners'], value['runners'])
             self.assertEqual(final['bundle']['sha256'], hashlib.sha256(b'actual mac native archive fixture').hexdigest())
 
+    def test_distribution_alias_preserves_complete_original_records_and_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'; root.mkdir()
+            plan = self.fixture(root)
+            output = Path(directory) / 'metadata'
+            originals = copy.deepcopy(plan['components'])
+            with patch.object(PREPARE, 'identity', return_value={'input_identity': 'd' * 64}):
+                PREPARE.prepare(root, plan, None, output, None, lambda record: {'original': record['image']}, True)
+            manifest = json.loads((output / 'release.json').read_text())
+            for provider in ('codex', 'claude'):
+                for architecture in ('arm64', 'x86_64'):
+                    record = originals[provider][architecture]['record']
+                    selected = dict(manifest['runners'][provider][architecture], provider=provider, architecture=architecture)
+                    self.assertEqual(selected, record)
+                    self.assertEqual(manifest['distribution'][provider][architecture],
+                        'localhost:5000/symphony-distribution-'+provider+'@'+record['image'].split('@',1)[1])
+
     def test_built_join_cannot_replace_a_valid_original_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'source'; root.mkdir()

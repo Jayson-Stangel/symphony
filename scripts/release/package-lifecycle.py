@@ -142,6 +142,7 @@ def main():
     owned = set()
     controller_ids = {}
     negative_images = {}
+    distribution_aliases = set()
     storages = set()
     owned_volumes = set()
     log = (evidence / "commands.log").open("w")
@@ -261,9 +262,23 @@ def main():
                 docker("pull", original)
                 pulled = json.loads(docker("image", "inspect", original))[0]
                 verify_loaded_component(pulled, qualified, provider, manifest["schema_version"] == 2)
+                alias = manifest.get("distribution", {}).get(provider, {}).get("x86_64")
+                if alias is not None:
+                    assert manifest["schema_version"] == 2
+                    expected_alias = f"localhost:5000/symphony-distribution-{provider}@" + original.split("@", 1)[1]
+                    assert alias == expected_alias, "diagnostic distribution must preserve original digest in the isolated repository"
+                    alias_tag = f"localhost:5000/symphony-distribution-{provider}:" + legacy_tag
+                    distribution_aliases.update((alias_tag, alias))
+                    docker("tag", original, alias_tag)
+                    docker("push", alias_tag)
+                    assert alias in json.loads(docker("image", "inspect", alias_tag))[0].get("RepoDigests", []), "alias changed original OCI digest"
+                    docker("pull", alias)
+                    distributed = json.loads(docker("image", "inspect", alias))[0]
+                    verify_loaded_component(distributed, qualified, provider, True)
+                    assert distributed["Id"] == pulled["Id"], "alias changed original config"
                 result["qualified_runner_components"].append({"provider": provider, "architecture": "x86_64",
                     "manager_source_revision": manifest["source_revision"], "runner_source_revision": qualified["source_revision"],
-                    "image": original, "observed_image_config": pulled["Id"],
+                    "image": original, "distribution_image": alias, "observed_image_config": pulled["Id"],
                     "input_identity": qualified.get("input_identity"), "protocol": qualified.get("protocol")})
         record("actual source-bound manager package and original runner checksums" if current_only else "two real source-bound package and runner revision checksums")
 
@@ -360,6 +375,8 @@ fi
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
             assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
+            selected_reference = initial.get("distribution", {}).get(selected_agent, {}).get("x86_64", initial["runners"][selected_agent]["x86_64"]["image"])
+            assert inspect(name, "{{.Config.Image}}") == selected_reference, "installed manager did not select the manifest distribution reference"
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
                 dashboard = response.read().decode()
             assert "Symphony" in dashboard and "<html" in dashboard.lower(), dashboard[:200]
@@ -533,6 +550,12 @@ fi
                     absent = cleanup_container(name, controller_ids, storages, evidence)
                     if absent:
                         removed.append(absent)
+                except Exception as error:
+                    cleanup_errors.append(str(error))
+            for reference in distribution_aliases:
+                try:
+                    remove_local_image(run, reference)
+                    removed.append(reference)
                 except Exception as error:
                     cleanup_errors.append(str(error))
             for reference, token in negative_images.items():
