@@ -47,7 +47,8 @@ jobs:
             -t "$image" .
           docker push "$image"
           digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
-          docker image rm "$image" "$digest"
+          docker image rm "$image"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
           ! docker image inspect "$digest" >/dev/null 2>&1
           docker pull "$digest"
           bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
@@ -104,7 +105,8 @@ jobs:
           docker push "$image"
           digest=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -F "$repository@sha256:")
           docker logout ghcr.io
-          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate" "$digest"
+          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
           ! docker image inspect "$digest" >/dev/null 2>&1
           docker pull "$digest"
           bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"

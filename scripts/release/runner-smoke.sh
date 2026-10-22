@@ -20,6 +20,10 @@ docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 90 /bin/sh
   node --version
   playwright --version
   test -x /opt/symphony/elixir/bin/symphony
+  status=0
+  output=$(/opt/symphony/elixir/bin/symphony 2>&1) || status=$?
+  test "$status" = 1
+  printf "%s\n" "$output" | grep -F "This Symphony implementation is a low key engineering preview."
   for skill in commit push pull linear land; do test -r "/opt/symphony/skills/$skill/SKILL.md"; done
   workspace=$(mktemp -d)
   git -C "$workspace" init -q
@@ -29,5 +33,7 @@ docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 90 /bin/sh
 '
 case "$provider" in
   codex) docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 codex --version ;;
-  claude) docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 /usr/local/bin/node /opt/symphony/claude/node_modules/@anthropic-ai/claude-code/cli.js --version ;;
+  claude) docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 /usr/local/bin/node --input-type=module -e "import {nativeExecutable} from '/opt/symphony/claude/runtime.mjs'; import {execFileSync} from 'node:child_process'; process.stdout.write(execFileSync(nativeExecutable(), ['--version'], {encoding:'utf8', timeout:15000}));" ;;
 esac
+
+bash "$(dirname "$0")/runner-startup.sh" "$image" "$provider"
