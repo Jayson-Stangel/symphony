@@ -18,11 +18,16 @@ func checkedInfo(_ path: String, directory: Bool = false) -> stat {
 }
 func validateManifest(_ path: String) throws -> [String: Any] {
     let manifest = object(try json(read(path)))
-    guard integer(manifest["schema_version"]) == 1,
+    let schema = integer(manifest["schema_version"])
+    guard schema == 1 || schema == 2,
           let version = manifest["version"] as? String, matches(version, "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"),
           let revision = manifest["source_revision"] as? String, matches(revision, "^[a-f0-9]{40}$"),
           ["candidate", "stable"].contains(manifest["channel"] as? String ?? ""),
           manifest["host_architectures"] as? [String] == ["arm64", "x86_64"] else { fail("invalid or unsupported release manifest") }
+    if schema == 2 {
+        let compatibility = object(manifest["compatibility"])
+        guard Set(compatibility.keys) == Set(["runner_protocol"]), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager/runner compatibility") }
+    }
     guard Set(object(manifest["runners"]).keys) == Set(["codex", "claude"]) else { fail("both runner providers are required") }
     for provider in ["codex", "claude"] {
         guard Set(object(object(manifest["runners"])[provider]).keys) == Set(["arm64", "x86_64"]) else { fail("both runner architectures are required") }
@@ -30,10 +35,39 @@ func validateManifest(_ path: String) throws -> [String: Any] {
             let runner = object(object(object(manifest["runners"])[provider])[arch])
             let tools = object(runner["tool_versions"])
             for tool in [provider, "git", "node", "playwright"] { guard let value = tools[tool] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { fail("missing recorded tool version: \(tool)") } }
-            guard runner["source_revision"] as? String == revision,
+            guard let runnerRevision = runner["source_revision"] as? String, matches(runnerRevision, "^[a-f0-9]{40}$"),
+                  schema != 1 || runnerRevision == revision,
                   runner["platform"] as? String == (arch == "arm64" ? "linux/arm64" : "linux/amd64"),
                   let image = runner["image"] as? String,
                   matches(image, "^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$") else { fail("missing or invalid \(provider)/\(arch) release image") }
+            if schema == 2 {
+                let proof = object(runner["qualification"])
+                let dependencies = object(runner["dependencies"])
+                guard let engine = tools["elixir"] as? String, !engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      dependencies["resolution_policy"] as? String == "retain-original-qualified-resolution",
+                      let bases = dependencies["base_images"] as? [String], !bases.isEmpty,
+                      bases.allSatisfy({ matches($0, "^[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}$") }),
+                      let packages = dependencies["os_packages"] as? [String: String], !packages.isEmpty,
+                      packages.allSatisfy({ !$0.key.isEmpty && !$0.value.isEmpty }),
+                      let buildOptions = dependencies["build_options"] as? [String: String],
+                      buildOptions["TARGETARCH"] == (arch == "arm64" ? "arm64" : "amd64") else { fail("missing original resolved runner dependencies") }
+                guard let inputs = runner["input_identity"] as? String, matches(inputs, "^[a-f0-9]{64}$"),
+                      integer(runner["protocol"]) == 1,
+                      proof["repository"] as? String == "Jayson-Stangel/symphony",
+                      let run = integer(proof["run_id"]), run > 0,
+                      let attempt = integer(proof["run_attempt"]), attempt > 0,
+                      let artifact = integer(proof["artifact_id"]), artifact > 0,
+                      let controller = proof["controller_revision"] as? String, matches(controller, "^[a-f0-9]{40}$"),
+                      proof["source_revision"] as? String == runnerRevision,
+                      proof["input_identity"] as? String == inputs,
+                      proof["image"] as? String == image,
+                      ["runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)"].contains(proof["job_name"] as? String ?? ""),
+                      proof["artifact_name"] as? String == "runner-candidate-\(provider)-\(arch)",
+                      let artifactDigest = proof["artifact_digest"] as? String, matches(artifactDigest, "^sha256:[a-f0-9]{64}$"),
+                      let archive = proof["archive_filename"] as? String,
+                      ["\(provider)-\(arch).docker.tar.gz", "previous/\(provider)-\(arch).docker.tar.gz"].contains(archive),
+                      let archiveDigest = proof["archive_sha256"] as? String, matches(archiveDigest, "^[a-f0-9]{64}$") else { fail("invalid original runner qualification or compatibility") }
+            }
         }
     }
     let bundle = object(manifest["bundle"])

@@ -100,6 +100,37 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":0}}').returncode, 0)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
 
+    def test_component_manifest_keeps_original_sources_and_strict_compatibility(self):
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider, runners in value['runners'].items():
+            for arch, runner in runners.items():
+                runner.update(source_revision='a' * 40, input_identity='c' * 64, protocol=1,
+                              dependencies={'resolution_policy': 'retain-original-qualified-resolution',
+                                            'base_images': ['base@sha256:' + 'a' * 64],
+                                            'os_packages': {'git': '1.0'}, 'build_options': {'TARGETARCH': 'arm64' if arch == 'arm64' else 'amd64'}})
+                runner['tool_versions']['elixir'] = 'Elixir fixture / OTP fixture'
+                runner['qualification'] = {'repository': 'Jayson-Stangel/symphony', 'run_id': 123, 'run_attempt': 1,
+                    'controller_revision': 'b' * 40, 'job_name': f'runner-{provider}-{arch}', 'artifact_id': 456,
+                    'artifact_name': f'runner-candidate-{provider}-{arch}', 'artifact_digest': 'sha256:' + 'd' * 64,
+                    'archive_filename': f'{provider}-{arch}.docker.tar.gz', 'archive_sha256': 'e' * 64,
+                    **{key: runner[key] for key in ('source_revision', 'input_identity', 'image')}}
+        self.file.write_text(json.dumps(value))
+        self.assertOK(self.helper('validate-manifest', self.file))
+        changes = [lambda m: m.update(schema_version=1),
+                   lambda m: m['compatibility'].update(runner_protocol=True),
+                   lambda m: m['compatibility'].update(runner_protocol=2),
+                   lambda m: m['runners']['codex']['arm64'].update(protocol=1.0),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(run_id=True),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(repository='foreign/repo'),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(source_revision='0' * 40),
+                   lambda m: m['runners']['codex']['arm64']['dependencies'].update(os_packages={})]
+        for change in changes:
+            invalid = copy.deepcopy(value)
+            change(invalid)
+            self.file.write_text(json.dumps(invalid))
+            self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
+
     def test_git_identity_and_linked_worktree_match_git(self):
         repo = self.root / "project with space"; repo.mkdir()
         self.assertOK(call(["git", "init", "-q", repo], env=self.git_env))

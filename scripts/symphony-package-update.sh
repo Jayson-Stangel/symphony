@@ -213,14 +213,11 @@ package_stage_download() (
   package_helper validate-manifest "$temporary/unpacked/release.json" || return
   package_helper verify-files "$temporary/unpacked" || return
   [ "$(package_helper get "$manifest" channel)" = "$(package_helper get "$temporary/unpacked/release.json" channel)" ] || die 'bundle and release channels differ'
-  for agent in codex claude; do
-    for arch in arm64 x86_64; do
-      for field in image platform source_revision; do
-        [ "$(package_helper get "$manifest" "runners.$agent.$arch.$field")" = \
-          "$(package_helper get "$temporary/unpacked/release.json" "runners.$agent.$arch.$field")" ] || die 'bundle runner identity differs from release manifest'
-      done
-    done
-  done
+  [ "$(package_helper get "$manifest" schema_version)" = "$(package_helper get "$temporary/unpacked/release.json" schema_version)" ] || die 'bundle and release schemas differ'
+  [ "$(package_helper get "$manifest" runners)" = "$(package_helper get "$temporary/unpacked/release.json" runners)" ] || die 'bundle runner identity or qualification differs from release manifest'
+  if [ "$(package_helper get "$manifest" schema_version)" = 2 ]; then
+    [ "$(package_helper get "$manifest" compatibility)" = "$(package_helper get "$temporary/unpacked/release.json" compatibility)" ] || die 'bundle compatibility differs from release manifest'
+  fi
   # The installer preflights/copies an immutable release without changing PATH,
   # skills, current, project files, credentials, or running containers.
   target=$(package_stage_bundle "$temporary/unpacked") || return

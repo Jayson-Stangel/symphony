@@ -63,13 +63,11 @@ jobs:
       - name: Verify release tag matches project version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          project_version="$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' mix.exs | head -n 1)"
-          expected_tag="v$project_version"
-
-          if test -z "$project_version" || test "$GITHUB_REF_NAME" != "$expected_tag"; then
-            echo "Release tag $GITHUB_REF_NAME does not match mix.exs version $project_version."
+          manager_version="$(python3 ../scripts/release/manager_version.py)"
+          test "$GITHUB_REF_NAME" = "v$manager_version" || {
+            echo 'Release tag differs from the independent manager release version.' >&2
             exit 1
-          fi
+          }
 
       - name: Build Burrito executable
         run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite

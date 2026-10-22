@@ -1,8 +1,9 @@
 # Runner and manager release artifacts
 
 The installed manager consumes `release.json`, independent of Git and the Symphony
-source checkout. Its version, 40-character source revision, host architecture and
-provider resolve one immutable Linux OCI image digest. `arm64` uses Linux ARM64;
+source checkout. The manager version/source revision identifies the actual bundle
+and helper. Each provider/platform record independently identifies the original
+runner source and immutable Linux OCI image digest. `arm64` uses Linux ARM64;
 `x86_64` uses Linux AMD64. Missing records are errors. Never substitute another
 architecture, provider or mutable tag. `tool_versions` records versions observed
 inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
@@ -81,7 +82,8 @@ After the normal review, promotion and release approval gates, create the matchi
 the protected publication jobs can push those exact tested images. Publication
 then removes login credentials, pulls each GHCR digest anonymously, reruns smoke,
 and records the actual public digest. The manager archive and checksum are built
-from those four records at the same revision. The packaged-manager prerequisite
+from those four records. A legacy schema-1 bridge binds them to its own revision;
+schema 2 preserves each actual runner revision and qualified payload origin. The packaged-manager prerequisite
 must be integrated: absent `package.sh`, production fails closed. No Burrito engine
 binary is needed to build or run the container manager bundle.
 
@@ -96,3 +98,67 @@ These checks prove artifact identity and model-free container behavior. They do
 not prove native login, authenticated inference, clean macOS installation, or a
 complete listener update. Those require the install/update stories' separately
 recorded observations and explicit disposable-account authorization.
+
+
+## Independent manager and runner components
+
+`scripts/release/manager-version` is the manager release version and tag contract.
+`elixir/mix.exs` remains the engine/runtime version reported by actual engines and
+runner images. A manager semver change therefore does not itself change engine
+source inputs. Never update an old image's version or source labels to claim the
+new manager version; record the two component identities separately.
+
+Schema 1 retains its strict single-revision contract. A bridge candidate may add
+native component receipts while keeping every runner source equal to the bridge
+manager source. Its real new helper understands schemas 1 and 2. An older
+installed updater first installs that explicit schema-1 bridge with its ordinary
+`--release` path, then uses the bridge updater for schema 2. Direct schema-2
+selection by an older validator refuses before activation and preserves the
+usable installation. Actual installed update/rollback proof is required before
+this path is accepted; a shape-valid fixture is insufficient. Platform policy
+and per-bundle architecture metadata belong to the supported-host contract.
+
+Schema 2 retains top-level `source_revision` for the manager/helper and carries
+original runner `source_revision`, immutable image digest, `input_identity`,
+protocol compatibility, resolved dependency inventory and native qualification
+origin. The installed consumer checks the selected runner's own source/input and
+protocol labels. It never substitutes the manager source. Internal/external bundle
+metadata must match the complete runner records, including provenance fields.
+
+`runner_inputs.py` hashes the selected production stage graph, pinned base
+references, effective declared options and actual consumed committed files/modes.
+It follows supported COPY and Dockerignore semantics and includes the **whole**
+current `COPY elixir` tree, including its docs, AGENTS and WORKFLOW. JAY-693's event
+classification does not change what an actual image build consumes. Claude-only
+stage/source changes do not enter Codex's closure. Manager/helper files outside
+that closure do not enter either image. Unknown syntax, ignored metadata loss,
+platform overrides, dirty/untracked consumed files or unsafe links refuse reuse.
+Metadata arguments may only reach final labels, including through stage inheritance.
+
+That identity describes declared source/recipe inputs, not a fresh resolution of
+mutable external apt indexes. Each native image records its actual resolved OS
+packages, Elixir/OTP and agent/browser/tool versions, pinned base references and
+build options. Reuse explicitly retains that **original qualified resolution**
+and immutable payload. It never claims current-head dependency resolution or old
+native checks ran at the new manager head. Changing locks, a base or the effective
+recipe invalidates reuse; requesting a new OS resolution requires such an actual
+input change and a newly qualified image.
+
+After an image payload upload, `component_provenance.py seal` binds its actual
+archive checksum, immutable artifact ID/digest, source/controller revisions and
+native job/run. The sealed small record is then uploaded separately. A reuse
+selection downloads and checksum-verifies that original small record, compares
+its complete content, checks the successful native job and live original payload
+availability, and rejects expired/missing/foreign/corrupt evidence. Schema-2
+assembly repeats this verification; a local receipt alone never authorizes reuse.
+The current manager's actual bundle/integration qualification is separate from
+these original native image results. Actual downstream archive/digest loading
+and installed lifecycle proof remain mandatory at their consumer boundary.
+
+`runner_reuse.py` plans one exact build-or-reuse decision per provider/platform
+against an explicit baseline. It neither builds nor deploys. Unchanged inputs and
+verified original evidence permit reuse; missing evidence requests an explicitly
+reported verified-input rebuild. Unknown source closure stops before any reuse.
+A `--require-reuse` diagnostic fails if any rebuild would be needed. Reused records
+preserve every original digest/label/source and never cause export/upload just to
+associate the image with a new manager head.

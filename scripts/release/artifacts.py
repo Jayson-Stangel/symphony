@@ -20,7 +20,12 @@ def require(condition, message):
 
 def validate(value, require_bundle=True):
     require(isinstance(value, dict), "release manifest must be an object")
-    require(type(value.get("schema_version")) is int and value["schema_version"] == 1, "unsupported release manifest schema")
+    schema = value.get("schema_version")
+    require(type(schema) is int and schema in (1, 2), "unsupported release manifest schema")
+    if schema == 2:
+        require(value.get("compatibility") == {"runner_protocol": 1} and
+                type(value["compatibility"].get("runner_protocol")) is int,
+                "unsupported manager/runner compatibility")
     require(VERSION.fullmatch(value.get("version", "")), "invalid release version")
     require(REVISION.fullmatch(value.get("source_revision", "")), "invalid source revision")
     require(value.get("channel") in ("candidate", "stable"), "invalid release channel")
@@ -35,7 +40,11 @@ def validate(value, require_bundle=True):
             runner = runners[provider][architecture]
             require(isinstance(runner, dict), "runner must be an object")
             require(runner.get("platform") == platform, "runner platform differs")
-            require(runner.get("source_revision") == value["source_revision"], "runner revision differs")
+            if schema == 1:
+                require(runner.get("source_revision") == value["source_revision"], "runner revision differs")
+            else:
+                require(REVISION.fullmatch(runner.get("source_revision", "")), "invalid runner source revision")
+                validate_component(runner, provider, architecture)
             require(DIGEST_IMAGE.fullmatch(runner.get("image", "")), "runner image must use an immutable digest")
             tools = runner.get("tool_versions", {})
             require(isinstance(tools, dict), "tool versions must be an object")
@@ -49,16 +58,56 @@ def validate(value, require_bundle=True):
     return value
 
 
+def validate_component(runner, provider, architecture):
+    require(re.fullmatch(r"[a-f0-9]{64}", runner.get("input_identity", "")), "missing runner input identity")
+    require(type(runner.get("protocol")) is int and runner["protocol"] == 1, "incompatible runner protocol")
+    require(isinstance(runner.get("tool_versions", {}).get("elixir"), str) and
+            bool(runner["tool_versions"]["elixir"].strip()), "missing original engine/toolchain version")
+    dependencies = runner.get("dependencies")
+    require(isinstance(dependencies, dict) and dependencies.get("resolution_policy") == "retain-original-qualified-resolution",
+            "missing original dependency resolution policy")
+    bases = dependencies.get("base_images")
+    require(isinstance(bases, list) and bool(bases) and all(isinstance(base, str) and
+            re.fullmatch(r"[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}", base) for base in bases),
+            "missing pinned original base images")
+    packages = dependencies.get("os_packages")
+    require(isinstance(packages, dict) and bool(packages) and all(isinstance(name, str) and name and
+            isinstance(version, str) and version for name, version in packages.items()),
+            "missing original resolved OS packages")
+    options = dependencies.get("build_options")
+    require(isinstance(options, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in options.items())
+            and options.get("TARGETARCH") == ARCHITECTURES[architecture].split("/")[1],
+            "missing or incompatible original effective build options")
+    proof = runner.get("qualification")
+    require(isinstance(proof, dict), "missing original native qualification")
+    require(proof.get("repository") == "Jayson-Stangel/symphony", "foreign native qualification")
+    for key in ("run_id", "run_attempt", "artifact_id"):
+        require(type(proof.get(key)) is int and proof[key] > 0, "invalid native qualification " + key)
+    require(REVISION.fullmatch(proof.get("controller_revision", "")), "missing qualification controller revision")
+    for key in ("source_revision", "input_identity", "image"):
+        require(proof.get(key) == runner.get(key), "native qualification identity differs: " + key)
+    require(proof.get("job_name") in (f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}"), "native qualification target differs")
+    require(proof.get("artifact_name") == f"runner-candidate-{provider}-{architecture}", "native artifact target differs")
+    require(re.fullmatch(r"sha256:[a-f0-9]{64}", proof.get("artifact_digest", "")), "missing immutable artifact digest")
+    require(proof.get("archive_filename") in (f"{provider}-{architecture}.docker.tar.gz",
+                                              f"previous/{provider}-{architecture}.docker.tar.gz"),
+            "native archive target differs")
+    require(re.fullmatch(r"[a-f0-9]{64}", proof.get("archive_sha256", "")), "missing native archive checksum")
+
+
 def assemble(args):
     runners = {provider: {} for provider in PROVIDERS}
     for filename in args.records:
         record = json.loads(Path(filename).read_text())
+        if getattr(args, "schema_version", 1) == 2:
+            from component_provenance import verify_origin
+            verify_origin(record)
         provider, architecture = record.pop("provider"), record.pop("architecture")
         require(provider in runners and architecture in ARCHITECTURES, "unsupported runner record")
         require(architecture not in runners[provider], "duplicate runner record")
         runners[provider][architecture] = record
     result = {
-        "schema_version": 1,
+        "schema_version": getattr(args, "schema_version", 1),
         "version": args.version,
         "source_revision": args.revision,
         "channel": args.channel,
@@ -66,6 +115,8 @@ def assemble(args):
         "runners": runners,
         "bundle": {"filename": f"symphony-{args.version}-macos.tar.gz"},
     }
+    if result["schema_version"] == 2:
+        result["compatibility"] = {"runner_protocol": 1}
     if args.bundle:
         require(Path(args.bundle).name == result["bundle"]["filename"], "bundle filename differs")
         result["bundle"]["sha256"] = hashlib.sha256(Path(args.bundle).read_bytes()).hexdigest()
@@ -80,6 +131,7 @@ def main():
     check.add_argument("manifest")
     check.add_argument("--internal", action="store_true", help="allow bundled metadata without its own checksum")
     build = commands.add_parser("assemble")
+    build.add_argument("--schema-version", choices=(1, 2), type=int, default=1)
     build.add_argument("--version", required=True)
     build.add_argument("--revision", required=True)
     build.add_argument("--channel", choices=("candidate", "stable"), required=True)

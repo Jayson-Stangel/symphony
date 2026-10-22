@@ -36,8 +36,10 @@ USAGE
 
 package_image() { package_helper get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; }
 package_release_image() {
-  local runtime=$1 image=$2 agent=$3 revision=$4 platform
+  local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
   [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
+  [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
+  revision=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
   platform=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; check engine network access and release availability: $image"
@@ -45,6 +47,11 @@ package_release_image() {
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'runner source revision does not match selected release'
   [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'runner architecture does not match selected release'
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'runner provider does not match selected release'
+  if [ "$(package_helper get "$symphony_home/release.json" schema_version)" = 2 ]; then
+    inputs=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.input_identity")
+    [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.inputs.sha256" }}' "$image")" = "$inputs" ] || die 'runner build inputs differ from selected release'
+    [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")" = 1 ] || die 'runner protocol is incompatible with this manager'
+  fi
 }
 package_build_image() {
   local agent=${1:-codex} runtime image

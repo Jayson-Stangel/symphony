@@ -32,7 +32,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/release/tests -v
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$(python3 scripts/release/manager_version.py)"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Build exact runner and test a digest pull from an isolated registry
         env:
@@ -131,7 +131,7 @@ jobs:
           merge-multiple: true
       - name: Assemble source-independent candidate metadata
         run: |
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          version=$(python3 scripts/release/manager_version.py)
           mkdir -p dist
           python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
             --channel candidate --output dist/release.json candidate/*.json
@@ -154,7 +154,7 @@ jobs:
       - name: Assemble matching manager bundle and checksums
         run: |
           test -f scripts/release/package.sh || { echo 'Packaged manager prerequisite is not integrated; refusing incomplete stable release.' >&2; exit 1; }
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          version=$(python3 scripts/release/manager_version.py)
           mkdir -p dist
           python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
             --channel stable --output "$RUNNER_TEMP/release.json" records/*.json
