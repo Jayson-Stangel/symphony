@@ -204,6 +204,29 @@ PY
         self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
         self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
 
+    def test_failed_stage_rename_never_activates_and_preserves_existing_install(self):
+        bundle = self.bundle(); env = self.environment()
+        mv = self.root / "tools/mv"; mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Installed Symphony", result.stdout)
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
+        mv.unlink()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        before = self.assertOK(call([command, "--version"], env=env))
+        # A second fresh staging destination isolates the rename failure while
+        # retaining the existing active manager and command.
+        script = 'source "$1" --help >/dev/null; package_app_home="$2"; package_stage_bundle "$3"'
+        other = self.root / "other-app"; other.mkdir(mode=0o700)
+        mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call(["bash", "-e", "-c", script, "fixture", command, other, bundle], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list((other / "releases").iterdir()))
+        self.assertEqual(self.assertOK(call([command, "--version"], env=env)), before)
+
     def test_host_layouts_missing_engine_and_source_bound_archive(self):
         mismatch = manifest(revision="c" * 40)
         self.file.write_text(json.dumps(mismatch))

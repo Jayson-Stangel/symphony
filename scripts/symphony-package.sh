@@ -78,8 +78,8 @@ package_use_project_image() {
 package_stage_bundle() {
   local source=$1 destination stage version revision
   package_helper validate-manifest "$source/release.json" || return
-  version=$(package_helper get "$source/release.json" version)
-  revision=$(package_helper get "$source/release.json" source_revision)
+  version=$(package_helper get "$source/release.json" version) || return
+  revision=$(package_helper get "$source/release.json" source_revision) || return
   package_helper verify-files "$source" || return
   destination="$package_app_home/releases/$version-$revision"
   # Validate each owned storage boundary before following it for staging.
@@ -92,10 +92,10 @@ package_stage_bundle() {
     cmp -s "$source/files.sha256" "$destination/files.sha256" || die 'same release identity has different bundle content'
     package_helper verify-files "$destination" || return
   else
-    stage=$(mktemp -d "$package_app_home/releases/.stage.XXXXXX")
+    stage=$(mktemp -d "$package_app_home/releases/.stage.XXXXXX") || return
     cp -R "$source/." "$stage/" || { rm -rf "$stage"; return 1; }
     package_helper verify-files "$stage" || { rm -rf "$stage"; return 1; }
-    mv "$stage" "$destination"
+    mv "$stage" "$destination" || { rm -rf "$stage"; return 1; }
   fi
   printf '%s\n' "$destination"
 }
@@ -131,24 +131,25 @@ package_install() (
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
   package_app_home=$(package_helper canonical-path "$package_app_home")
   if ! "$stage_only"; then package_preflight_links; fi
-  (umask 077; mkdir -p "$package_app_home")
+  (umask 077; mkdir -p "$package_app_home") || return
   package_helper lock-directory "$package_app_home" || return
   app_lock="$package_app_home/update.lock"
   [ ! -L "$app_lock" ] || die 'unsafe application updater lock'
-  exec 8>>"$app_lock"; package_helper lock "$app_lock" 8 acquire || return
+  exec 8>>"$app_lock" || return
+  package_helper lock "$app_lock" 8 acquire || return
   if ! "$stage_only"; then package_preflight_links; fi
   destination=$(package_stage_bundle "$symphony_home") || return
   if "$stage_only"; then printf '%s\n' "$destination"; return; fi
   next="$package_app_home/.current-$$"
-  ln -s "releases/$package_version-$package_revision" "$next"
-  package_helper replace-link "$next" "$package_app_home/current"
-  mkdir -p "$bin_dir" "$skills_dir"
-  [ -L "$bin_dir/symphony" ] || ln -s "$package_app_home/current/scripts/symphony" "$bin_dir/symphony"
+  ln -s "releases/$package_version-$package_revision" "$next" || return
+  package_helper replace-link "$next" "$package_app_home/current" || { rm -f "$next"; return 1; }
+  mkdir -p "$bin_dir" "$skills_dir" || return
+  [ -L "$bin_dir/symphony" ] || ln -s "$package_app_home/current/scripts/symphony" "$bin_dir/symphony" || return
   for skill in "${managed_skills[@]}"; do
     target=$(global_skill_path "$skill")
-    [ -L "$target" ] || ln -s "$package_app_home/current/.codex/skills/$skill" "$target"
+    [ -L "$target" ] || ln -s "$package_app_home/current/.codex/skills/$skill" "$target" || return
   done
-  (umask 077; mkdir -p "$config_home/projects")
+  (umask 077; mkdir -p "$config_home/projects") || return
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
   case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add this directory to PATH: export PATH="%s:$PATH"\n' "$bin_dir" ;; esac
   printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, then symphony auth codex login and symphony run.\n'
