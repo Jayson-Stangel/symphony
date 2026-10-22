@@ -11,6 +11,7 @@ bundle="$stage/bundle"; mkdir -p "$bundle/scripts" "$bundle/libexec" "$bundle/el
 if [ -n "$helper" ]; then cp "$helper" "$bundle/libexec/symphony-host"
 else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host"; fi
 "$bundle/libexec/symphony-host" validate-manifest "$manifest"
+if "$bundle/libexec/symphony-host" get "$manifest" bundle.sha256 >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
 revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
 git -C "$root" diff --quiet HEAD -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/release/package.sh scripts/release/build-host-helper.sh elixir/WORKFLOW.md .codex/skills || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
@@ -24,6 +25,7 @@ cat > "$bundle/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "$0")" && pwd)
+"$root/libexec/symphony-host" verify-files "$root"
 exec "$root/scripts/symphony" install "$@"
 INSTALL
 chmod 755 "$bundle/install.sh" "$bundle/scripts/symphony" "$bundle/libexec/symphony-host"

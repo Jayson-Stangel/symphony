@@ -81,7 +81,7 @@ class PackageTest(unittest.TestCase):
 
     def test_manifest_validation_and_typed_json(self):
         self.assertOK(self.helper("validate-manifest", self.file))
-        for change in [lambda m: m.update(version="1.2.3\n"), lambda m: m.update(schema_version=True),
+        for change in [lambda m: m.update(version="1.2.3\n"), lambda m: m.update(schema_version=True), lambda m: m.update(schema_version=1.0),
                 lambda m: m["runners"]["codex"]["arm64"].update(image="mutable:latest"),
                 lambda m: m["runners"]["claude"]["x86_64"].pop("tool_versions"),
                 lambda m: m["bundle"].update(filename="other.tar.gz"),
@@ -152,11 +152,25 @@ PY
         self.assertNotEqual(result.returncode, 0); self.assertEqual(command.read_text(), "owned")
         self.assertFalse((self.root / "app").exists())
         command.unlink()
-        (bundle / "scripts/symphony-package.sh").write_text("corrupt")
-        # Invoke unmodified launcher definitions, checksum verification catches altered payload before copy.
+        canary = self.root / "payload-ran"
+        (bundle / "scripts/symphony-package.sh").write_text(f"touch {canary}\n")
+        # Installer verifies shell payload before sourcing the manager library.
         result = call([bundle / "install.sh"], env=env)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / "app/current").exists())
+        self.assertFalse(canary.exists())
+        self.assertIn("bundle checksum mismatch", result.stderr)
+
+    def test_custom_app_dir_does_not_require_environment_override(self):
+        bundle = self.bundle(); env = self.environment()
+        env.pop("SYMPHONY_APP_HOME")
+        app = self.root / "custom-app"
+        self.assertOK(call([bundle / "install.sh", "--app-dir", app], env=env))
+        self.assertOK(call([bundle / "install.sh", "--app-dir", app], env=env))
+        shutil.rmtree(bundle)
+        command = self.root / "bin/symphony"
+        self.assertIn('"ready":true', self.assertOK(call([command, "doctor", "--json"], env=env)))
+        self.assertOK(call([command, "--version"], env=env))
 
     def test_stage_only_does_not_activate_and_arch_failure_is_clear(self):
         bundle = self.bundle(); env = self.environment()

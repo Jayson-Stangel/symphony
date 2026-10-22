@@ -1,13 +1,16 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
 packaged_install=true
+symphony_home=$(cd "$symphony_home" && pwd -P)
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
 package_helper validate-manifest "$symphony_home/release.json" || exit 1
 package_version=$(package_helper get "$symphony_home/release.json" version)
 package_revision=$(package_helper get "$symphony_home/release.json" source_revision)
+[ "$(package_helper build-revision)" = "$package_revision" ] || die 'bundled helper does not match release source revision'
 package_channel=$(package_helper get "$symphony_home/release.json" channel)
 case "$(uname -s)" in Darwin) ;; *) die 'packaged installs support macOS only' ;; esac
 case "$(uname -m)" in arm64|aarch64) package_arch=arm64 ;; x86_64) package_arch=x86_64 ;; *) die 'unsupported host architecture; select an ARM64 or Intel macOS release' ;; esac
 package_app_home=${SYMPHONY_APP_HOME:-"$HOME/.local/share/$runtime_prefix"}
+package_app_home=$(package_helper canonical-path "$package_app_home")
 case "$symphony_home" in */releases/*) package_app_home=$(cd "$symphony_home/../.." && pwd) ;; esac
 
 package_usage() {
@@ -104,6 +107,7 @@ package_install() (
     esac
   done
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
+  package_app_home=$(package_helper canonical-path "$package_app_home")
   if ! "$stage_only"; then
     source="$package_app_home/current/scripts/symphony"; target="$bin_dir/symphony"
     if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target"

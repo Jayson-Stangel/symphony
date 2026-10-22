@@ -10,7 +10,7 @@ func json(_ data: Data) throws -> Any { try JSONSerialization.jsonObject(with: d
 func object(_ value: Any?) -> [String: Any] { value as? [String: Any] ?? [:] }
 func matches(_ value: String, _ pattern: String) -> Bool { value.range(of: pattern.replacingOccurrences(of: "$", with: "\\z"), options: .regularExpression) != nil }
 func isBool(_ value: Any?, _ expected: Bool) -> Bool { guard let n = value as? NSNumber else { return false }; return CFGetTypeID(n) == CFBooleanGetTypeID() && n.boolValue == expected }
-func integer(_ value: Any?) -> Int? { guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue == Double(n.intValue) else { return nil }; return n.intValue }
+func integer(_ value: Any?) -> Int? { guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), !["d", "f"].contains(String(cString: n.objCType)), n.doubleValue == Double(n.intValue) else { return nil }; return n.intValue }
 func checkedInfo(_ path: String, directory: Bool = false) -> stat {
     var info = stat()
     guard lstat(path, &info) == 0, info.st_uid == geteuid(), (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG), directory || info.st_nlink == 1 else { fail("unsafe or foreign metadata: \(path)") }
@@ -96,10 +96,20 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1]
+let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
+    case "canonical-path":
+        var path = URL(fileURLWithPath: args[1]).standardizedFileURL.path
+        var suffix: [String] = []
+        while access(path, F_OK) != 0 {
+            let url = URL(fileURLWithPath: path); suffix.insert(url.lastPathComponent, at: 0)
+            path = url.deletingLastPathComponent().path
+            guard path != "/" || access(path, F_OK) == 0 else { fail("cannot resolve path") }
+        }
+        guard let resolved = realpath(path, nil) else { fail("cannot resolve path") }; defer { free(resolved) }
+        print(([String(cString: resolved)] + suffix).joined(separator: "/").replacingOccurrences(of: "//", with: "/"))
     case "build-revision": print(compiledRevision)
     case "replace-link":
         var info = stat()
