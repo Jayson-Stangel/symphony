@@ -235,3 +235,10 @@ consumer. It does not itself prove Docker config identity, runtime behavior or
 current-manager integration. Ordinary runner integration must retain its real
 behavioral checks until the native package lifecycle prerequisite is available
 and that consumer is composed with these archives and the actual new manager.
+
+Pre-merge candidate diagnostics may pass `--baseline-run ID` to the payload
+consumer only in an explicitly invoked `workflow_dispatch` context. The consumer
+independently verifies that selected original run; a plan's diagnostic metadata
+never grants permission. Ordinary PR/push consumers always require original
+source/controller ancestry in verified fork dev/main history. Actual archive
+retrieval also bounds the streamed artifact bytes and total download time.
