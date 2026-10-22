@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - runner/Dockerfile
+      - .github/actions/build-runner/**
       - runner/browser/**
       - .github/workflows/browser-smoke.yml
   push:
     branches: [dev, main]
     paths:
       - runner/Dockerfile
+      - .github/actions/build-runner/**
       - runner/browser/**
       - .github/workflows/browser-smoke.yml
 
@@ -20,7 +22,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build shared browser layer
-        run: docker build --target browser-tools -f runner/Dockerfile -t symphony-browser-test .
+        uses: ./.github/actions/build-runner
+        with:
+          target: browser-tools
+          tags: symphony-browser-test
       - name: Verify CLI and browser for both agent users
         run: |
           docker run --rm --entrypoint playwright symphony-browser-test --version

@@ -8,6 +8,7 @@ on:
       - .dockerignore
       - scripts/symphony
       - runner/Dockerfile
+      - .github/actions/build-runner/**
       - runner/Dockerfile.dockerignore
       - runner/entrypoint.sh
       - runner/updater-smoke.py
@@ -39,10 +40,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build production Claude image
-        run: docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
+        uses: ./.github/actions/build-runner
+        with:
+          target: claude
+          tags: symphony-claude-smoke
+          revision: ${{ github.sha }}
       - name: Verify credential-free listener and owned subprocess cleanup
         run: bash runner/claude/smoke.sh symphony-claude-smoke
       - name: Build production Codex image using shared layers
-        run: docker build --target codex -f runner/Dockerfile -t symphony-codex-smoke .
+        uses: ./.github/actions/build-runner
+        with:
+          target: codex
+          tags: symphony-codex-smoke
+          revision: ${{ github.sha }}
       - name: Verify isolated updater, rollback and project identity lifecycle
         run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
