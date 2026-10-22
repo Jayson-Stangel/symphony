@@ -140,3 +140,5 @@ Licensed under [Apache License 2.0](LICENSE). This project is derived from
 upstream copyright notice.
 
 Documentation-only CI probe: first prose commit.
+
+Documentation-only CI probe: subsequent prose commit.
