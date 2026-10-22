@@ -40,6 +40,16 @@ class HostTargets(unittest.TestCase):
             self.assertEqual(key, 'matrix')
             self.assertEqual(len(json.loads(matrix)['include']), 2)
 
+    def test_filtered_native_policy_retains_one_matching_host(self):
+        for platform, target in [('macos', 'macos_arm64'), ('linux_x86_64', 'linux_x86_64')]:
+            with self.subTest(platform=platform):
+                output = subprocess.check_output(['python3', str(ROOT/'scripts/release/select-hosts.py'), '--platform', platform], text=True)
+                matrix = json.loads(output.strip().split('=', 1)[1])
+                self.assertEqual([host['target'] for host in matrix['include']], [target])
+        package = (ROOT/'.github/workflows/package-checks.yml').read_text()
+        self.assertNotIn('macos-15-intel', package)
+        self.assertIn('fromJSON(needs.macos-host-policy.outputs.matrix)', package)
+
     def test_helper_builder_compiles_only_the_matching_supported_native_target(self):
         # Execute the real build wrapper with a recording compiler. These prove
         # selection/refusal, while actual native compiler execution remains CI.

@@ -12,20 +12,25 @@ on:
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  native-macos-package:
+  macos-host-policy:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/host-policy.yml
+    with:
+      platform: macos
+  native-macos-package:
+    needs: [changes, macos-host-policy]
     if: needs.changes.outputs.code == 'true'
     name: native-macos-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
-      matrix:
-        runner: [macos-14, macos-15-intel]
+      matrix: ${{ fromJSON(needs.macos-host-policy.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build both supported host architectures
+      - name: Build retained ARM64 host helper
         run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
       - name: Source-independent installation and host-helper regressions
         env:

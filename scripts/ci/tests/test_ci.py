@@ -121,9 +121,11 @@ class WorkflowContracts(unittest.TestCase):
             return remaining[:boundary.start()] if boundary else remaining
         for name in ('native-macos-package','linux-helper'):
             block=job(name)
-            self.assertIn('    needs: changes\n',block)
+            self.assertIn('    needs: changes\n' if name == 'linux-helper' else '    needs: [changes, macos-host-policy]\n',block)
             self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
-        self.assertIn('runner: [macos-14, macos-15-intel]',job('native-macos-package'))
+        self.assertIn('matrix: ${{ fromJSON(needs.macos-host-policy.outputs.matrix) }}',job('native-macos-package'))
+        self.assertIn('platform: macos', job('macos-host-policy'))
+        self.assertNotIn('macos-15-intel', text)
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
         wrapper=job('macos-package')
