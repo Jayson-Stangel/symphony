@@ -143,14 +143,17 @@ package_install() (
   if ! "$stage_only"; then package_preflight_links; fi
   destination=$(package_stage_bundle "$symphony_home") || return
   if "$stage_only"; then printf '%s\n' "$destination"; return; fi
+  # Another installation may share command/skill paths while using a different
+  # application lock. Recheck after the long copy before any activation.
+  package_preflight_links || return
   next="$package_app_home/.current-$$"
-  ln -s "releases/$package_version-$package_revision" "$next" || return
+  package_helper ensure-link "releases/$package_version-$package_revision" "$next" || return
   package_helper replace-link "$next" "$package_app_home/current" || { rm -f "$next"; return 1; }
   mkdir -p "$bin_dir" "$skills_dir" || return
-  [ -L "$bin_dir/symphony" ] || ln -s "$package_app_home/current/scripts/symphony" "$bin_dir/symphony" || return
+  package_helper ensure-link "$package_app_home/current/scripts/symphony" "$bin_dir/symphony" || return
   for skill in "${managed_skills[@]}"; do
     target=$(global_skill_path "$skill")
-    [ -L "$target" ] || ln -s "$package_app_home/current/.codex/skills/$skill" "$target" || return
+    package_helper ensure-link "$package_app_home/current/.codex/skills/$skill" "$target" || return
   done
   (umask 077; mkdir -p "$config_home/projects") || return
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"

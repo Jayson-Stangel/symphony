@@ -97,7 +97,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2]
+let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -112,6 +112,14 @@ do {
         guard let resolved = realpath(path, nil) else { fail("cannot resolve path") }; defer { free(resolved) }
         print(([String(cString: resolved)] + suffix).joined(separator: "/").replacingOccurrences(of: "//", with: "/"))
     case "build-revision": print(compiledRevision)
+    case "ensure-link":
+        // symlink(2) never follows an existing target directory or link.
+        if symlink(args[1], args[2]) != 0 {
+            guard errno == EEXIST else { fail("cannot create managed link: \(args[2])") }
+            var info = stat()
+            guard lstat(args[2], &info) == 0, info.st_mode & S_IFMT == S_IFLNK, info.st_uid == geteuid(),
+                  try FileManager.default.destinationOfSymbolicLink(atPath: args[2]) == args[1] else { fail("refusing to replace conflicting managed link: \(args[2])") }
+        }
     case "replace-link":
         var info = stat()
         guard lstat(args[1], &info) == 0, info.st_mode & S_IFMT == S_IFLNK, info.st_uid == geteuid() else { fail("activation source is not an owned symbolic link") }
