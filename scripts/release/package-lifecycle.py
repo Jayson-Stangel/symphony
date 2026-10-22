@@ -33,8 +33,10 @@ def main():
     namespace = "package-" + uuid.uuid4().hex[:12]
     prefix = "symphony-" + namespace
     client, registry = prefix + "-client", prefix + "-registry"
-    owned = {client, registry}
+    owned = set()
+    controller_ids = {}
     storages = set()
+    owned_volumes = set()
     log = (evidence / "commands.log").open("w")
     result = {"source_revision": os.environ.get("GITHUB_SHA"), "os_arch": os.uname().sysname + "/" + os.uname().machine,
               "nativeAuth": "STUB login entrypoints and Codex login status ONLY; no account/model requests",
@@ -83,7 +85,11 @@ def main():
         return sorted(json.loads(inspect(name, "{{json .Mounts}}")), key=lambda m: json.dumps(m, sort_keys=True))
 
     def preserved(name):
-        return docker("exec", name, "sh", "-ceu", "sha256sum /workspaces/proof/edited /workspaces/proof/untracked /var/lib/symphony/proof-state; git -C /workspaces/proof rev-parse HEAD; git -C /workspaces/proof status --porcelain")
+        # Read actual retained volumes without starting a stopped listener or
+        # changing its state. The throwaway utility process uses the real image.
+        return docker("run", "--rm", "--network", "none", "--read-only", "--volumes-from", name + ":ro",
+                      "--entrypoint", "sh", inspect(name, "{{.Image}}"), "-ceu",
+                      "sha256sum /workspaces/proof/edited /workspaces/proof/untracked /var/lib/symphony/proof-state; git -C /workspaces/proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -C /workspaces/proof status --porcelain")
 
     def negative_archive(source_archive, manifest, mode):
         directory = root / ("negative-" + mode); directory.mkdir()
@@ -118,7 +124,8 @@ def main():
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == bundle["sha256"]
             source_archives.append(archive)
         result["packages"] = [{"source_revision": m["source_revision"], **m["bundles"]["linux_x86_64"]} for m in (previous, current)]
-        docker("run", "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
+        controller_ids[registry] = docker("run", "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
+        owned.add(registry)
         for provider in ("codex", "claude"):
             archive = images / f"{provider}-x86_64.docker.tar.gz"
             expected = (images / f"{provider}-x86_64.sha256").read_text().split()[0]
@@ -166,8 +173,9 @@ if [ -f "$PROOF_ROOT/fault" ]; then
 fi
 '''); wrapper.chmod(0o755)
         socket_gid = os.stat("/var/run/docker.sock").st_gid
-        docker("run", "-d", "--name", client, "--network", "host", "--volume", "/var/run/docker.sock:/var/run/docker.sock",
+        controller_ids[client] = docker("run", "-d", "--name", client, "--network", "host", "--volume", "/var/run/docker.sock:/var/run/docker.sock",
                "--volume", f"{root}:{root}", "ubuntu:26.04", "sleep", "infinity")
+        owned.add(client)
         docker("exec", client, "bash", "-euc", "apt-get update && apt-get install -y --no-install-recommends docker.io curl ca-certificates; cat /etc/os-release; uname -sm", timeout=300)
         environment = {
             "HOME": str(home), "PATH": f"{tools}:/usr/bin:/bin", "SYMPHONY_HOME": "", "GH_TOKEN": "", "GITHUB_TOKEN": "",
@@ -197,6 +205,8 @@ fi
             client_run([str(command), "init", "--linear-project", "disposable-package-proof", "--local-skill", "commit"], cwd=repo)
             # No real tracker is ever started: replace the generated template
             # before launching the disposable fixture.
+            override = repo / ".codex/skills/symphony-commit/SKILL.md"
+            override.write_text(override.read_text() + "\nIntentional local override canary " + str(number) + "\n")
             (repo / "WORKFLOW.md").write_text("---\ntracker:\n  kind: memory\nworkspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\n---\nEmpty isolated candidate fixture; zero inference.\n")
             # Ask the actual packaged launcher for its canonical resource id.
             script = 'source "$1" --help >/dev/null; project_id "$2"'
@@ -207,6 +217,7 @@ fi
             credentials.chmod(0o600)
             client_run([str(command), "auth", "codex", "login"], cwd=repo)
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
+            owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
             client_run([str(command), "run", "--port", str(port)], cwd=repo)
             state(port)
@@ -217,6 +228,15 @@ fi
         assert identifiers[0] != identifiers[1]
         assert inspect(names[0], '{{index .Config.Labels "com.symphony.storage"}}') != inspect(names[1], '{{index .Config.Labels "com.symphony.storage"}}')
         name, repo, port = names[0], repositories[0], ports[0]
+        utility_image = previous["runners"]["codex"]["x86_64"]["image"]
+        auth_volumes = [prefix + "-codex-auth", *[n + "-claude-auth" for n in names]]
+        for volume in auth_volumes:
+            docker("run", "--rm", "--network", "none", "--read-only", "--entrypoint", "sh", "--volume", volume + ":/proof", utility_image,
+                   "-ceu", "printf synthetic-noncredential-native-volume-canary > /proof/package-proof-canary")
+        def auth_canaries():
+            return {volume: docker("run", "--rm", "--network", "none", "--read-only", "--entrypoint", "sh", "--volume", volume + ":/proof:ro", utility_image,
+                                   "-ceu", "sha256sum /proof/package-proof-canary") for volume in auth_volumes}
+        auth_before = auth_canaries()
         docker("exec", name, "sh", "-ceu", "mkdir /workspaces/proof; git -C /workspaces/proof init -q; git -C /workspaces/proof config user.name Fixture; git -C /workspaces/proof config user.email fixture@example.invalid; printf committed > /workspaces/proof/edited; git -C /workspaces/proof add edited; git -C /workspaces/proof commit -qm fixture; printf dirty >> /workspaces/proof/edited; printf untracked > /workspaces/proof/untracked; printf state-canary > /var/lib/symphony/proof-state")
         before = preserved(name)
         mount_before = mount_snapshot(name)
@@ -229,6 +249,7 @@ fi
         def unchanged():
             assert preserved(name) == before
             assert mount_snapshot(name) == mount_before
+            assert auth_canaries() == auth_before
             assert {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries} == hashes
         metadata = [root / "config/runners" / (i + ".env") for i in identifiers]
         second_metadata = metadata[1].read_bytes(); second_image = inspect(names[1], "{{.Image}}")
@@ -237,12 +258,19 @@ fi
         client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
         update_args = ["--candidate-manifest", str(second_manifest), "--candidate-bundle", str(second_archive)]
+        client_run([str(command), "runner", "stop"], cwd=repo)
+        stopped_id = inspect(name, "{{.Id}}")
+        assert inspect(name, "{{.State.Running}}") == "false"
         client_run([str(command), "update", *update_args], cwd=repo)
+        assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         client_run([str(command), "update", "--rollback-release"], cwd=repo)
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
-        unchanged(); record("two real package revisions: manager-only activation and updater-controlled release rollback preserve both selected images")
+        assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
+        unchanged()
+        client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port)
+        record("two real package revisions: manager-only activation and updater-controlled rollback retain stopped runner until explicit run, preserving both selected images")
         # Remove only the unselected new candidate image from this disposable
         # daemon/registry and prove a real immutable-digest pull failure. Restore
         # from the same checksummed archive before positive transition proof.
@@ -271,14 +299,19 @@ fi
         assert inspect(name, "{{.Image}}") == inspect(current["runners"]["codex"]["x86_64"]["image"], "{{.Id}}")
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         record("real selected-runner update after post-create failure, pinned retry and unchanged second-project selected image")
-        # Roll back a pending transition through the installed updater only.
+        # Explicit --agent transitions preserve the updater's existing policy:
+        # a stopped source may become a running selected candidate; rollback
+        # resumes the retained previous runner. Manager-only updates above do
+        # not start it. Prove both supported paths without changing policy.
+        client_run([str(command), "runner", "stop"], cwd=repo)
+        assert inspect(name, "{{.State.Running}}") == "false"
         (root / "fault").write_text("create")
         client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", "codex"], cwd=repo, expected=97)
         client_run([str(command), "update", "--rollback-runner"], cwd=repo)
         state(port); unchanged()
         assert inspect(name, "{{.Image}}") == inspect(current["runners"]["codex"]["x86_64"]["image"], "{{.Id}}")
         assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
-        record("updater-controlled pending transition rollback preserves usable manager, dirty/untracked/workflow/credential/state evidence")
+        record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
         corrupt = json.loads(second_manifest.read_text()); corrupt["bundles"]["linux_x86_64"]["sha256"] = "0" * 64
         corrupted_manifest = root / "corrupt.json"; corrupted_manifest.write_text(json.dumps(corrupt))
@@ -301,20 +334,54 @@ fi
         result["passed"] = True
         record("credential-free candidate acceptance complete; authenticated login/inference intentionally unperformed")
     finally:
-        # Resource identities are unique and created by this invocation. Never
-        # inspect or mutate a pre-existing Symphony runtime as part of cleanup.
-        for name in list(owned):
-            if name not in (client, registry):
-                with (evidence / (name + ".log")).open("w") as output:
-                    subprocess.run(["docker", "logs", name], stdout=output, stderr=subprocess.STDOUT, timeout=15)
-            subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        p = subprocess.run(["docker", "volume", "ls", "--format", "{{.Name}}"], text=True, capture_output=True, timeout=15)
-        for volume in p.stdout.splitlines():
-            if volume.startswith(prefix + "-"):
-                subprocess.run(["docker", "volume", "rm", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        result["cleanup"] = "test-owned disposable client/registry/listeners/volumes removed"
+        cleanup_errors = []
+        removed = []
+        try:
+            for name in list(owned):
+                observed = subprocess.run(["docker", "inspect", name], text=True, capture_output=True, timeout=15)
+                if observed.returncode != 0:
+                    continue  # A planned backup may never have been created.
+                config = json.loads(observed.stdout)[0]
+                if name in controller_ids:
+                    safe = config["Id"] == controller_ids[name]
+                else:
+                    safe = config["Config"]["Labels"].get("com.symphony.storage") in storages
+                if not safe:
+                    cleanup_errors.append("refused foreign resource at " + name)
+                    continue
+                if name not in controller_ids:
+                    with (evidence / (name + ".log")).open("w") as output:
+                        subprocess.run(["docker", "logs", config["Id"]], stdout=output, stderr=subprocess.STDOUT, timeout=15)
+                deletion = subprocess.run(["docker", "rm", "-f", config["Id"]], text=True, capture_output=True, timeout=30)
+                if deletion.returncode != 0:
+                    cleanup_errors.append("container removal failed: " + name)
+                if subprocess.run(["docker", "inspect", config["Id"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0:
+                    cleanup_errors.append("container remains: " + name)
+                else:
+                    removed.append(name)
+            for volume in owned_volumes:
+                observed = subprocess.run(["docker", "volume", "inspect", volume], text=True, capture_output=True, timeout=15)
+                if observed.returncode != 0:
+                    continue
+                deletion = subprocess.run(["docker", "volume", "rm", volume], text=True, capture_output=True, timeout=30)
+                if deletion.returncode != 0:
+                    cleanup_errors.append("volume removal failed: " + volume)
+                if subprocess.run(["docker", "volume", "inspect", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0:
+                    cleanup_errors.append("volume remains: " + volume)
+                else:
+                    removed.append(volume)
+            if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode != 0:
+                cleanup_errors.append("Docker unavailable; resource absence cannot be verified")
+        except Exception as error:
+            cleanup_errors.append("cleanup verification failed: " + str(error))
+        result["cleanup"] = {"verified_absent": removed, "errors": cleanup_errors}
+        if cleanup_errors:
+            result["passed"] = False
         (evidence / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         log.close()
+        if cleanup_errors:
+            raise AssertionError(cleanup_errors)
+
 
 
 if __name__ == "__main__":

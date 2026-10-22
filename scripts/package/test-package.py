@@ -290,6 +290,50 @@ PY
         self.assertOK(call(["bash", "-e", "-c", script, "fixture", lock, HELPER]))
         self.assertNotEqual(call(["bash", "-c", 'exec 8>>"$1"; "$2" lock "$1" 8 inherited', "fixture", lock, HELPER]).returncode, 0)
 
+    @unittest.skipUnless(sys.platform == "darwin", "old macOS updater must execute on macOS")
+    def test_actual_legacy_macos_updater_accepts_new_manifest_and_roundtrip(self):
+        # The test controller builds actual old/current source-bound managers.
+        # Runner records are metadata fixtures: this test makes no lifecycle or
+        # Linux-artifact claim and never pulls an image or authenticates.
+        legacy_revision = "6794fc7a385a52429d80ca77cb6564408ed872c6"
+        legacy = self.root / "legacy-source"
+        self.assertOK(call(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", ROOT, legacy]))
+        self.assertOK(call(["git", "-C", legacy, "checkout", "--quiet", "--detach", legacy_revision]))
+        old_helper = self.root / "old-helper"
+        self.assertOK(call([legacy / "scripts/release/build-host-helper.sh", old_helper, "--native"]))
+        old_manifest = manifest(version="1.2.2", revision=legacy_revision)
+        old_manifest.pop("bundles")
+        old_internal = self.root / "old-internal.json"; old_internal.write_text(json.dumps(old_manifest))
+        old_output = self.root / "old-output"
+        self.assertOK(call([legacy / "scripts/release/package.sh", old_internal, old_output, old_helper]))
+        old_archive = old_output / old_manifest["bundle"]["filename"]
+        old_download = self.root / "old-download"; old_download.mkdir()
+        self.assertOK(call(["tar", "-xzf", old_archive, "-C", old_download]))
+        current_download = self.bundle()
+        current_archive = self.root / "output" / manifest()["bundle"]["filename"]
+        current_manifest = manifest()
+        current_manifest["bundle"]["sha256"] = hashlib.sha256(current_archive.read_bytes()).hexdigest()
+        current_manifest["bundles"]["linux_x86_64"]["sha256"] = "e" * 64
+        current_external = self.root / "current-external.json"; current_external.write_text(json.dumps(current_manifest))
+        old_manifest["bundle"]["sha256"] = hashlib.sha256(old_archive.read_bytes()).hexdigest()
+        old_external = self.root / "old-external.json"; old_external.write_text(json.dumps(old_manifest))
+        env = self.environment()
+        # The already-installed old updater legitimately uses the standard
+        # macOS shasum utility until activation of the new helper-owned hash.
+        (self.root / "tools/shasum").unlink()
+        self.assertOK(call([old_download / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], manifest()["source_revision"])
+        # New updater must also understand prior manifest shape, and retain
+        # updater-controlled rollback into the actual old installation.
+        self.assertOK(call([command, "update", "--rollback-release"], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        self.assertOK(call([command, "update", "--candidate-manifest", old_external, "--candidate-bundle", old_archive], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))

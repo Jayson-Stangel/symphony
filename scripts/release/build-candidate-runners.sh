@@ -5,10 +5,22 @@ provider=${1:?provider}; architecture=${2:?architecture}; output=${3:?output}; p
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
-owned_registry="candidate-registry"
-cleanup() { docker rm -f "$owned_registry" >/dev/null 2>&1 || true; }
+owned_registry="candidate-${provider}-${architecture}-${GITHUB_RUN_ID:-local}-$RANDOM"
+registry_id=
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ "$registry_id" =~ ^[a-f0-9]{64}$ ]]; then
+    docker rm -f "$registry_id" >/dev/null || status=1
+    if docker inspect "$registry_id" >/dev/null 2>&1; then
+      echo 'owned candidate registry remains after cleanup' >&2; status=1
+    fi
+  fi
+  exit "$status"
+}
 trap cleanup EXIT
-docker run -d --name "$owned_registry" -p 127.0.0.1:5000:5000 registry:3
+registry_id=$(docker run -d --name "$owned_registry" -p 127.0.0.1:5000:5000 registry:3)
+[[ "$registry_id" =~ ^[a-f0-9]{64}$ ]] || { echo 'missing owned registry identity' >&2; exit 1; }
 images=()
 for selection in current previous; do
   source=$root; destination=$output; tag=candidate
