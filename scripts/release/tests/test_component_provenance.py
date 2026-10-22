@@ -22,7 +22,7 @@ def record(provider="codex", architecture="arm64"):
     value = {"provider": provider, "architecture": architecture,
              "platform": artifacts.ARCHITECTURES[architecture], "source_revision": source,
              "image": f"ghcr.io/test/{provider}@sha256:" + "c" * 64,
-             "input_identity": "d" * 64, "protocol": 1,
+             "input_identity": "d" * 64, "protocol": 1, "image_config": "sha256:"+"9"*64,
              "tool_versions": {tool: "1.0" for tool in (provider, "git", "node", "playwright")},
              "dependencies": {"resolution_policy": "retain-original-qualified-resolution",
                               "base_images": ["base@sha256:" + "a" * 64],

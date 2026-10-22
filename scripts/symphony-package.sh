@@ -50,7 +50,12 @@ See the packaged installation guide for isolated candidate storage and namespace
 USAGE
 }
 
-package_image() { package_helper get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; }
+package_image() {
+  local image
+  image=$(package_helper get "$symphony_home/release.json" "distribution.${1:-codex}.$package_arch" 2>/dev/null) || image=
+  if [ -n "$image" ]; then printf '%s\n' "$image"
+  else package_helper get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; fi
+}
 package_release_image() {
   local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
   [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
@@ -67,6 +72,7 @@ package_release_image() {
     inputs=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.input_identity")
     [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.inputs.sha256" }}' "$image")" = "$inputs" ] || die 'runner build inputs differ from selected release'
     [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")" = 1 ] || die 'runner protocol is incompatible with this manager'
+    [ "$("$runtime" image inspect --format '{{.Id}}' "$image")" = "$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.image_config")" ] || die 'runner config differs from original qualified component'
   fi
 }
 # Validate retained project images independently of the selected release image.

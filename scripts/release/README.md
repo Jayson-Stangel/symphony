@@ -381,3 +381,12 @@ using older images outside that exact previous release need a compatible bridge
 runner transition before a later manager-only update; refusal preserves the
 current manager and project state. Native lifecycle qualification must establish
 that migration and refusal behavior separately from these portable regressions.
+
+Schema2 may carry a separate `distribution` provider/architecture map. Each value
+is an immutable image reference with exactly the original qualified OCI digest;
+changing that digest is rejected by Python and the native helper. Original runner
+records and proof remain unchanged. Installed consumers select the distribution
+reference but verify the original source, input identity, protocol and config ID.
+External and bundled manifests must carry identical distribution maps. This
+contract alone does not publish, transfer or establish availability of an alias;
+plan-aware availability checks and protected publication remain separate work.

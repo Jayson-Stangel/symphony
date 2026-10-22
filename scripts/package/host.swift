@@ -69,6 +69,7 @@ func validateManifest(_ path: String) throws -> [String: Any] {
                       buildOptions["TARGETARCH"] == (arch == "arm64" ? "arm64" : "amd64") else { fail("missing original resolved runner dependencies") }
                 guard let inputs = runner["input_identity"] as? String, matches(inputs, "^[a-f0-9]{64}$"),
                       integer(runner["protocol"]) == 1,
+                      let imageConfig = runner["image_config"] as? String, matches(imageConfig, "^sha256:[a-f0-9]{64}$"),
                       proof["repository"] as? String == "Jayson-Stangel/symphony",
                       let run = integer(proof["run_id"]), run > 0,
                       let attempt = integer(proof["run_attempt"]), attempt > 0,
@@ -108,6 +109,20 @@ func validateManifest(_ path: String) throws -> [String: Any] {
                 if let recordFile = proof["record_filename"] {
                     guard let name = recordFile as? String, ["\(provider)-\(arch).json", "previous/\(provider)-\(arch).json"].contains(name) else { fail("invalid original native record filename") }
                 }
+            }
+        }
+    }
+    if let raw = manifest["distribution"] {
+        let distribution = object(raw)
+        guard schema == 2, Set(distribution.keys) == Set(["codex", "claude"]) else { fail("invalid independent component distribution") }
+        for provider in ["codex", "claude"] {
+            let images = object(distribution[provider])
+            guard Set(images.keys) == Set(["arm64", "x86_64"]) else { fail("missing distribution platform") }
+            for arch in ["arm64", "x86_64"] {
+                let original = object(object(object(manifest["runners"])[provider])[arch])["image"] as? String ?? ""
+                guard let image = images[arch] as? String,
+                      matches(image, "^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$"),
+                      image.split(separator: "@").last == original.split(separator: "@").last else { fail("distribution changes original OCI digest") }
             }
         }
     }

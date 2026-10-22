@@ -109,7 +109,7 @@ class PackageTest(unittest.TestCase):
         value.update(schema_version=2, compatibility={'runner_protocol': 1})
         for provider, runners in value['runners'].items():
             for arch, runner in runners.items():
-                runner.update(source_revision='a' * 40, input_identity='c' * 64, protocol=1,
+                runner.update(source_revision='a' * 40, input_identity='c' * 64, protocol=1, image_config='sha256:'+'9'*64,
                               dependencies={'resolution_policy': 'retain-original-qualified-resolution',
                                             'base_images': ['base@sha256:' + 'a' * 64],
                                             'os_packages': {'git': '1.0'}, 'build_options': {'TARGETARCH': 'arm64' if arch == 'arm64' else 'amd64'}})
@@ -119,9 +119,14 @@ class PackageTest(unittest.TestCase):
                     'artifact_name': f'runner-candidate-{provider}-{arch}', 'artifact_digest': 'sha256:' + 'd' * 64,
                     'archive_filename': f'{provider}-{arch}.docker.tar.gz', 'archive_sha256': 'e' * 64,
                     **{key: runner[key] for key in ('source_revision', 'input_identity', 'image')}}
+        value['distribution'] = {provider: {arch: 'ghcr.io/immutable/'+provider+'@'+runner['image'].split('@')[1]
+            for arch,runner in group.items()} for provider,group in value['runners'].items()}
         self.file.write_text(json.dumps(value))
         self.assertOK(self.helper('validate-manifest', self.file))
-        changes = [lambda m: m.update(schema_version=1),
+        changes = [lambda m: m['distribution']['codex'].update(arm64='ghcr.io/changed@sha256:'+'f'*64),
+                   lambda m: m['distribution']['codex'].pop('arm64'),
+                   lambda m: m['runners']['codex']['arm64'].pop('image_config'),
+                   lambda m: m.update(schema_version=1),
                    lambda m: m['compatibility'].update(runner_protocol=True),
                    lambda m: m['compatibility'].update(runner_protocol=2),
                    lambda m: m['runners']['codex']['arm64'].update(protocol=1.0),

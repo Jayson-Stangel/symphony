@@ -50,6 +50,18 @@ def validate(value, require_bundle=True):
             require(isinstance(tools, dict), "tool versions must be an object")
             for tool in (provider, "git", "node", "playwright"):
                 require(isinstance(tools.get(tool), str) and bool(tools[tool].strip()), f"missing {tool} version")
+    if "distribution" in value:
+        require(schema == 2, "distribution mapping requires independent component schema")
+        distribution = value["distribution"]
+        require(isinstance(distribution, dict) and set(distribution) == set(PROVIDERS), "both distribution providers are required")
+        for provider in PROVIDERS:
+            require(isinstance(distribution[provider], dict) and set(distribution[provider]) == set(ARCHITECTURES),
+                    "both distribution architectures are required")
+            for architecture in ARCHITECTURES:
+                image = distribution[provider][architecture]
+                require(isinstance(image, str) and DIGEST_IMAGE.fullmatch(image), "distribution image must use an immutable digest")
+                require(image.split('@', 1)[1] == runners[provider][architecture]["image"].split('@', 1)[1],
+                        "distribution image changes original OCI digest")
     bundle = value.get("bundle", {})
     require(isinstance(bundle, dict), "bundle must be an object")
     require(bundle.get("filename") == f"symphony-{value['version']}-macos.tar.gz", "unexpected bundle filename")
@@ -78,6 +90,7 @@ def validate_component(runner, provider, architecture):
     if "browser_input_identity" in runner:
         require(re.fullmatch(r"[a-f0-9]{64}", runner["browser_input_identity"]), "invalid original browser identity")
     require(re.fullmatch(r"[a-f0-9]{64}", runner.get("input_identity", "")), "missing runner input identity")
+    require(re.fullmatch(r"sha256:[a-f0-9]{64}", runner.get("image_config", "")), "missing original image config")
     require(type(runner.get("protocol")) is int and runner["protocol"] == 1, "incompatible runner protocol")
     require(isinstance(runner.get("tool_versions", {}).get("elixir"), str) and
             bool(runner["tool_versions"]["elixir"].strip()), "missing original engine/toolchain version")
