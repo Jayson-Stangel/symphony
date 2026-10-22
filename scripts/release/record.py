@@ -30,8 +30,13 @@ def main():
     if args.provider == "codex":
         tools["codex"] = docker("run", "--rm", "--network", "none", "--entrypoint", "codex", args.image, "--version")
     else:
+        tools["claude_sdk"] = docker("run", "--rm", "--network", "none", "--entrypoint", "/usr/local/bin/node", args.image,
+                                    "-p", "require('/opt/symphony/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")
         tools["claude"] = docker("run", "--rm", "--network", "none", "--entrypoint", "/usr/local/bin/node", args.image,
-                                 "/opt/symphony/claude/node_modules/@anthropic-ai/claude-code/cli.js", "--version")
+                                 "--input-type=module", "-e",
+                                 "import {nativeExecutable} from '/opt/symphony/claude/runtime.mjs'; "
+                                 "import {execFileSync} from 'node:child_process'; "
+                                 "process.stdout.write(execFileSync(nativeExecutable(), ['--version'], {encoding:'utf8', timeout:15000}));")
     result = {"provider": args.provider, "architecture": args.architecture,
               "platform": f"linux/{expected}", "source_revision": args.revision,
               "image": args.image, "tool_versions": tools}

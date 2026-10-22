@@ -47,15 +47,16 @@ jobs:
             -t "$image" .
           docker push "$image"
           digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
-          docker image rm "$image" "$digest"
-          ! docker image inspect "$digest" >/dev/null 2>&1
+          docker image rm "$image"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
+          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
           docker pull "$digest"
           bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
           python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
             --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
           docker tag "$digest" "$image"
           docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
-          (cd dist && sha256sum *.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
+          (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
           docker logs candidate-registry > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -95,7 +96,7 @@ jobs:
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
         run: |
-          (cd candidate && sha256sum --check *.sha256)
+          (cd candidate && sha256sum --check ./*.sha256)
           gzip -dc "candidate/$PROVIDER-$ARCHITECTURE.docker.tar.gz" | docker load
           repository="ghcr.io/${GITHUB_REPOSITORY,,}-$PROVIDER"
           image="$repository:$GITHUB_REF_NAME-$ARCHITECTURE"
@@ -104,8 +105,9 @@ jobs:
           docker push "$image"
           digest=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -F "$repository@sha256:")
           docker logout ghcr.io
-          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate" "$digest"
-          ! docker image inspect "$digest" >/dev/null 2>&1
+          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate"
+          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
+          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
           docker pull "$digest"
           bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
           mkdir -p dist
@@ -160,7 +162,7 @@ jobs:
           python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
             --channel stable --bundle "dist/symphony-$version-macos.tar.gz" --output dist/release.json records/*.json
           python3 scripts/release/artifacts.py validate dist/release.json
-          (cd dist && shasum -a 256 *.tar.gz release.json > SHA256SUMS)
+          (cd dist && shasum -a 256 ./*.tar.gz ./release.json > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: packaged-release

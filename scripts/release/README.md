@@ -5,7 +5,7 @@ source checkout. Its version, 40-character source revision, host architecture an
 provider resolve one immutable Linux OCI image digest. `arm64` uses Linux ARM64;
 `x86_64` uses Linux AMD64. Missing records are errors. Never substitute another
 architecture, provider or mutable tag. `tool_versions` records versions observed
-inside the built image (Codex, or Claude, plus Git, Node and Playwright). The
+inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
 Dockerfile pins agent/browser packages; startup never installs agent packages.
 
 `artifacts.py` is a build-time Python utility, not a host installation dependency:
@@ -32,7 +32,11 @@ the runner images are Linux containers, not macOS executables.
 Run `runner-release` manually. It builds both providers on native ARM64 and AMD64
 Linux hosts, temporarily pushes each image to a loopback-only disposable registry,
 removes the selected local image, pulls the exact distribution digest and runs
-credential-free Git, browser, skill, engine-file and agent-version checks. The Linux image's
+credential-free Git, browser, skill, engine-startup and agent-version checks.
+The actual default entrypoint starts with an empty in-memory tracker and networking
+disabled, serves a state snapshot with no workers (`auth_required` for Claude; Codex
+readiness qualifies policy transport without proving login), then
+stops within its grace period. No host home or account material is mounted. The Linux image's
 `timeout` bounds smoke commands, including when invoked from macOS. The registry is owned by the ephemeral CI
 job; there is no GHCR or GitHub Release publication during candidate builds.
 Build cache layers can remain: this is a fresh selected-image pull, not proof of
