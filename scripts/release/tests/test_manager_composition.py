@@ -167,6 +167,7 @@ class ManagerComposition(unittest.TestCase):
                 built = json.loads((original / 'release.json').read_text())
                 replacement = copy.deepcopy(built)
                 replacement['runners']['codex']['arm64']['image'] = 'localhost:5000/symphony-codex@sha256:'+'e'*64
+                replacement['runners']['codex']['arm64']['qualification']['image'] = replacement['runners']['codex']['arm64']['image']
                 output = Path(directory) / 'changed-record'
                 with self.assertRaisesRegex(ValueError, 'component changed after planning'):
                     PREPARE.prepare(root, plan, replacement, output, None, verify)
