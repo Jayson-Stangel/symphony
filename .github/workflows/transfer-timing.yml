@@ -1,4 +1,4 @@
-name: retained-transfer-timing
+name: retained-native-dual-cli-proof
 
 on:
   workflow_call:
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run:
-        description: Existing same-repository legacy combined image/records artifact run ID (no rebuild or export)
+        description: Existing selected original two-source artifact (no build, registry or new large upload)
         type: string
         required: true
       provider:
@@ -66,20 +66,13 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
           PYTHON
-      - name: Download only selected retained original gzip payload
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.source_run }}
-          name: runner-candidate-${{ inputs.provider }}-${{ inputs.architecture }}
-          path: original
-      - name: Measure actual retained checksum and archive identity verification
+      - name: Prove actual fixed CLI retains both original native sources
         env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run }}
           PROVIDER: ${{ inputs.provider }}
           ARCHITECTURE: ${{ inputs.architecture }}
-        run: |
-          python3 scripts/release/benchmark-transfer.py timing --input original --output timing-evidence \
-            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
+        run: python3 .github/scripts/dual-image-cli-proof.py
       - name: Retain small timing and provenance receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
