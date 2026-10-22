@@ -1,0 +1,92 @@
+name: Native current-manager helpers
+on:
+  workflow_call:
+    inputs:
+      portable_revision:
+        description: Exact source qualified by the caller's cheap portable preflight
+        type: string
+        required: true
+    outputs:
+      qualified_revision:
+        value: ${{ jobs.qualification.outputs.qualified_revision }}
+permissions:
+  contents: read
+jobs:
+  host-policy:
+    uses: ./.github/workflows/host-policy.yml
+  helper:
+    needs: host-policy
+    name: native-host-package (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Require successful exact-source portable qualification
+        env:
+          PORTABLE_REVISION: ${{ inputs.portable_revision }}
+        run: test "$PORTABLE_REVISION" = "$GITHUB_SHA"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Build actual native macOS ARM64 helper
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p "$RUNNER_TEMP/host-helper"
+          bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/host-helper/symphony-host" --native
+          (cd "$RUNNER_TEMP/host-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
+      - name: Build actual static Linux x86-64 helper
+        if: matrix.platform == 'linux_x86_64'
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/host-helper"
+      - name: Native source-independent shared helper contracts
+        env:
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/host-helper/symphony-host
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          test "$("$SYMPHONY_TEST_HOST_HELPER" build-revision)" = "$GITHUB_SHA"
+          test "$("$SYMPHONY_TEST_HOST_HELPER" host-platform)" = "$PLATFORM"
+          python3 scripts/package/test-package.py -v
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          HELPER: ${{ runner.temp }}/host-helper/symphony-host
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
+            uname -sm
+            cat /etc/os-release
+            for tool in swift swiftc python3 node git mise elixir erl; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                printf "unexpected helper runtime dependency present: %s\n" "$tool" >&2
+                exit 1
+              fi
+            done
+            test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
+            test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+            mkdir -m700 /contract
+            /symphony-host owned-directory /contract
+            exec 8>>/contract/lock
+            /symphony-host lock /contract/lock 8 acquire
+            /symphony-host lock /contract/lock 8 inherited
+          ' | tee "$RUNNER_TEMP/host-helper/ubuntu26.log"
+      - name: Retain actual exact-source platform helper and qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-manager-helper-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/host-helper/*
+          if-no-files-found: error
+          retention-days: 30
+
+  qualification:
+    needs: helper
+    runs-on: ubuntu-24.04
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
+    steps:
+      - id: qualified
+        env:
+          PORTABLE_REVISION: ${{ inputs.portable_revision }}
+        run: |
+          test "$PORTABLE_REVISION" = "$GITHUB_SHA"
+          echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

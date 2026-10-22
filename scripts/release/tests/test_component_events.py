@@ -1,5 +1,6 @@
 """Execute event guards with failed, missing and cancelled planner decisions."""
 import os
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -25,12 +26,50 @@ class ComponentEvents(unittest.TestCase):
                                         env=dict(os.environ, RESULT='success', CODE=code, PLAN=plan, BROWSER=browser))
                 self.assertEqual(result.returncode == 0, success, (code, plan, browser))
 
+    def test_manual_baseline_is_rejected_before_discovery_on_ordinary_events(self):
+        workflow = (ROOT / '.github/workflows/component-plan.yml').read_text()
+        block = workflow.split('        run: |\n', 1)[1].split('          python3 scripts/release/runner_reuse.py', 1)[0]
+        script = '\n'.join(line[10:] for line in block.splitlines())
+        for event, run, accepted in (('pull_request', '', True), ('push', '', True),
+                                     ('pull_request', '123', False), ('push', '123', False),
+                                     ('workflow_dispatch', '123', True), ('workflow_dispatch', 'not-a-run', False)):
+            with self.subTest(event=event, run=run):
+                result = subprocess.run(['bash', '-e', '-c', script], env=dict(os.environ, GITHUB_EVENT_NAME=event, BASELINE_RUN=run))
+                self.assertEqual(result.returncode == 0, accepted)
+
+    def test_helper_artifact_is_checked_before_executable_permission(self):
+        workflow = (ROOT / '.github/workflows/current-manager-package.yml').read_text()
+        section = workflow.split('      - name: Verify the original exact-source helper checksum\n', 1)[1]
+        body = section.split('        run: |\n', 1)[1].split('      - ', 1)[0]
+        script = '\n'.join(line[10:] for line in body.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / 'symphony-host'
+            payload = b'actual selected helper bytes'
+            checksum = Path(directory) / 'symphony-host.sha256'
+            checksum.write_text(hashlib.sha256(payload).hexdigest() + '  symphony-host\n')
+            helper.write_bytes(payload)
+            helper.chmod(0o644)
+            self.assertEqual(subprocess.run(['bash', '-e', '-c', script], cwd=directory,
+                                           capture_output=True).returncode, 0)
+            self.assertTrue(helper.stat().st_mode & 0o111)
+            helper.write_bytes(b'changed after original qualification')
+            helper.chmod(0o644)
+            self.assertNotEqual(subprocess.run(['bash', '-e', '-c', script], cwd=directory,
+                                              capture_output=True).returncode, 0)
+            self.assertFalse(helper.stat().st_mode & 0o111)
+        guard_section = workflow.split('      - name: Require the current source\'s qualified native helpers\n', 1)[1]
+        guard = guard_section.split('        run: ', 1)[1].split('\n', 1)[0]
+        for revision, expected in (('a' * 40, True), ('b' * 40, False), ('', False)):
+            result = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ,
+                                    HELPER_REVISION=revision, GITHUB_SHA='a' * 40))
+            self.assertEqual(result.returncode == 0, expected)
+
     def test_current_manager_wrapper_rejects_missing_failed_or_cancelled_evidence(self):
         workflow = (ROOT / '.github/workflows/runner-integration.yml').read_text()
         section = workflow.split('      - name: Require complete current-manager and component decisions\n', 1)[1]
         body = section.split('        run: |\n', 1)[1].split('      - ', 1)[0]
         script = '\n'.join(line[10:] for line in body.splitlines())
-        good = dict(RESULT='success', CODE='true', PLAN='success', HAS_BUILDS='false',
+        good = dict(RESULT='success', CODE='true', PORTABLE='success', HELPERS='success', PLAN='success', HAS_BUILDS='false',
                     RUNNERS='skipped', INPUTS='success', PACKAGE='success')
         with tempfile.TemporaryDirectory() as directory:
             def accepted(values):
@@ -38,13 +77,13 @@ class ComponentEvents(unittest.TestCase):
                                       env=dict(os.environ, **values)).returncode == 0
             self.assertTrue(accepted(good))
             self.assertTrue(accepted(dict(good, HAS_BUILDS='true', RUNNERS='success')))
-            for key in ('RESULT', 'PLAN', 'INPUTS', 'PACKAGE'):
+            for key in ('RESULT', 'PORTABLE', 'HELPERS', 'PLAN', 'INPUTS', 'PACKAGE'):
                 for state in ('failure', 'cancelled', 'skipped', ''):
                     self.assertFalse(accepted(dict(good, **{key: state})), (key, state))
             for state in ('success', 'failure', 'cancelled', ''):
                 self.assertFalse(accepted(dict(good, RUNNERS=state)))
             self.assertFalse(accepted(dict(good, HAS_BUILDS='')))
-            docs = dict(RESULT='success', CODE='false', PLAN='skipped', RUNNERS='skipped',
+            docs = dict(RESULT='success', CODE='false', PORTABLE='skipped', HELPERS='skipped', PLAN='skipped', RUNNERS='skipped',
                         INPUTS='skipped', PACKAGE='skipped', HAS_BUILDS='')
             self.assertTrue(accepted(docs))
             self.assertFalse(accepted(dict(docs, PACKAGE='failure')))

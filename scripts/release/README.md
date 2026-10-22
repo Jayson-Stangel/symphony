@@ -482,3 +482,18 @@ reference but verify the original source, input identity, protocol and config ID
 External and bundled manifests must carry identical distribution maps. This
 contract alone does not publish, transfer or establish availability of an alias;
 plan-aware availability checks and protected publication remain separate work.
+Ordinary current-manager helper scheduling
+------------------------------------------
+
+`runner-integration` gates expensive work on the shared portable preflight. The
+`native-manager-helpers` reusable workflow then builds and qualifies the exact
+current-source Linux x86-64 static helper and macOS ARM64 helper concurrently
+with changed-component planning/building. It uses the shared two-host policy,
+runs each host's native package contracts and the clean Ubuntu helper proof, and
+retains source-bound checksums in same-run artifacts. Current-manager assembly
+requires that successful source revision, verifies the downloaded checksum before
+restoring executable permissions, and rechecks actual source/platform/CPU through
+the shared builder. It does not compile a second current helper after images
+finish. The terminal current-manager guard requires portable and helper success
+as well as the actual package/component decisions; cancelled or skipped native
+qualification cannot produce a successful behavioral receipt.

@@ -2,6 +2,11 @@ name: component-plan
 
 on:
   workflow_call:
+    inputs:
+      baseline_run:
+        description: Optional explicit manual original-record run; rejected for PR/push
+        type: string
+        default: ''
     outputs:
       has_builds:
         value: ${{ jobs.plan.outputs.has_builds }}
@@ -37,8 +42,15 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
-          python3 scripts/release/runner_reuse.py --root . --output component-plan.json
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            [[ "$BASELINE_RUN" =~ ^[0-9]+$ ]] || exit 1
+            args+=(--baseline-run "$BASELINE_RUN")
+          fi
+          python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
           python3 - <<'PYTHON'
           import json, os, subprocess
           plan = json.load(open('component-plan.json'))
