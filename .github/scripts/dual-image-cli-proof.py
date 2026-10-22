@@ -29,8 +29,16 @@ def api(path):
     return ['gh', 'api', 'repos/'+REPOSITORY+'/'+path]
 
 
+def binary_api(path):
+    command = api(path)
+    help_text = subprocess.check_output(['gh', 'api', '--help'], text=True, timeout=30)
+    if '--allow-escape-sequences' in help_text:
+        command.append('--allow-escape-sequences')
+    return command
+
+
 def download(identifier, destination):
-    command = api(f'actions/artifacts/{identifier}/zip')
+    command = binary_api(f'actions/artifacts/{identifier}/zip')
     deadline, received = time.monotonic()+1200, 0
     with destination.open('xb') as output, subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
         try:
