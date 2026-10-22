@@ -15,6 +15,7 @@ jobs:
   host-policy:
     uses: ./.github/workflows/host-policy.yml
   helper:
+    if: ${{ always() && !cancelled() && needs.host-policy.result == 'success' }}
     needs: host-policy
     name: native-host-package (${{ matrix.runner }})
     strategy:
@@ -79,6 +80,7 @@ jobs:
           retention-days: 30
 
   qualification:
+    if: ${{ always() && !cancelled() && needs.helper.result == 'success' }}
     needs: helper
     runs-on: ubuntu-24.04
     outputs:

@@ -112,6 +112,42 @@ class RetainedDiagnosticContractTest(unittest.TestCase):
         self.assertNotIn('inputs.controller_only', packages)
 
 
+class ReusedPreflightSchedulingTest(unittest.TestCase):
+    def test_fanout_joins_override_implicit_ancestor_skip_and_require_success(self):
+        # A real caller-owned preflight leaves the local portable job skipped.
+        # Actions' implicit success() can suppress its descendants even after
+        # qualification succeeds. Every fanout/join needs an explicit status
+        # function and direct successful artifact dependencies instead.
+        root = Path(__file__).resolve().parents[3]
+        import re
+        expected = {
+            'runner-release.yml': {
+                'package-inputs': ['qualification'], 'component-plan': ['qualification'], 'candidate': ['qualification','component-plan'],
+                'publish': ['candidate', 'candidate-qualification'],
+                'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publish'],
+                'packaged-release': ['packaged-release-platform'],
+                'packaged-candidate': ['candidate-metadata', 'package-inputs'],
+                'packaged-candidate-metadata': ['packaged-candidate'],
+                'ubuntu-package-lifecycle': ['packaged-candidate-metadata'],
+                'lifecycle-diagnostic': ['qualification'], 'cache-probe': ['qualification']},
+            'runner-integration.yml': {'manager-package': ['manager-inputs','helpers']},
+            'current-manager-package.yml': {'package':['host-policy'],'metadata':['package']},
+            'native-manager-helpers.yml': {'helper':['host-policy'],'qualification':['helper']},
+            'package-checks.yml': {
+                'native': ['changes', 'qualification'],
+                'native-host-package': ['changes', 'qualification', 'host-policy']}}
+        for filename, jobs in expected.items():
+            text = (root / '.github/workflows' / filename).read_text()
+            for name, needed in jobs.items():
+                with self.subTest(workflow=filename, job=name):
+                    block = re.search(r'^  '+name+r':\n(?:(?!^  [a-z]).*\n)*', text, re.M).group(0)
+                    condition = re.search(r'^    if: (.*)$', block, re.M).group(1)
+                    self.assertIn('always()', condition)
+                    self.assertIn('!cancelled()', condition)
+                    for predecessor in needed:
+                        self.assertIn('needs.'+predecessor+".result == 'success'", condition)
+
+
 class NativeHelperInvocationTest(unittest.TestCase):
     def test_actual_current_mac_helper_step_passes_native_to_the_builder(self):
         root = Path(__file__).resolve().parents[3]
@@ -132,3 +168,15 @@ class NativeHelperInvocationTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ComponentsOnlyManualTest(unittest.TestCase):
+    def test_explicit_false_cannot_be_overridden_by_manual_caller_event(self):
+        text=(Path(__file__).resolve().parents[3]/'.github/workflows/runner-release.yml').read_text()
+        dispatch=text.split('  workflow_dispatch:',1)[1].split('permissions:',1)[0]
+        self.assertIn('      compose_packages:',dispatch)
+        self.assertNotIn("inputs.compose_packages || github.event_name",text)
+        import re
+        for name in ('package-inputs','packaged-candidate','candidate-qualification'):
+            block=re.search(r'^  '+name+r':\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
+            self.assertIn('inputs.compose_packages',re.search(r'^    if: (.*)$',block,re.M).group(1))
