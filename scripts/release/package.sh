@@ -14,7 +14,7 @@ else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host
 if "$bundle/libexec/symphony-host" get "$manifest" bundle.sha256 >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
 revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
-git -C "$root" diff --quiet HEAD -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/release/package.sh scripts/release/build-host-helper.sh elixir/WORKFLOW.md .codex/skills || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/release/package.sh scripts/release/build-host-helper.sh elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 cp "$manifest" "$bundle/release.json"
 cp "$root/scripts/symphony" "$root/scripts/symphony-package.sh" "$bundle/scripts/"
