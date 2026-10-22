@@ -371,8 +371,12 @@ manager or starting a runner transition. The config identity, provider and nativ
 container platform must match, and protocol 2 or an unknown protocol is refused.
 Protocol 1 is compatible. A historical image without a protocol label has one
 explicit migration route: its source and immutable RepoDigest must exactly match
-the verified previous schema1 release. Arbitrary unlabeled local images cannot
-satisfy that route. Retained project starts apply the same checks. Projects still
+the verified previous schema1 release. A private config-keyed receipt retains
+the original canonical release directory as the migration basis. Every later
+start, update and rollback revalidates that original release inventory and exact
+image/source evidence; a receipt alone grants no trust. That original directory
+must remain available; removal or tampering causes explicit refusal. Arbitrary
+unlabeled local images cannot satisfy that route. Retained project starts apply the same checks. Projects still
 using older images outside that exact previous release need a compatible bridge
 runner transition before a later manager-only update; refusal preserves the
 current manager and project state. Native lifecycle qualification must establish

@@ -72,7 +72,7 @@ package_release_image() {
 # Validate retained project images independently of the selected release image.
 # An unlabeled historical image needs exact immutable previous-schema1 evidence.
 package_retained_image_compatible() {
-  local runtime=$1 image=$2 agent=$3 previous=${4:-} protocol platform legacy revision
+  local runtime=$1 image=$2 agent=$3 previous=${4:-} protocol platform legacy revision receipt directory temporary
   [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'invalid retained runner config identity'
   case "$agent" in codex|claude) ;; *) die 'invalid retained runner provider' ;; esac
   [ "$("$runtime" image inspect --format '{{.Id}}' "$image")" = "$image" ] || die 'retained runner config differs'
@@ -82,6 +82,13 @@ package_retained_image_compatible() {
   protocol=$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")
   [ "$protocol" != 1 ] || return 0
   case "$protocol" in ''|'<no value>') ;; *) die 'retained runner protocol is incompatible with this manager' ;; esac
+  directory="$runner_home/compatibility"
+  receipt="$directory/${image#sha256:}.schema1"
+  if [ -e "$directory" ] || [ -L "$directory" ]; then package_helper owned-directory "$directory" || return; fi
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    package_helper owned-file "$receipt" || return
+    previous=$(cat "$receipt")
+  fi
   [ -n "$previous" ] || die 'retained legacy runner has no verified migration evidence'
   previous=$(package_verified_home "$previous") || return
   [ "$(package_helper get "$previous/release.json" schema_version)" = 1 ] || die 'retained legacy runner requires exact previous schema1 evidence'
@@ -89,6 +96,16 @@ package_retained_image_compatible() {
   revision=$(package_helper get "$previous/release.json" "runners.$agent.$package_arch.source_revision")
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'retained legacy runner source differs from verified migration source'
   "$runtime" image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -Fqx -- "$legacy" || die 'retained legacy runner digest differs from verified migration image'
+  if [ ! -e "$receipt" ]; then
+    if [ ! -e "$directory" ]; then (umask 077; mkdir "$directory") || return; fi
+    package_helper owned-directory "$directory" || return
+    temporary=$(mktemp "$directory/.migration.XXXXXX") || return
+    printf '%s\n' "$previous" > "$temporary"
+    # Link with no-overwrite semantics; never replace a conflicting receipt.
+    if ! ln "$temporary" "$receipt"; then rm "$temporary"; die 'legacy migration receipt changed concurrently'; fi
+    rm "$temporary" || return
+    package_helper owned-file "$receipt" || return
+  fi
 }
 
 package_check_retained_images() {
@@ -111,7 +128,7 @@ package_build_image() {
       # An already-retained project image is pinned by the existing runner metadata.
       "$runtime" image inspect "$image" >/dev/null 2>&1 || die 'retained runner image is missing; recover through symphony update'
       local previous=
-      if [ -L "$package_app_home/previous" ]; then previous="$package_app_home/previous"; fi
+      if [ -L "$package_app_home/previous" ] && [ -d "$package_app_home/previous" ]; then previous=$(cd "$package_app_home/previous" && pwd -P) || return; fi
       package_retained_image_compatible "$runtime" "$image" "$agent" "$previous"
       ;;
     *) package_release_image "$runtime" "$image" "$agent" "$package_revision" ;;

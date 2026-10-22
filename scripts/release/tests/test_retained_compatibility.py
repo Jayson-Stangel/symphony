@@ -10,14 +10,16 @@ SOURCE = (ROOT/'scripts/symphony-package.sh').read_text()
 CHECKS = SOURCE[SOURCE.index('package_retained_image_compatible() {'):SOURCE.index('package_build_image() {')]
 UPDATER = (ROOT/'scripts/symphony-package-update.sh').read_text()
 COMPLETE = UPDATER[UPDATER.index('complete_package_update() {'):]
+BUILD = SOURCE[SOURCE.index('package_build_image() {'):SOURCE.index('# A shared manager update')]
 
 
 class RetainedCompatibility(unittest.TestCase):
-    def execute(self, variant, activation=False):
+    def execute(self, variant, activation=False, migration=None):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)
             docker=path/'docker'
             docker.write_text('''#!/bin/sh
+[ "$3" = --format ] || exit 0
 case "$4" in
 '{{.Id}}') printf '%s\\n' "$IMAGE" ;;
 '{{.Os}}/{{.Architecture}}') echo "${PLATFORM:-linux/amd64}" ;;
@@ -39,13 +41,14 @@ esac
             shell='''set -euo pipefail
 die() { echo "$*" >&2; exit 42; }
 package_arch=x86_64
-package_verified_home() { printf '%s\\n' "$1"; }
+package_verified_home() { test -d "$1" && test ! -L "$1" || die 'missing original release evidence'; printf '%s\\n' "$1"; }
 package_helper() {
  case "$1/${3:-}" in
  get/schema_version) echo "$SCHEMA" ;;
  get/runners.codex.x86_64.image) echo "${EXPECTED_DIGEST:-$DIGEST}" ;;
  get/runners.codex.x86_64.source_revision) echo "${EXPECTED_REVISION:-$REVISION}" ;;
  owned-file/) test -f "$2" && test ! -L "$2" ;;
+ owned-directory/) test -d "$2" && test ! -L "$2" ;;
  *) exit 91 ;;
  esac
 }
@@ -53,11 +56,20 @@ container_runtime() { echo docker; }
 package_update_lock() { :; }
 package_activate_home() { touch "$MARKER"; }
 runner_transition() { touch "$MARKER"; }
-'''+CHECKS
-            if activation:
+'''+CHECKS+'\nrunner_home='+str(runners)+'\n'
+            if migration:
+                app=path/'application';app.mkdir()
+                (app/'previous').symlink_to(previous,target_is_directory=True)
+                shell+=BUILD+'\npackage_app_home='+str(app)+'\nrunner_image() { echo "$IMAGE"; }\npackage_build_image codex\n'
+                if migration=='missing':
+                    shell+='rmdir "$PREVIOUS"\n'
+                else:
+                    shell+='rm "$package_app_home/previous"\nmkdir "$package_app_home/new-schema2"\nln -s "$package_app_home/new-schema2" "$package_app_home/previous"\n'
+                shell+='package_build_image codex\n'
+            elif activation:
                 shell+=COMPLETE+'\nrunner_home='+str(runners)+'\nsymphony_home="$PREVIOUS"\ncomplete_package_update "$PREVIOUS" ""\n'
             else:
-                shell+='\npackage_retained_image_compatible docker "$IMAGE" codex "$PREVIOUS"\n'
+                shell+='\npackage_retained_image_compatible docker "$IMAGE" codex "$PREVIOUS"\npackage_retained_image_compatible docker "$IMAGE" codex \"\"\n'
             result=subprocess.run(['bash','-c',shell],env=env,text=True,capture_output=True)
             return result,(path/'activated').exists()
 
@@ -77,3 +89,10 @@ runner_transition() { touch "$MARKER"; }
                 result,activated=self.execute({'PROTOCOL':protocol},activation=True)
                 self.assertEqual(result.returncode==0,accepted,result.stderr)
                 self.assertEqual(activated,accepted)
+
+    def test_actual_previous_symlink_and_durable_migration_basis_survive_manager_changes(self):
+        result,_=self.execute({'PROTOCOL':'<no value>'},migration='survive')
+        self.assertEqual(result.returncode,0,result.stderr)
+        result,_=self.execute({'PROTOCOL':'<no value>'},migration='missing')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('missing original release evidence',result.stderr)
