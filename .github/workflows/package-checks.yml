@@ -8,9 +8,13 @@ on:
         required: false
   pull_request:
   push:
-    branches: [dev]
+    branches: [dev, main]
 jobs:
+  changes:
+    uses: ./.github/workflows/change-classification.yml
   native-macos-package:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: native-macos-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
@@ -31,6 +35,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/release/tests -v
 
   linux-helper:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -96,14 +102,33 @@ jobs:
   macos-package:
     name: macos-package
     if: ${{ always() }}
-    needs: [native-macos-package, linux-helper]
+    needs: [changes, native-macos-package, linux-helper]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
       - name: Require every native package qualification job
+        if: needs.changes.outputs.code != 'false'
         env:
           MACOS_RESULT: ${{ needs.native-macos-package.result }}
           LINUX_RESULT: ${{ needs.linux-helper.result }}
         run: |
           test "$MACOS_RESULT" = success
           test "$LINUX_RESULT" = success
+      - name: Require intentionally omitted native jobs
+        if: needs.changes.outputs.code == 'false'
+        env:
+          MACOS_RESULT: ${{ needs.native-macos-package.result }}
+          LINUX_RESULT: ${{ needs.linux-helper.result }}
+        run: |
+          test "$MACOS_RESULT" = skipped
+          test "$LINUX_RESULT" = skipped
+      - name: Documentation-only qualification decision
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

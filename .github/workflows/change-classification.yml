@@ -1,0 +1,22 @@
+name: change-classification
+on:
+  workflow_call:
+    outputs:
+      code:
+        description: Whether behavioral qualification is required
+        value: ${{ jobs.classify.outputs.code }}
+permissions:
+  contents: read
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        name: Classify the complete event diff
+        run: python3 scripts/ci/classify_changes.py

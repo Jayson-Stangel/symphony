@@ -241,3 +241,41 @@ releases. It builds both actual source revisions and runs the clean Ubuntu26.04
 source-independent installed manager/updater against real Docker. Candidate
 controller tools are test dependencies, distinct from installed product runtime
 dependencies. See [the evidence contract](packaged-install.md#native-candidate-evidence).
+
+
+
+## CI event and documentation policy
+
+| Event | Documentation-only | Behavioral or unknown change |
+| --- | --- | --- |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Same metadata validation plus make-all, package, listener/updater and browser qualification |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | Behavioral qualification |
+| Manual candidate / version tag | Full candidate/release qualification | Full candidate/release qualification |
+
+The classifier uses the complete PR merge-base-to-head diff, or the exact push
+before/after diff. It disables rename detection so both old and new paths are
+classified. Missing history, empty/invalid event ranges, unknown paths and diff
+failures require behavioral qualification. Workflow-level path filters are not
+used for required checks, so documentation PRs do not leave pending contexts.
+The classification job lists paths and the decision in its summary. Required
+wrappers reject failed, cancelled, missing or invalid classifier outputs.
+
+Human-facing prose is explicitly allowlisted in `scripts/ci/classify_changes.py`.
+Packaged agent skills and runtime `WORKFLOW.md` templates remain code inputs.
+The Python standard-library PR validator enforces template headings/order,
+nonempty sections, bullets, test checkboxes and removal of placeholder comments;
+it needs no Elixir, Mix, downloaded dependencies or setup action.
+
+For changes to this CI policy, run:
+
+```sh
+python3 -m unittest discover -s scripts/ci/tests -v
+make -C elixir all
+```
+
+The first command replays real temporary Git histories for PRs to both integration
+and production, multiple documentation commits, merge pushes, mixed changes,
+renames/deletions, stale bases and missing history. It also executes the required
+wrapper guard from an empty workspace and checks failure/cancellation propagation.
+These are isolated event-replay results, not claims that GitHub-hosted jobs ran.
+Pure documentation changes do not run either suite.
