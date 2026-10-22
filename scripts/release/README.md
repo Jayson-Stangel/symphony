@@ -155,3 +155,11 @@ publication still requires a production tag, enabled release variable and the
 protected environment; the production manager artifact now contains both native
 archives and the backwards-compatible combined manifest. No test controller can
 satisfy an unavailable native platform by replacing it with a compile or mock.
+
+For controller-only lifecycle diagnosis, manually dispatch
+`package-lifecycle-diagnostic` with a completed `runner-release` run ID and its
+exact current package source SHA. It downloads that run's real checksummed
+current/prior packages and x86-64 images, then uses the selected controller head.
+Evidence records the controller SHA, package SHA and diagnostic artifact run
+separately. This never publishes and does not replace final same-head native
+build and lifecycle acceptance in `runner-release`.

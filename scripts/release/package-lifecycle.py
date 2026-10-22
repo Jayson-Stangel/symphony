@@ -8,6 +8,7 @@ No host credentials, model requests, source/runtime mounts or public publication
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -17,6 +18,47 @@ import tarfile
 import time
 import urllib.request
 import uuid
+
+
+def acquire_container(run, *args):
+    # Pull progress belongs to stderr; only Docker's authoritative stdout ID
+    # grants ownership. Never infer ownership from a name after failed create.
+    created = run(["docker", "run", *args], separate_stderr=True)
+    if not re.fullmatch(r"[0-9a-f]{64}\n?", created.stdout):
+        raise AssertionError(("invalid detached container ID", created.stdout))
+    return created.stdout.strip()
+
+
+def remove_local_image(run, image):
+    def present():
+        observed = run(["docker", "image", "inspect", image], expected=None)
+        if observed.returncode == 0:
+            return True
+        assert observed.returncode == 1 and "No such image" in observed.stdout, ("cannot verify image absence", image, observed.stdout)
+        return False
+    if present():
+        run(["docker", "image", "rm", image])
+    assert not present(), ("local image remains", image)
+
+
+def cleanup_container(name, controller_ids, storages, evidence):
+    observed = subprocess.run(["docker", "inspect", name], text=True, capture_output=True, timeout=15)
+    if observed.returncode != 0:
+        return None  # A planned backup may never have been created.
+    config = json.loads(observed.stdout)[0]
+    if name in controller_ids:
+        safe = config["Id"] == controller_ids[name]
+    else:
+        safe = (config["Config"].get("Labels") or {}).get("com.symphony.storage") in storages
+    if not safe:
+        raise AssertionError("refused foreign resource at " + name)
+    if name not in controller_ids:
+        with (evidence / (name + ".log")).open("w") as output:
+            subprocess.run(["docker", "logs", config["Id"]], stdout=output, stderr=subprocess.STDOUT, timeout=15)
+    deletion = subprocess.run(["docker", "rm", "-f", config["Id"]], text=True, capture_output=True, timeout=30)
+    assert deletion.returncode == 0, "container removal failed: " + name
+    assert subprocess.run(["docker", "inspect", config["Id"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode != 0, "container remains: " + name
+    return name
 
 
 def main():
@@ -40,12 +82,15 @@ def main():
     log = (evidence / "commands.log").open("w")
     result = {"source_revision": os.environ.get("GITHUB_SHA"), "os_arch": os.uname().sysname + "/" + os.uname().machine,
               "nativeAuth": "STUB login entrypoints and Codex login status ONLY; no account/model requests",
+              "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
+              "diagnostic_artifact_run": os.environ.get("DIAGNOSTIC_ARTIFACT_RUN"),
               "checks": [], "passed": False}
 
     def run(args, expected=0, **kwargs):
         args = [str(a) for a in args]
-        p = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=kwargs.pop("timeout", 300), **kwargs)
-        line = "$ " + " ".join(args) + "\n" + p.stdout
+        separate_stderr = kwargs.pop("separate_stderr", False)
+        p = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT, timeout=kwargs.pop("timeout", 300), **kwargs)
+        line = "$ " + " ".join(args) + "\n" + p.stdout + (p.stderr or "")
         print(line, flush=True); log.write(line); log.flush()
         if expected is not None and p.returncode != expected:
             raise AssertionError((args, p.returncode, p.stdout))
@@ -116,7 +161,8 @@ def main():
         current = json.loads((packages / "release.json").read_text())
         previous = json.loads((packages / "previous/release.json").read_text())
         assert current["source_revision"] != previous["source_revision"], "two distinct actual source revisions required"
-        assert current["source_revision"] == result["source_revision"], "candidate must match exact workflow head"
+        assert current["source_revision"] == result["package_source_revision"], "candidate must match exact selected package source"
+        assert result["diagnostic_artifact_run"] or result["package_source_revision"] == result["source_revision"], "acceptance candidate must match exact workflow head"
         source_archives = []
         for folder, manifest in ((packages / "previous", previous), (packages, current)):
             bundle = manifest["bundles"]["linux_x86_64"]
@@ -124,7 +170,7 @@ def main():
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == bundle["sha256"]
             source_archives.append(archive)
         result["packages"] = [{"source_revision": m["source_revision"], **m["bundles"]["linux_x86_64"]} for m in (previous, current)]
-        controller_ids[registry] = docker("run", "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
+        controller_ids[registry] = acquire_container(run, "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
         owned.add(registry)
         for provider in ("codex", "claude"):
             archive = images / f"{provider}-x86_64.docker.tar.gz"
@@ -173,7 +219,7 @@ if [ -f "$PROOF_ROOT/fault" ]; then
 fi
 '''); wrapper.chmod(0o755)
         socket_gid = os.stat("/var/run/docker.sock").st_gid
-        controller_ids[client] = docker("run", "-d", "--name", client, "--network", "host", "--volume", "/var/run/docker.sock:/var/run/docker.sock",
+        controller_ids[client] = acquire_container(run, "-d", "--name", client, "--network", "host", "--volume", "/var/run/docker.sock:/var/run/docker.sock",
                "--volume", f"{root}:{root}", "ubuntu:26.04", "sleep", "infinity")
         owned.add(client)
         docker("exec", client, "bash", "-euc", "apt-get update && apt-get install -y --no-install-recommends docker.io curl ca-certificates; cat /etc/os-release; uname -sm", timeout=300)
@@ -286,9 +332,8 @@ fi
         # daemon/registry and prove a real immutable-digest pull failure. Restore
         # from the same checksummed archive before positive transition proof.
         image = current["runners"]["codex"]["x86_64"]["image"]
-        docker("image", "rm", "localhost:5000/symphony-codex:candidate")
-        docker("image", "rm", image)
-        assert run(["docker", "image", "inspect", image], expected=None).returncode != 0
+        remove_local_image(run, "localhost:5000/symphony-codex:candidate")
+        remove_local_image(run, image)
         digest = image.split("@", 1)[1]
         request = urllib.request.Request("http://127.0.0.1:5000/v2/symphony-codex/manifests/" + digest, method="DELETE")
         with urllib.request.urlopen(request, timeout=5) as response: assert response.status == 202
@@ -349,27 +394,12 @@ fi
         removed = []
         try:
             for name in list(owned):
-                observed = subprocess.run(["docker", "inspect", name], text=True, capture_output=True, timeout=15)
-                if observed.returncode != 0:
-                    continue  # A planned backup may never have been created.
-                config = json.loads(observed.stdout)[0]
-                if name in controller_ids:
-                    safe = config["Id"] == controller_ids[name]
-                else:
-                    safe = config["Config"]["Labels"].get("com.symphony.storage") in storages
-                if not safe:
-                    cleanup_errors.append("refused foreign resource at " + name)
-                    continue
-                if name not in controller_ids:
-                    with (evidence / (name + ".log")).open("w") as output:
-                        subprocess.run(["docker", "logs", config["Id"]], stdout=output, stderr=subprocess.STDOUT, timeout=15)
-                deletion = subprocess.run(["docker", "rm", "-f", config["Id"]], text=True, capture_output=True, timeout=30)
-                if deletion.returncode != 0:
-                    cleanup_errors.append("container removal failed: " + name)
-                if subprocess.run(["docker", "inspect", config["Id"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0:
-                    cleanup_errors.append("container remains: " + name)
-                else:
-                    removed.append(name)
+                try:
+                    absent = cleanup_container(name, controller_ids, storages, evidence)
+                    if absent:
+                        removed.append(absent)
+                except Exception as error:
+                    cleanup_errors.append(str(error))
             for volume in owned_volumes:
                 observed = subprocess.run(["docker", "volume", "inspect", volume], text=True, capture_output=True, timeout=15)
                 if observed.returncode != 0:
