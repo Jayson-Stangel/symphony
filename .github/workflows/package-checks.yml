@@ -16,27 +16,37 @@ on:
         value: ${{ jobs.macos-package.outputs.qualified_revision }}
   pull_request:
   push:
-    branches: [dev]
+    branches: [dev, main]
 concurrency:
   group: package-checks-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/change-classification.yml
   portable:
-    if: inputs.portable_revision == ''
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && inputs.portable_revision == ''
     uses: ./.github/workflows/release-preflight.yml
   qualification:
-    needs: portable
+    needs: [changes, portable]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require successful exact-head portable preflight
         env:
+          CLASSIFICATION: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
           LOCAL_RESULT: ${{ needs.portable.result }}
           LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
           CALLER_REVISION: ${{ inputs.portable_revision }}
         run: |
-          if [ -n "$CALLER_REVISION" ]; then
+          test "$CLASSIFICATION" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CODE" = false ]; then
+            test "$LOCAL_RESULT" = skipped
+            test -z "$CALLER_REVISION"
+          elif [ -n "$CALLER_REVISION" ]; then
             test "$LOCAL_RESULT" = skipped
             test "$CALLER_REVISION" = "$GITHUB_SHA"
           else
@@ -44,10 +54,12 @@ jobs:
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
   native:
-    needs: qualification
+    needs: [changes, qualification]
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/release-native.yml
   host-package:
-    needs: qualification
+    needs: [changes, qualification]
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -58,21 +70,36 @@ jobs:
           SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
         run: python3 scripts/package/test-package.py -v
   macos-package:
-    needs: [qualification, native, host-package]
+    needs: [changes, qualification, native, host-package]
     if: ${{ always() }}
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every native and package-input qualification
+      - name: Require a complete classification decision
         env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+      - name: Require every requested native and package-input qualification
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
           PORTABLE: ${{ needs.qualification.result }}
           NATIVE: ${{ needs.native.result }}
           PACKAGE: ${{ needs.host-package.result }}
         run: |
           test "$PORTABLE" = success
-          test "$NATIVE" = success
-          test "$PACKAGE" = success
+          if [ "$CODE" = false ]; then
+            test "$NATIVE" = skipped
+            test "$PACKAGE" = skipped
+            echo 'Documentation-only event; behavioral checks intentionally omitted, not executed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            test "$NATIVE" = success
+            test "$PACKAGE" = success
+          fi
       - id: qualified
+        if: needs.changes.outputs.code == 'true'
         name: Bind successful qualification to the exact source
         run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

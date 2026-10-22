@@ -65,6 +65,18 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
 
+    def test_documentation_aggregate_requires_intentional_skips(self):
+        name = 'Require every requested native and package-input qualification'
+        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped')
+        self.assertEqual(self.guard('package-checks.yml', name, docs), 0)
+        for key in ('PORTABLE', 'NATIVE', 'PACKAGE'):
+            self.assertNotEqual(self.guard('package-checks.yml', name, dict(docs, **{key: 'failure'})), 0)
+        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success')
+        self.assertEqual(self.guard('package-checks.yml', name, code), 0)
+        for key in code:
+            if key != 'CODE':
+                self.assertNotEqual(self.guard('package-checks.yml', name, dict(code, **{key: 'skipped'})), 0)
+
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
         name = 'Require all requested candidate work without accepting omitted failures'
         good = dict(PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success')

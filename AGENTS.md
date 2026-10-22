@@ -80,3 +80,25 @@ These rules apply to all work in this repository. Also follow directory-specific
   gates. Do not push directly to protected branches or merge with failing required
   checks. Update the stable installation only through `symphony update` after the
   change has been promoted to `main`.
+
+## Documentation-only validation
+
+Pure human-facing documentation changes use the lightweight CI classification and
+PR metadata checks. They do not require dependency installation, application or
+Docker builds, SDK compilation, or test suites. For code and workflow changes,
+run the focused checks and full required gates, including `make -C elixir all`
+where applicable. A mixed change follows the code route.
+
+`scripts/ci/classify_changes.py` is the shared event-wide policy. Root README,
+AGENTS, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY and SPEC Markdown, the Elixir
+README/AGENTS, and prose `.md`/`.txt`/`.rst` beneath `docs/` or `elixir/docs/`
+are documentation. Examples embedded in those documents follow that route.
+Standalone executable examples and unknown paths take the conservative code route.
+Packaged `.codex/skills/`, `.agents/` content and every `WORKFLOW.md` are behavioral
+inputs even though they use Markdown. Do not classify all Markdown as documentation.
+
+Behavioral required check names remain present on every PR and dev/main push;
+PR metadata validation remains required on PR events. Their summaries
+say explicitly when behavioral qualification was intentionally omitted; that is
+not a claim that tests executed. Classification failure fails the required wrapper.
+See `docs/development.md` for the event map and local classifier validation.
