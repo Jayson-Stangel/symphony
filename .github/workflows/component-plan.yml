@@ -3,6 +3,8 @@ name: component-plan
 on:
   workflow_call:
     outputs:
+      has_builds:
+        value: ${{ jobs.plan.outputs.has_builds }}
       browser_x86_64:
         value: ${{ jobs.plan.outputs.browser_x86_64 }}
       codex_x86_64:
@@ -23,6 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      has_builds: ${{ steps.plan.outputs.has_builds }}
       browser_x86_64: ${{ steps.plan.outputs.browser_x86_64 }}
       codex_x86_64: ${{ steps.plan.outputs.codex_x86_64 }}
       claude_x86_64: ${{ steps.plan.outputs.claude_x86_64 }}
@@ -41,9 +44,10 @@ jobs:
           plan = json.load(open('component-plan.json'))
           revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           assert plan['planning_complete'] is True and plan['manager_source_revision'] == revision
-          outputs = {'manager_revision': revision, 'browser_x86_64': plan['browser']['x86_64']['action']}
+          assert type(plan['has_builds']) is bool
+          outputs = {'has_builds': str(plan['has_builds']).lower(), 'manager_revision': revision, 'browser_x86_64': plan['browser']['x86_64']['action']}
           outputs.update({provider + '_x86_64': plan['components'][provider]['x86_64']['action'] for provider in ('codex', 'claude')})
-          assert all(value in ('build', 'reuse') for key, value in outputs.items() if key != 'manager_revision')
+          assert all(value in ('build', 'reuse') for key, value in outputs.items() if key not in ('manager_revision', 'has_builds'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
               for key, value in outputs.items():
                   stream.write(key + '=' + value + '\n')

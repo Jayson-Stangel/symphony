@@ -1,54 +1,138 @@
 name: runner-integration
-
 on:
   pull_request:
   push:
     branches: [dev, main]
   workflow_dispatch:
-
+permissions:
+  contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  listener-and-cleanup:
+  plan:
     needs: changes
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/component-plan.yml
+  runners:
+    needs: plan
+    if: needs.plan.outputs.has_builds == 'true'
+    uses: ./.github/workflows/runner-release.yml
+    with:
+      manifest_schema: '2'
+      compose_packages: false
+      publish: false
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+  manager-inputs:
+    needs: [changes, plan, runners]
+    if: ${{ always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped') }}
+    runs-on: ubuntu-24.04
     steps:
-      - name: Require a complete classification decision
+      - name: Require the complete selected component result
+        env:
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          RUNNERS: ${{ needs.runners.result }}
+        run: |
+          case "$HAS_BUILDS" in
+            true) test "$RUNNERS" = success ;;
+            false) test "$RUNNERS" = skipped ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.plan.outputs.has_builds == 'true'
+        with:
+          name: runner-candidate-metadata
+          path: built
+      - name: Bind current manager to actual selected original components
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+        run: |
+          args=()
+          if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: manager-inputs/*
+          if-no-files-found: error
+  manager-package:
+    needs: manager-inputs
+    uses: ./.github/workflows/current-manager-package.yml
+    with:
+      metadata_artifact: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+  listener-and-cleanup:
+    needs: [changes, plan, runners, manager-inputs, manager-package]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require complete current-manager and component decisions
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          PLAN: ${{ needs.plan.result }}
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          RUNNERS: ${{ needs.runners.result }}
+          INPUTS: ${{ needs.manager-inputs.result }}
+          PACKAGE: ${{ needs.manager-package.result }}
         run: |
           test "$RESULT" = success
-          case "$CODE" in true|false) ;; *) exit 1 ;; esac
-      - name: Checkout
-        if: needs.changes.outputs.code != 'false'
+          case "$CODE" in
+            false) test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
+            true)
+              test "$PLAN" = success
+              test "$INPUTS" = success
+              test "$PACKAGE" = success
+              case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac ;;
+            *) exit 1 ;;
+          esac
+      - name: Checkout actual current manager
+        if: needs.changes.outputs.code == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Build production Claude image
-        if: needs.changes.outputs.code != 'false'
-        uses: ./.github/actions/build-runner
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
         with:
-          target: claude
-          tags: symphony-claude-smoke
-          revision: ${{ github.sha }}
-      - name: Verify credential-free listener and owned subprocess cleanup
-        if: needs.changes.outputs.code != 'false'
-        run: bash runner/claude/smoke.sh symphony-claude-smoke
-      - name: Build production Codex image using shared layers
-        if: needs.changes.outputs.code != 'false'
-        uses: ./.github/actions/build-runner
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
         with:
-          target: codex
-          tags: symphony-codex-smoke
-          revision: ${{ github.sha }}
-      - name: Verify isolated updater, rollback and project identity lifecycle
-        if: needs.changes.outputs.code != 'false'
-        run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
+          name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bound
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
+        with:
+          name: ${{ needs.manager-package.outputs.package_artifact }}
+          path: packages
+      - name: Retrieve actual original runners without rebuild, export or upload
+        if: needs.changes.outputs.code == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
+            --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners"
+      - name: Execute the installed current manager with original immutable runners
+        if: needs.changes.outputs.code == 'true'
+        run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
+      - name: Retain actual current-manager and owned cleanup evidence
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ordinary-current-manager-${{ github.sha }}
+          path: evidence/*
+          if-no-files-found: warn
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

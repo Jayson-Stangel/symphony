@@ -1,0 +1,69 @@
+name: Current manager package
+on:
+  workflow_call:
+    inputs:
+      metadata_artifact:
+        description: This run's complete current-source internal manifest artifact
+        type: string
+        required: true
+    outputs:
+      package_artifact:
+        value: ${{ jobs.metadata.outputs.package_artifact }}
+permissions:
+  contents: read
+jobs:
+  host-policy:
+    uses: ./.github/workflows/host-policy.yml
+  package:
+    needs: host-policy
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.metadata_artifact }}
+          path: manager-inputs
+      - name: Build the actual current manager using shared native package assembly
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          python3 scripts/release/artifacts.py validate manager-inputs/release.json --internal
+          bash scripts/release/build-manager-package.sh "$PWD/manager-inputs/release.json" "$PWD/packages" "$PLATFORM" "$PWD" "$GITHUB_SHA"
+          mv packages/package-source.txt "packages/package-source-$PLATFORM.txt"
+      - name: Retain this source's actual native manager archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-manager-native-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            packages/*.tar.gz
+            packages/package-source-*.txt
+          if-no-files-found: error
+  metadata:
+    needs: package
+    runs-on: ubuntu-24.04
+    outputs:
+      package_artifact: current-manager-package-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.metadata_artifact }}
+          path: manager-inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: current-manager-native-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages
+          merge-multiple: true
+      - name: Bind both actual native archives to the current manager
+        run: python3 scripts/release/finalize-manager-packages.py manager-inputs/release.json packages
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-manager-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/*
+          if-no-files-found: error
