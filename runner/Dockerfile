@@ -32,6 +32,12 @@ COPY runner/browser/smoke.cjs ./
 RUN node smoke.cjs
 
 FROM browser-tools AS common
+ARG SYMPHONY_VERSION=development
+ARG SYMPHONY_REVISION=unknown
+ARG TARGETARCH
+LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
+      org.opencontainers.image.revision=$SYMPHONY_REVISION \
+      com.symphony.architecture=$TARGETARCH
 WORKDIR /opt/symphony/elixir
 COPY elixir/mix.exs elixir/mix.lock ./
 RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod \
@@ -91,4 +97,6 @@ CMD ["test", "--cover"]
 # The default target retains Codex's existing root/auth layout.
 FROM common AS codex
 LABEL com.symphony.agent=codex com.symphony.protocol=1
-RUN npm install --global @openai/codex@latest
+ARG CODEX_VERSION=0.163.0
+RUN npm install --global "@openai/codex@$CODEX_VERSION"
+LABEL com.symphony.codex.version=$CODEX_VERSION

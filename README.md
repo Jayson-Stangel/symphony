@@ -101,6 +101,7 @@ itself or test `dev`, use a [separate development environment](docs/development.
 | Understand or adapt the worker's operating instructions | [Workflow template](elixir/WORKFLOW.md) |
 | Develop and test Symphony in isolation | [Development guide](docs/development.md) |
 | Build or test the Elixir service | [Implementation guide](elixir/README.md) |
+| Build and qualify versioned runner and manager artifacts | [Release artifact contract](scripts/release/README.md) |
 | Understand the orchestration contract | [Specification](SPEC.md) |
 
 Run `symphony --help` for the command summary. For service diagnostics, see
