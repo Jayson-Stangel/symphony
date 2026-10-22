@@ -1,15 +1,30 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
 packaged_install=true
 [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64|Darwin/aarch64) package_platform=macos; package_arch=arm64 ;;
+  Darwin/x86_64) package_platform=macos; package_arch=x86_64 ;;
+  Linux/x86_64) package_platform=linux_x86_64; package_arch=x86_64 ;;
+  *) die 'unsupported host architecture or OS; packaged installs support macOS ARM64/Intel and Linux x86-64' ;;
+esac
 symphony_home=$(cd "$symphony_home" && pwd -P)
+IFS= read -r bundle_platform < "$symphony_home/host-platform" || die 'bundle is missing its host platform marker'
+[ "$bundle_platform" = "$package_platform" ] || die 'bundle platform does not match this host'
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
 package_helper validate-manifest "$symphony_home/release.json" || exit 1
 package_version=$(package_helper get "$symphony_home/release.json" version)
 package_revision=$(package_helper get "$symphony_home/release.json" source_revision)
 [ "$(package_helper build-revision)" = "$package_revision" ] || die 'bundled helper does not match release source revision'
 package_channel=$(package_helper get "$symphony_home/release.json" channel)
-case "$(uname -s)" in Darwin) ;; *) die 'packaged installs support macOS only' ;; esac
-case "$(uname -m)" in arm64|aarch64) package_arch=arm64 ;; x86_64) package_arch=x86_64 ;; *) die 'unsupported host architecture; select an ARM64 or Intel macOS release' ;; esac
+package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
+[ "$(package_manifest_platform "$symphony_home/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
+[ "$(package_helper host-platform)" = "$package_platform" ] || die 'helper platform does not match this host'
+# Keep legacy schema1/macOS selection stable so already-installed updaters can
+# consume new releases; only Linux selects the additive platform bundle.
+package_bundle_field() {
+  if [ "$package_platform" = macos ]; then printf 'bundle.%s\n' "$1"
+  else printf 'bundles.linux_x86_64.%s\n' "$1"; fi
+}
 package_app_home=${SYMPHONY_APP_HOME:-"$HOME/.local/share/$runtime_prefix"}
 package_app_home=$(package_helper canonical-path "$package_app_home")
 case "$symphony_home" in */releases/*) package_app_home=$(cd "$symphony_home/../.." && pwd) ;; esac
@@ -25,7 +40,8 @@ Usage:
   symphony runner start|stop|status|doctor|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]
 
-This macOS release bundle requires Docker Desktop or OrbStack. No host build or
+This release bundle requires Docker Engine (Ubuntu) or Docker Desktop/OrbStack
+(macOS). No host build or
 agent toolchain is needed. From an existing project checkout, initialize it, edit
 the printed private credentials file, authenticate the native container login,
 and run. Runner images are pulled by immutable release digest; they never build
@@ -80,6 +96,7 @@ package_stage_bundle() {
   package_helper validate-manifest "$source/release.json" || return
   version=$(package_helper get "$source/release.json" version) || return
   revision=$(package_helper get "$source/release.json" source_revision) || return
+  [ "$(package_manifest_platform "$source/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
   package_helper verify-files "$source" || return
   destination="$package_app_home/releases/$version-$revision"
   # Validate each owned storage boundary before following it for staging.
@@ -176,8 +193,8 @@ package_doctor() {
   if "$json"; then
     printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s"}\n' "$ready" "$package_version" "$package_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)"
   else
-    printf 'Symphony %s (%s), packaged macOS %s\nReady: %s\n' "$package_version" "$package_revision" "$package_arch" "$ready"
-    "$ready" || printf 'Check the Docker Desktop/OrbStack engine and installed command/skills. No host build toolchain is required.\n' >&2
+    printf 'Symphony %s (%s), packaged %s %s\nReady: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2
   fi
   "$ready"
 }

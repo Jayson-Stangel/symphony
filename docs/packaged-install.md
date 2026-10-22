@@ -1,16 +1,27 @@
-# Packaged macOS installation
+# Packaged installation on macOS and Ubuntu
 
-On macOS 14 or later, install Symphony from a completed stable
+On macOS 14 or later, or Ubuntu 26.04 x86-64, install Symphony from a completed stable
 [GitHub release](https://github.com/Jayson-Stangel/symphony/releases). The manager
-uses prebuilt Linux runner images and a bundled macOS helper; end users need no
+uses prebuilt Linux runner images and a bundled native helper; end users need no
 Symphony source checkout, host Git, Python, Node, Codex, Claude, mise, Erlang,
 Elixir, Swift or Xcode Command Line Tools.
+
+Linux support is delivered as candidate code/artifacts first. Merging it does not
+publish a stable Linux release. Use the isolated candidate process below until a
+completed stable release actually contains the Linux archive and checksum. Native
+login, authenticated inference and an issue-to-PR demonstration are separate
+operator-run acceptance; credential-free CI never claims they were performed.
 
 ## Prerequisites
 
 - Install Docker Desktop or OrbStack separately and start its engine in the macOS
   account that will run Symphony. Docker installation and Homebrew are not part
   of the Symphony installer.
+- On Ubuntu, install Docker Engine separately and give the ordinary operator
+  account permission to use its socket. Verify `docker info`. Symphony does not
+  install Docker or change socket ownership. Ordinary runtime utilities are Bash,
+  curl with CA certificates, tar/gzip, coreutils, sed, grep, awk, find and diff/cmp;
+  Ubuntu's `sha256sum` verifies downloads. Docker handles all runner tooling.
 - Prepare an existing target project checkout with an explicit `origin` remote
   that the worker can clone and push to. Preparing that checkout is separate from
   installing Symphony; the packaged manager reads its identity without host Git.
@@ -51,10 +62,33 @@ symphony doctor
 ```
 
 Installation needs no sudo and does not run `symphony setup` or build an image.
-The archive carries a universal Apple Silicon/Intel host helper. Apple Silicon
+The macOS archive carries a universal Apple Silicon/Intel host helper. Apple Silicon
 selects the Linux ARM64 runner; Intel selects Linux AMD64. Missing artifacts or
 failed pulls stop without choosing a different provider or architecture.
 `--version` and `doctor` report release identity without a Symphony `.git` directory.
+
+On Ubuntu 26.04 x86-64, choose the Linux archive from the **same** completed
+release and compare its SHA-256 to `bundles.linux_x86_64.sha256` in `release.json`:
+
+```sh
+sha256sum symphony-VERSION-linux_x86_64.tar.gz
+mkdir symphony-download
+tar -xzf symphony-VERSION-linux_x86_64.tar.gz -C symphony-download
+cd symphony-download
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+symphony --version
+symphony doctor
+```
+
+The static Linux helper needs no Swift, SDK or crypto shared libraries. Ubuntu
+x86-64 selects the Linux AMD64 runner. Linux ARM64 host installation is explicitly
+unsupported; the existing Linux ARM64 runner/standalone engine remains supported
+for its own consumers. A wrong-platform bundle, missing image or unavailable
+Docker engine fails clearly without a build fallback. All following project,
+credential, native-login, runner, update and recovery commands apply to both hosts.
+The installed updater hashes downloads through the bundled helper and requires no
+Perl/shasum or other interpreter.
 
 The installer stores immutable releases under
 `~/.local/share/symphony/releases/VERSION-REVISION`. Its `current` link selects the
@@ -276,3 +310,24 @@ publish a release or authorize a stable rollout. Portable updater fixtures prove
 selection, verification, exclusion, interrupted activation, retry, and rollback
 control flow. Actual installed native/container observations and clean-machine
 and authenticated account acceptance remain separate evidence.
+
+## Native candidate evidence
+
+`Package checks` builds both macOS helper architectures and executes package,
+helper and updater regressions on native Apple Silicon, Intel and Linux x86-64.
+The `runner-release` manual candidate path accepts `previous_revision`, the full
+SHA of a prior real Linux-capable candidate (not a fabricated revision string).
+It builds source-bound runner images and native archives for both revisions,
+retains both platform checksums, and runs `package-lifecycle.py` on native Linux.
+The clean Ubuntu 26.04 client gets archives and isolated data only, with optional
+host tools poisoned. The controller uses CI Python/Docker as test utilities.
+
+The lifecycle proof uses real memory-tracker listeners and loopback dashboards,
+physical mounts, same-basename projects, stop/restart, manager-only activation,
+selected-runner updates, post-create failure/retry and updater-controlled rollback.
+It checks dirty tracked files, untracked evidence, state, credentials, workflows,
+local overrides and the unchanged second project's selected image. Native login
+entrypoints/Codex login status are explicitly stubbed; this is not authenticated
+execution. Candidate CI creates no production tag, GHCR publication or GitHub
+release. Its evidence is valid only for the recorded source SHA and artifact
+checksums; a skipped or unavailable native platform remains an acceptance gap.

@@ -2,7 +2,7 @@
 
 This guide covers packaged and source-backed installations. Run project commands
 from the target repository with the same configuration and namespace used for
-initialization. For installation, see the [macOS bundle guide](packaged-install.md)
+initialization. For installation, see the [macOS/Ubuntu bundle guide](packaged-install.md)
 or [getting started](getting-started.md). Use `symphony --version` to identify the
 installed release and `symphony --help` for the command summary.
 

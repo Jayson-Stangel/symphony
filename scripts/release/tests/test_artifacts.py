@@ -44,6 +44,23 @@ class ArtifactsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 artifacts.validate(value)
 
+    def test_additive_platform_manifest_retains_legacy_mac_contract(self):
+        value = manifest()
+        legacy = copy.deepcopy(value)
+        value["bundles"] = {"macos": copy.deepcopy(value["bundle"]), "linux_x86_64": {
+            "filename": "symphony-0.0.3-linux_x86_64.tar.gz", "sha256": "e" * 64}}
+        artifacts.validate(value)
+        self.assertEqual(value["schema_version"], legacy["schema_version"])
+        self.assertEqual(value["host_architectures"], legacy["host_architectures"])
+        self.assertEqual(value["bundle"], legacy["bundle"])
+        mutations = [lambda v: v["bundles"].update(linux_arm64={}),
+                     lambda v: v["bundles"]["linux_x86_64"].update(filename="../linux.tar.gz"),
+                     lambda v: v["bundles"]["linux_x86_64"].update(sha256="invalid"),
+                     lambda v: v["bundles"]["macos"].update(sha256="f" * 64)]
+        for mutate in mutations:
+            changed = copy.deepcopy(value); mutate(changed)
+            with self.assertRaises(ValueError): artifacts.validate(changed)
+
     def test_duplicate_records_and_bundle_checksum(self):
         import json
         with tempfile.TemporaryDirectory() as directory:

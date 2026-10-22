@@ -51,10 +51,14 @@ class HostTargets(unittest.TestCase):
             fake.mkdir()
             (fake / 'uname').write_text('#!/bin/bash\ncase "$1" in -s) echo "$TEST_OS" ;; -m) echo "$TEST_ARCH" ;; esac\n')
             (fake / 'swiftc').write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$TEST_ARGS"\nwhile [ "$1" != -o ]; do shift; done\ntouch "$2"\n')
+            build_bin = root / 'swift-bin'
+            build_bin.mkdir()
+            (build_bin / 'symphony-host').write_text('fixture')
+            (fake / 'swift').write_text('#!/bin/bash\nprintf "%s\\n" "$@" >> "$TEST_ARGS"\ncase "$*" in *--show-bin-path*) echo "$TEST_BUILD_BIN" ;; esac\n')
             for path in fake.iterdir():
                 path.chmod(0o755)
             for system, architecture, target in [('Darwin', 'arm64', 'arm64-apple-macosx14.0'),
-                                                  ('Linux', 'x86_64', 'x86_64-unknown-linux-gnu'),
+                                                  ('Linux', 'x86_64', 'x86_64-swift-linux-musl'),
                                                   ('Darwin', 'x86_64', None), ('Linux', 'aarch64', None)]:
                 with self.subTest(system=system, architecture=architecture):
                     output = root / (system + architecture) / 'helper'
@@ -62,7 +66,7 @@ class HostTargets(unittest.TestCase):
                     if args.exists():
                         args.unlink()
                     env = dict(os.environ, PATH=str(fake) + os.pathsep + os.environ['PATH'],
-                               TEST_OS=system, TEST_ARCH=architecture, TEST_ARGS=str(args))
+                               TEST_OS=system, TEST_ARCH=architecture, TEST_ARGS=str(args), TEST_BUILD_BIN=str(build_bin))
                     result = subprocess.run(['bash', str(ROOT / 'scripts/release/build-host-helper.sh'), str(output)],
                                             env=env, text=True, capture_output=True)
                     if target:
