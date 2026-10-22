@@ -67,6 +67,34 @@ class ExportTransport(unittest.TestCase):
             with tarfile.open(archive, 'r:gz') as bundle:
                 self.assertEqual(bundle.getnames().count('shared-layer.tar'), 1)
 
+    def test_two_source_diagnostic_binds_records_and_refuses_foreign_source(self):
+        records, configs, manifest = [], [], []
+        for index, letter in enumerate(('a', 'b')):
+            revision = letter * 40
+            config = json.dumps({'architecture': 'amd64', 'config': {'Labels': {
+                'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64',
+                'org.opencontainers.image.revision': revision}}}).encode()
+            digest = hashlib.sha256(config).hexdigest()
+            configs.append((digest + '.json', config))
+            manifest.append({'Config': digest + '.json', 'RepoTags': ['fixture:' + str(index)], 'Layers': ['shared-layer.tar']})
+            records.append({'provider': 'codex', 'architecture': 'x86_64', 'platform': 'linux/amd64',
+                            'source_revision': revision, 'image': 'localhost:5000/codex@sha256:' + letter * 64})
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode='w') as bundle:
+            for name, content in configs + [('shared-layer.tar', b'shared'), ('manifest.json', json.dumps(manifest).encode())]:
+                entry = tarfile.TarInfo(name); entry.size = len(content)
+                bundle.addfile(entry, io.BytesIO(content))
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'candidate.tar.gz'
+            archive.write_bytes(gzip.compress(raw.getvalue()))
+            observed = BENCH.identities(archive, records, 'codex', 'x86_64')
+            self.assertEqual(len(observed), 2)
+            self.assertEqual({value['record']['source_revision'] for value in observed}, {'a'*40, 'b'*40})
+            with self.assertRaisesRegex(ValueError, 'no unique original qualification'):
+                BENCH.identities(archive, records[:1], 'codex', 'x86_64')
+            with self.assertRaisesRegex(ValueError, 'differs from original'):
+                BENCH.identities(archive, records, 'claude', 'x86_64')
+
     def test_source_failure_cannot_be_hidden_by_successful_gzip(self):
         with tempfile.TemporaryFile() as stream:
             with self.assertRaises(subprocess.CalledProcessError):
