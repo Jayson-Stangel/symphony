@@ -24,8 +24,8 @@ python3 scripts/release/artifacts.py validate dist/release.json
 The archive's internal manifest omits `bundle.sha256` to avoid a circular checksum.
 The external manifest includes it. `bundle.filename` is exactly
 `symphony-VERSION-macos.tar.gz`. Both manifests carry the same source and image
-identities. The universal macOS host bundle supports Apple Silicon and Intel;
-the runner images are Linux containers, not macOS executables.
+identities. New macOS host bundles support only Apple Silicon ARM64; Linux host
+bundles support only x86-64. Both Linux container architectures remain required.
 
 ## Candidate qualification without publication
 
@@ -145,9 +145,9 @@ is involved.
 
 ### Portable host helper (candidate qualification)
 
-On macOS, `bash scripts/release/build-host-helper.sh /tmp/symphony-host` retains
-one universal Intel/Apple Silicon executable. `--native` is a development-only
-single-architecture build. On native Linux x86-64, install the matching Swift
+On Apple Silicon, `bash scripts/release/build-host-helper.sh /tmp/symphony-host`
+builds only ARM64. Intel macOS and Linux ARM64 host helper builds refuse before
+compilation; neither starts a compiler or creates an output directory. On native Linux x86-64, install the matching Swift
 6.1.2 toolchain and Static Linux SDK, then use the same command, or run
 `bash scripts/release/build-linux-host-helper.sh /tmp/linux-helper` with Docker.
 The latter pins the Swift build container, SDK integrity checksum and portable
@@ -289,6 +289,19 @@ gh workflow run runner-release.yml --ref codex/faster-image-transfer \
   -f transfer_timing_run=39857032359 \
   -f transfer_timing_provider=claude -f transfer_timing_architecture=x86_64
 ```
+
+### Explicit per-platform host architectures
+
+New assembly derives `supported_hosts` from `host-targets.json` and declares
+`bundle.architectures=["arm64"]` for macOS and
+`bundles.linux_x86_64.architectures=["x86_64"]`. The global schema1 architecture
+union, legacy macOS filename, immutable image and revision checks remain intact.
+Validators still accept historical manifests without the additive fields; new
+packaging requires the explicit policy and checks the helper's compiled CPU.
+On macOS it checks every Mach-O slice before helper execution; supplied universal
+helpers are refused even when their executing ARM slice reports the right CPU.
+When packaging a prior source on the native ARM Mac, the current controller passes
+`--native` to its unmodified helper builder, avoiding an old universal compile.
 
 The real current/prior candidate controller uses `build-runner-cached.sh` through
 an explicit executable callback. Each source context retains its actual Git

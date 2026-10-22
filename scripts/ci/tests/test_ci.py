@@ -127,6 +127,7 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
             self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
         self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
+        self.assertNotIn('macos-15-intel', text)
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
         wrapper=job('macos-package')

@@ -61,6 +61,23 @@ class ArtifactsTest(unittest.TestCase):
             changed = copy.deepcopy(value); mutate(changed)
             with self.assertRaises(ValueError): artifacts.validate(changed)
 
+    def test_per_platform_architectures_preserve_truthful_legacy_union(self):
+        value = manifest()
+        value['supported_hosts'] = {'macos': ['arm64'], 'linux_x86_64': ['x86_64']}
+        value['bundle']['architectures'] = ['arm64']
+        value['bundles'] = {'macos': copy.deepcopy(value['bundle']), 'linux_x86_64': {
+            'filename': 'symphony-0.0.3-linux_x86_64.tar.gz', 'sha256': 'e'*64, 'architectures': ['x86_64']}}
+        artifacts.validate(value)
+        self.assertEqual(value['host_architectures'], ['arm64', 'x86_64'])
+        for mutate in [lambda v: v['supported_hosts']['macos'].append('x86_64'),
+                       lambda v: v['supported_hosts'].update(linux_arm64=['arm64']),
+                       lambda v: v['bundle'].update(architectures=['arm64', 'x86_64']),
+                       lambda v: v['bundle'].pop('architectures'),
+                       lambda v: v['bundles']['linux_x86_64'].update(architectures=['arm64']),
+                       lambda v: v.pop('supported_hosts')]:
+            changed = copy.deepcopy(value); mutate(changed)
+            with self.assertRaises(ValueError): artifacts.validate(changed)
+
     def test_duplicate_records_and_bundle_checksum(self):
         import json
         with tempfile.TemporaryDirectory() as directory:
@@ -77,6 +94,9 @@ class ArtifactsTest(unittest.TestCase):
                                    channel="candidate", bundle=bundle, output=root / "release.json")
             artifacts.assemble(args)
             actual = json.loads(args.output.read_text())
+            self.assertEqual(actual['supported_hosts'], {'macos': ['arm64'], 'linux_x86_64': ['x86_64']})
+            self.assertEqual(actual['bundle']['architectures'], ['arm64'])
+            self.assertEqual(actual['host_architectures'], ['arm64', 'x86_64'])
             self.assertEqual(actual["bundle"]["sha256"], artifacts.hashlib.sha256(bundle.read_bytes()).hexdigest())
             args.records = records + records[:1]
             with self.assertRaisesRegex(ValueError, "duplicate"):

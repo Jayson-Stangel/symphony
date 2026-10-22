@@ -19,6 +19,10 @@ class HostTargets(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/burrito-release.yml').read_text()
         self.assertEqual(workflow.count('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}'), 2)
         self.assertNotIn('macos-15-intel', workflow)
+        self.assertIn('engine_only:', workflow)
+        self.assertIn('!inputs.controller_only && !inputs.engine_only', workflow)
+        runner_call = workflow.split('  runners:\n', 1)[1].split('  build:', 1)[0]
+        self.assertIn('      actions: read', runner_call)
         self.assertNotIn('Download linux_arm64', workflow)
         self.assertNotIn('Download macos_x86_64', workflow)
         config = (ROOT / 'elixir/mix.exs').read_text()
@@ -39,6 +43,16 @@ class HostTargets(unittest.TestCase):
             key, matrix = lines[0].split('=', 1)
             self.assertEqual(key, 'matrix')
             self.assertEqual(len(json.loads(matrix)['include']), 2)
+
+    def test_filtered_native_policy_retains_one_matching_host(self):
+        for platform, target in [('macos', 'macos_arm64'), ('linux_x86_64', 'linux_x86_64')]:
+            with self.subTest(platform=platform):
+                output = subprocess.check_output(['python3', str(ROOT/'scripts/release/select-hosts.py'), '--platform', platform], text=True)
+                matrix = json.loads(output.strip().split('=', 1)[1])
+                self.assertEqual([host['target'] for host in matrix['include']], [target])
+        package = (ROOT/'.github/workflows/package-checks.yml').read_text()
+        self.assertNotIn('macos-15-intel', package)
+        self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', package)
 
     def test_helper_builder_compiles_only_the_matching_supported_native_target(self):
         # Execute the real build wrapper with a recording compiler. These prove
