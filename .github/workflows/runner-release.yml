@@ -1,4 +1,4 @@
-name: runner-release
+name: runner-release-native-cache-controller-diagnostic
 
 on:
   workflow_call:
@@ -41,13 +41,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        provider: [codex, claude]
         include:
-          - architecture: arm64
+          - provider: codex
+            architecture: arm64
             runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
-        architecture: [arm64, x86_64]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Verify release version and run metadata tests
@@ -92,7 +89,7 @@ jobs:
           retention-days: 30
 
   publish:
-    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: candidate
     environment: production-release
     permissions:
@@ -146,6 +143,7 @@ jobs:
           if-no-files-found: error
 
   candidate-metadata:
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: candidate
     runs-on: ubuntu-24.04
     steps:
@@ -176,6 +174,7 @@ jobs:
           path: dist/**
 
   packaged-release-platform:
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: publish
     strategy:
       fail-fast: false
@@ -212,6 +211,7 @@ jobs:
           if-no-files-found: error
 
   packaged-release:
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: packaged-release-platform
     runs-on: ubuntu-24.04
     environment: production-release
@@ -242,7 +242,7 @@ jobs:
           if-no-files-found: error
 
   cache-probe:
-    if: inputs.cache_probe && github.event_name == 'workflow_dispatch'
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -343,6 +343,7 @@ jobs:
           test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker rm -f "$REGISTRY_ID"
   packaged-candidate:
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: candidate-metadata
     strategy:
       fail-fast: false
@@ -387,6 +388,7 @@ jobs:
           retention-days: 30
 
   packaged-candidate-metadata:
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: packaged-candidate
     runs-on: ubuntu-24.04
     steps:
@@ -431,7 +433,7 @@ jobs:
           retention-days: 30
 
   ubuntu-package-lifecycle:
-    if: inputs.previous_revision != ''
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     needs: packaged-candidate-metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -457,7 +459,7 @@ jobs:
           retention-days: 30
 
   lifecycle-diagnostic:
-    if: github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.diagnostic_artifact_run != ''
+    if: ${{ false }} # Diagnostic only: no package, publication, or full-candidate claim.
     permissions:
       contents: read
       actions: read
