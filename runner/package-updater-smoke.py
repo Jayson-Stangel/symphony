@@ -192,8 +192,16 @@ try:
             docker("exec", name, "node", "-e", "const {chromium}=require('/opt/symphony/browser/node_modules/playwright'); (async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1280,height:900}});await page.goto('http://127.0.0.1:4010/',{waitUntil:'networkidle'});await page.screenshot({path:'/tmp/package-dashboard.png',fullPage:true});console.log(await page.title());await browser.close();})().catch(error=>{console.error(error);process.exit(1)});")
             docker("cp", name + ":/tmp/package-dashboard.png", str(proof / "dashboard.png"))
         mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", name))
-        assert {value["Destination"] for value in mounts} == {"/etc/symphony/WORKFLOW.md", "/root/.codex", "/workspaces", "/var/lib/symphony"}
-        assert all(value.get("Type") == "volume" or value["Source"] == str(project / "WORKFLOW.md") for value in mounts)
+        assert len(mounts) == 4
+        expected_volumes = {"/root/.codex": auth_volume, "/workspaces": name + "-workspaces", "/var/lib/symphony": name + "-state"}
+        assert {value["Destination"] for value in mounts} == set(expected_volumes) | {"/etc/symphony/WORKFLOW.md"}
+        for value in mounts:
+            if value["Destination"] == "/etc/symphony/WORKFLOW.md":
+                expected = str(project / "WORKFLOW.md")
+                assert value["Type"] == "bind" and value["RW"] is False
+                assert value["Source"] in (expected, "/host_mnt" + expected)
+            else:
+                assert value["Type"] == "volume" and value["Name"] == expected_volumes[value["Destination"]]
         (proof / f"mounts-{index}.json").write_text(json.dumps(mounts, indent=2))
     assert identities[0] != identities[1]
     names = [prefix + "-" + identity for identity in identities]
