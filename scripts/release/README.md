@@ -56,8 +56,8 @@ available. Keep it isolated from stable installations and runner namespaces.
 
 Local developer builds may use `docker build --target codex|claude` with
 `--build-arg SYMPHONY_VERSION=... --build-arg SYMPHONY_REVISION=...`; commit the
-candidate first so the labels identify the code tested. Local image IDs (`.Id`)
-are config digests, and must not be presented as registry manifest digests.
+candidate first so the labels identify the code tested. Treat `.Id` as an opaque local image ID, not a substitute for a registry
+distribution digest.
 
 ## Approved production publication
 
