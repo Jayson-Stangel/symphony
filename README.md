@@ -67,20 +67,27 @@ merging. Existing workflows are preserved when Symphony is initialized or update
 
 ## Get started
 
-For the source installation below, you will need Git, [mise](https://mise.jdx.dev/),
-a running Docker-compatible container engine, a repository the worker can clone and
-push to, tracker credentials, and an agent login. Codex is the default; Claude uses native subscription sign-in in its
-qualified container profile. Host agent CLIs are unnecessary for container execution.
+On macOS 14 or later, download the manager bundle and `release.json` from a
+[completed stable release](https://github.com/Jayson-Stangel/symphony/releases).
+Install and start Docker Desktop or OrbStack separately, then follow the
+[packaged installation guide](docs/packaged-install.md) to verify and install the
+bundle. The manager uses prebuilt runner images; it needs no Symphony checkout,
+host Git, mise, Python, Node, agent CLI, or build toolchain.
 
-On macOS 14 or later, a completed release bundle can run without a Symphony source
-checkout or host build tools. See [packaged installation](docs/packaged-install.md)
-for prerequisites, release verification, and setup. Existing source installations
-are not migrated automatically.
-Packaged `symphony update` verifies and stages one release before activating its
-manager and any selected project runner; see [packaged update and recovery](docs/packaged-install.md#updating-a-packaged-installation)
-for retry and retained prior-release rollback procedures.
+You also need an existing project checkout with an explicit `origin`, tracker
+credentials, a repository-scoped GitHub credential, and a native agent login.
+Preparing the target checkout is separate from installing Symphony. Codex is the
+default; Claude uses native sign-in in its isolated runner.
 
-For a source installation, install the stable command in a dedicated checkout:
+The [getting started guide](docs/getting-started.md) covers project initialization,
+credentials, authentication, and one disposable issue-to-PR pilot for either
+installation type. Existing source installations keep their source updater;
+bundle installation does not migrate them automatically.
+
+### Source installation
+
+For a source-backed installation, install Git and [mise](https://mise.jdx.dev/)
+and keep Symphony in a dedicated checkout:
 
 ```bash
 git clone --branch main https://github.com/Jayson-Stangel/symphony.git ~/src/symphony
@@ -90,10 +97,9 @@ symphony setup
 symphony doctor
 ```
 
-Then follow the [getting started guide](docs/getting-started.md#initialize-a-repository)
-to initialize a target repository, configure credentials and tracker scope, authenticate
-an agent, and run your first issue. The guide uses Linear; other supported trackers
-are described in the [configuration reference](elixir/README.md#configuration).
+Continue at [initialize a repository](docs/getting-started.md#initialize-a-repository).
+The guide uses Linear; other supported trackers are described in the
+[configuration reference](elixir/README.md#configuration).
 
 For source installations, keep the stable checkout in place: the global command points to it. To change Symphony
 itself or test `dev`, use a [separate development environment](docs/development.md).
@@ -102,7 +108,7 @@ itself or test `dev`, use a [separate development environment](docs/development.
 
 | I want to… | Read |
 | --- | --- |
-| Install from source and run a first project | [Getting started](docs/getting-started.md) |
+| Connect a project, authenticate an agent, and run a first issue | [Getting started](docs/getting-started.md) |
 | Install a macOS release bundle without host build tools | [Packaged installation](docs/packaged-install.md) |
 | Inspect, drain, stop, update, or recover a runner | [Operations](docs/operations.md) |
 | Configure trackers, workspaces, hooks, models, or concurrency | [Configuration reference](elixir/README.md#configuration) |

@@ -49,8 +49,14 @@ Docker archive, checksum, observed release record and registry log. To replay on
 a compatible native host, start an isolated registry at `127.0.0.1:5000`, verify
 the archive checksum, `docker load` it, push its
 `localhost:5000/symphony-PROVIDER:candidate` tag to that registry, and pull the
-record's digest. A digest mismatch is a failure, not permission to rewrite the
-record. The record and image archive do not require the Symphony source checkout.
+record's digest. Some engines normalize image manifests or drop an OCI index and
+its attestations during `docker load`/`push`, changing the distribution digest.
+If that happens, stop this replay path: use the original qualified registry when
+available, or transfer the complete OCI graph with a digest-preserving copy that
+retains raw manifest/index bytes and all referenced objects. Verify the original
+record's digest after transfer. Do not rewrite a qualified record or bundle
+manifest to accept the converted image. The record and image archive do not
+require the Symphony source checkout.
 A candidate bundle can then use those local digests while that registry is
 available. Keep it isolated from stable installations and runner namespaces.
 

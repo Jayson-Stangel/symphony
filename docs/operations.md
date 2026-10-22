@@ -1,15 +1,16 @@
 # Operating Symphony
 
-This guide covers the source-backed installation. For macOS bundles, see
-[packaged installation](packaged-install.md). Run project commands from the target
-repository. For a fresh source installation, follow [getting started](getting-started.md).
-Use `symphony --help` for the command summary.
+This guide covers packaged and source-backed installations. Run project commands
+from the target repository with the same configuration and namespace used for
+initialization. For installation, see the [macOS bundle guide](packaged-install.md)
+or [getting started](getting-started.md). Use `symphony --version` to identify the
+installed release and `symphony --help` for the command summary.
 
 ## Inspect and control a runner
 
 | Command | Purpose |
 | --- | --- |
-| `symphony doctor` | Check the installed source, command/skill links, Git, and container runtime. |
+| `symphony doctor` | Check the installation, command/skill links, and container runtime; packaged diagnostics report release identity without host Git. |
 | `symphony project doctor` | Inspect workflow references, credentials, and legacy project setup without changing files. |
 | `symphony runner doctor --agent codex` | Check the selected image's native login and disposable local Git operations. Use `claude` for Claude. |
 | `symphony runner status` | Show the project's container, dashboard address, and retained volumes. |
@@ -23,7 +24,8 @@ Both installation and project doctors support `--json`. The runner doctor makes 
 model requests and starts no listener; it does not prove remote clone/push permission.
 
 For a planned stop, drain first, wait for zero active workers in the dashboard, then
-stop. A matching `symphony run --port PORT` can restart the retained container.
+stop. Restart the retained Claude runner with `symphony run --agent claude --port PORT`;
+for Codex use `symphony run --port PORT`. Keep the original provider and port.
 A drain survives restart until explicitly resumed. `run` refuses a different
 provider, image, port, or native profile for an existing runner; use the updater for
 supported transitions.
@@ -64,9 +66,41 @@ set and exact revisions. Rollout approval must also name runtime/project targets
 review or testing in `dev` does not authorize either action. Follow the
 [production approval rules](../AGENTS.md#explicit-approval-for-production).
 
-After approval, use the installed global command:
+After approval, use the installed global command. The installation type selects
+the updater; existing source installations remain source-backed.
 
-```bash
+### Packaged releases
+
+A packaged update selects a completed stable GitHub release and verifies its
+manifest, archive checksum and file inventory before activation. It uses prebuilt
+images without host Git or a local build. From the target project:
+
+```sh
+symphony update                           # shared manager and skills only
+symphony update --agent claude            # manager and this project's Claude runner
+# For Codex instead: symphony update --agent codex
+# Choose a specific completed release: symphony update --release VERSION --agent claude
+```
+
+Keep the project's existing provider when updating. Other projects retain their
+pinned images and volumes until their own explicit transition. A failed download
+or verification leaves the current manager and listener usable.
+
+```sh
+symphony update --agent claude            # retry a pending selected transition
+symphony update --rollback-runner         # recover an unfinished transition
+symphony update --rollback-release --agent claude  # restore a completed prior release
+```
+
+A pending transition must be completed or rolled back before selecting another
+release. `--rollback-release` without `--agent` restores only the shared manager;
+project image pins stay unchanged. See [packaged update and recovery](packaged-install.md#updating-a-packaged-installation)
+for selection, ownership and retained-state rules. Do not repoint `current`,
+remove journals, or replace retained containers manually.
+
+### Source installations
+
+```sh
 symphony update
 ```
 
@@ -109,6 +143,10 @@ refuse immediately. Status and logs remain available. If the updater refuses,
 resolve the reported precondition or report the limitation. Do not repair the
 stable checkout, delete ownership evidence, force-replace a container, or restart
 stable processes manually to bypass it. Stable changes go through `symphony update`.
+
+These update commands preserve project workflows, credentials and native login;
+they do not turn a source installation into a packaged installation. Use separate
+paths and a namespace for [isolated candidate testing](packaged-install.md#isolated-candidate-installation).
 
 ## Credentials and project identity
 
@@ -191,7 +229,9 @@ review cross-skill references that may still use generic names.
 
 Both images bundle Git, GitHub CLI, and a version-matched Playwright/Chromium
 installation. Add project dependencies through `hooks.after_create`, or use a
-compatible custom image selected with `SYMPHONY_RUNNER_IMAGE`.
+compatible custom image selected with `SYMPHONY_RUNNER_IMAGE` in a source
+installation. Packaged installations require the release manifest's immutable
+image and reject that override.
 
 For browser automation inside a workspace, use the bundled CLI or Node package:
 
@@ -215,12 +255,15 @@ evidence; temporary logs do not all require upload.
 | `SYMPHONY_RUNNER_HOME` | Runner metadata and journals; default under the configuration root. |
 | `SYMPHONY_CODEX_AUTH_VOLUME` | Override the namespace's Codex login volume. |
 | `SYMPHONY_HOME` | Source checkout when invoking a launcher copied outside its checkout. |
+| `SYMPHONY_APP_HOME` | Packaged application storage; default `~/.local/share/symphony`. |
+| `SYMPHONY_RUNNER_NAMESPACE` | Namespace for isolated configuration, containers and storage; preserve it for every command. |
 
 `install`, `doctor`, and `update` also accept `--bin-dir`, `--config-dir`, and
 `--skills-dir`. An explicit `SYMPHONY_RUNNER_HOME` overrides derived runner storage.
 For development, isolate the configuration, Docker namespace, auth volumes, and
 port together using the [development guide](development.md).
 
-Optional `run --host` is for native Codex debugging. Use `doctor --host` for the
+Source-only `run --host` is for native Codex debugging. Packaged installations
+require container execution. For source debugging, use `doctor --host` for the
 pinned host runtime and authenticate the commands selected by your workflow.
 Install host GitHub CLI when its procedures require it. Claude requires its container.
