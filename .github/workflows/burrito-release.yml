@@ -10,6 +10,14 @@ permissions:
   contents: read
 
 jobs:
+  runners:
+    uses: ./.github/workflows/runner-release.yml
+    with:
+      publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: read
+      packages: write
+
   build:
     name: build-${{ matrix.target }}
     runs-on: ubuntu-24.04
@@ -119,8 +127,9 @@ jobs:
           grep -F "This Symphony implementation is a low key engineering preview." <<<"$output"
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    needs: [build, smoke, runners]
+    environment: production-release
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -129,10 +138,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Download release assets
+      - name: Download linux_x86_64
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: dist
+          name: linux_x86_64
+          path: dist/linux_x86_64
+
+      - name: Download linux_arm64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux_arm64
+          path: dist/linux_arm64
+
+      - name: Download macos_x86_64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos_x86_64
+          path: dist/macos_x86_64
+
+      - name: Download macos_arm64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos_arm64
+          path: dist/macos_arm64
+
+      - name: Download packaged-release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packaged-release
+          path: dist/packaged-release
 
       - name: Create or update GitHub release
         env:
@@ -140,7 +174,9 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*/* --clobber
+            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo "Refusing to alter a completed release." >&2; exit 1; }
           else
-            gh release create "$TAG" dist/*/* --verify-tag --generate-notes
+            gh release create "$TAG" --draft --verify-tag --generate-notes
           fi
+          gh release upload "$TAG" dist/linux_*/* dist/macos_*/* dist/packaged-release/* --clobber
+          gh release edit "$TAG" --draft=false --prerelease=false --latest

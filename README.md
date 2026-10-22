@@ -492,3 +492,7 @@ Codex and Claude share the configured global and per-state worker limits. Use
 parallel work. Healthy explicit authentication/policy rechecks restore normal parallel capacity immediately, without waiting for a model turn. The deprecated `claude.max_concurrent_agents` input is accepted
 but ignored; move any desired limit into `agent`. See the
 [Claude workflow settings](docs/claude.md#workflow-settings) for migration details.
+
+Versioned prebuilt runner and manager artifacts use one immutable release identity.
+See the [release artifact contract and qualification procedure](scripts/release/README.md)
+for candidate builds, public image digests, approval gates and evidence limits.

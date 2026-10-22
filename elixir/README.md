@@ -209,8 +209,10 @@ Supported release targets:
 - `linux_arm64`
 - `linux_x86_64`
 
-`v*` tags publish all four targets with checksums. A manual workflow run builds the same
-artifacts without creating a release.
+`v*` tags qualify all four targets and the matching prebuilt runners before approved
+publication. A manual workflow run builds candidate artifacts without creating a release.
+See the [release artifact contract](../scripts/release/README.md) for registry setup,
+production environment approval and the source-independent manager bundle contract.
 
 For native Codex execution, download the matching executable and checksum from a
 [release](https://github.com/Jayson-Stangel/symphony/releases). Replace `VERSION` below
