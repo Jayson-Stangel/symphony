@@ -54,6 +54,8 @@ class ComponentProofTest(unittest.TestCase):
                                                 "conclusion": "success", "labels": ["ubuntu-24.04-arm"]}]}
 
     def fetch(self, path, binary=False):
+        if path.startswith("compare/"):
+            return {"status": "ahead", "merge_base_commit": {"sha": path.split("/")[1].split("...")[0]}}
         return {"actions/runs/123": self.run, "actions/runs/123/attempts/1/jobs?per_page=100": self.jobs,
                 "actions/artifacts/987": self.payload,
                 "actions/runs/123/artifacts?per_page=100": {"total_count": 1, "artifacts": [self.metadata]},

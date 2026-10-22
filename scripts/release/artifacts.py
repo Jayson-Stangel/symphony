@@ -59,6 +59,12 @@ def validate(value, require_bundle=True):
 
 
 def validate_component(runner, provider, architecture):
+    require(provider in PROVIDERS and architecture in ARCHITECTURES, "unknown native component target")
+    require(runner.get("platform") == ARCHITECTURES[architecture], "native component platform differs")
+    require(REVISION.fullmatch(runner.get("source_revision", "")), "invalid original runner revision")
+    require(DIGEST_IMAGE.fullmatch(runner.get("image", "")), "invalid original immutable image")
+    if "browser_input_identity" in runner:
+        require(re.fullmatch(r"[a-f0-9]{64}", runner["browser_input_identity"]), "invalid original browser identity")
     require(re.fullmatch(r"[a-f0-9]{64}", runner.get("input_identity", "")), "missing runner input identity")
     require(type(runner.get("protocol")) is int and runner["protocol"] == 1, "incompatible runner protocol")
     require(isinstance(runner.get("tool_versions", {}).get("elixir"), str) and
@@ -92,6 +98,9 @@ def validate_component(runner, provider, architecture):
     require(proof.get("archive_filename") in (f"{provider}-{architecture}.docker.tar.gz",
                                               f"previous/{provider}-{architecture}.docker.tar.gz"),
             "native archive target differs")
+    require(proof.get("record_filename", f"{provider}-{architecture}.json") in
+            (f"{provider}-{architecture}.json", f"previous/{provider}-{architecture}.json"),
+            "native record target differs")
     require(re.fullmatch(r"[a-f0-9]{64}", proof.get("archive_sha256", "")), "missing native archive checksum")
 
 

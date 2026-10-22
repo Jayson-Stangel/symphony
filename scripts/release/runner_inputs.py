@@ -144,7 +144,7 @@ def stage_graph(contents):
 
 def identity(root, provider, architecture, build_args=None):
     root = Path(root).resolve()
-    require(provider in ("codex", "claude") and architecture in PLATFORMS, "unsupported native runner target")
+    require(provider in ("codex", "claude", "browser-tools") and architecture in PLATFORMS, "unsupported native runner target")
     build_args = dict(build_args or {})
     require(not (set(build_args) & METADATA_ARGS), "source/version metadata is recorded separately from runtime inputs")
     require(not (set(build_args) & {"TARGETARCH", "TARGETPLATFORM", "BUILDARCH", "BUILDPLATFORM"}),
@@ -276,7 +276,7 @@ def identity(root, provider, architecture, build_args=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
-    parser.add_argument("--provider", choices=("codex", "claude"), required=True)
+    parser.add_argument("--provider", choices=("codex", "claude", "browser-tools"), required=True)
     parser.add_argument("--architecture", choices=tuple(PLATFORMS), required=True)
     parser.add_argument("--build-arg", action="append", default=[])
     parser.add_argument("--output", required=True)

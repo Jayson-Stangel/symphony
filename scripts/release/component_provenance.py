@@ -44,7 +44,17 @@ def available(artifact, expected_name, expected_digest, run_id, controller, now)
     require(origin.get("id") == run_id and origin.get("head_sha") == controller, "foreign artifact origin")
 
 
-def verify_origin(record, fetch=api, now=None):
+def trusted_lineage(revision, fetch=api):
+    """Accept only ancestors of live fork integration/production refs."""
+    require(artifacts.REVISION.fullmatch(revision or ""), "invalid source/controller revision")
+    for branch in ("dev", "main"):
+        comparison = fetch(f"compare/{revision}...{branch}")
+        if comparison.get("status") in ("ahead", "identical") and comparison.get("merge_base_commit", {}).get("sha") == revision:
+            return
+    raise ValueError("source/controller is outside verified fork dev/main history")
+
+
+def verify_origin(record, fetch=api, now=None, candidate_run=None):
     provider, architecture = record["provider"], record["architecture"]
     artifacts.validate_component(record, provider, architecture)
     proof = record["qualification"]
@@ -56,6 +66,12 @@ def verify_origin(record, fetch=api, now=None):
     require(run.get("event") in ("workflow_dispatch", "push") and
             run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml"),
             "unqualified native workflow origin")
+    if candidate_run is not None:
+        require(type(candidate_run) is int and candidate_run == run_id and run.get("event") == "workflow_dispatch",
+                "explicit candidate origin differs from the selected manual run")
+    else:
+        for revision in set((proof["controller_revision"], record["source_revision"])):
+            trusted_lineage(revision, fetch)
     jobs = fetch(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
     require(jobs.get("total_count", 0) <= 100, "incomplete native job discovery")
     selected = [job for job in jobs.get("jobs", []) if job.get("name") == proof["job_name"]]
@@ -79,7 +95,7 @@ def verify_origin(record, fetch=api, now=None):
     data = fetch(f"actions/artifacts/{metadata['id']}/zip", binary=True)
     require(len(data) <= MAX_RECORD_BYTES and "sha256:" + hashlib.sha256(data).hexdigest() == metadata["digest"],
             "original record artifact checksum differs")
-    name = proof["archive_filename"].removesuffix(".docker.tar.gz") + ".json"
+    name = proof.get("record_filename", proof["archive_filename"].removesuffix(".docker.tar.gz") + ".json")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             require(sum(item.file_size for item in archive.infolist()) <= MAX_RECORD_BYTES,
@@ -90,7 +106,10 @@ def verify_origin(record, fetch=api, now=None):
         raise ValueError("corrupt or unsupported original record archive; reuse refused") from None
     require(original == record, "record differs from the original native qualification")
     return {"run_id": run_id, "artifact_id": payload["id"], "artifact_digest": payload["digest"],
-            "record_artifact_id": metadata["id"], "record_artifact_digest": metadata["digest"]}
+            "record_artifact_id": metadata["id"], "record_artifact_digest": metadata["digest"],
+            "run_attempt": attempt, "controller_revision": proof["controller_revision"],
+            "job_name": proof["job_name"], "archive_filename": proof["archive_filename"],
+            "archive_sha256": proof["archive_sha256"], "record_filename": name}
 
 
 def seal(args):
@@ -107,7 +126,7 @@ def seal(args):
              "controller_revision": os.environ["GITHUB_SHA"], "job_name": args.job_name,
              "artifact_id": args.artifact_id, "artifact_name": f"runner-candidate-{provider}-{architecture}",
              "artifact_digest": args.artifact_digest, "archive_filename": args.archive_name,
-             "archive_sha256": checksum.hexdigest(),
+             "archive_sha256": checksum.hexdigest(), "record_filename": args.record_name,
              **{key: record[key] for key in ("image", "source_revision", "input_identity")}}
     record["qualification"] = proof
     artifacts.validate_component(record, provider, architecture)
@@ -123,6 +142,7 @@ def main():
     build.add_argument("--record", required=True)
     build.add_argument("--archive", required=True)
     build.add_argument("--archive-name", required=True)
+    build.add_argument("--record-name", required=True)
     build.add_argument("--artifact-id", required=True, type=int)
     build.add_argument("--artifact-digest", required=True)
     build.add_argument("--job-name", required=True)
