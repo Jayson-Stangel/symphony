@@ -107,11 +107,17 @@ class WorkflowContracts(unittest.TestCase):
                 # Package qualification fans out by OS/architecture; the exact
                 # required wrapper is exercised independently below.
                 continue
-            steps=text.split('    steps:\n',1)[1]
+            if name == 'runner-integration':
+                self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
+                steps=text.split('  listener-and-cleanup:\n',1)[1].split('    steps:\n',1)[1]
+            else:
+                steps=text.split('    steps:\n',1)[1]
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
                 if name == 'browser-smoke':
                     self.assertIn("if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 ==", step)
+                elif name == 'runner-integration':
+                    self.assertIn("needs.changes.outputs.code == 'true'", step)
                 else:
                     self.assertIn("if: needs.changes.outputs.code != 'false'",step)
 

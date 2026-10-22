@@ -251,11 +251,33 @@ It never builds, exports, uploads or renames an image. `--prior` requires an
 available original prior record; it never fabricates one. Download, checksum and
 member failures leave no completed destination or successful receipt.
 
-Payload retrieval is preparation for the existing packaged-manager lifecycle
-consumer. It does not itself prove Docker config identity, runtime behavior or
-current-manager integration. Ordinary runner integration must retain its real
-behavioral checks until the native package lifecycle prerequisite is available
-and that consumer is composed with these archives and the actual new manager.
+Payload retrieval prepares the existing packaged-manager lifecycle consumer;
+it does not itself prove Docker config identity or runtime behavior. Ordinary
+runner integration assembles actual native packages from the current manager
+source, verifies their source and archive checksums, then executes the installed
+current manager with original immutable runner payloads. Unchanged components
+bypass the native image producer entirely. Changed components use the same
+production native producer and retain their actual original records.
+
+`package-lifecycle.py --current-manager-only PACKAGES RUNNERS EVIDENCE` qualifies
+one actual current manager package, source-free installation, both provider
+listeners, same-basename project isolation, persistent dirty/untracked/state and
+auth-volume canaries, stop/restart and owned cleanup. It retains explicit
+single-manager evidence and never invents a prior package revision. The default
+controller mode continues to require two real manager revisions and exercises
+actual update, failure, pinned retry and rollback separately. Both modes verify
+original runner config/source/protocol/input labels and restore/pull only the
+original isolated-registry digest, without assigning a manager revision to an
+older image.
+
+`build-manager-package.sh MANIFEST OUTPUT PLATFORM SOURCE FULL_SHA [HELPER]`
+extracts the native package assembly used by these consumers. It calls the
+existing native helper builders and source's packer, verifies exact source,
+platform and binary CPU, and builds historical Mac helpers with `--native`.
+An explicitly supplied already-qualified helper avoids a duplicate compile.
+`current-manager-package.yml` consumes the shared two-host policy and binds both
+actual archive hashes; no nonexistent platform archive receives a placeholder
+checksum.
 
 Pre-merge candidate diagnostics may pass `--baseline-run ID` to the payload
 consumer only in an explicitly invoked `workflow_dispatch` context. The consumer

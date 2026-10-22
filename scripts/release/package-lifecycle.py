@@ -79,12 +79,37 @@ def cleanup_container(name, controller_ids, storages, evidence):
     return name
 
 
+def package_selections(packages, current_only, revision):
+    current = json.loads((packages / "release.json").read_text())
+    if current_only:
+        assert current["source_revision"] == revision, "current-manager integration requires this exact manager source"
+        return [(packages, current)]
+    previous = json.loads((packages / "previous/release.json").read_text())
+    assert current["source_revision"] != previous["source_revision"], "two distinct actual source revisions required"
+    return [(packages / "previous", previous), (packages, current)]
+
+
+def verify_loaded_component(config, record, provider, independent):
+    labels = config.get("Config", {}).get("Labels") or {}
+    assert (config.get("Architecture") == "amd64" and record.get("platform") == "linux/amd64" and
+            labels.get("com.symphony.agent") == provider and labels.get("com.symphony.architecture") == "amd64" and
+            labels.get("org.opencontainers.image.revision") == record["source_revision"]), "loaded original image source/platform/provider differs"
+    if independent:
+        assert config.get("Id") == record.get("image_config"), "loaded original image config differs"
+        assert labels.get("com.symphony.protocol") == str(record.get("protocol")) == "1", "loaded original runner protocol differs"
+        assert labels.get("com.symphony.inputs.sha256") == record.get("input_identity"), "loaded original input identity differs"
+
+
 def main():
-    if len(sys.argv) != 4:
-        raise SystemExit("Usage: package-lifecycle.py PACKAGES RUNNER_ARCHIVES EVIDENCE")
+    arguments = sys.argv[1:]
+    current_only = bool(arguments and arguments[0] == "--current-manager-only")
+    if current_only:
+        arguments = arguments[1:]
+    if len(arguments) != 3:
+        raise SystemExit("Usage: package-lifecycle.py [--current-manager-only] PACKAGES RUNNER_ARCHIVES EVIDENCE")
     if os.uname().sysname != "Linux" or os.uname().machine != "x86_64":
         raise SystemExit("actual native Linux x86-64 is required")
-    packages, images, evidence = (Path(p).resolve() for p in sys.argv[1:])
+    packages, images, evidence = (Path(p).resolve() for p in arguments)
     evidence.mkdir(parents=True, exist_ok=True)
     root = evidence / "isolated"; root.mkdir(mode=0o755)
     uid, gid = os.getuid(), os.getgid()
@@ -102,7 +127,8 @@ def main():
               "nativeAuth": "STUB login entrypoints and Codex login status ONLY; no account/model requests",
               "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
               "diagnostic_artifact_run": os.environ.get("DIAGNOSTIC_ARTIFACT_RUN"),
-              "checks": [], "passed": False}
+              "mode": "current-manager-only" if current_only else "two-revision-lifecycle",
+              "qualified_runner_components": [], "checks": [], "passed": False}
 
     def run(args, expected=0, **kwargs):
         args = [str(a) for a in args]
@@ -176,18 +202,20 @@ def main():
         return external, archive
 
     try:
-        current = json.loads((packages / "release.json").read_text())
-        previous = json.loads((packages / "previous/release.json").read_text())
-        assert current["source_revision"] != previous["source_revision"], "two distinct actual source revisions required"
+        selections = package_selections(packages, current_only, result["source_revision"])
+        current = selections[-1][1]
+        initial = selections[0][1]
+        previous = initial  # The full lifecycle uses a real previous source; single-manager mode never claims one.
         assert current["source_revision"] == result["package_source_revision"], "candidate must match exact selected package source"
         assert result["diagnostic_artifact_run"] or result["package_source_revision"] == result["source_revision"], "acceptance candidate must match exact workflow head"
         source_archives = []
-        for folder, manifest in ((packages / "previous", previous), (packages, current)):
+        for folder, manifest in selections:
             bundle = manifest["bundles"]["linux_x86_64"]
             archive = folder / bundle["filename"]
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == bundle["sha256"]
             source_archives.append(archive)
-        result["packages"] = [{"source_revision": m["source_revision"], **m["bundles"]["linux_x86_64"]} for m in (previous, current)]
+        result["packages"] = [{"source_revision": manifest["source_revision"], **manifest["bundles"]["linux_x86_64"]}
+                              for _, manifest in selections]
         controller_ids[registry] = acquire_container(run, "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
         owned.add(registry)
         for provider in ("codex", "claude"):
@@ -197,21 +225,34 @@ def main():
             with archive.open("rb") as source:
                 # Docker load handles the gzip archive; no shell pipeline status ambiguity.
                 run(["docker", "load"], stdin=source)
-            for tag, manifest in (("candidate", current), ("previous", previous)):
-                image = f"localhost:5000/symphony-{provider}:{tag}"
+            selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", previous)]
+            for legacy_tag, manifest in selected:
+                qualified = manifest["runners"][provider]["x86_64"]
+                image = qualified.get("archive_tag", f"localhost:5000/symphony-{provider}:{legacy_tag}")
+                assert image in (f"localhost:5000/symphony-{provider}:candidate", f"localhost:5000/symphony-{provider}:previous"), "foreign original archive tag"
+                original = qualified["image"]
+                assert re.fullmatch(f"localhost:5000/symphony-{provider}@sha256:[a-f0-9]{{64}}", original), "original digest must use the isolated candidate registry route"
+                verify_loaded_component(json.loads(docker("image", "inspect", image))[0], qualified, provider, manifest["schema_version"] == 2)
                 docker("push", image)
-                digest = docker("image", "inspect", "--format", "{{index .RepoDigests 0}}", image)
-                assert digest == manifest["runners"][provider]["x86_64"]["image"], ("image digest changed", image, digest)
-                assert inspect(image, '{{index .Config.Labels "org.opencontainers.image.revision"}}') == manifest["source_revision"]
-        record("two real source-bound package and runner revision checksums")
+                observed = json.loads(docker("image", "inspect", image))[0]
+                assert original in observed.get("RepoDigests", []), ("original image digest changed", image, original)
+                docker("pull", original)
+                pulled = json.loads(docker("image", "inspect", original))[0]
+                verify_loaded_component(pulled, qualified, provider, manifest["schema_version"] == 2)
+                result["qualified_runner_components"].append({"provider": provider, "architecture": "x86_64",
+                    "manager_source_revision": manifest["source_revision"], "runner_source_revision": qualified["source_revision"],
+                    "image": original, "observed_image_config": pulled["Id"],
+                    "input_identity": qualified.get("input_identity"), "protocol": qualified.get("protocol")})
+        record("actual source-bound manager package and original runner checksums" if current_only else "two real source-bound package and runner revision checksums")
 
         # The client sees only candidate downloads and isolated data, with the
         # same absolute path used for Docker bind mounts on the native host.
-        for source in source_archives + [packages / "previous/release.json", packages / "release.json"]:
+        for source in source_archives + [folder / "release.json" for folder, _ in selections]:
             target = root / ("old-" + source.name if source.parent.name == "previous" else "new-" + source.name)
             shutil.copyfile(source, target)
-        first_manifest, second_manifest = root / "old-release.json", root / "new-release.json"
-        first_archive = root / ("old-" + previous["bundles"]["linux_x86_64"]["filename"])
+        first_manifest = root / ("new-release.json" if current_only else "old-release.json")
+        second_manifest = root / "new-release.json"
+        first_archive = root / (("new-" if current_only else "old-") + initial["bundles"]["linux_x86_64"]["filename"])
         second_archive = root / ("new-" + current["bundles"]["linux_x86_64"]["filename"])
         home = root / "home"; home.mkdir(mode=0o700)
         tools = root / "tools"; tools.mkdir()
@@ -293,8 +334,10 @@ fi
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
-            client_run([str(command), "run", "--port", str(port)], cwd=repo)
+            selected_agent = "claude" if current_only and number == 1 else "codex"
+            client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
+            assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
                 dashboard = response.read().decode()
             assert "Symphony" in dashboard and "<html" in dashboard.lower(), dashboard[:200]
@@ -332,6 +375,16 @@ fi
         assert inspect(name, "{{.State.Running}}") == "false"
         client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
+        if current_only:
+            assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+            assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
+            for selected_repo, selected_name in zip(repositories, names):
+                client_run([str(command), "runner", "stop"], cwd=selected_repo)
+                assert inspect(selected_name, "{{.State.Running}}") == "false"
+            unchanged()
+            result["passed"] = True
+            record("current exact-source installed manager exercises verified original runners; two-source update/failure/rollback not requested in this mode")
+            return
         update_args = ["--candidate-manifest", str(second_manifest), "--candidate-bundle", str(second_archive)]
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
