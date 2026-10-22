@@ -310,6 +310,10 @@ complete_package_update() {
   package_update_lock inherited || return
   package_update_target=$(package_verified_home "$symphony_home") || return
   package_update_previous=$(package_verified_home "$1") || return
+  # Refuse an incompatible retained project before activation or transition can
+  # mutate any installed manager or project. The previous verified schema1
+  # manifest is the sole migration route for images without a protocol label.
+  package_check_retained_images "$package_update_previous" || return
   if [ -n "$2" ]; then
     local root
     root=$(repo_root)

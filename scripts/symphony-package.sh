@@ -69,6 +69,40 @@ package_release_image() {
     [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")" = 1 ] || die 'runner protocol is incompatible with this manager'
   fi
 }
+# Validate retained project images independently of the selected release image.
+# An unlabeled historical image needs exact immutable previous-schema1 evidence.
+package_retained_image_compatible() {
+  local runtime=$1 image=$2 agent=$3 previous=${4:-} protocol platform legacy revision
+  [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'invalid retained runner config identity'
+  case "$agent" in codex|claude) ;; *) die 'invalid retained runner provider' ;; esac
+  [ "$("$runtime" image inspect --format '{{.Id}}' "$image")" = "$image" ] || die 'retained runner config differs'
+  [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'retained runner provider differs'
+  platform=linux/arm64; [ "$package_arch" != x86_64 ] || platform=linux/amd64
+  [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'retained runner platform differs'
+  protocol=$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")
+  [ "$protocol" != 1 ] || return 0
+  case "$protocol" in ''|'<no value>') ;; *) die 'retained runner protocol is incompatible with this manager' ;; esac
+  [ -n "$previous" ] || die 'retained legacy runner has no verified migration evidence'
+  previous=$(package_verified_home "$previous") || return
+  [ "$(package_helper get "$previous/release.json" schema_version)" = 1 ] || die 'retained legacy runner requires exact previous schema1 evidence'
+  legacy=$(package_helper get "$previous/release.json" "runners.$agent.$package_arch.image")
+  revision=$(package_helper get "$previous/release.json" "runners.$agent.$package_arch.source_revision")
+  [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'retained legacy runner source differs from verified migration source'
+  "$runtime" image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -Fqx -- "$legacy" || die 'retained legacy runner digest differs from verified migration image'
+}
+
+package_check_retained_images() {
+  local previous=$1 metadata image agent runtime
+  runtime=$(container_runtime)
+  for metadata in "$runner_home"/*.env; do
+    [ -e "$metadata" ] || [ -L "$metadata" ] || continue
+    package_helper owned-file "$metadata" || return
+    image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
+    agent=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")
+    package_retained_image_compatible "$runtime" "$image" "$agent" "$previous" || return
+  done
+}
+
 package_build_image() {
   local agent=${1:-codex} runtime image
   runtime=$(container_runtime); image=$(runner_image "$agent")
@@ -76,7 +110,9 @@ package_build_image() {
     sha256:*)
       # An already-retained project image is pinned by the existing runner metadata.
       "$runtime" image inspect "$image" >/dev/null 2>&1 || die 'retained runner image is missing; recover through symphony update'
-      [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'retained runner provider differs'
+      local previous=
+      if [ -L "$package_app_home/previous" ]; then previous="$package_app_home/previous"; fi
+      package_retained_image_compatible "$runtime" "$image" "$agent" "$previous"
       ;;
     *) package_release_image "$runtime" "$image" "$agent" "$package_revision" ;;
   esac

@@ -69,6 +69,9 @@ runner_namespace=${SYMPHONY_RUNNER_NAMESPACE:-}
 bin_dir=$package_app_home/bin
 skills_dir=$package_app_home/skills
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
+# This launcher fixture isolates atomic update state; retained image checks
+# execute from actual production functions in test_retained_compatibility.py.
+package_check_retained_images() { :; }
 package_platform=macos
 package_bundle_field() { printf 'bundle.%s\n' "$1"; }
 package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
