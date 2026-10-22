@@ -5,7 +5,7 @@ source checkout. Its version, 40-character source revision, host architecture an
 provider resolve one immutable Linux OCI image digest. `arm64` uses Linux ARM64;
 `x86_64` uses Linux AMD64. Missing records are errors. Never substitute another
 architecture, provider or mutable tag. `tool_versions` records versions observed
-inside the built image (Codex, or Claude, plus Git, Node and Playwright). The
+inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
 Dockerfile pins agent/browser packages; startup never installs agent packages.
 
 `artifacts.py` is a build-time Python utility, not a host installation dependency:
