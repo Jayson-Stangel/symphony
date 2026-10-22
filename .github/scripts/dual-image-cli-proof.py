@@ -81,7 +81,7 @@ def main():
         source = json.loads((evidence/'source-run.txt').read_text())
         native = json.loads((evidence/'native-producer.txt').read_text())
         assert source['id'] == RUN and source['head_repository']['full_name'] == REPOSITORY
-        assert source['head_sha'].startswith('c920') and re.fullmatch('[a-f0-9]{40}', source['head_sha'])
+        assert source['head_sha'] == 'c920e5386294f209c5a11e0f298673001473d75b'
         assert native['name'] == 'runner-codex-x86_64' and native['status'] == 'completed' and native['conclusion'] == 'success'
         assert 'ubuntu-24.04' in native['labels']
         artifacts = []
@@ -118,7 +118,7 @@ def main():
             digest = BENCH.checksum_record(folder/'codex-x86_64.sha256', original.name)
             _, result['input_checksum'] = BENCH.observed(BENCH.verified_checksum, original, digest)
             records = [json.loads((folder/name).read_text()) for name in ('codex-x86_64.json', 'previous/codex-x86_64.json')]
-            assert records[0]['source_revision'] == source['head_sha'] and records[1]['source_revision'].startswith('93')
+            assert records[0]['source_revision'] == source['head_sha'] and records[1]['source_revision'] == '93c52c7b48a788dabba821c3b88b3e2a66143d68'
             assert records[0]['source_revision'] != records[1]['source_revision']
             images, result['input_identity_verification'] = BENCH.observed(BENCH.identities, original, records, PROVIDER, ARCHITECTURE)
             tags = ['localhost:5000/symphony-codex:candidate', 'localhost:5000/symphony-codex:previous']
