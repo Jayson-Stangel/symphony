@@ -175,11 +175,32 @@ class ExportTransport(unittest.TestCase):
         token = mock.Mock(hex='a'*32)
         response = mock.MagicMock()
         response.__enter__.return_value.status = 200
-        with mock.patch.object(BENCH.uuid, 'uuid4', return_value=token), mock.patch.object(BENCH, 'urlopen', return_value=response), mock.patch.object(BENCH.subprocess, 'check_output', side_effect=['b'*64, 'foreign']), mock.patch.object(BENCH.subprocess, 'run') as commands:
+        with mock.patch.object(BENCH.uuid, 'uuid4', return_value=token), mock.patch.object(BENCH, 'urlopen', return_value=response), mock.patch.object(BENCH.subprocess, 'check_output', side_effect=['b'*64, 'foreign', '/foreign-name']), mock.patch.object(BENCH.subprocess, 'run') as commands:
             with self.assertRaisesRegex(ValueError, 'foreign registry container'):
                 with BENCH.digest_registry():
                     pass
             commands.assert_not_called()
+
+    def test_registry_start_failure_after_creation_recovers_only_exact_owned_resource(self):
+        token = 'a'*32
+        name = 'symphony-transfer-digest-' + token
+        identity = 'b'*64
+        for failure in ('timeout', 'invalid-stdout'):
+            with self.subTest(failure=failure):
+                def acquire(*args, **kwargs):
+                    if failure == 'timeout':
+                        raise subprocess.TimeoutExpired(args[0], 120)
+                    return 'lost receipt'
+                responses = [acquire, identity+' '+name+'\n'+'c'*64+' foreign-name\n', token, '/'+name, '']
+                def output(*args, **kwargs):
+                    response = responses.pop(0)
+                    return response(*args, **kwargs) if callable(response) else response
+                with mock.patch.object(BENCH.uuid, 'uuid4', return_value=mock.Mock(hex=token)), mock.patch.object(BENCH.subprocess, 'check_output', side_effect=output), mock.patch.object(BENCH.subprocess, 'run') as commands:
+                    with self.assertRaises((subprocess.TimeoutExpired, ValueError)):
+                        with BENCH.digest_registry():
+                            self.fail('failed acquisition cannot yield')
+                    commands.assert_called_once_with(['docker', 'rm', '-f', identity], check=True, timeout=30)
+                    self.assertEqual(responses, [])
 
     def test_source_failure_cannot_be_hidden_by_successful_gzip(self):
         with tempfile.TemporaryFile() as stream:

@@ -82,12 +82,14 @@ def digest_registry():
     """Use the existing candidate route; never contact a publication registry."""
     token = uuid.uuid4().hex
     name = 'symphony-transfer-digest-' + token
-    container = subprocess.check_output(['docker', 'run', '-d', '--name', name,
-        '--label', 'com.symphony.transfer-digest=' + token,
-        '-p', '127.0.0.1:5000:5000', 'registry:3'], text=True, timeout=120).strip()
-    if not re.fullmatch('[a-f0-9]{64}', container):
-        raise ValueError('isolated registry has no exact owned container identity')
+    container = None
     try:
+        received = subprocess.check_output(['docker', 'run', '-d', '--name', name,
+            '--label', 'com.symphony.transfer-digest=' + token,
+            '-p', '127.0.0.1:5000:5000', 'registry:3'], text=True, timeout=120).strip()
+        if not re.fullmatch('[a-f0-9]{64}', received):
+            raise ValueError('isolated registry has no exact owned container identity')
+        container = received
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -101,15 +103,29 @@ def digest_registry():
             time.sleep(0.1)
         yield
     finally:
-        owner = subprocess.check_output(['docker', 'inspect', '--format',
-            '{{index .Config.Labels "com.symphony.transfer-digest"}}', container], text=True, timeout=30).strip()
-        if owner != token:
-            raise ValueError('refusing to remove foreign registry container')
-        subprocess.run(['docker', 'rm', '-f', container], check=True, timeout=30)
-        remaining = subprocess.check_output(['docker', 'ps', '-a', '--no-trunc',
-            '--filter', 'id=' + container, '--format', '{{.ID}}'], text=True, timeout=30).strip()
-        if remaining:
-            raise ValueError('owned registry remains after cleanup')
+        if container is None:
+            # A CLI timeout or lost/invalid stdout does not prove the daemon
+            # failed to create the resource. Recover only this exact name AND
+            # unpredictable ownership token; a failed list is never absence.
+            observed = subprocess.check_output(['docker', 'ps', '-a', '--no-trunc',
+                '--filter', 'label=com.symphony.transfer-digest=' + token,
+                '--format', '{{.ID}} {{.Names}}'], text=True, timeout=30)
+            matches = [line.split()[0] for line in observed.splitlines()
+                       if len(line.split()) == 2 and line.split()[1] == name]
+            if len(matches) > 1 or any(not re.fullmatch('[a-f0-9]{64}', item) for item in matches):
+                raise ValueError('ambiguous owned registry startup identity')
+            container = matches[0] if matches else None
+        if container is not None:
+            owner = subprocess.check_output(['docker', 'inspect', '--format',
+                '{{index .Config.Labels "com.symphony.transfer-digest"}}', container], text=True, timeout=30).strip()
+            actual_name = subprocess.check_output(['docker', 'inspect', '--format', '{{.Name}}', container], text=True, timeout=30).strip()
+            if owner != token or actual_name != '/' + name:
+                raise ValueError('refusing to remove foreign registry container')
+            subprocess.run(['docker', 'rm', '-f', container], check=True, timeout=30)
+            remaining = subprocess.check_output(['docker', 'ps', '-a', '--no-trunc',
+                '--filter', 'id=' + container, '--format', '{{.ID}}'], text=True, timeout=30).strip()
+            if remaining:
+                raise ValueError('owned registry remains after cleanup')
 
 
 def prove_digests(images, provider):
@@ -232,7 +248,8 @@ def main():
                 destination.write_bytes(record_file.read_bytes())
         else:
             # Startup and browser checks execute real loaded artifacts, with no
-            # credentials, host mounts, model calls, or new registry service.
+            # credentials, host mounts or model calls. The candidate registry route
+            # below proves original distribution identities without publication.
             with digest_registry():
                 result['original_distribution_digest_proof'] = prove_digests(images, args.provider)
                 for qualified in result['original_distribution_digest_proof']:
