@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run:
-        description: Existing same-repository successful native runner producer run ID (no rebuild or export)
+        description: Existing same-repository legacy combined image/records artifact run ID (no rebuild or export)
         type: string
         required: true
       provider:
@@ -44,7 +44,9 @@ jobs:
           jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
           name = 'runner-' + os.environ['PROVIDER'] + '-' + os.environ['ARCHITECTURE']
           producer = [job for job in jobs if job['name'] == name]
-          assert len(producer) == 1 and producer[0]['conclusion'] == 'success', 'native producer did not pass'
+          assert len(producer) == 1 and producer[0]['status'] == 'completed' and producer[0]['conclusion'] == 'success', 'native producer did not complete successfully'
+          runner = 'ubuntu-24.04-arm' if os.environ['ARCHITECTURE'] == 'arm64' else 'ubuntu-24.04'
+          assert runner in producer[0]['labels'], 'producer did not run on the selected native host'
           Path('timing-evidence').mkdir()
           Path('timing-evidence/source-run.txt').write_text(json.dumps(run, indent=2))
           Path('timing-evidence/native-producer.txt').write_text(json.dumps(producer[0], indent=2))

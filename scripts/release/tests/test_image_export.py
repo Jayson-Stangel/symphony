@@ -137,6 +137,31 @@ class ExportTransport(unittest.TestCase):
                 self.assertGreaterEqual(result[operation]['cpu_seconds'], 0)
             self.assertEqual(archive.read_bytes(), original)
 
+    def test_timing_workflow_requires_completed_matching_native_producer(self):
+        workflow = (ROOT/'.github/workflows/transfer-timing.yml').read_text()
+        block = workflow.split("          python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON', 1)[0]
+        script = '\n'.join(line[10:] for line in block.splitlines())
+        repo = 'fixture/symphony'
+        run = {'head_repository': {'full_name': repo}, 'head_sha': 'a'*40}
+        for status, conclusion, labels, accepted in [('completed', 'success', ['ubuntu-24.04'], True),
+                                                     ('in_progress', 'success', ['ubuntu-24.04'], False),
+                                                     ('completed', 'failure', ['ubuntu-24.04'], False),
+                                                     ('completed', 'success', ['ubuntu-24.04-arm'], False)]:
+            with self.subTest(status=status, conclusion=conclusion, labels=labels), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fake = root/'tools'; fake.mkdir()
+                gh = fake/'gh'
+                gh.write_text('#!/usr/bin/env python3\nimport os,sys\nprint(os.environ["TEST_JOBS"] if "/jobs?" in sys.argv[-1] else os.environ["TEST_RUN"])\n')
+                gh.chmod(0o755)
+                jobs = {'jobs': [{'name': 'runner-codex-x86_64', 'status': status,
+                                  'conclusion': conclusion, 'labels': labels}]}
+                env = dict(os.environ, PATH=str(fake)+os.pathsep+os.environ['PATH'],
+                           RUN_ID='123', GITHUB_REPOSITORY=repo, GITHUB_ENV=str(root/'environment'),
+                           PROVIDER='codex', ARCHITECTURE='x86_64', TEST_RUN=json.dumps(run), TEST_JOBS=json.dumps(jobs))
+                result = subprocess.run([sys.executable, '-c', script], cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual((root/'timing-evidence').exists(), accepted)
+
     def test_failed_second_or_third_publication_cleans_owned_outputs_and_retries(self):
         for failure_at in (2, 3):
             with self.subTest(failure_at=failure_at), tempfile.TemporaryDirectory() as directory:

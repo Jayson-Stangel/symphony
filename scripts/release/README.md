@@ -155,6 +155,10 @@ separate, truthful provenance.
 
 For one bounded measurement of a retained original gzip candidate payload, use
 `transfer-timing.yml` with its exact `source_run`, provider and architecture.
+This diagnostic currently requires the legacy combined image/record artifact
+layout, such as run `39857032359`; split record/payload layouts fail closed
+until their normal integration. It verifies the successful completed producer
+and matching native Ubuntu runner label before downloading its artifact.
 It downloads only that original artifact, checks its original checksum and
 source/config identities, and measures real checksum, identity inspection and
 archive verification CPU/wall time. It never loads, rebuilds or re-exports an
