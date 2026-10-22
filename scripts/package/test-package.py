@@ -152,6 +152,12 @@ class PackageTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("external Git configuration contains identity indirection", result.stderr)
                 self.assertNotIn("PRIVATE-REWRITE", result.stderr + result.stdout)
+        # Canonical /dev/null selections and ordinary empty files are supported.
+        selected_null = dict(env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null", GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_null)), raw)
+        custom.write_text(""); system.write_text("")
+        selected_empty = dict(env, GIT_CONFIG_GLOBAL=str(custom), GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_empty)), raw)
         # Explicit global selection suppresses both standard HOME/XDG files.
         global_file.write_text(rewrite); xdg.write_text(rewrite); custom.write_text(harmless)
         self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=dict(env, GIT_CONFIG_GLOBAL=str(custom)))), raw)
