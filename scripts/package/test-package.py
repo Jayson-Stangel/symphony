@@ -27,8 +27,10 @@ def manifest(version="1.2.3", revision=None):
         for arch, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
             runners[provider][arch] = dict(platform=platform, image=f"ghcr.io/test/{provider}@sha256:" + "b" * 64,
                 source_revision=revision, tool_versions={tool: "1.0" for tool in (provider, "git", "node", "playwright")})
+    bundle = dict(filename=f"symphony-{version}-macos.tar.gz")
     return dict(schema_version=1, version=version, source_revision=revision, channel="candidate",
-        host_architectures=["arm64", "x86_64"], runners=runners, bundle=dict(filename=f"symphony-{version}-macos.tar.gz"))
+        host_architectures=["arm64", "x86_64"], runners=runners, bundle=bundle,
+        bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz")))
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
@@ -64,7 +66,7 @@ class PackageTest(unittest.TestCase):
     def bundle(self):
         output = self.root / "output"
         self.assertOK(call([ROOT / "scripts/release/package.sh", self.file, output, HELPER]))
-        archive = output / manifest()["bundle"]["filename"]
+        archive = output / manifest()["bundles"]["macos" if sys.platform == "darwin" else "linux_x86_64"]["filename"]
         extracted = self.root / "download"
         extracted.mkdir()
         self.assertOK(call(["tar", "-xzf", archive, "-C", extracted]))
@@ -74,7 +76,7 @@ class PackageTest(unittest.TestCase):
         tools = self.root / "tools"
         tools.mkdir(exist_ok=True)
         # Poison optional host runtimes; installed code must never execute these.
-        for tool in ("git", "python3", "node", "mise", "elixir", "erl", "swiftc", "codex", "claude"):
+        for tool in ("git", "python3", "python", "node", "mise", "elixir", "erl", "swift", "swiftc", "shasum", "codex", "claude"):
             (tools / tool).write_text(f"#!/bin/sh\necho 'unexpected host dependency: {tool}' >&2\nexit 98\n")
             (tools / tool).chmod(0o755)
         docker = tools / "docker"
@@ -101,6 +103,23 @@ class PackageTest(unittest.TestCase):
         for count in ("0.0", "false", "true", "1.5", '"0"'):
             self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":' + count + '}}').returncode, 1)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
+
+    def test_additive_platform_manifest_and_legacy_mac_contract(self):
+        value = manifest()
+        self.assertOK(self.helper("validate-manifest", self.file))
+        legacy = copy.deepcopy(value); legacy.pop("bundles")
+        self.file.write_text(json.dumps(legacy))
+        self.assertOK(self.helper("validate-manifest", self.file))
+        for mutate in (lambda v: v["bundles"].update(linux_arm64={}),
+                       lambda v: v["bundles"]["linux_x86_64"].update(filename="bad.tar.gz"),
+                       lambda v: v["bundles"]["linux_x86_64"].update(sha256=True),
+                       lambda v: v.update(package_platform="linux_arm64")):
+            changed = copy.deepcopy(value); mutate(changed)
+            self.file.write_text(json.dumps(changed))
+            self.assertNotEqual(self.helper("validate-manifest", self.file).returncode, 0)
+        self.assertEqual(self.assertOK(self.helper("host-platform")),
+            "macos" if sys.platform == "darwin" else "linux_x86_64")
+        self.assertEqual(self.assertOK(self.helper("sha256", self.file)), hashlib.sha256(self.file.read_bytes()).hexdigest())
 
     def test_git_identity_and_linked_worktree_match_git(self):
         repo = self.root / "project with space"; repo.mkdir()
@@ -422,8 +441,8 @@ PY
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
         uname = self.root / "tools/uname"
-        for architecture, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
-            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo Darwin ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
+        for architecture, platform in ((("arm64", "linux/arm64"), ("x86_64", "linux/amd64")) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {"Darwin" if sys.platform == "darwin" else "Linux"} ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
             output = self.assertOK(call([command, "doctor", "--json"], env=env))
             self.assertEqual(json.loads(output)["architecture"], architecture)
             result = call([command, "auth", "codex", "login"], env=env)
