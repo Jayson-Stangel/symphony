@@ -160,14 +160,38 @@ PY
         self.assertNotEqual(result.returncode, 0); self.assertEqual(command.read_text(), "owned")
         self.assertFalse((self.root / "app").exists())
         command.unlink()
+        self.assertOK(call([bundle / "install.sh"], env=env))
         canary = self.root / "payload-ran"
         (bundle / "scripts/symphony-package.sh").write_text(f"touch {canary}\n")
         # Installer verifies shell payload before sourcing the manager library.
         result = call([bundle / "install.sh"], env=env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.root / "app/current").exists())
+        self.assertTrue((self.root / "app/current").exists())
+        self.assertOK(call([command, "--version"], env=env))
         self.assertFalse(canary.exists())
         self.assertIn("bundle checksum mismatch", result.stderr)
+
+    def test_host_layouts_missing_engine_and_source_bound_archive(self):
+        mismatch = manifest(revision="c" * 40)
+        self.file.write_text(json.dumps(mismatch))
+        result = call([ROOT / "scripts/release/package.sh", self.file, self.root / "mismatch-output", HELPER])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("source differs", result.stderr)
+        self.file.write_text(json.dumps(manifest()))
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        uname = self.root / "tools/uname"
+        for architecture, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo Darwin ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
+            output = self.assertOK(call([command, "doctor", "--json"], env=env))
+            self.assertEqual(json.loads(output)["architecture"], architecture)
+            result = call([command, "auth", "codex", "login"], env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"pull --platform {platform}", (self.root / "docker.calls").read_text())
+        result = call([command, "doctor", "--json"], env=dict(env, SYMPHONY_CONTAINER_RUNTIME="/unavailable/engine"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(json.loads(result.stdout)["ready"])
 
     def test_mutable_or_foreign_image_overrides_are_rejected(self):
         bundle = self.bundle(); env = self.environment()
