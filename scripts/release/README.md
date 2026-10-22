@@ -521,3 +521,14 @@ the shared builder. It does not compile a second current helper after images
 finish. The terminal current-manager guard requires portable and helper success
 as well as the actual package/component decisions; cancelled or skipped native
 qualification cannot produce a successful behavioral receipt.
+
+A manual ordinary-integration diagnostic may set `distribution_alias=true` to
+exercise the schema2 distribution map in the existing installed lifecycle. It
+uses fixed disposable localhost repositories and each original OCI digest,
+without changing original component records, sources, labels, input identities
+or checksums. The native Linux x86-64 controller pushes/pulls each provider's
+alias, verifies the same original digest and config, then checks the actual
+installed manager's selected container reference. Both native ARM payloads retain
+their original qualification; this x86-64 lifecycle does not claim ARM alias
+runtime proof. Alias references and the deliberately incompatible protocol2
+negative fixture are cleanup-owned diagnostics, never new reusable baselines.

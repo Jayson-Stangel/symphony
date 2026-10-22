@@ -5,6 +5,10 @@ on:
     branches: [dev, main]
   workflow_dispatch:
     inputs:
+      distribution_alias:
+        description: Isolated same-content distribution alias proof using original OCI digests
+        type: boolean
+        default: false
       baseline_run:
         description: Optional explicit authorized original-record run for pre-merge diagnostics
         type: string
@@ -40,6 +44,7 @@ jobs:
     with:
       preflight_revision: ${{ needs.portable.outputs.qualified_revision }}
       manifest_schema: '2'
+      component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
       publish: false
@@ -77,8 +82,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
+          DISTRIBUTION_ALIAS: ${{ inputs.distribution_alias }}
         run: |
           args=()
+          if [ "$DISTRIBUTION_ALIAS" = true ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            args+=(--distribution-alias)
+          fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
@@ -147,8 +157,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
+          DISTRIBUTION_ALIAS: ${{ inputs.distribution_alias }}
         run: |
           args=()
+          if [ "$DISTRIBUTION_ALIAS" = true ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            args+=(--distribution-alias)
+          fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
             --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners" "${args[@]}"
