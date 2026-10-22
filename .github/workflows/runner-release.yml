@@ -3,11 +3,27 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      baseline_run:
+        description: Exact manually authorized record run; rejected outside workflow_dispatch
+        type: string
+        default: ''
+      manifest_schema:
+        description: Candidate metadata schema; independent components use schema 2
+        type: string
+        default: '1'
+      compose_packages:
+        description: Assemble native manager packages in this producer (ordinary integration composes separately)
+        type: boolean
+        default: true
       publish:
         type: boolean
         default: false
   workflow_dispatch:
     inputs:
+      resume_native_run:
+        description: Recover small records only from this original manual native run with the known downstream sealing failure
+        type: string
+        default: ''
       baseline_run:
         description: Exact authorized manual native candidate run (empty uses verified fork history)
         type: string
@@ -44,7 +60,7 @@ permissions:
 
 jobs:
   component-plan:
-    if: ${{ !inputs.cache_probe && inputs.diagnostic_artifact_run == '' }}
+    if: ${{ !inputs.cache_probe && inputs.resume_native_run == '' && inputs.diagnostic_artifact_run == '' }}
     runs-on: ubuntu-24.04
     outputs:
       has_builds: ${{ steps.plan.outputs.has_builds }}
@@ -75,7 +91,7 @@ jobs:
           retention-days: 30
   candidate:
     needs: component-plan
-    if: ${{ !inputs.cache_probe && inputs.diagnostic_artifact_run == '' && needs.component-plan.outputs.has_builds == 'true' }}
+    if: ${{ !inputs.cache_probe && inputs.resume_native_run == '' && inputs.diagnostic_artifact_run == '' && needs.component-plan.outputs.has_builds == 'true' }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.native_runner }}
     timeout-minutes: 45
@@ -180,7 +196,9 @@ jobs:
       - name: Refuse unsupported mixed-component publication before any image push
         env:
           MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages || github.event_name == 'workflow_dispatch' }}
         run: |
+          test "$COMPOSE_PACKAGES" = true
           python3 - <<'PYCODE'
           import json, os
           plan = json.load(open('component-plan.json'))
@@ -244,7 +262,7 @@ jobs:
 
   candidate-metadata:
     needs: [component-plan, candidate]
-    if: ${{ always() && !inputs.cache_probe && inputs.diagnostic_artifact_run == '' && needs.component-plan.result == 'success' && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
+    if: ${{ always() && !inputs.cache_probe && inputs.resume_native_run == '' && inputs.diagnostic_artifact_run == '' && needs.component-plan.result == 'success' && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -341,7 +359,7 @@ jobs:
           if-no-files-found: error
 
   cache-probe:
-    if: inputs.cache_probe && github.event_name == 'workflow_dispatch'
+    if: inputs.cache_probe && inputs.resume_native_run == '' && github.event_name == 'workflow_dispatch'
     name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -442,6 +460,7 @@ jobs:
           test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker rm -f "$REGISTRY_ID"
   packaged-candidate:
+    if: inputs.compose_packages || github.event_name == 'workflow_dispatch'
     needs: candidate-metadata
     strategy:
       fail-fast: false
@@ -556,7 +575,7 @@ jobs:
           retention-days: 30
 
   lifecycle-diagnostic:
-    if: github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.diagnostic_artifact_run != ''
+    if: github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.resume_native_run == '' && inputs.diagnostic_artifact_run != ''
     permissions:
       contents: read
       actions: read
@@ -595,5 +614,91 @@ jobs:
         with:
           name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
           path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+
+  recover-native-records:
+    if: github.event_name == 'workflow_dispatch' && inputs.resume_native_run != ''
+    name: recover-${{ matrix.provider }}-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate exclusive small-record recovery request
+        env:
+          CACHE_PROBE: ${{ inputs.cache_probe }}
+          PREVIOUS: ${{ inputs.previous_revision }}
+          DIAGNOSTIC: ${{ inputs.diagnostic_artifact_run }}
+        run: |
+          test "$CACHE_PROBE" != true
+          test -z "$PREVIOUS"
+          test -z "$DIAGNOSTIC"
+      - name: Verify original native stages and replay only the retained immutable payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN: ${{ inputs.resume_native_run }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/recover_native_record.py --run-id "$ORIGINAL_RUN" --attempt 1 \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output recovered
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: recovered/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain original-stage and replay identity/cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-record-recovery-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: recovered/*.txt
+          if-no-files-found: warn
+          retention-days: 30
+  recovered-record-qualification:
+    needs: recover-native-records
+    if: github.event_name == 'workflow_dispatch' && inputs.resume_native_run != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runner-records-*
+          path: recovered
+          merge-multiple: true
+      - name: Reverify all original qualifications and independent successful recovery origins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, sys
+          sys.path.insert(0, 'scripts/release')
+          import component_provenance as proof
+          records = list(pathlib.Path('recovered').glob('*.json'))
+          assert len(records) == 4
+          results = {}
+          for path in records:
+              record = json.loads(path.read_text())
+              key = record['provider'] + '-' + record['architecture']
+              assert key not in results
+              results[key] = proof.verify_origin(record, candidate_run=int(os.environ['GITHUB_RUN_ID']))
+          assert set(results) == {provider+'-'+arch for provider in ('codex','claude') for arch in ('arm64','x86_64')}
+          pathlib.Path('recovery-summary.json').write_text(json.dumps(results, indent=2, sort_keys=True)+'\n')
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-record-recovery-summary
+          path: recovery-summary.json
           if-no-files-found: error
           retention-days: 30

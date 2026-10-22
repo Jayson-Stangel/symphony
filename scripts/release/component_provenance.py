@@ -22,9 +22,20 @@ REPOSITORY = "Jayson-Stangel/symphony"
 MAX_RECORD_BYTES = 1024 * 1024
 
 
+_BINARY_FLAGS = None
+
+
+def api_command(path, binary=False):
+    global _BINARY_FLAGS
+    if binary and _BINARY_FLAGS is None:
+        help_text = subprocess.check_output(["gh", "api", "--help"], stderr=subprocess.PIPE, text=True, timeout=10)
+        _BINARY_FLAGS = ["--allow-escape-sequences"] if "--allow-escape-sequences" in help_text else []
+    return ["gh", "api", *(_BINARY_FLAGS or [] if binary else []), f"repos/{REPOSITORY}/{path}"]
+
+
 def api(path, binary=False):
     try:
-        data = subprocess.check_output(["gh", "api", f"repos/{REPOSITORY}/{path}"], stderr=subprocess.PIPE)
+        data = subprocess.check_output(api_command(path, binary), stderr=subprocess.PIPE, timeout=60)
     except subprocess.SubprocessError:
         raise ValueError("native origin service unavailable; reuse refused") from None
     return data if binary else json.loads(data)
@@ -34,12 +45,21 @@ def require(condition, message):
     artifacts.require(condition, message)
 
 
+def instant(value):
+    # GitHub log timestamps can have seven fractional digits; Python3.9 accepts six.
+    require(isinstance(value, str), "missing origin timestamp")
+    value = re.sub(r"(\.\d{6})\d+(?=Z|[+-])", r"\1", value)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    require(parsed.tzinfo is not None, "origin timestamp has no timezone")
+    return parsed
+
+
 def available(artifact, expected_name, expected_digest, run_id, controller, now):
     require(artifact.get("name") == expected_name, "artifact name differs")
     require(artifact.get("digest") == expected_digest, "artifact digest differs")
     require(artifact.get("expired") is False and type(artifact.get("size_in_bytes")) is int
             and artifact["size_in_bytes"] > 0, "artifact payload is absent or expired")
-    expiry = datetime.fromisoformat(artifact["expires_at"].replace("Z", "+00:00"))
+    expiry = instant(artifact["expires_at"])
     require(expiry > now, "artifact payload has expired")
     origin = artifact.get("workflow_run", {})
     require(origin.get("id") == run_id and origin.get("head_sha") == controller, "foreign artifact origin")
@@ -55,6 +75,7 @@ def trusted_lineage(revision, fetch=api):
     raise ValueError("source/controller is outside verified fork dev/main history")
 
 
+BUILD_STEP = "Build exact native candidate with reusable dependency layers"
 NATIVE_STEP = "Build exact runner and test a digest pull from an isolated registry"
 SEAL_STEP = "Seal original native record against immutable uploaded payload"
 CLEANUP_STEP = "Remove only the qualification registry owned by this job"
@@ -75,7 +96,9 @@ def recovery_eligibility(job, raw_log):
         require(len(found) == 1 and found[0].get("status") == "completed" and found[0].get("conclusion") == "success",
                 "original required native stage did not pass: " + name)
         return found[0]
+    build = successful(BUILD_STEP)
     native = successful(NATIVE_STEP)
+    require(build["number"] < native["number"], "native qualification did not follow its actual build")
     cleanup = successful(CLEANUP_STEP)
     failed = failures[0]
     uploads = [step for step in steps if step.get("name", "").startswith("Run actions/upload-artifact@") and
@@ -83,20 +106,30 @@ def recovery_eligibility(job, raw_log):
                step.get("status") == "completed" and step.get("conclusion") == "success"]
     require(len(uploads) == 1 and cleanup["number"] > failed["number"], "native payload upload or cleanup ordering differs")
     require(isinstance(raw_log, bytes) and len(raw_log) <= MAX_JOB_LOG_BYTES, "original native log is unavailable or oversized")
-    start = datetime.fromisoformat(failed["started_at"].replace("Z", "+00:00"))
-    end = datetime.fromisoformat(failed["completed_at"].replace("Z", "+00:00")) + timedelta(seconds=1)
+    start = instant(failed["started_at"])
+    end = instant(failed["completed_at"]) + timedelta(seconds=1)
     known_error = False
     for line in raw_log.decode("utf-8-sig").splitlines():
         timestamp, _, message = line.partition(" ")
         if SEAL_FORMAT_ERROR not in message:
             continue
-        when = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        when = instant(timestamp)
         known_error = known_error or start <= when <= end
     require(known_error, "failed sealing was not the known immutable-digest format error")
-    return {"job_id": job["id"], "original_job_conclusion": "failure", "qualification_step_number": native["number"],
+    return {"job_id": job["id"], "original_job_conclusion": "failure", "build_step_number": build["number"], "qualification_step_number": native["number"],
             "payload_step_number": uploads[0]["number"], "failure_step_number": failed["number"],
             "cleanup_step_number": cleanup["number"], "failure_reason": "bare-upload-artifact-sha256",
             "log_sha256": hashlib.sha256(raw_log).hexdigest()}
+
+
+def recovery_payload_binding(job, recovery, artifact):
+    selected = [step for step in job.get("steps", []) if step.get("number") == recovery["payload_step_number"]]
+    require(len(selected) == 1, "original payload upload stage is missing")
+    upload = selected[0]
+    created = instant(artifact["created_at"])
+    start = instant(upload["started_at"])
+    end = instant(upload["completed_at"]) + timedelta(seconds=1)
+    require(start <= created <= end, "payload belongs to another native job attempt")
 
 
 def run_identity(run_id, controller, fetch, current_context=None):
@@ -183,6 +216,8 @@ def verify_origin(record, fetch=api, now=None, candidate_run=None, current_conte
     now = now or datetime.now(timezone.utc)
     payload = fetch(f"actions/artifacts/{proof['artifact_id']}")
     available(payload, proof["artifact_name"], proof["artifact_digest"], payload_run, native_run["head_sha"], now)
+    if recovery:
+        recovery_payload_binding(selected, recovery, payload)
     inventory = fetch(f"actions/runs/{record_run}/artifacts?per_page=100")
     require(inventory.get("total_count", 0) <= 100, "incomplete origin artifact discovery")
     record_name = f"runner-records-{provider}-{architecture}"
@@ -230,6 +265,22 @@ def verify_current_origin(record, fetch=api, root="."):
         return verify_origin(record, fetch=fetch)
     return verify_origin(record, fetch=fetch, current_context={"run_id": run_id,
                          "controller_revision": revision, "event": event})
+
+
+def selection_verifier(baseline_run=None, root=".", fetch=api):
+    """Caller-authorized manual baseline plus current-run or protected-history records."""
+    if baseline_run is not None:
+        require(type(baseline_run) is int and baseline_run > 0 and
+                os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
+                os.environ.get("GITHUB_REPOSITORY") == REPOSITORY,
+                "baseline selection requires an explicit manual fork diagnostic")
+    def verify(record):
+        proof = record["qualification"]
+        record_run = proof.get("record_origin", {}).get("run_id", proof["run_id"])
+        if baseline_run is not None and record_run == baseline_run:
+            return verify_origin(record, fetch=fetch, candidate_run=baseline_run)
+        return verify_current_origin(record, fetch=fetch, root=root)
+    return verify
 
 
 def artifact_digest(value):

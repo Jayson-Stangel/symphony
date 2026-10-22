@@ -150,7 +150,7 @@ class PackageTest(unittest.TestCase):
         proof = value['runners']['codex']['arm64']['qualification']
         proof.update(record_origin={'run_id':789,'run_attempt':1,'controller_revision':'c'*40,'job_name':'recover-codex-arm64'},
                      payload_origin={'run_id':123,'controller_revision':'a'*40},
-                     native_step_recovery={'job_id':1234,'original_job_conclusion':'failure','qualification_step_number':6,
+                     native_step_recovery={'job_id':1234,'original_job_conclusion':'failure','build_step_number':5,'qualification_step_number':6,
                          'payload_step_number':7,'failure_step_number':8,'cleanup_step_number':10,
                          'failure_reason':'bare-upload-artifact-sha256','log_sha256':'e'*64})
         artifacts.validate(value, require_bundle=False)

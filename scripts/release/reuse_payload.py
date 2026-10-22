@@ -18,7 +18,7 @@ import tempfile
 import time
 import zipfile
 
-from component_provenance import REPOSITORY, require, verify_origin
+from component_provenance import REPOSITORY, require, verify_origin, api_command
 
 MAX_ARCHIVE_BYTES = 64 * 1024 ** 3
 MAX_ARTIFACT_BYTES = MAX_ARCHIVE_BYTES + 1024 ** 3
@@ -34,7 +34,7 @@ def checksum(path):
 
 def download(artifact_id, path):
     require(type(artifact_id) is int and artifact_id > 0, 'invalid payload artifact ID')
-    command = ['gh', 'api', f'repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip']
+    command = api_command(f'actions/artifacts/{artifact_id}/zip', binary=True)
     with path.open('xb') as output, subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
         try:
             deadline, received = time.monotonic() + 1800, 0
@@ -68,7 +68,7 @@ def origin_verifier(baseline_run, event):
         require(type(baseline_run) is int and baseline_run > 0 and event == 'workflow_dispatch',
                 'candidate baseline override requires an explicit manual diagnostic')
     return lambda record: verify_origin(record, candidate_run=(baseline_run if
-        record['qualification']['run_id'] == baseline_run else None))
+        record['qualification'].get('record_origin', {}).get('run_id', record['qualification']['run_id']) == baseline_run else None))
 
 
 def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=download):
