@@ -58,6 +58,18 @@ LABEL com.symphony.agent=codex com.symphony.protocol=1
     def identities(self):
         return [INPUTS.identity(self.root, provider, "arm64")["input_identity"] for provider in ("codex", "claude")]
 
+    def test_browser_projection_uses_same_recipe_and_ignores_only_nonbrowser_inputs(self):
+        recipe = self.root / "runner/Dockerfile"
+        recipe.write_text(recipe.read_text().replace("AS browser\n", "AS browser-tools\n").replace("FROM browser AS common", "FROM browser-tools AS common"))
+        self.commit()
+        before = INPUTS.identity(self.root, "browser-tools", "arm64")["input_identity"]
+        self.write("elixir/lib/engine.ex", "actual engine change")
+        self.commit()
+        self.assertEqual(before, INPUTS.identity(self.root, "browser-tools", "arm64")["input_identity"])
+        self.write("runner/browser/package-lock.json", "actual browser dependency change")
+        self.commit()
+        self.assertNotEqual(before, INPUTS.identity(self.root, "browser-tools", "arm64")["input_identity"])
+
     def test_manager_revision_and_unconsumed_docs_do_not_change_runtime_identity(self):
         before = self.identities()
         self.write("scripts/package/host.swift", "actual manager/helper change\n")

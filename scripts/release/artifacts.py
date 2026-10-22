@@ -104,13 +104,13 @@ def validate_component(runner, provider, architecture):
     require(re.fullmatch(r"[a-f0-9]{64}", proof.get("archive_sha256", "")), "missing native archive checksum")
 
 
-def assemble(args):
+def assemble(args, verifier=None):
     runners = {provider: {} for provider in PROVIDERS}
     for filename in args.records:
         record = json.loads(Path(filename).read_text())
         if getattr(args, "schema_version", 1) == 2:
             from component_provenance import verify_origin
-            verify_origin(record)
+            (verifier or verify_origin)(record)
         provider, architecture = record.pop("provider"), record.pop("architecture")
         require(provider in runners and architecture in ARCHITECTURES, "unsupported runner record")
         require(architecture not in runners[provider], "duplicate runner record")

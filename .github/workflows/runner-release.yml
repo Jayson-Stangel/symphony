@@ -8,6 +8,15 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      baseline_run:
+        description: Exact authorized manual native candidate run (empty uses verified fork history)
+        type: string
+        default: ''
+      manifest_schema:
+        description: Candidate schema (1 bridge with same-source runners, 2 independent components)
+        type: choice
+        options: ['1', '2']
+        default: '1'
       cache_probe:
         description: Only run bounded native cold/warm/changed-input cache qualification
         type: boolean
@@ -19,23 +28,46 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  candidate:
+  component-plan:
     if: ${{ !inputs.cache_probe }}
+    runs-on: ubuntu-24.04
+    outputs:
+      has_builds: ${{ steps.plan.outputs.has_builds }}
+      build_matrix: ${{ steps.plan.outputs.build_matrix }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+        run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
+          python3 - <<'PYCODE'
+          import json, os
+          plan = json.load(open('component-plan.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('has_builds=' + str(plan['has_builds']).lower() + '\n')
+              output.write('build_matrix=' + json.dumps(plan['build_matrix'], separators=(',', ':')) + '\n')
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-component-plan
+          path: component-plan.json
+          retention-days: 30
+  candidate:
+    needs: component-plan
+    if: ${{ !inputs.cache_probe && needs.component-plan.outputs.has_builds == 'true' }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.native_runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        provider: [codex, claude]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
-        architecture: [arm64, x86_64]
+      matrix: ${{ fromJSON(needs.component-plan.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Verify release version and run metadata tests
@@ -44,6 +76,14 @@ jobs:
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
           if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$(python3 scripts/release/manager_version.py)"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Capture committed effective build inputs
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          EXPECTED_IDENTITY: ${{ matrix.input_identity }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/component-inputs.json"
+          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input_identity"])' "$RUNNER_TEMP/component-inputs.json")" = "$EXPECTED_IDENTITY"
       - name: Build exact native candidate with reusable dependency layers
         uses: ./.github/actions/build-runner
         with:
@@ -51,6 +91,7 @@ jobs:
           tags: localhost:5000/symphony-${{ matrix.provider }}:candidate
           version: ${{ env.VERSION }}
           revision: ${{ github.sha }}
+          input-identity: ${{ matrix.input_identity }}
       - name: Build exact runner and test a digest pull from an isolated registry
         env:
           PROVIDER: ${{ matrix.provider }}
@@ -67,16 +108,37 @@ jobs:
           docker pull "$digest"
           bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
           python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
-            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
+            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --inputs "$RUNNER_TEMP/component-inputs.json" \
+            --output "dist/$PROVIDER-$ARCHITECTURE.json"
           docker tag "$digest" "$image"
           docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
           (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
           docker logs candidate-registry > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: payload
         with:
           name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: dist/*
+          path: |
+            dist/*.docker.tar.gz
+            dist/*.sha256
+            dist/*.registry.log
           if-no-files-found: error
+          retention-days: 30
+      - name: Seal original native record against immutable uploaded payload
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          ARTIFACT_ID: ${{ steps.payload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.payload.outputs.artifact-digest }}
+        run: |
+          python3 scripts/release/component_provenance.py seal --record "dist/$PROVIDER-$ARCHITECTURE.json" \
+            --archive "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz" --archive-name "$PROVIDER-$ARCHITECTURE.docker.tar.gz" \
+            --record-name "$PROVIDER-$ARCHITECTURE.json" --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --job-name "runner-$PROVIDER-$ARCHITECTURE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: dist/*.json
           retention-days: 30
 
   publish:
@@ -134,25 +196,33 @@ jobs:
           if-no-files-found: error
 
   candidate-metadata:
-    needs: candidate
+    needs: [component-plan, candidate]
+    if: ${{ always() && !inputs.cache_probe && needs.component-plan.result == 'success' && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: runner-candidate-*
+          name: runner-component-plan
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.component-plan.outputs.has_builds == 'true'
+        with:
+          pattern: runner-records-*
           path: candidate
           merge-multiple: true
-      - name: Assemble source-independent candidate metadata
+      - name: Join exact planned native components without exporting reused payloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
-          version=$(python3 scripts/release/manager_version.py)
-          mkdir -p dist
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel candidate --output dist/release.json candidate/*.json
+          python3 scripts/release/component_join.py --plan plan/component-plan.json --records candidate --output dist \
+            --schema "$MANIFEST_SCHEMA" ${BASELINE_RUN:+--baseline-run "$BASELINE_RUN"}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runner-candidate-metadata
-          path: dist/release.json
+          path: dist/*
 
   packaged-release:
     needs: publish

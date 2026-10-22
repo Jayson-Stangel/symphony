@@ -41,7 +41,8 @@ def main():
                                  "process.stdout.write(execFileSync(nativeExecutable(), ['--version'], {encoding:'utf8', timeout:15000}));")
     result = {"provider": args.provider, "architecture": args.architecture,
               "platform": f"linux/{expected}", "source_revision": args.revision,
-              "image": args.image, "tool_versions": tools}
+              "image": args.image, "image_config": config["Id"],
+              "archive_tag": f"localhost:5000/symphony-{args.provider}:candidate", "tool_versions": tools}
     if args.inputs:
         import runner_inputs
         snapshot = json.loads(Path(args.inputs).read_text())
