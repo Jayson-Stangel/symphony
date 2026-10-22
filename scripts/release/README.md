@@ -82,12 +82,19 @@ uses the complete source-bound component plan. Before the protected transfer job
 all original native evidence and payload availability are reverified. Every
 reused public digest must already be anonymously available with raw manifest
 bytes and a registry digest header matching the exact original OCI digest.
-Missing reused distribution evidence refuses before any push.
+Every referenced config is fetched and checksummed; every layer must provide a
+successful anonymous HEAD with its exact digest and length. Index manifests are
+followed within fixed graph/count/byte bounds. Missing or denied referenced
+blobs refuse despite a valid root manifest. All transfer records, unique target
+selections, original origins and destination availability are validated before
+the first payload retrieval or image mutation.
 
 The protected job transfers only missing newly built components. It loads the
 original verified payload, checks the original config/source/input/platform,
-pushes that exact image and refuses any digest conversion. Already available
-original digests are never retagged or pushed. Manager-only schema2 releases run
+pushes that exact image and refuses any digest conversion. After a new transfer,
+it streams and checksums every referenced blob anonymously, without executing
+foreign-architecture images or claiming a new native image qualification.
+Already available original digests are never retagged or pushed. Manager-only schema2 releases run
 zero image build, export, transfer or repeated native qualification commands.
 The complete original records and separate immutable `distribution` map reach
 both internal and external manager manifests, built with already-qualified

@@ -2,64 +2,19 @@
 """Plan immutable distribution before protected publication; preserve original records."""
 import argparse
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-from urllib.error import HTTPError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 import artifacts
 from component_provenance import REPOSITORY, selection_verifier
 from reuse_payload import retrieve
 from runner_inputs import identity
 
-MAX_MANIFEST = 4 * 1024 * 1024
-ACCEPT = ', '.join(('application/vnd.oci.image.index.v1+json','application/vnd.oci.image.manifest.v1+json',
-                    'application/vnd.docker.distribution.manifest.list.v2+json','application/vnd.docker.distribution.manifest.v2+json'))
-
-
-def request(url, headers=None):
-    with urlopen(Request(url, headers=headers or {}), timeout=60) as response:
-        data=response.read(MAX_MANIFEST+1)
-        artifacts.require(len(data)<=MAX_MANIFEST,'registry response exceeds bound')
-        return data,response.headers
-
-
-def registry_available(image, fetch=request):
-    """Anonymous public availability, raw manifest bytes and digest header must agree."""
-    artifacts.require(artifacts.DIGEST_IMAGE.fullmatch(image or ''),'invalid distribution reference')
-    host,repository=image.split('/',1)
-    repository,digest=repository.split('@',1)
-    artifacts.require(host in ('ghcr.io','localhost:5000'),'unsupported distribution registry')
-    scheme='http' if host=='localhost:5000' else 'https'
-    url=f'{scheme}://{host}/v2/{repository}/manifests/{digest}'
-    headers={'Accept':ACCEPT}
-    try:
-        try:
-            data,observed=fetch(url,headers)
-        except HTTPError as error:
-            if error.code!=401 or host!='ghcr.io':raise
-            # Fixed GHCR anonymous token endpoint/scope, never follow a service-
-            # supplied authentication URL or send GitHub credentials here.
-            token_data,_=fetch('https://ghcr.io/token?'+urlencode({'service':'ghcr.io','scope':'repository:'+repository+':pull'}))
-            token=json.loads(token_data).get('token')
-            artifacts.require(isinstance(token,str) and token and '\n' not in token,'invalid anonymous registry token')
-            data,observed=fetch(url,dict(headers,Authorization='Bearer '+token))
-    except HTTPError as error:
-        if error.code!=404:raise
-        data=error.read(65537)
-        artifacts.require(len(data)<=65536,'registry error exceeds bound')
-        errors=json.loads(data).get('errors',[])
-        artifacts.require(errors and all(item.get('code')=='MANIFEST_UNKNOWN' for item in errors),'registry did not prove missing manifest')
-        return False
-    artifacts.require(observed.get('Docker-Content-Digest')==digest and 'sha256:'+hashlib.sha256(data).hexdigest()==digest,
-                      'distribution registry changes original OCI manifest digest')
-    return True
+from registry_closure import registry_available, manifest_available
 
 
 def plan_distribution(plan, manifest, revision, verify, inputs, probe=registry_available,
@@ -116,7 +71,7 @@ def docker(*args, timeout=600):
     return subprocess.check_output(['docker',*args],text=True,stderr=subprocess.PIPE,timeout=timeout).strip()
 
 
-def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker):
+def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None):
     """Protected job only: transfer only missing newly built images; never retag reused images."""
     stable=prepared['manifest'];artifacts.validate(stable,require_bundle=False)
     artifacts.require(prepared['manager_source_revision']==stable['source_revision'],'publication manager identity differs')
@@ -125,21 +80,31 @@ def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=d
     artifacts.require(prepared.get('original_records_preserved') is True,'publication did not preserve original components')
     # Retry/re-entry rechecks all reused refs before any transfer, independent of
     # the prior preflight receipt. No fixed latest tag is ever selected.
-    selected={(item['record']['provider'],item['record']['architecture']):item for item in transfers}
+    artifacts.require(isinstance(transfers,list) and len(transfers)<=4,'invalid publication transfer selection')
+    selected={};origins={};available={}
+    # Validate the entire mutation plan before the first fetch/load/tag/push.
+    for item in transfers:
+        artifacts.require(isinstance(item,dict) and isinstance(item.get('record'),dict),'invalid transfer entry')
+        record=item['record'];key=(record.get('provider'),record.get('architecture'))
+        artifacts.require(key[0] in artifacts.PROVIDERS and key[1] in artifacts.ARCHITECTURES and key not in selected,
+                          'unknown or duplicate publication transfer')
+        artifacts.require(record==dict(components[key[0]][key[1]],provider=key[0],architecture=key[1]) and
+                          record['source_revision']==stable['source_revision'],'publication transfer differs from current selected record')
+        artifacts.require(item.get('image')==selected_image(stable,*key),'publication transfer destination differs')
+        selected[key]=item
     for provider in artifacts.PROVIDERS:
         for architecture in artifacts.ARCHITECTURES:
+            key=(provider,architecture)
             record=dict(components[provider][architecture],provider=provider,architecture=architecture)
-            verify(record)
-            if (provider,architecture) not in selected:
-                artifacts.require(probe(selected_image(stable,provider,architecture)),'existing distribution digest unavailable before publication')
-    for item in transfers:
-        record=item['record'];provider=record['provider'];architecture=record['architecture']
-        artifacts.require(record==dict(components[provider][architecture],provider=provider,architecture=architecture),
-                          'publication transfer differs from original selected record')
-        artifacts.require(record['source_revision']==stable['source_revision'],'unchanged components may not be pushed')
-        image=selected_image(stable,provider,architecture)
-        artifacts.require(image==item['image'],'publication transfer destination differs')
-        if probe(image):continue  # actual immutable availability, not a retry receipt
+            origins[key]=verify(record)
+            if key in selected:
+                artifacts.require(origins[key]==selected[key].get('origin'),'original payload origin changed before publication')
+            available[key]=probe(selected_image(stable,provider,architecture))
+            artifacts.require(available[key] or key in selected,'existing distribution digest unavailable before publication')
+    for key,item in selected.items():
+        if available[key]:continue
+        record=item['record'];provider,architecture=key
+        image=item['image']
         with tempfile.TemporaryDirectory(prefix='component-publication-') as folder:
             archive=fetch(record,item['origin'],Path(folder)/'payload',verify=verify)
             invoke('load','--input',str(archive),timeout=1200)
@@ -158,7 +123,8 @@ def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=d
             invoke('push',tag)
             artifacts.require(image in json.loads(invoke('image','inspect',tag))[0].get('RepoDigests',[]),
                               'publication transfer changed original OCI digest')
-            artifacts.require(probe(image),'new original digest is not anonymously available')
+            checked=qualify(image) if qualify is not None else registry_available(image,full=True)
+            artifacts.require(checked,'new original digest blob closure is not anonymously available')
     return stable
 
 

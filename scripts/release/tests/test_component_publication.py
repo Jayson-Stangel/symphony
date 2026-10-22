@@ -56,15 +56,15 @@ class PublicationTest(unittest.TestCase):
         raw=b'{"schemaVersion":2,"manifests":[]}'
         digest='sha256:'+hashlib.sha256(raw).hexdigest()
         image='localhost:5000/symphony-codex@'+digest
-        self.assertTrue(publication.registry_available(image,lambda *args:(raw,{'Docker-Content-Digest':digest})))
+        self.assertTrue(publication.manifest_available(image,lambda *args:(raw,{'Docker-Content-Digest':digest})))
         with self.assertRaisesRegex(ValueError,'changes original'):
-            publication.registry_available(image,lambda *args:(raw+b' ',{'Docker-Content-Digest':digest}))
+            publication.manifest_available(image,lambda *args:(raw+b' ',{'Docker-Content-Digest':digest}))
         def missing(*args):
             raise HTTPError(args[0],404,'missing',{},io.BytesIO(b'{"errors":[{"code":"MANIFEST_UNKNOWN"}]}'))
-        self.assertFalse(publication.registry_available(image,missing))
+        self.assertFalse(publication.manifest_available(image,missing))
         def daemon(*args):
             raise HTTPError(args[0],503,'unavailable',{},io.BytesIO(b'uncertain'))
-        with self.assertRaises(HTTPError):publication.registry_available(image,daemon)
+        with self.assertRaises(HTTPError):publication.manifest_available(image,daemon)
 
     def test_payload_transfer_cannot_change_config_or_original_digest(self):
         plan,metadata=self.fixture()
@@ -81,7 +81,7 @@ class PublicationTest(unittest.TestCase):
                 return json.dumps([{'Id':'sha256:'+'0'*64}])
             return ''
         with self.assertRaisesRegex(ValueError,'loaded original'):
-            publication.publish(prepared,lambda record:None,fetch=lambda *args,**kwargs:Path('/opaque-original'),
+            publication.publish(prepared,lambda record:{'exact':'origin'},fetch=lambda *args,**kwargs:Path('/opaque-original'),
                                 probe=lambda image:not image.endswith('7'*64),invoke=invoke)
         self.assertFalse(any(args[0]=='push' for args in calls))
 
@@ -117,3 +117,27 @@ class PublicationTest(unittest.TestCase):
         self.assertIn('name: runner-stable-metadata',block)
         self.assertNotIn('pattern: runner-stable-*',text)
         self.assertIn('finalize-manager-packages.py metadata/release.json dist',text)
+
+    def test_every_transfer_origin_destination_and_availability_precedes_any_mutation(self):
+        plan,metadata=self.fixture()
+        for provider,group in metadata['runners'].items():
+            for arch,record in group.items():
+                record['source_revision']='a'*40;record['qualification']['source_revision']='a'*40
+                plan['components'][provider][arch]['action']='build'
+        prepared=self.prepare(plan,metadata,lambda image:False)
+        for variant in ('origin','record','destination','duplicate','late-service-error'):
+            with self.subTest(variant=variant):
+                changed=copy.deepcopy(prepared);calls=[];probes=[]
+                if variant=='origin':changed['transfers'][1]['origin']={'stale':'origin'}
+                if variant=='record':changed['transfers'][1]['record']['source_revision']='b'*40
+                if variant=='destination':changed['transfers'][1]['image']='ghcr.io/foreign@sha256:'+'c'*64
+                if variant=='duplicate':changed['transfers'][1]=copy.deepcopy(changed['transfers'][0])
+                def no_effect(*args,**kwargs):calls.append(args);self.fail('mutation preceded complete prevalidation')
+                def probe(image):
+                    probes.append(image)
+                    if variant=='late-service-error' and len(probes)==4:
+                        raise HTTPError(image,503,'uncertain',{},io.BytesIO())
+                    return False
+                with self.assertRaises((ValueError,HTTPError)):
+                    publication.publish(changed,lambda record:{'exact':'origin'},fetch=no_effect,invoke=no_effect,probe=probe)
+                self.assertEqual(calls,[])
