@@ -6,6 +6,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
+import subprocess
 import zipfile
 
 sys.path.insert(0,str(Path(__file__).parents[1]))
@@ -50,3 +52,34 @@ class RetainedArchiveTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     archive,_=recovery.extract(service,payload,destination,'codex','arm64')
                     recovery.archive_config(archive,'localhost:5000/symphony-codex:candidate')
+
+
+class ReplayAbsenceTest(unittest.TestCase):
+    image = 'localhost:5000/symphony-codex@sha256:'+'a'*64
+    tag = 'localhost:5000/symphony-codex:candidate'
+
+    def response(self, error=None):
+        if error is None:
+            return subprocess.CompletedProcess([], 0, json.dumps([{'Id':'sha256:'+'b'*64}]), '')
+        return subprocess.CompletedProcess([], 1, '[]', error)
+
+    def absent(self):
+        return self.response('Error response from daemon: No such image: '+self.image+'\n')
+
+    def test_removal_and_postcheck_require_explicit_image_absence(self):
+        with patch.object(recovery.subprocess, 'run', side_effect=[self.response(), self.absent()]), patch.object(recovery, 'docker') as docker:
+            recovery.remove_before_pull(self.tag,self.image)
+            self.assertEqual(docker.call_args_list[0].args, ('image','rm',self.tag))
+            self.assertEqual(docker.call_args_list[1].args, ('image','rm',self.image))
+        with patch.object(recovery.subprocess, 'run', side_effect=[self.response(),self.response()]), patch.object(recovery, 'docker'):
+            with self.assertRaisesRegex(ValueError,'remains cached'):
+                recovery.remove_before_pull(self.tag,self.image)
+
+    def test_daemon_errors_cannot_prove_absence_before_or_after_removal(self):
+        for replies in ([self.response('Cannot connect to the Docker daemon')],
+                        [self.response(),self.response('permission denied')]):
+            with self.subTest(replies=replies), patch.object(recovery.subprocess,'run',side_effect=replies), patch.object(recovery,'docker'):
+                with self.assertRaisesRegex(ValueError,'without proving absence'):
+                    recovery.remove_before_pull(self.tag,self.image)
+        with patch.object(recovery.subprocess,'run',return_value=self.response('Error response from daemon: No such image: foreign')):
+            with self.assertRaises(ValueError): recovery.image_present(self.image)
