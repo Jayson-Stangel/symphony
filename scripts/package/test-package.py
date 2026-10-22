@@ -211,6 +211,33 @@ PY
         self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
         self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
 
+    def test_links_created_during_copy_are_preserved_before_activation(self):
+        bundle = self.bundle(); env = self.environment()
+        # Retain a separate already-installed manager as a usability canary.
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        existing = self.root / "bin/symphony"
+        before = self.assertOK(call([existing, "--version"], env=env))
+        cp = self.root / "tools/cp"
+        cp.write_text('#!/bin/bash\n/bin/cp "$@" || exit $?\n/bin/mkdir -p "$(dirname "$TEST_CONFLICT_TARGET")"\n/bin/ln -s /a/foreign/command "$TEST_CONFLICT_TARGET"\n')
+        cp.chmod(0o755)
+        for index, kind in enumerate(("command", "skill")):
+            with self.subTest(kind=kind):
+                base = self.root / f"competing-{index}"
+                candidate_env = dict(env, SYMPHONY_APP_HOME=str(base / "app"),
+                    SYMPHONY_BIN_DIR=str(base / "bin"), SYMPHONY_SKILLS_DIR=str(base / "skills"))
+                target = base / ("bin/symphony" if kind == "command" else "skills/symphony-commit")
+                candidate_env["TEST_CONFLICT_TARGET"] = str(target)
+                result = call([bundle / "install.sh"], env=candidate_env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("refusing to replace", result.stderr)
+                self.assertEqual(os.readlink(target), "/a/foreign/command")
+                self.assertFalse((base / "app/current").is_symlink())
+                self.assertEqual(self.assertOK(call([existing, "--version"], env=env)), before)
+        # Final writes themselves must verify exact targets, not accept any link.
+        wrong = self.root / "wrong-link"; wrong.symlink_to("/a/foreign/command")
+        self.assertNotEqual(self.helper("ensure-link", "/expected/command", wrong).returncode, 0)
+        self.assertEqual(os.readlink(wrong), "/a/foreign/command")
+
     def test_failed_stage_directory_creation_never_attempts_copy(self):
         bundle = self.bundle(); env = self.environment()
         tools = self.root / "tools"
