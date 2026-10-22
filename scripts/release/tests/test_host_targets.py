@@ -28,9 +28,7 @@ class HostTargets(unittest.TestCase):
         self.assertNotIn('linux_arm64:', config)
 
     def test_actual_matrix_output_is_valid_actions_output(self):
-        workflow = (ROOT / '.github/workflows/burrito-release.yml').read_text()
-        block = workflow.split('        name: Select supported standalone host targets\n        run: |\n', 1)[1].split('\n\n', 1)[0]
-        command = '\n'.join(line[10:] for line in block.splitlines())
+        command = 'python3 scripts/release/select-hosts.py >> "$GITHUB_OUTPUT"'
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
             subprocess.run(['bash', '-e', '-c', command], cwd=ROOT,

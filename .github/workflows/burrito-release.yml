@@ -17,23 +17,7 @@ permissions:
 
 jobs:
   host-policy:
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.policy.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - id: policy
-        name: Select supported standalone host targets
-        run: |
-          python3 - <<'PYTHON'
-          import json, os
-          from pathlib import Path
-          policy = json.loads(Path('scripts/release/host-targets.json').read_text())
-          expected = {'linux_x86_64', 'macos_arm64'}
-          assert {host['target'] for host in policy['include']} == expected
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('matrix=' + json.dumps(policy, separators=(',', ':')) + '\n')
-          PYTHON
+    uses: ./.github/workflows/host-policy.yml
 
   runners:
     if: ${{ !inputs.controller_only }}
