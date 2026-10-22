@@ -84,7 +84,7 @@ func repository(_ input: String) throws -> (String, String) {
                 if line.hasPrefix("[") { origin = matches(line, "^\\[(?i:remote)[ \\t]+\"origin\"\\][ \\t]*([#;].*)?$"); continue }
                 if origin, matches(line, "^(?i:url)[ \\t]*=") {
                     let value = gitValue(String(line.drop(while: { $0 != "=" }).dropFirst()).trimmingCharacters(in: .whitespaces))
-                    remote = value
+                    if remote == nil { remote = value }
                 }
             }
             guard let found = remote else { fail("the repository needs an explicit origin remote in its local Git config") }

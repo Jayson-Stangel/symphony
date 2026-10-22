@@ -101,7 +101,7 @@ repo_root() { if "$packaged_install"; then package_helper repository-root "$PWD"
 
 legacy_project_id() {
   local remote name
-  remote=$(repository_remote "$1" 2>/dev/null || true)
+  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || true); fi
   name=$(basename "${remote:-$1}" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//')
   printf '%s\n' "$name"
 }
@@ -110,7 +110,7 @@ legacy_project_id() {
 # uses the same normalized repository identity instead of its ambiguous basename.
 project_id() {
   local remote digest
-  remote=$(repository_remote "$1" 2>/dev/null || printf '%s' "$1")
+  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || printf '%s' "$1"); fi
   remote=$(printf '%s' "$remote" | sed -E 's#^[^@/]+@([^:]+):#\1/#; s#^[[:alnum:]+.-]+://##; s#^[^/@]+@##; s#\.git/?$##; s#/$##')
   if "$packaged_install"; then digest=$(package_helper hash-blob "$remote"); else digest=$(printf '%s' "$remote" | git hash-object --stdin); fi
   printf '%s-%s\n' "$(legacy_project_id "$1")" "${digest:0:12}"
