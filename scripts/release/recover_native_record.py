@@ -117,6 +117,30 @@ def docker(*args, timeout=600):
     return subprocess.check_output(['docker', *args], text=True, stderr=subprocess.PIPE, timeout=timeout).strip()
 
 
+def image_present(image):
+    result = subprocess.run(['docker', 'image', 'inspect', image], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if result.returncode == 0:
+        values = json.loads(result.stdout)
+        require(isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict)
+                and re.fullmatch(r'sha256:[a-f0-9]{64}', values[0].get('Id', '')),
+                'invalid image inspection receipt')
+        return True
+    # Only Docker's exact missing-image response proves absence. Daemon,
+    # permission and transport failures leave local cache state unknown.
+    require(result.returncode == 1 and result.stdout.strip() in ('', '[]') and
+            result.stderr.strip() == 'Error response from daemon: No such image: '+image,
+            'image inspection failed without proving absence')
+    return False
+
+
+def remove_before_pull(tag, image):
+    docker('image', 'rm', tag)
+    if image_present(image):
+        docker('image', 'rm', image)
+    require(not image_present(image), 'original digest remains cached before replay pull')
+
+
 def recover(args):
     require(os.environ.get('GITHUB_REPOSITORY') == origin.REPOSITORY and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch',
             'native record recovery requires an explicit manual fork diagnostic')
@@ -165,11 +189,7 @@ def recover(args):
             before=time.monotonic(); docker('push',tag); evidence['loopback_push_seconds']=time.monotonic()-before
             observed = json.loads(docker('image','inspect',tag))[0]
             require(selected['image'] in observed.get('RepoDigests',[]), 'replayed OCI digest differs from original qualified digest')
-            docker('image','rm',tag)
-            if subprocess.run(['docker','image','inspect',selected['image']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=120).returncode == 0:
-                docker('image','rm',selected['image'])
-            require(subprocess.run(['docker','image','inspect',selected['image']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=120).returncode != 0,
-                    'original digest remains cached before replay pull')
+            remove_before_pull(tag,selected['image'])
             before=time.monotonic(); docker('pull',selected['image']); evidence['loopback_pull_seconds']=time.monotonic()-before
             require(json.loads(docker('image','inspect',selected['image']))[0]['Id'] == config, 'replayed config differs from retained archive')
             record_path = output/f'{args.provider}-{args.architecture}.json'
