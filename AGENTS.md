@@ -97,7 +97,8 @@ Standalone executable examples and unknown paths take the conservative code rout
 Packaged `.codex/skills/`, `.agents/` content and every `WORKFLOW.md` are behavioral
 inputs even though they use Markdown. Do not classify all Markdown as documentation.
 
-Required check names remain present on every PR and dev/main push. Their summaries
+Behavioral required check names remain present on every PR and dev/main push;
+PR metadata validation remains required on PR events. Their summaries
 say explicitly when behavioral qualification was intentionally omitted; that is
 not a claim that tests executed. Classification failure fails the required wrapper.
 See `docs/development.md` for the event map and local classifier validation.

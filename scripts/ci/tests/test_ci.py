@@ -65,7 +65,6 @@ class EventReplay(unittest.TestCase):
                         start=time.monotonic();docs,reason,paths=classifier.classify(event,name)
                         self.assertEqual(docs,expected,(reason,paths))
                         print(json.dumps({'event':label,'docs_only':docs,'elapsed_seconds':round(time.monotonic()-start,6),'paths':paths,
-                            'required_jobs':['make-all','macos-package','validate-pr-description'],
                             'behavioral_steps':'intentionally omitted' if docs else 'required (not executed by this classifier replay)'}))
             finally:
                 os.chdir(original)
