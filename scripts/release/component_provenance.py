@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import zipfile
@@ -112,6 +113,13 @@ def verify_origin(record, fetch=api, now=None, candidate_run=None):
             "archive_sha256": proof["archive_sha256"], "record_filename": name}
 
 
+def artifact_digest(value):
+    """upload-artifact emits bare SHA256; service metadata includes the prefix."""
+    require(isinstance(value, str) and re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", value),
+            "invalid immutable upload artifact digest")
+    return value if value.startswith("sha256:") else "sha256:" + value
+
+
 def seal(args):
     record_path = Path(args.record)
     record = json.loads(record_path.read_text())
@@ -133,7 +141,7 @@ def seal(args):
              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
              "controller_revision": os.environ["GITHUB_SHA"], "job_name": jobs[0]["name"],
              "artifact_id": args.artifact_id, "artifact_name": f"runner-candidate-{provider}-{architecture}",
-             "artifact_digest": args.artifact_digest, "archive_filename": args.archive_name,
+             "artifact_digest": artifact_digest(args.artifact_digest), "archive_filename": args.archive_name,
              "archive_sha256": checksum.hexdigest(), "record_filename": args.record_name,
              **{key: record[key] for key in ("image", "source_revision", "input_identity")}}
     record["qualification"] = proof

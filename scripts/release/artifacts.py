@@ -55,6 +55,18 @@ def validate(value, require_bundle=True):
     require(bundle.get("filename") == f"symphony-{value['version']}-macos.tar.gz", "unexpected bundle filename")
     if require_bundle:
         require(re.fullmatch(r"[0-9a-f]{64}", bundle.get("sha256", "")), "missing bundle checksum")
+    if "bundles" in value:
+        bundles = value["bundles"]
+        require(isinstance(bundles, dict) and set(bundles) == {"macos", "linux_x86_64"}, "invalid platform bundles")
+        require(bundles["macos"] == bundle, "legacy macOS bundle differs")
+        linux = bundles["linux_x86_64"]
+        require(isinstance(linux, dict), "Linux bundle must be an object")
+        require(linux.get("filename") == f"symphony-{value['version']}-linux_x86_64.tar.gz", "unexpected Linux bundle filename")
+        if require_bundle:
+            require(re.fullmatch(r"[0-9a-f]{64}", linux.get("sha256", "")), "missing Linux bundle checksum")
+    if "package_platform" in value:
+        require(value["package_platform"] in ("macos", "linux_x86_64"), "invalid package platform")
+        require(value["package_platform"] != "linux_x86_64" or "bundles" in value, "Linux package has no platform bundles")
     return value
 
 
@@ -126,6 +138,14 @@ def assemble(args, verifier=None):
     }
     if result["schema_version"] == 2:
         result["compatibility"] = {"runner_protocol": 1}
+
+    if getattr(args, "platform_bundles", False) or getattr(args, "linux_bundle", None):
+        result["bundles"] = {"macos": result["bundle"],
+                             "linux_x86_64": {"filename": f"symphony-{args.version}-linux_x86_64.tar.gz"}}
+    if getattr(args, "linux_bundle", None):
+        linux = Path(args.linux_bundle)
+        require(linux.name == result["bundles"]["linux_x86_64"]["filename"], "Linux bundle filename differs")
+        result["bundles"]["linux_x86_64"]["sha256"] = hashlib.sha256(linux.read_bytes()).hexdigest()
     if args.bundle:
         require(Path(args.bundle).name == result["bundle"]["filename"], "bundle filename differs")
         result["bundle"]["sha256"] = hashlib.sha256(Path(args.bundle).read_bytes()).hexdigest()
@@ -145,6 +165,8 @@ def main():
     build.add_argument("--revision", required=True)
     build.add_argument("--channel", choices=("candidate", "stable"), required=True)
     build.add_argument("--bundle")
+    build.add_argument("--linux-bundle")
+    build.add_argument("--platform-bundles", action="store_true", help="include Linux x86-64 and legacy macOS bundle slots")
     build.add_argument("--output", required=True)
     build.add_argument("records", nargs="+")
     args = parser.parse_args()

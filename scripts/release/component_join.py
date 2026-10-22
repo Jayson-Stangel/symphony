@@ -59,7 +59,7 @@ def main():
             files.append(str(path))
         artifacts.assemble(SimpleNamespace(records=files, schema_version=args.schema,
                            version=manager_version.read(), revision=revision, channel='candidate',
-                           bundle=None, output=str(output / 'release.json')), verifier=verify)
+                           bundle=None, platform_bundles=True, output=str(output / 'release.json')), verifier=verify)
     except (ValueError, KeyError, TypeError, OSError) as error:
         parser.exit(1, f'component join: {type(error).__name__}; candidate assembly refused\n')
 

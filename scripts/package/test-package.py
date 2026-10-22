@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""macOS package and host-helper regression checks; no account/model requests."""
+"""Native macOS/Linux package and helper regressions; no account/model requests."""
 import copy
 import hashlib
 import json
@@ -27,11 +27,13 @@ def manifest(version="1.2.3", revision=None):
         for arch, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
             runners[provider][arch] = dict(platform=platform, image=f"ghcr.io/test/{provider}@sha256:" + "b" * 64,
                 source_revision=revision, tool_versions={tool: "1.0" for tool in (provider, "git", "node", "playwright")})
+    bundle = dict(filename=f"symphony-{version}-macos.tar.gz")
     return dict(schema_version=1, version=version, source_revision=revision, channel="candidate",
-        host_architectures=["arm64", "x86_64"], runners=runners, bundle=dict(filename=f"symphony-{version}-macos.tar.gz"))
+        host_architectures=["arm64", "x86_64"], runners=runners, bundle=bundle,
+        bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz")))
 
 
-@unittest.skipUnless(sys.platform == "darwin", "native installed-macOS helper requires macOS")
+@unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
 class PackageTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -64,7 +66,7 @@ class PackageTest(unittest.TestCase):
     def bundle(self):
         output = self.root / "output"
         self.assertOK(call([ROOT / "scripts/release/package.sh", self.file, output, HELPER]))
-        archive = output / manifest()["bundle"]["filename"]
+        archive = output / manifest()["bundles"]["macos" if sys.platform == "darwin" else "linux_x86_64"]["filename"]
         extracted = self.root / "download"
         extracted.mkdir()
         self.assertOK(call(["tar", "-xzf", archive, "-C", extracted]))
@@ -74,7 +76,7 @@ class PackageTest(unittest.TestCase):
         tools = self.root / "tools"
         tools.mkdir(exist_ok=True)
         # Poison optional host runtimes; installed code must never execute these.
-        for tool in ("git", "python3", "node", "mise", "elixir", "erl", "swiftc", "codex", "claude"):
+        for tool in ("git", "python3", "python", "node", "mise", "elixir", "erl", "swift", "swiftc", "shasum", "codex", "claude"):
             (tools / tool).write_text(f"#!/bin/sh\necho 'unexpected host dependency: {tool}' >&2\nexit 98\n")
             (tools / tool).chmod(0o755)
         docker = tools / "docker"
@@ -98,6 +100,8 @@ class PackageTest(unittest.TestCase):
         self.assertNotEqual(self.helper("get").returncode, 0)
         self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":false}}').returncode, 1)
         self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":0}}').returncode, 0)
+        for count in ("0.0", "false", "true", "1.5", '"0"'):
+            self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":' + count + '}}').returncode, 1)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
 
     def test_component_manifest_keeps_original_sources_and_strict_compatibility(self):
@@ -130,6 +134,23 @@ class PackageTest(unittest.TestCase):
             change(invalid)
             self.file.write_text(json.dumps(invalid))
             self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
+
+    def test_additive_platform_manifest_and_legacy_mac_contract(self):
+        value = manifest()
+        self.assertOK(self.helper("validate-manifest", self.file))
+        legacy = copy.deepcopy(value); legacy.pop("bundles")
+        self.file.write_text(json.dumps(legacy))
+        self.assertOK(self.helper("validate-manifest", self.file))
+        for mutate in (lambda v: v["bundles"].update(linux_arm64={}),
+                       lambda v: v["bundles"]["linux_x86_64"].update(filename="bad.tar.gz"),
+                       lambda v: v["bundles"]["linux_x86_64"].update(sha256=True),
+                       lambda v: v.update(package_platform="linux_arm64")):
+            changed = copy.deepcopy(value); mutate(changed)
+            self.file.write_text(json.dumps(changed))
+            self.assertNotEqual(self.helper("validate-manifest", self.file).returncode, 0)
+        self.assertEqual(self.assertOK(self.helper("host-platform")),
+            "macos" if sys.platform == "darwin" else "linux_x86_64")
+        self.assertEqual(self.assertOK(self.helper("sha256", self.file)), hashlib.sha256(self.file.read_bytes()).hexdigest())
 
     def test_git_identity_and_linked_worktree_match_git(self):
         repo = self.root / "project with space"; repo.mkdir()
@@ -231,6 +252,61 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(effective, "https://injected.invalid/local.git")
         self.assertNotEqual(self.helper("repository-root", repo, env=injected).returncode, 0)
 
+    def test_inventory_hashing_unsafe_paths_and_links(self):
+        directory = self.root / "inventory"; directory.mkdir()
+        content = directory / "payload"; content.write_bytes(b"actual helper inventory")
+        digest = hashlib.sha256(content.read_bytes()).hexdigest()
+        inventory = directory / "files.sha256"
+        inventory.write_text(f"{digest}  ./payload\n")
+        self.assertOK(self.helper("verify-files", directory))
+        content.write_bytes(b"tampered")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        content.write_bytes(b"actual helper inventory")
+        for name in ("../inventory/payload", str(content)):
+            inventory.write_text(f"{digest}  {name}\n")
+            self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        link = directory / "link"; link.symlink_to(content)
+        inventory.write_text(f"{digest}  ./link\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        outside = self.root / "outside"; outside.mkdir()
+        (outside / "payload").write_bytes(content.read_bytes())
+        (directory / "parent").symlink_to(outside, target_is_directory=True)
+        inventory.write_text(f"{digest}  ./parent/payload\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        os.link(content, directory / "hardlink")
+        inventory.write_text(f"{digest}  ./hardlink\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        target = directory / "activation"; target.write_text("unrelated")
+        self.assertNotEqual(self.helper("ensure-link", "payload", target).returncode, 0)
+        self.assertEqual(target.read_text(), "unrelated")
+        staged = directory / "staged"; staged.symlink_to("payload")
+        self.assertNotEqual(self.helper("replace-link", staged, target).returncode, 0)
+        target.unlink()
+        self.assertOK(self.helper("replace-link", staged, target))
+        self.assertEqual(os.readlink(target), "payload")
+
+    def test_lock_survives_helper_exit_and_releases_after_last_inheritor(self):
+        lock = self.root / "inherited.lock"
+        with lock.open("a") as owner:
+            fd = owner.fileno()
+            self.assertOK(self.helper("lock", lock, fd, "acquire", pass_fds=(fd,)))
+            self.assertOK(self.helper("lock", lock, fd, "inherited", pass_fds=(fd,)))
+            # A different open description must remain excluded after the helper exits.
+            with lock.open("a") as competitor:
+                self.assertNotEqual(self.helper("lock", lock, competitor.fileno(), "acquire",
+                    pass_fds=(competitor.fileno(),)).returncode, 0)
+            child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                stdin=subprocess.PIPE, pass_fds=(fd,))
+            self.addCleanup(lambda: child.poll() is None and child.kill())
+        # The original parent has closed its descriptor; only the child retains it.
+        with lock.open("a") as competitor:
+            self.assertNotEqual(self.helper("lock", lock, competitor.fileno(), "acquire",
+                pass_fds=(competitor.fileno(),)).returncode, 0)
+            child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0)
+            self.assertOK(self.helper("lock", lock, competitor.fileno(), "acquire",
+                pass_fds=(competitor.fileno(),)))
+
     def test_flock_matches_python_owner_and_exclusion(self):
         lock = self.root / "lock"
         script = '''exec 8>>"$1"; "$2" lock "$1" 8 acquire; "$2" lock "$1" 8 inherited; python3 - "$1" <<'PY'
@@ -244,6 +320,50 @@ PY
 '''
         self.assertOK(call(["bash", "-e", "-c", script, "fixture", lock, HELPER]))
         self.assertNotEqual(call(["bash", "-c", 'exec 8>>"$1"; "$2" lock "$1" 8 inherited', "fixture", lock, HELPER]).returncode, 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "old macOS updater must execute on macOS")
+    def test_actual_legacy_macos_updater_accepts_new_manifest_and_roundtrip(self):
+        # The test controller builds actual old/current source-bound managers.
+        # Runner records are metadata fixtures: this test makes no lifecycle or
+        # Linux-artifact claim and never pulls an image or authenticates.
+        legacy_revision = "6794fc7a385a52429d80ca77cb6564408ed872c6"
+        legacy = self.root / "legacy-source"
+        self.assertOK(call(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", ROOT, legacy]))
+        self.assertOK(call(["git", "-C", legacy, "checkout", "--quiet", "--detach", legacy_revision]))
+        old_helper = self.root / "old-helper"
+        self.assertOK(call([legacy / "scripts/release/build-host-helper.sh", old_helper, "--native"]))
+        old_manifest = manifest(version="1.2.2", revision=legacy_revision)
+        old_manifest.pop("bundles")
+        old_internal = self.root / "old-internal.json"; old_internal.write_text(json.dumps(old_manifest))
+        old_output = self.root / "old-output"
+        self.assertOK(call([legacy / "scripts/release/package.sh", old_internal, old_output, old_helper]))
+        old_archive = old_output / old_manifest["bundle"]["filename"]
+        old_download = self.root / "old-download"; old_download.mkdir()
+        self.assertOK(call(["tar", "-xzf", old_archive, "-C", old_download]))
+        current_download = self.bundle()
+        current_archive = self.root / "output" / manifest()["bundle"]["filename"]
+        current_manifest = manifest()
+        current_manifest["bundle"]["sha256"] = hashlib.sha256(current_archive.read_bytes()).hexdigest()
+        current_manifest["bundles"]["linux_x86_64"]["sha256"] = "e" * 64
+        current_external = self.root / "current-external.json"; current_external.write_text(json.dumps(current_manifest))
+        old_manifest["bundle"]["sha256"] = hashlib.sha256(old_archive.read_bytes()).hexdigest()
+        old_external = self.root / "old-external.json"; old_external.write_text(json.dumps(old_manifest))
+        env = self.environment()
+        # The already-installed old updater legitimately uses the standard
+        # macOS shasum utility until activation of the new helper-owned hash.
+        (self.root / "tools/shasum").unlink()
+        self.assertOK(call([old_download / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], manifest()["source_revision"])
+        # New updater must also understand prior manifest shape, and retain
+        # updater-controlled rollback into the actual old installation.
+        self.assertOK(call([command, "update", "--rollback-release"], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        self.assertOK(call([command, "update", "--candidate-manifest", old_external, "--candidate-bundle", old_archive], env=env))
+        self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
 
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
@@ -396,8 +516,8 @@ PY
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
         uname = self.root / "tools/uname"
-        for architecture, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
-            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo Darwin ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
+        for architecture, platform in ((("arm64", "linux/arm64"), ("x86_64", "linux/amd64")) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {"Darwin" if sys.platform == "darwin" else "Linux"} ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
             output = self.assertOK(call([command, "doctor", "--json"], env=env))
             self.assertEqual(json.loads(output)["architecture"], architecture)
             result = call([command, "auth", "codex", "login"], env=env)
@@ -406,6 +526,23 @@ PY
         result = call([command, "doctor", "--json"], env=dict(env, SYMPHONY_CONTAINER_RUNTIME="/unavailable/engine"))
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(json.loads(result.stdout)["ready"])
+
+    def test_unsupported_host_and_wrong_os_refuse_before_native_helper(self):
+        bundle = self.bundle(); env = self.environment()
+        canary = self.root / "wrong-platform-helper-executed"
+        (bundle / "libexec/symphony-host").write_text(f"#!/bin/sh\ntouch '{canary}'\nexit 99\n")
+        uname = self.root / "tools/uname"
+        other_os = "Linux" if sys.platform == "darwin" else "Darwin"
+        for system, architecture, reason in (("Linux", "aarch64", "unsupported host"),
+                                            ("Windows_NT", "x86_64", "unsupported host"),
+                                            (other_os, "x86_64", "bundle platform")):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; *) echo {architecture} ;; esac\n')
+            uname.chmod(0o755)
+            for command in ([bundle / "install.sh"], [bundle / "scripts/symphony", "--version"]):
+                refused = call(command, env=env)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(reason, refused.stderr)
+                self.assertFalse(canary.exists(), "unsupported platform executed native helper")
 
     def test_mutable_or_foreign_image_overrides_are_rejected(self):
         bundle = self.bundle(); env = self.environment()

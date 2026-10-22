@@ -263,3 +263,71 @@ independently verifies that selected original run; a plan's diagnostic metadata
 never grants permission. Ordinary PR/push consumers always require original
 source/controller ancestry in verified fork dev/main history. Actual archive
 retrieval also bounds the streamed artifact bytes and total download time.
+
+### Portable host helper (candidate qualification)
+
+On macOS, `bash scripts/release/build-host-helper.sh /tmp/symphony-host` retains
+one universal Intel/Apple Silicon executable. `--native` is a development-only
+single-architecture build. On native Linux x86-64, install the matching Swift
+6.1.2 toolchain and Static Linux SDK, then use the same command, or run
+`bash scripts/release/build-linux-host-helper.sh /tmp/linux-helper` with Docker.
+The latter pins the Swift build container, SDK integrity checksum and portable
+Crypto/ASN.1 revisions. These are build dependencies, never installed runtime
+requirements. Linux ARM64 manager/helper support is outside this contract.
+
+The Linux build controller downloads the pinned SDK with `curl`, verifies its
+official SHA-256 before Docker starts, then installs the local archive inside the
+Swift container. This avoids the Swift 6.1.2 remote installer's observed
+FoundationNetworking/URLSession crash. A current controller can build an actual
+prior checkout without modifying it:
+
+```sh
+bash scripts/release/build-linux-host-helper.sh /tmp/prior-helper /tmp/prior-source FULL_SOURCE_SHA
+```
+
+The selected source and Git metadata are mounted read-only; compiler/SwiftPM
+writes stay in temporary storage. The executable's compiled revision must match
+the requested source. `build.txt` distinguishes source/controller revisions and
+records the SDK checksum; `elf.txt` retains actual runtime-dependency inspection.
+For a small nonpublishing diagnostic, manually dispatch `Package checks` with
+`previous_revision`: it builds/tests both real helpers through the current
+controller. This is build/helper evidence, not a substitute for the two-archive
+installed-manager lifecycle qualification.
+
+`Package checks` executes the shared hash, typed JSON, identity, path/link and
+inherited-descriptor lock contracts on native macOS and Linux. The Linux artifact
+must have no ELF interpreter or required shared libraries and is additionally
+executed in clean Ubuntu 26.04 without Swift, Git or scripting runtimes. The
+retained artifact includes SHA-256 and clean-container evidence, bound to the
+workflow source SHA. CI controller utilities are distinct from helper runtime
+requirements. Cross-compiling a binary does not prove native execution.
+
+
+### Linux and macOS bundle metadata
+
+`artifacts.py assemble --platform-bundles` creates internal metadata with both
+native archive slots. Final assembly supplies `--bundle MACOS_ARCHIVE` and
+`--linux-bundle LINUX_ARCHIVE`, binding both SHA-256 checksums to the same source
+and immutable runner identities. Schema1, `host_architectures` and legacy `bundle`
+remain unchanged: the old macOS updater still selects its ordinary macOS archive.
+The additive `bundles` map mirrors that macOS entry and adds `linux_x86_64`.
+Each archive records `package_platform`; new Linux managers require this marker
+and select the Linux field. Prior macOS manifests without the marker remain usable.
+
+The manual `runner-release` workflow accepts an optional full `previous_revision`
+SHA. When supplied, it builds actual current/prior runner images and platform
+archives, then performs the native clean-Ubuntu two-revision installed lifecycle
+proof. Candidate artifacts/evidence remain workflow artifacts only. Production
+publication still requires a production tag, enabled release variable and the
+protected environment; the production manager artifact now contains both native
+archives and the backwards-compatible combined manifest. No test controller can
+satisfy an unavailable native platform by replacing it with a compile or mock.
+
+For controller-only lifecycle diagnosis, manually dispatch
+`runner-release` with `diagnostic_artifact_run` set to a completed run ID
+and `diagnostic_package_source_revision` set to its exact current package SHA.
+Only the diagnostic job runs in this mode. It downloads that run's real checksummed
+current/prior packages and x86-64 images, then uses the selected controller head.
+Evidence records the controller SHA, package SHA and diagnostic artifact run
+separately. This never publishes and does not replace final same-head native
+build and lifecycle acceptance in `runner-release`.

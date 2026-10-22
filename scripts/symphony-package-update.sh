@@ -193,10 +193,10 @@ package_stage_download() (
   package_helper validate-manifest "$manifest" || return
   version=$(package_helper get "$manifest" version) || return
   revision=$(package_helper get "$manifest" source_revision) || return
-  filename=$(package_helper get "$manifest" bundle.filename) || return
-  checksum=$(package_helper get "$manifest" bundle.sha256) || return
+  filename=$(package_helper get "$manifest" "$(package_bundle_field filename)") || return
+  checksum=$(package_helper get "$manifest" "$(package_bundle_field sha256)") || return
   case "$version" in ''|*[!0-9A-Za-z.+-]*) die 'invalid packaged release version' ;; esac
-  [ "$filename" = "symphony-$version-macos.tar.gz" ] || die 'release bundle filename does not match version'
+  [ "$filename" = "symphony-$version-$package_platform.tar.gz" ] || die 'release bundle filename does not match version'
   case "$checksum" in *[!a-f0-9]*|'') die 'invalid release bundle checksum' ;; esac
   [ "${#checksum}" = 64 ] || die 'invalid release bundle checksum'
   if [ -z "$candidate_manifest" ]; then
@@ -205,12 +205,14 @@ package_stage_download() (
   bundle="$temporary/$filename"
   if [ -n "$candidate_manifest" ]; then cp "$candidate_bundle" "$bundle" || return
   else package_download "https://github.com/Jayson-Stangel/symphony/releases/download/$tag/$filename" "$bundle"; fi
-  actual=$(shasum -a 256 "$bundle") || return; actual=${actual%% *}
+  actual=$(package_helper sha256 "$bundle") || return
   [ "$actual" = "$checksum" ] || die 'release bundle checksum mismatch; installed manager and runner retained'
   package_extract_bundle "$bundle" "$temporary/unpacked" || return
   [ "$(package_helper get "$temporary/unpacked/release.json" version)" = "$version" ] &&
     [ "$(package_helper get "$temporary/unpacked/release.json" source_revision)" = "$revision" ] || die 'bundle and release manifest identities differ'
   package_helper validate-manifest "$temporary/unpacked/release.json" || return
+  [ "$(package_manifest_platform "$temporary/unpacked/release.json")" = "$package_platform" ] || die 'downloaded bundle platform does not match selected host'
+  [ "$(package_helper get "$temporary/unpacked/release.json" "$(package_bundle_field filename)")" = "$filename" ] || die 'downloaded bundle platform identity differs'
   package_helper verify-files "$temporary/unpacked" || return
   [ "$(package_helper get "$manifest" channel)" = "$(package_helper get "$temporary/unpacked/release.json" channel)" ] || die 'bundle and release channels differ'
   [ "$(package_helper get "$manifest" schema_version)" = "$(package_helper get "$temporary/unpacked/release.json" schema_version)" ] || die 'bundle and release schemas differ'

@@ -112,6 +112,15 @@ class ComponentProofTest(unittest.TestCase):
 
 
 class NativeSealTest(unittest.TestCase):
+    def test_upload_action_bare_digest_normalizes_to_service_digest_strictly(self):
+        # Actual upload-artifact output format from failed baseline run39867029678.
+        bare = "7c5b8d5c6ffbbefb848103f6f18bf2a418adbf07b4f592212ae5b49881132d39"
+        self.assertEqual(provenance.artifact_digest(bare), 'sha256:' + bare)
+        self.assertEqual(provenance.artifact_digest('sha256:' + bare), 'sha256:' + bare)
+        for invalid in ('', bare+'0', bare.upper(), 'sha256:'+bare+'\n', 'sha512:'+bare):
+            with self.assertRaises(ValueError):
+                provenance.artifact_digest(invalid)
+
     def test_seal_preserves_actual_reusable_job_and_shared_payload_record_path(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

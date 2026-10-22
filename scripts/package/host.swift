@@ -1,8 +1,24 @@
 // Release-built host utilities. No user machine compiler or scripting runtime is needed.
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import CoreFoundation
+#if canImport(Darwin)
 import Darwin
+#else
+#if canImport(Musl)
+import Musl
+#else
+import Glibc
+#endif
+// Glibc also exports a struct named flock. Bind the BSD flock syscall explicitly;
+// POSIX process locks do not preserve ownership through an inherited descriptor.
+@_silgen_name("flock")
+func flock(_ descriptor: Int32, _ operation: Int32) -> Int32
+#endif
 
 func fail(_ message: String) -> Never { FileHandle.standardError.write(Data(("symphony: " + message + "\n").utf8)); exit(1) }
 func read(_ path: String) throws -> Data { try Data(contentsOf: URL(fileURLWithPath: path)) }
@@ -73,6 +89,17 @@ func validateManifest(_ path: String) throws -> [String: Any] {
     let bundle = object(manifest["bundle"])
     guard let filename = bundle["filename"] as? String, filename == "symphony-\(version)-macos.tar.gz" else { fail("invalid bundle filename") }
     if let digest = bundle["sha256"] { guard let s = digest as? String, matches(s, "^[a-f0-9]{64}$") else { fail("invalid bundle checksum") } }
+    if let raw = manifest["bundles"] {
+        guard let bundles = raw as? [String: Any], Set(bundles.keys) == Set(["macos", "linux_x86_64"]),
+              NSDictionary(dictionary: object(bundles["macos"])) == NSDictionary(dictionary: bundle) else { fail("invalid platform bundles") }
+        let linux = object(bundles["linux_x86_64"])
+        guard linux["filename"] as? String == "symphony-\(version)-linux_x86_64.tar.gz" else { fail("invalid Linux bundle filename") }
+        if let digest = linux["sha256"] { guard let s = digest as? String, matches(s, "^[a-f0-9]{64}$") else { fail("invalid Linux bundle checksum") } }
+    }
+    if let platform = manifest["package_platform"] {
+        guard let name = platform as? String, ["macos", "linux_x86_64"].contains(name),
+              name != "linux_x86_64" || manifest["bundles"] != nil else { fail("invalid package platform") }
+    }
     return manifest
 }
 func gitValue(_ input: String) -> String {
@@ -120,7 +147,7 @@ func checkGitIdentityEnvironment() {
     for path in Set(paths) {
         if URL(fileURLWithPath: path).resolvingSymlinksInPath().path == "/dev/null" { continue }
         var info = stat()
-        if stat(path, &info) != 0 {
+        if fstatat(AT_FDCWD, path, &info, 0) != 0 {
             if errno == ENOENT { continue }
             fail("cannot inspect selected external Git configuration; check its access before using the packaged manager")
         }
@@ -174,7 +201,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3]
+let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -189,6 +216,15 @@ do {
         guard let resolved = realpath(path, nil) else { fail("cannot resolve path") }; defer { free(resolved) }
         print(([String(cString: resolved)] + suffix).joined(separator: "/").replacingOccurrences(of: "//", with: "/"))
     case "build-revision": print(compiledRevision)
+    case "host-platform":
+        #if os(macOS)
+        print("macos")
+        #elseif os(Linux) && arch(x86_64)
+        print("linux_x86_64")
+        #else
+        fail("unsupported host helper platform")
+        #endif
+    case "sha256": print(SHA256.hash(data: try read(args[1])).map { String(format: "%02x", $0) }.joined())
     case "ensure-link":
         // symlink(2) never follows an existing target directory or link.
         if symlink(args[1], args[2]) != 0 {
@@ -243,6 +279,12 @@ do {
             guard line.count > 66 else { fail("invalid bundle inventory") }
             let digest = String(line.prefix(64)); let path = String(line.dropFirst(66))
             guard matches(digest, "^[a-f0-9]{64}$"), !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { fail("unsafe bundle inventory path") }
+            let components = path.split(separator: "/").filter { $0 != "." }
+            var parent = root
+            for component in components.dropLast() {
+                parent.appendPathComponent(String(component))
+                _ = checkedInfo(parent.path, directory: true)
+            }
             let url = root.appendingPathComponent(path); _ = checkedInfo(url.path)
             let observed = SHA256.hash(data: try read(url.path)).map { String(format: "%02x", $0) }.joined()
             guard observed == digest else { fail("bundle checksum mismatch: \(path)") }
