@@ -181,7 +181,7 @@ def export(image, output, checksum_output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--image', nargs='+', required=True)
+    parser.add_argument('--image', nargs='+', action='extend', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--checksum-output', type=Path, required=True)
     args = parser.parse_args()

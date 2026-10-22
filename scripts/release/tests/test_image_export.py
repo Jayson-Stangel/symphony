@@ -69,6 +69,60 @@ class ExportTransport(unittest.TestCase):
             with tarfile.open(archive, 'r:gz') as bundle:
                 self.assertEqual(bundle.getnames().count('shared-layer.tar'), 1)
 
+    def test_actual_cli_exports_every_repeated_or_grouped_image_with_both_tags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            images = {}
+            for index, tag in enumerate(('fixture:current', 'fixture:previous')):
+                config = {'architecture': 'amd64', 'config': {'Labels': {
+                    'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64',
+                    'org.opencontainers.image.revision': ('a', 'b')[index] * 40}}}
+                raw = json.dumps(config).encode()
+                images[tag] = {'config': config, 'id': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+            fixture = root / 'images.json'; fixture.write_text(json.dumps(images))
+            docker = root / 'docker'
+            docker.write_text('''#!/usr/bin/env python3
+import io,json,os,sys,tarfile
+from pathlib import Path
+images=json.loads(Path(os.environ['CLI_IMAGES']).read_text())
+args=sys.argv[1:]
+if args[:2]==['image','inspect']:
+ item=images[args[2]]
+ print(json.dumps([{'Id':item['id'],'Architecture':'amd64','Config':item['config']['config']}]))
+elif args[0]=='save':
+ Path(os.environ['CLI_SAVE']).write_text(json.dumps(args[1:]))
+ files=[];manifest=[]
+ for tag in args[1:]:
+  item=images[tag];name=item['id'][7:]+'.json'
+  files.append((name,json.dumps(item['config']).encode()))
+  manifest.append({'Config':name,'RepoTags':[tag],'Layers':['shared.tar']})
+ files += [('shared.tar',b'shared layer'),('manifest.json',json.dumps(manifest).encode())]
+ with tarfile.open(fileobj=sys.stdout.buffer,mode='w|') as bundle:
+  for name,data in files:
+   entry=tarfile.TarInfo(name);entry.size=len(data);bundle.addfile(entry,io.BytesIO(data))
+else: raise SystemExit('unexpected Docker command')
+''')
+            docker.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       CLI_IMAGES=str(fixture), CLI_SAVE=str(root / 'save-arguments.json'))
+            for name, arguments in (('repeated', ['--image', 'fixture:current', '--image', 'fixture:previous']),
+                                    ('grouped', ['--image', 'fixture:current', 'fixture:previous'])):
+                with self.subTest(arguments=name):
+                    output = root / (name + '.tar.gz')
+                    result = subprocess.run([sys.executable, str(ROOT / 'scripts/release/export-image.py'),
+                        *arguments, '--output', str(output), '--checksum-output', str(root / (name + '.sha256'))],
+                        env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads((root / 'save-arguments.json').read_text()), list(images))
+                    metrics = json.loads(result.stdout)
+                    self.assertEqual({item['image_id'] for item in metrics['images']},
+                                     {item['id'] for item in images.values()})
+                    with tarfile.open(output, 'r:gz') as bundle:
+                        manifest = json.load(bundle.extractfile('manifest.json'))
+                        self.assertEqual({tag for item in manifest for tag in item['RepoTags']}, set(images))
+                        self.assertEqual({hashlib.sha256(bundle.extractfile(item['Config']).read()).hexdigest()
+                                          for item in manifest}, {item['id'][7:] for item in images.values()})
+
     def test_two_source_diagnostic_binds_records_and_refuses_foreign_source(self):
         records, configs, manifest = [], [], []
         for index, letter in enumerate(('a', 'b')):
