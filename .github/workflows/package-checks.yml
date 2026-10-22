@@ -44,10 +44,16 @@ jobs:
         env:
           HELPER: ${{ runner.temp }}/linux-helper/symphony-host
         run: |
+          set -euo pipefail
           docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
             uname -sm
             cat /etc/os-release
-            for tool in swift swiftc python3 node git mise elixir erl; do ! command -v "$tool"; done
+            for tool in swift swiftc python3 node git mise elixir erl; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                printf "unexpected helper runtime dependency present: %s\n" "$tool" >&2
+                exit 1
+              fi
+            done
             test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
             test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
             mkdir -m700 /contract
