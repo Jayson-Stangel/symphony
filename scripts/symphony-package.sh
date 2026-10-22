@@ -153,7 +153,7 @@ package_doctor() {
     esac
   done
   (container_runtime) >/dev/null 2>&1 || ready=false
-  [ -L "$bin_dir/symphony" ] || ready=false
+  [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$package_app_home/current/scripts/symphony" ] || ready=false
   global_skills_ready || ready=false
   package_helper verify-files "$symphony_home" >/dev/null || ready=false
   if "$json"; then
