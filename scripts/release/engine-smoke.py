@@ -48,6 +48,55 @@ def signal_group(pgid, sig):
         pass
 
 
+def process_table():
+    # Start identity avoids targeting a subsequently reused PID. Do not collect
+    # command lines or environment from unrelated host processes.
+    snapshot = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,lstart="],
+                              capture_output=True, text=True, timeout=5, check=True)
+    rows = {}
+    for line in snapshot.stdout.splitlines():
+        pid, parent, started = line.strip().split(None, 2)
+        rows[int(pid)] = (int(parent), started)
+    return rows
+
+
+class Descendants:
+    """Retain child identities even after setsid or reparenting on shutdown."""
+    def __init__(self, root):
+        self.root = root
+        self.identities = {}
+        self.observe()
+
+    def observe(self):
+        rows = process_table()
+        if self.root not in self.identities and self.root in rows:
+            self.identities[self.root] = rows[self.root][1]
+        changed = True
+        while changed:
+            changed = False
+            for pid, (parent, started) in rows.items():
+                if pid not in self.identities and parent in self.identities and parent in rows:
+                    if rows[parent][1] == self.identities[parent]:
+                        self.identities[pid] = started
+                        changed = True
+        return {pid for pid, started in self.identities.items() if pid in rows and rows[pid][1] == started}
+
+    def kill(self):
+        # Observe again before cleanup to include children created during stop.
+        for pid in self.observe():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def reap(self):
+        for pid in self.identities:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+
+
 def listener_owners(port, lsof):
     result = subprocess.run([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"],
                             capture_output=True, text=True, timeout=5)
@@ -110,6 +159,7 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
     require(lsof, "lsof is required for process attribution (controller dependency)")
     result = {"passed": False, "forced_cleanup": False}
     process = None
+    descendants = None
     with tempfile.TemporaryDirectory(prefix="symphony-engine-smoke-") as directory:
         root = Path(directory)
         for name in ("home", "cache", "config", "tmp", "workspaces", "logs", "extract"):
@@ -137,10 +187,12 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                                             "--agent", "claude", "--logs-root", str(root / "logs"), "--port", str(port), str(workflow)],
                                            cwd=root, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            start_new_session=True)
+                descendants = Descendants(process.pid)
                 result.update(pid=process.pid, port=port)
                 deadline = time.monotonic() + startup_timeout
                 healthy_since = None
                 while time.monotonic() < deadline:
+                    descendants.observe()
                     require(process.poll() is None, f"engine exited before qualification: {process.returncode}")
                     try:
                         body, content_type = fetch(port, "/api/v1/state")
@@ -168,6 +220,7 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                 require(process.poll() is None, "engine exited before termination request")
                 # SIGTERM is the Erlang runtime's supported graceful termination signal.
                 # Signal the executable's session, including its Burrito/BEAM child if present.
+                descendants.observe()
                 signal_group(process.pid, signal.SIGTERM)
                 try:
                     status = process.wait(timeout=shutdown_timeout)
@@ -176,26 +229,31 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                 result["exit_code"] = status
                 require(status == 0, f"engine did not exit cleanly after SIGTERM: {status}")
                 deadline = time.monotonic() + shutdown_timeout
-                while (group_alive(process.pid) or not port_closed(port)) and time.monotonic() < deadline:
+                while (descendants.observe() or group_alive(process.pid) or not port_closed(port)) and time.monotonic() < deadline:
                     time.sleep(0.1)
-                require(not group_alive(process.pid), "test-owned child survived graceful shutdown")
+                require(not descendants.observe() and not group_alive(process.pid), "test-owned child survived graceful shutdown")
                 require(port_closed(port) and not listener_owners(port, lsof), "listener survived graceful shutdown")
                 result.update(passed=True, graceful_shutdown=True, listener_closed=True, process_group_gone=True)
             except (SmokeFailure, OSError, ValueError, subprocess.SubprocessError) as exc:
                 result["error"] = str(exc)
                 raise SmokeFailure(str(exc)) from exc
             finally:
-                if process is not None and group_alive(process.pid):
+                if process is not None and (group_alive(process.pid) or (descendants and descendants.observe())):
                     result["forced_cleanup"] = True
                     signal_group(process.pid, signal.SIGKILL)
+                    if descendants:
+                        descendants.kill()
                 if process is not None:
                     process.wait(timeout=5)
                     cleanup_deadline = time.monotonic() + 5
-                    while group_alive(process.pid) and time.monotonic() < cleanup_deadline:
+                    while (group_alive(process.pid) or (descendants and descendants.observe())) and time.monotonic() < cleanup_deadline:
+                        descendants.reap()
                         time.sleep(0.1)
+                    result["owned_pids"] = sorted(descendants.identities) if descendants else [process.pid]
+                    result["cleanup_descendants_gone"] = not descendants or not descendants.observe()
                     result["cleanup_process_group_gone"] = not group_alive(process.pid)
                     result["cleanup_listener_closed"] = port_closed(port)
-                    if not result["cleanup_process_group_gone"] or not result["cleanup_listener_closed"]:
+                    if not result["cleanup_process_group_gone"] or not result["cleanup_listener_closed"] or not result["cleanup_descendants_gone"]:
                         result["passed"] = False
                         result["cleanup_error"] = "owned process group or listener survived cleanup"
                 shutil.copytree(root / "logs", evidence_dir / "engine-logs", dirs_exist_ok=True)

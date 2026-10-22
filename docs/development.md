@@ -194,13 +194,14 @@ python3 scripts/release/engine-smoke.py /path/to/symphony-REV-linux_x86_64 \
 python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 ```
 
-Python 3 and `lsof` are test controller dependencies, separate from the engine's
+Python 3, `ps` and `lsof` are test controller dependencies, separate from the engine's
 bundled runtime. The controller checks native OS/CPU and artifact identity, copies
 the executable outside the checkout, clears ambient credentials and runtime paths,
 and uses temporary homes, extraction/cache, logs, workspaces and an empty memory
 tracker. It observes actual dashboard content and typed empty JSON state for a
 bounded period, attributes the loopback listener to the new process session, then
-requires a zero exit after SIGTERM and disappearance of that session and listener.
+requires a zero exit after SIGTERM and disappearance of that session, listener and
+tracked descendant identities (including children that create a new session).
 Forced cleanup always fails qualification. Evidence artifacts retain identity,
 state, dashboard, startup/application logs and shutdown/cleanup results.
 
@@ -210,5 +211,5 @@ request is made. Engine buildability, native server liveness, native-agent login
 and installed-manager lifecycle are separate claims: this check proves the first
 two, and deliberately does not claim authenticated inference or issue-to-PR proof.
 Regression subprocess fixtures demonstrate rejection of early/banner exits, bad
-HTTP/state, false readiness, startup/shutdown timeouts and surviving children;
+HTTP/state, false readiness, startup/shutdown timeouts and surviving or detached children;
 those fixtures are controller tests, not substitutes for native artifact execution.

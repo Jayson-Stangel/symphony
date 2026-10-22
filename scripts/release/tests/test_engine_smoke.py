@@ -41,7 +41,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          b"Symphony Observability Operations Dashboard runner-identity")
     def log_message(self, *args):
         pass
-if MODE == "child_survives" and os.fork() == 0:
+if MODE in ("child_survives", "detached_child") and os.fork() == 0:
+    if MODE == "detached_child":
+        os.setsid()
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     while True:
         time.sleep(1)
@@ -72,6 +74,7 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertTrue(SMOKE.port_closed(result["port"]))
         self.assertTrue(result["cleanup_process_group_gone"], result)
         self.assertTrue(result["cleanup_listener_closed"], result)
+        self.assertTrue(result["cleanup_descendants_gone"], result)
         return result
 
     def test_actual_fixture_server_and_graceful_shutdown(self):
@@ -108,6 +111,12 @@ class EngineSmokeTests(unittest.TestCase):
         result = self.execute("child_survives", "child survived")
         self.assertFalse(result["passed"])
         self.assertTrue(result["forced_cleanup"])
+
+    def test_detached_child_cannot_pass_and_is_cleaned(self):
+        result = self.execute("detached_child", "child survived")
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["forced_cleanup"])
+        self.assertGreater(len(result["owned_pids"]), 1)
 
     def test_preexisting_listener_is_not_owned(self):
         server = subprocess.Popen([sys.executable, "-m", "http.server", "0", "--bind", "127.0.0.1"],
