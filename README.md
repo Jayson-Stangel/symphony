@@ -67,9 +67,11 @@ merging. Existing workflows are preserved when Symphony is initialized or update
 
 ## Get started
 
-On macOS 14 or later, or Ubuntu 26.04 x86-64 when its archive is available, download the matching manager bundle and `release.json` from a
+On macOS 14 or later, or Ubuntu 26.04 x86-64 when its archive is available,
+download the matching manager bundle and `release.json` from a
 [completed stable release](https://github.com/Jayson-Stangel/symphony/releases).
-Install and start Docker Desktop or OrbStack separately, then follow the
+Install and start Docker Engine on Ubuntu, or Docker Desktop/OrbStack on macOS,
+separately. Then follow the
 [packaged installation guide](docs/packaged-install.md) to verify and install the
 bundle. The manager uses prebuilt runner images; it needs no Symphony checkout,
 host Git, mise, Python, Node, agent CLI, or build toolchain.
