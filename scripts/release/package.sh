@@ -17,6 +17,12 @@ stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
 bundle="$stage/bundle"; mkdir -p "$bundle/scripts" "$bundle/libexec" "$bundle/elixir" "$bundle/.codex/skills"
 if [ -n "$helper" ]; then cp "$helper" "$bundle/libexec/symphony-host"
 else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host"; fi
+# Inspect every Mach-O slice before invoking a supplied helper. Its executing
+# ARM slice alone cannot establish that the bundle contains no retired Intel CPU.
+if [ "$platform" = macos ]; then
+  helper_architectures=$(lipo -archs "$bundle/libexec/symphony-host") || { echo 'cannot inspect macOS helper architectures' >&2; exit 1; }
+  [ "$helper_architectures" = arm64 ] || { echo 'macOS helper must contain only arm64; universal or other CPU payload refused' >&2; exit 1; }
+fi
 "$bundle/libexec/symphony-host" validate-manifest "$manifest"
 if "$bundle/libexec/symphony-host" get "$manifest" "$field.sha256" >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
 revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)

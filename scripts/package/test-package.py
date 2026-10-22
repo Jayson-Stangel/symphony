@@ -375,6 +375,28 @@ PY
         uname.unlink()
         self.assertEqual(json.loads(self.assertOK(call([command, '--version'], env=env)))['source_revision'], legacy_revision)
 
+    @unittest.skipUnless(sys.platform == "darwin", "Mach-O slice validation requires native macOS")
+    def test_supplied_universal_helper_refused_before_packaging(self):
+        # Reuse a pre-existing system Intel slice: no Intel compilation starts.
+        # This is a refusal fixture, never a valid cross-CPU Symphony release.
+        intel = self.root/'existing-system-intel-slice'
+        self.assertOK(call(['lipo', '/usr/bin/true', '-thin', 'x86_64', '-output', intel]))
+        universal = self.root/'universal-helper-fixture'
+        self.assertOK(call(['lipo', '-create', HELPER, intel, '-output', universal]))
+        universal.chmod(0o755)
+        self.assertEqual(set(self.assertOK(call(['lipo', '-archs', universal])).split()), {'arm64', 'x86_64'})
+        # The previously used checks all succeed on the real executing ARM
+        # slice, demonstrating why inspecting only that slice was insufficient.
+        self.assertEqual(self.assertOK(call([universal, 'build-revision'])), manifest()['source_revision'])
+        self.assertEqual(self.assertOK(call([universal, 'host-platform'])), 'macos')
+        self.assertEqual(self.assertOK(call([universal, 'host-architecture'])), 'arm64')
+        output = self.root/'universal-output'
+        refused = call([ROOT/'scripts/release/package.sh', self.file, output, universal])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('macOS helper must contain only arm64', refused.stderr)
+        self.assertFalse(list(output.glob('*.tar.gz')))
+        self.assertFalse((self.root/'app').exists())
+
     def test_unsupported_installer_refuses_before_helper_or_activation(self):
         bundle = self.bundle()
         env = self.environment()
