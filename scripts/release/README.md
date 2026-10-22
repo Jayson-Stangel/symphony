@@ -127,9 +127,9 @@ that run completes, run the same branch again with both `cache_probe=true` and
 `cache_probe_restore=true`. The second isolated run skips the cold build and
 imports the first run's exported GHA cache into a fresh builder. Inspect actual
 cache-import and layer-hit logs before claiming persistent cross-run reuse; a
-same-job hit alone is insufficient. The changed-recipe build writes a separate
-bounded `changed` snapshot and imports the baseline snapshot, preserving the
-original dependency graph for the next run's warm proof. Every build action also creates its own
+same-job hit alone is insufficient. The changed-recipe build imports the baseline
+snapshot but disables cache export, preserving the original dependency graph and
+avoiding an extra large snapshot that could evict the next run's warm baseline. Every build action also creates its own
 builder, so the ordinary three-phase probe exercises the cache service rather
 than relying on a previously populated daemon builder.
 

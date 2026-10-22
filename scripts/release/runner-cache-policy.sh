@@ -20,4 +20,4 @@ case "${CACHE_VARIANT:-}" in
   *) echo 'unsupported diagnostic cache variant' >&2; exit 1 ;;
 esac
 printf 'base_namespace=%s\nnamespace=%s\narch=%s\n' "$base_namespace" "$namespace" "$arch" >> "${GITHUB_OUTPUT:?}"
-printf '### Build layer cache\nTarget: `%s`; native platform: `linux/%s`; write namespace: `%s`.\nLayer hits remain subject to exact Dockerfile, base, COPY, lockfile and build-argument keys. Missing caches build cold.\n' "$TARGET" "$arch" "$namespace" >> "${GITHUB_STEP_SUMMARY:?}"
+printf '### Build layer cache\nTarget: `%s`; native platform: `linux/%s`; selected namespace: `%s`; export enabled: `%s`.\nLayer hits remain subject to exact Dockerfile, base, COPY, lockfile and build-argument keys. Missing caches build cold.\n' "$TARGET" "$arch" "$namespace" "${CACHE_EXPORT:-true}" >> "${GITHUB_STEP_SUMMARY:?}"

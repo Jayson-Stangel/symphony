@@ -22,6 +22,9 @@ inputs:
   cache-variant:
     description: Optional separate diagnostic cache snapshot
     default: ''
+  export-cache:
+    description: Export successful layers; false keeps diagnostic recipe changes read-only
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -34,6 +37,7 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         TARGET: ${{ inputs.target }}
         CACHE_VARIANT: ${{ inputs.cache-variant }}
+        CACHE_EXPORT: ${{ inputs.export-cache }}
       run: bash scripts/release/runner-cache-policy.sh
     - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
     - name: Start build measurement
@@ -64,7 +68,7 @@ runs:
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-codex
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-claude
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-browser-tools
-        cache-to: type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-${{ inputs.target }},mode=max
+        cache-to: ${{ inputs.export-cache == 'true' && format('type=gha,scope=runner-v1-{0}-{1}-{2},mode=max', steps.cache.outputs.arch, steps.cache.outputs.namespace, inputs.target) || '' }}
     - name: Retain build measurement
       if: inputs.evidence-name != ''
       shell: bash

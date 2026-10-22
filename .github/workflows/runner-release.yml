@@ -263,6 +263,7 @@ jobs:
           revision: ${{ steps.changed-source.outputs.revision }}
           evidence-name: changed
           cache-variant: changed
+          export-cache: 'false'
       - name: Qualify changed-input image and measure transfer
         env:
           PROVIDER: ${{ matrix.provider }}
