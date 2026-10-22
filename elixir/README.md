@@ -776,3 +776,8 @@ per-project transition ownership; competing updated updaters refuse before chang
 Already-running older launchers and manual Git operations do not honor this ownership.
 Finish older calls before source-only adoption. Development-runner operations keep their
 existing isolated-checkout and per-project behavior.
+
+For container use without a Symphony source checkout or host build tools, install
+the macOS release bundle using [the packaged installation guide](../docs/packaged-install.md).
+The source `mise`/Mix instructions above remain the development and optional host
+execution path.

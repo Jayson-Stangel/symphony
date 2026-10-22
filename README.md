@@ -496,3 +496,10 @@ but ignored; move any desired limit into `agent`. See the
 Versioned prebuilt runner and manager artifacts use one immutable release identity.
 See the [release artifact contract and qualification procedure](scripts/release/README.md)
 for candidate builds, public image digests, approval gates and evidence limits.
+
+A release bundle installs on macOS with only Docker Desktop or OrbStack and the
+standard shell tools. It includes its manager, native host helper, workflow and
+skills; it pulls versioned runner images instead of building them. See
+[packaged installation](docs/packaged-install.md) for the short setup sequence,
+conflict handling and the distinction between candidate proof and clean-Mac
+qualification.
