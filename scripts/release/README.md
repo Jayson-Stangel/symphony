@@ -5,7 +5,7 @@ source checkout. Its version, 40-character source revision, host architecture an
 provider resolve one immutable Linux OCI image digest. `arm64` uses Linux ARM64;
 `x86_64` uses Linux AMD64. Missing records are errors. Never substitute another
 architecture, provider or mutable tag. `tool_versions` records versions observed
-inside the built image (Codex, or Claude, plus Git, Node and Playwright). The
+inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
 Dockerfile pins agent/browser packages; startup never installs agent packages.
 
 `artifacts.py` is a build-time Python utility, not a host installation dependency:
@@ -56,8 +56,8 @@ available. Keep it isolated from stable installations and runner namespaces.
 
 Local developer builds may use `docker build --target codex|claude` with
 `--build-arg SYMPHONY_VERSION=... --build-arg SYMPHONY_REVISION=...`; commit the
-candidate first so the labels identify the code tested. Local image IDs (`.Id`)
-are config digests, and must not be presented as registry manifest digests.
+candidate first so the labels identify the code tested. Treat `.Id` as an opaque local image ID, not a substitute for a registry
+distribution digest.
 
 ## Approved production publication
 

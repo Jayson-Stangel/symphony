@@ -30,6 +30,8 @@ def main():
     if args.provider == "codex":
         tools["codex"] = docker("run", "--rm", "--network", "none", "--entrypoint", "codex", args.image, "--version")
     else:
+        tools["claude_sdk"] = docker("run", "--rm", "--network", "none", "--entrypoint", "/usr/local/bin/node", args.image,
+                                    "-p", "require('/opt/symphony/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")
         tools["claude"] = docker("run", "--rm", "--network", "none", "--entrypoint", "/usr/local/bin/node", args.image,
                                  "--input-type=module", "-e",
                                  "import {nativeExecutable} from '/opt/symphony/claude/runtime.mjs'; "

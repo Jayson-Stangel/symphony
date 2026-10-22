@@ -171,6 +171,82 @@ PY
         self.assertFalse(canary.exists())
         self.assertIn("bundle checksum mismatch", result.stderr)
 
+    def test_release_storage_conflicts_do_not_write_through_links(self):
+        bundle = self.bundle(); env = self.environment()
+        app = self.root / "app"; app.mkdir(mode=0o700)
+        foreign = self.root / "foreign"; foreign.mkdir()
+        canary = foreign / "keep"; canary.write_text("untouched")
+        releases = app / "releases"
+        for target in (foreign, self.root / "missing-target"):
+            with self.subTest(target=target.name):
+                releases.symlink_to(target)
+                result = call([bundle / "install.sh"], env=env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("unsafe or foreign metadata", result.stderr)
+                self.assertEqual(list(foreign.iterdir()), [canary])
+                self.assertEqual(canary.read_text(), "untouched")
+                self.assertFalse((self.root / "missing-target").exists())
+                self.assertFalse((app / "current").exists())
+                releases.unlink()
+        releases.write_text("owned file")
+        result = call([bundle / "install.sh", "--stage-only"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(releases.read_text(), "owned file")
+        releases.unlink(); releases.mkdir(mode=0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list(releases.iterdir()))
+        self.assertFalse((app / "current").exists())
+        # Canonical parent aliases may be intentional; only managed storage
+        # components themselves must be real owned directories.
+        releases.chmod(0o700)
+        version_path = releases / (manifest()["version"] + "-" + manifest()["source_revision"])
+        version_path.symlink_to(self.root / "missing-release")
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(version_path.is_symlink())
+        self.assertFalse((self.root / "missing-release").exists())
+        version_path.unlink()
+        alias = self.root / "parent-alias"; alias.symlink_to(self.root, target_is_directory=True)
+        self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
+        self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
+
+    def test_failed_stage_directory_creation_never_attempts_copy(self):
+        bundle = self.bundle(); env = self.environment()
+        tools = self.root / "tools"
+        (tools / "mktemp").write_text("#!/bin/sh\nexit 73\n"); (tools / "mktemp").chmod(0o755)
+        copied = self.root / "copy-called"
+        (tools / "cp").write_text(f"#!/bin/sh\ntouch {copied}\nexit 97\n"); (tools / "cp").chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(copied.exists())
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
+
+    def test_failed_stage_rename_never_activates_and_preserves_existing_install(self):
+        bundle = self.bundle(); env = self.environment()
+        mv = self.root / "tools/mv"; mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Installed Symphony", result.stdout)
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
+        mv.unlink()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        before = self.assertOK(call([command, "--version"], env=env))
+        # A second fresh staging destination isolates the rename failure while
+        # retaining the existing active manager and command.
+        script = 'source "$1" --help >/dev/null; package_app_home="$2"; package_stage_bundle "$3"'
+        other = self.root / "other-app"; other.mkdir(mode=0o700)
+        mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call(["bash", "-e", "-c", script, "fixture", command, other, bundle], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list((other / "releases").iterdir()))
+        self.assertEqual(self.assertOK(call([command, "--version"], env=env)), before)
+
     def test_host_layouts_missing_engine_and_source_bound_archive(self):
         mismatch = manifest(revision="c" * 40)
         self.file.write_text(json.dumps(mismatch))
