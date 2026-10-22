@@ -114,37 +114,17 @@ jobs:
         run: |
           python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/component-inputs.json"
           test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input_identity"])' "$RUNNER_TEMP/component-inputs.json")" = "$EXPECTED_IDENTITY"
-      - name: Build exact native candidate with reusable dependency layers
-        uses: ./.github/actions/build-runner
-        with:
-          target: ${{ matrix.provider }}
-          tags: localhost:5000/symphony-${{ matrix.provider }}:candidate
-          version: ${{ env.VERSION }}
-          revision: ${{ github.sha }}
-          input-identity: ${{ matrix.input_identity }}
-      - name: Build exact runner and test a digest pull from an isolated registry
+      - name: Configure native cache for actual current and prior source builds
+        uses: ./.github/actions/configure-runner-cache
+      - name: Build exact native runner candidates and verify digest pulls
+        id: native-build
         env:
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
-        run: |
-          mkdir -p dist
-          python3 scripts/release/test_registry.py start "$RUNNER_TEMP/native-registry.json"
-          image="localhost:5000/symphony-$PROVIDER:candidate"
-          docker push "$image"
-          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
-          docker image rm "$image"
-          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
-          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
-          docker pull "$digest"
-          bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
-          python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
-            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --inputs "$RUNNER_TEMP/component-inputs.json" \
-            --output "dist/$PROVIDER-$ARCHITECTURE.json"
-          docker tag "$digest" "$image"
-          docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
-          (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
-          registry=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["container_id"])' "$RUNNER_TEMP/native-registry.json")
-          docker logs "$registry" > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
+          SYMPHONY_CANDIDATE_BUILD_COMMAND: ${{ github.workspace }}/scripts/release/build-runner-cached.sh
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: bash scripts/release/build-candidate-runners.sh "$PROVIDER" "$ARCHITECTURE" dist "$PREVIOUS_REVISION"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: payload
         with:
@@ -173,15 +153,12 @@ jobs:
           path: dist/*.json
           if-no-files-found: error
           retention-days: 30
-      - name: Remove only the qualification registry owned by this job
-        if: always()
-        run: python3 scripts/release/test_registry.py cleanup "$RUNNER_TEMP/native-registry.json"
-      - name: Retain registry cleanup evidence
-        if: always()
+      - name: Retain attempted native registry cleanup evidence
+        if: ${{ always() && steps.native-build.outcome != 'skipped' && steps.native-build.outcome != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: ${{ runner.temp }}/native-registry.json
+          path: dist/*.registry-state.txt
           if-no-files-found: error
           retention-days: 30
 
