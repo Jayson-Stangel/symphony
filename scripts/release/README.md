@@ -155,13 +155,31 @@ The current manager's actual bundle/integration qualification is separate from
 these original native image results. Actual downstream archive/digest loading
 and installed lifecycle proof remain mandatory at their consumer boundary.
 
-`runner_reuse.py` plans one exact build-or-reuse decision per provider/platform
-against an explicit baseline. It neither builds nor deploys. Unchanged inputs and
-verified original evidence permit reuse; missing evidence requests an explicitly
-reported verified-input rebuild. Unknown source closure stops before any reuse.
-A `--require-reuse` diagnostic fails if any rebuild would be needed. Reused records
+`runner_reuse.py --root . --output PLAN` plans one build-or-reuse decision per
+provider/platform. Its default discovery inspects at most three artifact-list
+pages and 24 small native record artifacts; each selected controller and source
+must belong to verified fork dev/main ancestry. `--baseline FILE` selects an
+explicit manifest while retaining those origin checks. An explicitly authorized
+manual candidate may use `--baseline-run ID` for that exact pre-merge native run.
+This diagnostic exception does not authorize production publication.
+
+Unchanged inputs and verified original evidence permit reuse; missing evidence
+requests an explicitly reported verified-input rebuild. Unknown source closure
+stops before any reuse. `--require-reuse` fails if any runner needs rebuilding.
+Plans retain complete records and original origins, plus conditional build/reuse
+matrices; a completed plan is not actual component qualification. Reused records
 preserve every original digest/label/source and never cause export/upload just to
-associate the image with a new manager head.
+associate the image with a new manager head. A genuinely distinct original prior
+image is optional evidence for image-changing lifecycle tests; absence is explicit.
+
+The producer uploads actual image payloads before sealing small records. Separate
+`record_filename` and `archive_filename` fields bind previous records to their real
+shared payload when appropriate. Every planned build requires a matching actual
+current-source native record at the terminal join. Unique registry ownership is
+recorded before acquisition, and always-cleanup verifies the exact name, label
+and ID before removing it. Cleanup evidence is retained even on qualification or
+upload failure. Unsupported schema-2 or mixed/reused production image publication
+refuses in one pre-publication gate before any matrix job can push.
 
 ## Native Docker layer cache
 
@@ -216,8 +234,11 @@ Ordinary event planning and original payload retrieval
 original native evidence on ordinary PR and dev/main push events. The full plan
 is retained as a source-bound artifact; job outputs contain only explicit
 `build`/`reuse` decisions. Browser CI builds and executes browser qualification
-only when its browser closure requires a build. Reuse keeps the original native
-qualification and records that decision explicitly. A missing, failed or
+only when its browser closure requires a build. Browser reuse requires matching
+verified root/Codex and agent-user/Claude native qualifications for that same
+browser closure, retaining both original records and origins. Actual production
+build options are projected into the browser stage graph; provider-only options
+are excluded. Reuse records the retained qualification explicitly. A missing, failed or
 cancelled plan cannot become a successful omission. Documentation-only events
 continue to omit both planning and behavioral work.
 
