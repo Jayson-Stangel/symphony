@@ -272,6 +272,11 @@ def main():
                     docker("tag", original, alias_tag)
                     docker("push", alias_tag)
                     assert alias in json.loads(docker("image", "inspect", alias_tag))[0].get("RepoDigests", []), "alias changed original OCI digest"
+                    # Remove the alias references before the actual registry
+                    # pull. Shared original layers/config remain valid; they
+                    # are not fresh anonymous network-download evidence.
+                    remove_local_image(run, alias_tag)
+                    remove_local_image(run, alias)
                     docker("pull", alias)
                     distributed = json.loads(docker("image", "inspect", alias))[0]
                     verify_loaded_component(distributed, qualified, provider, True)
