@@ -99,9 +99,9 @@ func validateManifest(_ path: String) throws -> [String: Any] {
                 }
                 if let raw = proof["native_step_recovery"] {
                     let recovery = object(raw)
-                    let keys = Set(["job_id", "original_job_conclusion", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number", "failure_reason", "log_sha256"])
+                    let keys = Set(["job_id", "original_job_conclusion", "build_step_number", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number", "failure_reason", "log_sha256"])
                     guard Set(recovery.keys) == keys, proof["record_origin"] != nil, proof["payload_origin"] != nil,
-                          ["job_id", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number"].allSatisfy({ (integer(recovery[$0]) ?? 0) > 0 }),
+                          ["job_id", "build_step_number", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number"].allSatisfy({ (integer(recovery[$0]) ?? 0) > 0 }),
                           recovery["original_job_conclusion"] as? String == "failure", recovery["failure_reason"] as? String == "bare-upload-artifact-sha256",
                           let logDigest = recovery["log_sha256"] as? String, matches(logDigest, "^[a-f0-9]{64}$") else { fail("invalid successful-native-stage recovery evidence") }
                 }

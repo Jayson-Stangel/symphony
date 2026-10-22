@@ -2,6 +2,7 @@
 """Plan exact qualified runner components; never builds, relabels or deploys."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -103,6 +104,10 @@ def main():
     args = parser.parse_args()
     try:
         artifacts.require(not (args.baseline and args.baseline_run), "choose one baseline selector")
+        if args.baseline_run is not None:
+            artifacts.require(args.baseline_run > 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
+                              os.environ.get("GITHUB_REPOSITORY") == "Jayson-Stangel/symphony",
+                              "explicit pre-merge baseline requires a manual fork diagnostic")
         baseline = {"runners": {}}
         candidates = None
         if args.baseline:

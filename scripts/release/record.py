@@ -2,12 +2,13 @@
 """Record observed tooling and OCI identity after digest pull + smoke."""
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
 
 def docker(*args):
-    return subprocess.check_output(["docker", *args], text=True).strip()
+    return subprocess.check_output(["docker", *args], text=True, timeout=120).strip()
 
 
 def main():
@@ -19,7 +20,10 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--inputs", help="exact source input snapshot used by this build")
     parser.add_argument("--source-root", default=".")
+    parser.add_argument("--archive-tag", help="actual original archive tag, including current/previous role")
     args = parser.parse_args()
+    if args.archive_tag is not None and not re.fullmatch(re.escape(f"localhost:5000/symphony-{args.provider}") + r":(?:candidate|previous)", args.archive_tag):
+        parser.error("archive tag differs from the original provider/current-prior namespace")
     config = json.loads(docker("image", "inspect", args.image))[0]
     labels = config["Config"]["Labels"]
     expected = "amd64" if args.architecture == "x86_64" else "arm64"
@@ -42,7 +46,8 @@ def main():
     result = {"provider": args.provider, "architecture": args.architecture,
               "platform": f"linux/{expected}", "source_revision": args.revision,
               "image": args.image, "image_config": config["Id"],
-              "archive_tag": f"localhost:5000/symphony-{args.provider}:candidate", "tool_versions": tools}
+              "archive_tag": args.archive_tag or f"localhost:5000/symphony-{args.provider}:candidate",
+              "engine_version": labels.get("org.opencontainers.image.version"), "tool_versions": tools}
     if args.inputs:
         import runner_inputs
         snapshot = json.loads(Path(args.inputs).read_text())

@@ -21,11 +21,13 @@ class NativeRecoveryTest(fixtures.ComponentProofTest):
         self.record['qualification']['source_revision'] = 'a'*40
         self.original = self.jobs['jobs'][0]
         self.original.update(id=100, conclusion='failure', steps=[
+            {'name': proof.BUILD_STEP, 'number': 5, 'status': 'completed', 'conclusion': 'success'},
             {'name': proof.NATIVE_STEP, 'number': 6, 'status': 'completed', 'conclusion': 'success'},
-            {'name': 'Run actions/upload-artifact@pinned', 'number': 7, 'status': 'completed', 'conclusion': 'success'},
+            {'name': 'Run actions/upload-artifact@pinned', 'number': 7, 'status': 'completed', 'conclusion': 'success', 'started_at':'2026-10-22T21:59:00Z','completed_at':'2026-10-22T22:00:00Z'},
             {'name': proof.SEAL_STEP, 'number': 8, 'status': 'completed', 'conclusion': 'failure',
              'started_at': '2026-10-22T22:00:00Z', 'completed_at': '2026-10-22T22:00:01Z'},
             {'name': proof.CLEANUP_STEP, 'number': 10, 'status': 'completed', 'conclusion': 'success'}])
+        self.payload['created_at']='2026-10-22T21:59:30Z'
         self.log = b'2026-10-22T22:00:00.500Z component provenance: missing immutable artifact digest; original evidence could not be verified\n'
         self.record['qualification'].update(native_step_recovery=proof.recovery_eligibility(self.original, self.log),
             payload_origin={'run_id':123,'controller_revision':'a'*40},
@@ -55,7 +57,7 @@ class NativeRecoveryTest(fixtures.ComponentProofTest):
         self.assertEqual(value['artifact_id'],987)
 
     def test_wrong_platform_failed_cancelled_or_ambiguous_jobs_refuse(self):
-        for step,conclusion in ((0,'failure'),(0,'cancelled'),(1,'failure'),(3,'failure')):
+        for step,conclusion in ((0,'failure'),(1,'cancelled'),(2,'failure'),(4,'failure')):
             before=copy.deepcopy(self.original['steps'])
             self.original['steps'][step]['conclusion']=conclusion
             with self.subTest(step=step,conclusion=conclusion),self.assertRaises(ValueError):
@@ -74,6 +76,6 @@ class NativeRecoveryTest(fixtures.ComponentProofTest):
         for log in (b'2026-10-22T21:59:00Z '+proof.SEAL_FORMAT_ERROR.encode(), b'2026-10-22T22:00:00Z unrelated failure'):
             with self.assertRaises(ValueError):
                 proof.recovery_eligibility(self.original,log)
-        self.original['steps'][2]['name']='Unknown failure'
+        self.original['steps'][3]['name']='Unknown failure'
         with self.assertRaises(ValueError):
             proof.recovery_eligibility(self.original,self.log)

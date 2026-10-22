@@ -128,12 +128,12 @@ def validate_component(runner, provider, architecture):
                 origin.get("controller_revision") == proof["controller_revision"], "invalid original payload origin")
     if "native_step_recovery" in proof:
         recovery = proof["native_step_recovery"]
-        expected = {"job_id", "original_job_conclusion", "qualification_step_number", "payload_step_number",
+        expected = {"job_id", "original_job_conclusion", "build_step_number", "qualification_step_number", "payload_step_number",
                     "failure_step_number", "cleanup_step_number", "failure_reason", "log_sha256"}
         require(isinstance(recovery, dict) and set(recovery) == expected and "record_origin" in proof and "payload_origin" in proof,
                 "missing independent recovery origins")
         require(all(type(recovery.get(key)) is int and recovery[key] > 0 for key in
-                    ("job_id", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number")),
+                    ("job_id", "build_step_number", "qualification_step_number", "payload_step_number", "failure_step_number", "cleanup_step_number")),
                 "invalid successful-stage recovery identity")
         require(recovery.get("original_job_conclusion") == "failure" and recovery.get("failure_reason") == "bare-upload-artifact-sha256" and
                 re.fullmatch(r"[a-f0-9]{64}", recovery.get("log_sha256", "")), "unknown native recovery failure")
