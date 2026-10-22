@@ -99,7 +99,9 @@ environment["SYMPHONY_CONTAINER_RUNTIME"] = str(peer)
 environment["PATH"] = str(tools) + ":/usr/bin:/bin:/usr/sbin:/sbin"
 command = proof / "bin/symphony"
 sandbox = shutil.which("sandbox-exec")
-sandbox_prefix = [sandbox, "-p", '(version 1)(allow default)(deny file-read* (subpath ' + json.dumps(str(checkout)) + '))'] if sandbox else []
+source_roots = [str(checkout), "/Users/jayson/Repos/symphony", "/Users/jayson/src/symphony"]
+sandbox_policy = '(version 1)(allow default)(deny file-read* ' + ' '.join('(subpath ' + json.dumps(value) + ')' for value in source_roots) + ')'
+sandbox_prefix = [sandbox, "-p", sandbox_policy] if sandbox else []
 
 
 def run(args, expected=0, **kwargs):
@@ -186,6 +188,9 @@ try:
         html = urllib.request.urlopen(f"http://127.0.0.1:{ports[index]}/", timeout=5).read().decode()
         assert "Symphony" in html
         (proof / f"dashboard-{index}.html").write_text(html)
+        if index == 0:
+            docker("exec", name, "node", "-e", "const {chromium}=require('/opt/symphony/browser/node_modules/playwright'); (async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1280,height:900}});await page.goto('http://127.0.0.1:4010/',{waitUntil:'networkidle'});await page.screenshot({path:'/tmp/package-dashboard.png',fullPage:true});console.log(await page.title());await browser.close();})().catch(error=>{console.error(error);process.exit(1)});")
+            docker("cp", name + ":/tmp/package-dashboard.png", str(proof / "dashboard.png"))
         mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", name))
         assert {value["Destination"] for value in mounts} == {"/etc/symphony/WORKFLOW.md", "/root/.codex", "/workspaces", "/var/lib/symphony"}
         assert all(value.get("Type") == "volume" or value["Source"] == str(project / "WORKFLOW.md") for value in mounts)
@@ -234,8 +239,20 @@ try:
     launch("update", "--rollback-runner")
     assert current_version() == manifests[0]["version"]
     assert state(ports[0]) and preservation() == canary
-    update_second("--agent", "codex")
+    (proof / "docker-fault").write_text("backup-remove")
+    update_second("--agent", "codex", expected=97)
     assert current_version() == manifests[1]["version"]
+    launch("update", "--agent", "codex")
+    assert current_version() == manifests[1]["version"]
+    assert state(ports[0]) and preservation() == canary
+    claude_volume = names[0] + "-claude-auth"
+    docker("volume", "create", "--label", "com.symphony.storage=" + names[0], claude_volume)
+    claude_image = manifests[1]["runners"]["claude"]["arm64"]["image"]
+    docker("run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "sh", "--volume", claude_volume + ":/home/claude", claude_image, "-ceu", "chown 11001:11001 /home/claude")
+    prior = docker("inspect", "--format", "{{.Id}}", names[0])
+    missing = update_second("--agent", "claude", expected=1)
+    assert "auth_required" in missing and "model_requests" in missing
+    assert docker("inspect", "--format", "{{.Id}}", names[0]) == prior
     assert state(ports[0]) and preservation() == canary
     assert all(path.read_bytes() == contents for path, contents in original_credentials.items())
     assert all((path / "WORKFLOW.md").read_bytes() == contents for path, contents in workflows.items())
@@ -245,7 +262,9 @@ try:
                 "sourceAccessDenied": bool(sandbox), "nativeLogin": "STUB login-status ONLY; no credentials",
                 "modelRequests": 0, "tracker": "Memory, zero issues", "cleanMacOS": False,
                 "actualIntelMac": False, "root": str(proof), "ports": ports,
-                "observations": "actual archive install, UI HTML/API, retained mounts/state/Git, stop/restart, failed checksum, incomplete create/retry, two-project pin, completed rollback, activation-failure rollback"}
+                "productionRelease": False, "distinctCodeRevisionMigration": manifests[0]["source_revision"] != manifests[1]["source_revision"],
+                "unselectedArchitectureEvidence": "x86_64 is unobserved by this native ARM lifecycle proof; fixture records are not qualified release artifacts",
+                "observations": "actual archive install, rendered dashboard screenshot/UI HTML/API, retained mounts/state/Git, stop/restart, failed checksum, incomplete create/retry, two-project pin, completed rollback, activation-failure rollback, backup-removal interruption/retry, native Claude missing-auth preflight"}
     (proof / "evidence.json").write_text(json.dumps(evidence, indent=2))
     print("PASS actual packaged update lifecycle; evidence " + str(proof / "evidence.json"), flush=True)
 finally:

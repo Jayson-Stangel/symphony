@@ -44,6 +44,8 @@ elif op == 'lock':
 elif op == 'owned-directory':
     st=os.lstat(args[0]); assert stat.S_ISDIR(st.st_mode) and st.st_uid==os.geteuid() and stat.S_IMODE(st.st_mode)==0o700
 elif op == 'replace-link':
+    if os.environ.get('FIXTURE_FAIL_REPLACE') == pathlib.Path(args[1]).name:
+        sys.exit('injected atomic link failure')
     if os.path.lexists(args[1]): assert stat.S_ISLNK(os.lstat(args[1]).st_mode)
     os.replace(args[0],args[1])
 else: raise SystemExit('unknown fixture operation: '+op)
@@ -216,6 +218,27 @@ class PackageUpdateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.current(), self.initial)
         self.assertFalse((self.app / "releases" / self.second[2].name).exists())
+
+    def test_failed_previous_link_and_locator_publication_never_activate_current(self):
+        for destination, extra in (("previous", []), ("pending-transition", ["--agent", "codex"])):
+            with self.subTest(destination=destination):
+                result = self.candidate(*extra, env={"FIXTURE_FAIL_REPLACE": destination})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("atomic link failure", result.stdout)
+                self.assertNotIn("Updated packaged manager", result.stdout)
+                self.assertEqual(self.current(), self.initial)
+                self.assertFalse((self.config / "runners/project-one.transition").exists())
+
+    def test_failed_download_temporary_directory_stops_before_derived_paths(self):
+        tools = self.root / "temporary-failure-tools"
+        tools.mkdir()
+        mktemp = tools / "mktemp"
+        mktemp.write_text('#!/bin/sh\ncase "$*" in *.download.*) exit 41 ;; *) exec /usr/bin/mktemp "$@" ;; esac\n')
+        mktemp.chmod(0o755)
+        result = self.candidate(env={"PATH": str(tools) + ":" + self.env["PATH"]})
+        self.assertEqual(result.returncode, 41, result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        self.assertNotIn("/release.json", result.stdout)
 
     def test_pending_transition_pins_retry_and_excludes_other_configuration(self):
         (self.app / "fail-transition").touch()

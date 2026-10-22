@@ -1312,11 +1312,11 @@ runner_pause() {
 runner_finish_journal() {
   local journal=$1
   [ ! -e "$journal.complete" ] || die 'completed transition metadata already exists; inspect it before retrying'
-  if "$packaged_install"; then package_finish_transition "$journal"; fi
-  mv "$journal" "$journal.complete"
-  if "$packaged_install"; then package_remove_transition_fields "$journal.complete"; fi
-  rm -f "$journal.complete/image.next" "$journal.complete/previous.env.next"
-  rm "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image"
+  if "$packaged_install"; then package_finish_transition "$journal" || return; fi
+  mv "$journal" "$journal.complete" || return
+  if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
+  rm -f "$journal.complete/image.next" "$journal.complete/previous.env.next" || return
+  rm "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" || return
   rmdir "$journal.complete"
 }
 
@@ -1487,7 +1487,7 @@ runner_transition() (
   runner_project_lock "$root"
   runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    if "$packaged_install"; then package_remove_transition_fields "$journal.complete"; fi
+    if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
@@ -1526,7 +1526,7 @@ runner_transition() (
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
     "$runtime" image inspect --format '{{.Id}}' "$candidate" >"$journal_tmp/image"
-    if "$packaged_install"; then package_write_transition "$journal_tmp"; fi
+    if "$packaged_install"; then package_write_transition "$journal_tmp" || return; fi
     mv "$journal_tmp" "$journal"
   fi
   port=$(cat "$journal/port")
@@ -1573,7 +1573,7 @@ runner_transition() (
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
   # Keep the qualified prior container until packaged manager activation has
   # succeeded. A failed atomic link must remain eligible for retained rollback.
-  if "$packaged_install"; then package_finish_transition "$journal"; fi
+  if "$packaged_install"; then package_finish_transition "$journal" || return; fi
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
   printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"
@@ -1587,7 +1587,7 @@ runner_rollback() (
   runner_require_identity "$root"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    if "$packaged_install"; then package_remove_transition_fields "$journal.complete"; fi
+    if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
     rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
       "$journal.complete/image.next" "$journal.complete/previous.env.next"
     rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'

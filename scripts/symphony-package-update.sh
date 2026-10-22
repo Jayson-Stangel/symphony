@@ -16,7 +16,7 @@ package_update_lock() {
   path="$package_app_home/update.lock"
   if [ "$mode" = acquire ]; then
     [ ! -L "$path" ] && { [ ! -e "$path" ] || [ -f "$path" ]; } || die 'unsafe packaged updater lock'
-    exec 8>>"$path"
+    exec 8>>"$path" || return
   fi
   package_helper lock "$path" 8 "$mode"
 }
@@ -60,9 +60,9 @@ package_recover_completed_transition() {
   elif [ -f "$complete/package.target" ]; then
     die 'completed packaged transition has no verified committed manager; recovery refused'
   fi
-  package_remove_transition_fields "$complete"
+  package_remove_transition_fields "$complete" || return
   rm -f "$complete/target" "$complete/port" "$complete/previous.env" "$complete/image" \
-    "$complete/image.next" "$complete/previous.env.next"
+    "$complete/image.next" "$complete/previous.env.next" || return
   rmdir "$complete" || die 'unknown completed packaged transition metadata; recovery refused'
   printf 'Previously completed packaged transition recovered; no newer release selected.\n'
 }
@@ -99,7 +99,7 @@ package_atomic_link() {
 package_activate_home() {
   local target=$1 previous=${2:-} current
   target=$(package_verified_home "$target") || return
-  current=$(package_current_home)
+  current=$(package_current_home) || return
   if [ "$current" = "$target" ]; then return; fi
   if [ -n "$previous" ]; then
     [ "$current" = "$previous" ] || die 'current packaged manager changed; updater refused activation'
@@ -111,9 +111,9 @@ package_activate_home() {
 # Called before the existing transition directory is atomically published.
 package_write_transition() {
   [ -n "${package_update_target:-}" ] || return 0
-  printf '%s\n' "$package_update_target" >"$1/package.target"
-  printf '%s\n' "$package_update_previous" >"$1/package.previous"
-  printf '%s\n' "$(source_revision)" >"$1/package.revision"
+  printf '%s\n' "$package_update_target" >"$1/package.target" || return
+  printf '%s\n' "$package_update_previous" >"$1/package.previous" || return
+  printf '%s\n' "$(source_revision)" >"$1/package.revision" || return
   package_register_transition "$package_update_journal"
 }
 
@@ -127,19 +127,19 @@ package_finish_transition() {
   if [ "${package_update_rollback:-false}" = true ]; then target=$previous
   else target=$selected; fi
   target=$(package_verified_home "$target") || return
-  current=$(package_current_home)
+  current=$(package_current_home) || return
   [ "$current" = "$previous" ] || [ "$current" = "$selected" ] || die 'current manager differs from the retained transition; activation refused'
   if [ "$current" != "$target" ]; then
     package_activate_home "$target" "$current" || return
   fi
-  printf '%s\n' "$target" >"$journal/package.committed.next"
+  printf '%s\n' "$target" >"$journal/package.committed.next" || return
   mv "$journal/package.committed.next" "$journal/package.committed"
 }
 
 package_remove_transition_fields() {
   local pointer="$package_app_home/pending-transition" original=${1%.complete}
   rm -f "$1/package.target" "$1/package.previous" "$1/package.revision" \
-    "$1/package.committed" "$1/package.committed.next"
+    "$1/package.committed" "$1/package.committed.next" || return
   if [ -L "$pointer" ] && [ "$(readlink "$pointer")" = "$original" ]; then rm "$pointer"; fi
 }
 
@@ -207,7 +207,7 @@ package_stage_download() (
   else package_download "https://github.com/Jayson-Stangel/symphony/releases/download/$tag/$filename" "$bundle"; fi
   actual=$(shasum -a 256 "$bundle") || return; actual=${actual%% *}
   [ "$actual" = "$checksum" ] || die 'release bundle checksum mismatch; installed manager and runner retained'
-  package_extract_bundle "$bundle" "$temporary/unpacked"
+  package_extract_bundle "$bundle" "$temporary/unpacked" || return
   [ "$(package_helper get "$temporary/unpacked/release.json" version)" = "$version" ] &&
     [ "$(package_helper get "$temporary/unpacked/release.json" source_revision)" = "$revision" ] || die 'bundle and release manifest identities differ'
   package_helper validate-manifest "$temporary/unpacked/release.json" || return
@@ -260,9 +260,9 @@ package_update() {
   fi
   if [ -n "$requested" ] && { [ -n "$candidate_manifest" ] || "$rollback_release"; }; then die 'choose one packaged release selection'; fi
   if "$rollback_release" && [ -n "$candidate_manifest" ]; then die 'choose one packaged release selection'; fi
-  package_update_lock
+  package_update_lock || return
   pending=$(package_pending_transition) || return
-  previous=$(package_current_home)
+  previous=$(package_current_home) || return
   [ "$previous" = "$(cd "$symphony_home" && pwd -P)" ] || die 'invoke the installed current manager before updating'
   if [ -n "$transition" ]; then
     root=$(repo_root); journal="$runner_home/$(project_id "$root").transition"
@@ -308,14 +308,16 @@ package_update() {
 
 complete_package_update() {
   [ "$#" -eq 2 ] || die 'invalid packaged update continuation'
-  package_update_lock inherited
+  package_update_lock inherited || return
   package_update_target=$(package_verified_home "$symphony_home") || return
   package_update_previous=$(package_verified_home "$1") || return
   if [ -n "$2" ]; then
     local root
     root=$(repo_root)
     package_update_journal="$runner_home/$(project_id "$root").transition"
+    # Keep the existing lifecycle function outside a conditional context: it
+    # deliberately relies on errexit for synchronous Docker side effects.
     runner_transition "$root" "$2"
-  else package_activate_home "$package_update_target" "$package_update_previous"; fi
+  else package_activate_home "$package_update_target" "$package_update_previous" || return; fi
   printf 'Updated packaged manager: %s -> %s\n' "$(basename "$package_update_previous")" "$(basename "$package_update_target")"
 }
