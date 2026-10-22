@@ -61,6 +61,35 @@ class ManagerComposition(unittest.TestCase):
                     self.assertEqual((output / 'actual-invocation').exists(), accepted)
                     if name == 'unsupported-host': self.assertFalse(output.exists())
 
+    def test_negative_image_cleanup_requires_owned_config_and_positive_absence(self):
+        reference, token, identifier = 'symphony-negative:test', 'owned-fixture-token', 'sha256:'+'d'*64
+        def run_for(label, unavailable=False, changed_after=False):
+            calls = []
+            def run(args, **kwargs):
+                calls.append(args)
+                if args[2] == 'rm':
+                    self.assertEqual(args[-1], identifier)
+                    return subprocess.CompletedProcess(args, 0, 'removed', '')
+                if len(calls) == 1:
+                    return subprocess.CompletedProcess(args, 0, json.dumps([{'Id': identifier, 'Config': {
+                        'Labels': {'com.symphony.lifecycle-negative': label}}}]), '')
+                if unavailable:
+                    return subprocess.CompletedProcess(args, 1, '', 'Cannot connect to Docker daemon')
+                if changed_after:
+                    return subprocess.CompletedProcess(args, 0, json.dumps([{'Id': 'sha256:'+'e'*64}]), '')
+                return subprocess.CompletedProcess(args, 1, '[]', 'Error response from daemon: No such image: '+args[-1])
+            return run, calls
+        run, calls = run_for(token)
+        LIFECYCLE.cleanup_negative_image(run, reference, token)
+        self.assertEqual(calls[1], ['docker', 'image', 'rm', identifier])
+        for label, unavailable, changed in [('foreign', False, False), (token, True, False), (token, False, True)]:
+            with self.subTest(label=label, unavailable=unavailable, changed=changed):
+                run, calls = run_for(label, unavailable, changed)
+                with self.assertRaises(AssertionError):
+                    LIFECYCLE.cleanup_negative_image(run, reference, token)
+                if label == 'foreign':
+                    self.assertFalse(any('rm' in call for call in calls))
+
     def test_single_manager_mode_requires_current_source_and_no_invented_previous(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -126,6 +155,27 @@ class ManagerComposition(unittest.TestCase):
             final = FINALIZE.finalize(output / 'release.json', archives, plan['manager_source_revision'])
             self.assertEqual(final['runners'], value['runners'])
             self.assertEqual(final['bundle']['sha256'], hashlib.sha256(b'actual mac native archive fixture').hexdigest())
+
+    def test_built_join_cannot_replace_a_valid_original_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'; root.mkdir()
+            plan = self.fixture(root)
+            original = Path(directory) / 'original'
+            verify = lambda record: {'original': record['image']}
+            with patch.object(PREPARE, 'identity', return_value={'input_identity': 'd' * 64}):
+                PREPARE.prepare(root, plan, None, original, None, verify)
+                built = json.loads((original / 'release.json').read_text())
+                replacement = copy.deepcopy(built)
+                replacement['runners']['codex']['arm64']['image'] = 'localhost:5000/symphony-codex@sha256:'+'e'*64
+                replacement['runners']['codex']['arm64']['qualification']['image'] = replacement['runners']['codex']['arm64']['image']
+                output = Path(directory) / 'changed-record'
+                with self.assertRaisesRegex(ValueError, 'component changed after planning'):
+                    PREPARE.prepare(root, plan, replacement, output, None, verify)
+                self.assertFalse(output.exists())
+                output = Path(directory) / 'changed-origin'
+                with self.assertRaisesRegex(ValueError, 'origin changed after planning'):
+                    PREPARE.prepare(root, plan, built, output, None, lambda record: {'original': record['image'], 'other_job': True})
+                self.assertFalse(output.exists())
 
     def test_changed_or_unavailable_component_never_publishes_preparation(self):
         with tempfile.TemporaryDirectory() as directory:
