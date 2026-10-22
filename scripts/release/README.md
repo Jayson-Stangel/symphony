@@ -108,6 +108,25 @@ The latter pins the Swift build container, SDK integrity checksum and portable
 Crypto/ASN.1 revisions. These are build dependencies, never installed runtime
 requirements. Linux ARM64 manager/helper support is outside this contract.
 
+The Linux build controller downloads the pinned SDK with `curl`, verifies its
+official SHA-256 before Docker starts, then installs the local archive inside the
+Swift container. This avoids the Swift 6.1.2 remote installer's observed
+FoundationNetworking/URLSession crash. A current controller can build an actual
+prior checkout without modifying it:
+
+```sh
+bash scripts/release/build-linux-host-helper.sh /tmp/prior-helper /tmp/prior-source FULL_SOURCE_SHA
+```
+
+The selected source and Git metadata are mounted read-only; compiler/SwiftPM
+writes stay in temporary storage. The executable's compiled revision must match
+the requested source. `build.txt` distinguishes source/controller revisions and
+records the SDK checksum; `elf.txt` retains actual runtime-dependency inspection.
+For a small nonpublishing diagnostic, manually dispatch `Package checks` with
+`previous_revision`: it builds/tests both real helpers through the current
+controller. This is build/helper evidence, not a substitute for the two-archive
+installed-manager lifecycle qualification.
+
 `Package checks` executes the shared hash, typed JSON, identity, path/link and
 inherited-descriptor lock contracts on native macOS and Linux. The Linux artifact
 must have no ELF interpreter or required shared libraries and is additionally

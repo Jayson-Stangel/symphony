@@ -1,6 +1,11 @@
 name: Package checks
 on:
   workflow_dispatch:
+    inputs:
+      previous_revision:
+        description: Optional full prior source SHA for nonpublishing two-source helper build diagnosis
+        type: string
+        required: false
   pull_request:
   push:
     branches: [dev]
@@ -62,6 +67,23 @@ jobs:
             /symphony-host lock /contract/lock 8 acquire
             /symphony-host lock /contract/lock 8 inherited
           ' | tee "$RUNNER_TEMP/linux-helper/ubuntu26.log"
+      - name: Build unmodified prior helper with the current SDK controller
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/prior-helper-source"
+          bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
+          bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
+          SYMPHONY_TEST_HOST_HELPER="$RUNNER_TEMP/prior-helper/symphony-host" python3 "$source/scripts/package/test-package.py" -v
+      - uses: actions/upload-artifact@v4
+        if: inputs.previous_revision != ''
+        with:
+          name: prior-linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/prior-helper/*
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: linux-host-helper-${{ github.sha }}

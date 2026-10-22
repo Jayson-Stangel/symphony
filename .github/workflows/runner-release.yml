@@ -235,17 +235,17 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           for selection in current previous; do
-            source=$PWD; manifest="$PWD/metadata/release.json"; destination="$PWD/dist"
+            source=$PWD; manifest="$PWD/metadata/release.json"; destination="$PWD/dist"; revision=$GITHUB_SHA
             if [ "$selection" = previous ]; then
               [ -n "$PREVIOUS_REVISION" ] || continue
               source="$RUNNER_TEMP/previous-package"
               bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
-              manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"
+              manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"; revision=$PREVIOUS_REVISION
             fi
             mkdir -p "$destination"
             helper="$destination/symphony-host"
             if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper"
-            else bash "$source/scripts/release/build-linux-host-helper.sh" "$destination"; fi
+            else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
             bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
           done
       - uses: actions/upload-artifact@v4

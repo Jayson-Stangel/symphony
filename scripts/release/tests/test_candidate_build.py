@@ -161,3 +161,102 @@ class CandidateSourceTest(unittest.TestCase):
             refused = subprocess.run(["bash", str(helper), previous, str(prepared)], text=True, capture_output=True, env=env)
             self.assertNotEqual(refused.returncode, 0)
             self.assertEqual(sentinel.read_text(), "preserved")
+
+
+class LinuxSdkControllerTest(unittest.TestCase):
+    def controller_fixture(self, root, curl_status=0):
+        tools = root / "tools"; tools.mkdir()
+        scripts = {
+            "uname": '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux-x86_64 ;; esac\n',
+            "curl": f'''#!/bin/sh
+touch "$PROOF_CURL_CALLED"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then shift; output=$1; fi
+  shift
+done
+printf corrupt-or-partial-sdk > "$output"
+exit {curl_status}
+''',
+            "docker": '#!/bin/sh\ntouch "$PROOF_DOCKER_CALLED"\nexit 71\n',
+        }
+        for name, script in scripts.items():
+            path = tools / name; path.write_text(script); path.chmod(0o755)
+        output = root / "output"; output.mkdir()
+        (output / "symphony-host").write_text("keep prior output")
+        return dict(os.environ, PATH=str(tools) + ":" + os.environ["PATH"], TMPDIR=str(root),
+                    PROOF_CURL_CALLED=str(root / "curl-called"), PROOF_DOCKER_CALLED=str(root / "docker-called"))
+
+    def test_corrupt_sdk_is_rejected_before_docker_or_output_replacement(self):
+        with tempfile.TemporaryDirectory(prefix="symphony-sdk-checksum-") as directory:
+            root = Path(directory); env = self.controller_fixture(root)
+            result = subprocess.run(["bash", str(ROOT / "scripts/release/build-linux-host-helper.sh"), str(root / "output")],
+                text=True, capture_output=True, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Swift SDK archive checksum mismatch", result.stderr)
+            self.assertTrue((root / "curl-called").exists())
+            self.assertFalse((root / "docker-called").exists(), "corrupt SDK reached Swift installer/build")
+            self.assertEqual((root / "output/symphony-host").read_text(), "keep prior output")
+            self.assertFalse(list(root.glob("symphony-linux-sdk.*")), "SDK staging directory leaked")
+
+    def test_failed_download_is_not_installed_or_reported_as_built(self):
+        with tempfile.TemporaryDirectory(prefix="symphony-sdk-download-") as directory:
+            root = Path(directory); env = self.controller_fixture(root, curl_status=22)
+            result = subprocess.run(["bash", str(ROOT / "scripts/release/build-linux-host-helper.sh"), str(root / "output")],
+                text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 22, result.stdout + result.stderr)
+            self.assertTrue((root / "curl-called").exists())
+            self.assertFalse((root / "docker-called").exists())
+            self.assertEqual((root / "output/symphony-host").read_text(), "keep prior output")
+            self.assertFalse((root / "output/build.txt").exists())
+            self.assertFalse(list(root.glob("symphony-linux-sdk.*")))
+
+    def test_wrong_or_empty_explicit_source_revision_refuses_before_download(self):
+        with tempfile.TemporaryDirectory(prefix="symphony-sdk-source-") as directory:
+            root = Path(directory); env = self.controller_fixture(root)
+            for revision in ("0" * 40, ""):
+                with self.subTest(revision=revision):
+                    result = subprocess.run(["bash", str(ROOT / "scripts/release/build-linux-host-helper.sh"), str(root / "output"), str(ROOT), revision],
+                        text=True, capture_output=True, env=env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("selected helper source revision differs", result.stderr)
+                    self.assertFalse((root / "curl-called").exists())
+                    self.assertFalse((root / "docker-called").exists())
+                    self.assertEqual((root / "output/symphony-host").read_text(), "keep prior output")
+
+    def test_generated_candidate_outputs_are_allowed_but_dirty_source_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="symphony-sdk-clean-inputs-") as directory:
+            root = Path(directory); env = self.controller_fixture(root)
+            env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+            source = root / "source"; source.mkdir()
+
+            def git(*args):
+                result = subprocess.run(["git", "-C", str(source), *args], text=True, capture_output=True, env=env)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return result.stdout.strip()
+
+            git("init", "--quiet", "--initial-branch", "codex/source-fixture")
+            swift = source / "scripts/package/host.swift"; swift.parent.mkdir(parents=True)
+            swift.write_text("// exact tracked fixture source\n")
+            build = source / "scripts/release/build-host-helper.sh"; build.parent.mkdir(parents=True)
+            build.write_text("#!/bin/sh\nexit 99\n")
+            git("add", "scripts")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "source")
+            revision = git("rev-parse", "HEAD")
+            generated = []
+            for folder in ("metadata", "dist", "records"):
+                path = source / folder / "canary"; path.parent.mkdir(); path.write_text("preserved output")
+                generated.append(path)
+            arguments = ["bash", str(ROOT / "scripts/release/build-linux-host-helper.sh"), str(root / "output"), str(source), revision]
+            result = subprocess.run(arguments, text=True, capture_output=True, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Swift SDK archive checksum mismatch", result.stderr, "ordinary generated outputs prevented reaching the verified download")
+            self.assertTrue((root / "curl-called").exists())
+            self.assertTrue(all(path.read_text() == "preserved output" for path in generated))
+            (root / "curl-called").unlink()
+            swift.write_text("// uncommitted tracked source mutation\n")
+            refused = subprocess.run(arguments, text=True, capture_output=True, env=env)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("selected helper source inputs are dirty", refused.stderr)
+            self.assertFalse((root / "curl-called").exists())
+            self.assertFalse((root / "docker-called").exists())
+            self.assertTrue(all(path.read_text() == "preserved output" for path in generated))
