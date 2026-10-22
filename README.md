@@ -138,3 +138,5 @@ see [update procedures](docs/operations.md#update-the-stable-installation).
 Licensed under [Apache License 2.0](LICENSE). This project is derived from
 [OpenAI Symphony](https://github.com/openai/symphony); see [NOTICE](NOTICE) for the
 upstream copyright notice.
+
+Documentation-only CI probe: first prose commit.
