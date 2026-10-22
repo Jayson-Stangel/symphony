@@ -7,12 +7,19 @@ on:
         type: boolean
         default: false
   workflow_dispatch:
+    inputs:
+      transfer_diagnostic_run:
+        description: Existing same-repository runner candidate run ID for build-free transfer diagnosis (empty builds candidates)
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   candidate:
+    if: ${{ !inputs.transfer_diagnostic_run }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -55,13 +62,15 @@ jobs:
           python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
             --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
           docker tag "$digest" "$image"
-          docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
-          (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
+          python3 scripts/release/export-image.py --image "$image" \
+            --output "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz" \
+            --checksum-output "dist/$PROVIDER-$ARCHITECTURE.sha256"
           docker logs candidate-registry > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
 
@@ -168,3 +177,120 @@ jobs:
           name: packaged-release
           path: dist/*
           if-no-files-found: error
+
+  transfer-benchmark:
+    if: ${{ inputs.transfer_diagnostic_run != '' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify original run and successful native producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.transfer_diagnostic_run }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re, subprocess
+          from pathlib import Path
+          run_id = os.environ['RUN_ID']
+          assert re.fullmatch('[0-9]+', run_id), 'invalid immutable run ID'
+          repo = os.environ['GITHUB_REPOSITORY']
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['head_repository']['full_name'] == repo, 'foreign source run'
+          assert re.fullmatch('[0-9a-f]{40}', run['head_sha'])
+          jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
+          name = 'runner-' + os.environ['PROVIDER'] + '-' + os.environ['ARCHITECTURE']
+          producer = [job for job in jobs if job['name'] == name]
+          assert len(producer) == 1 and producer[0]['conclusion'] == 'success', 'native producer did not pass'
+          Path('provenance').mkdir()
+          Path('provenance/original-run.txt').write_text(json.dumps(run, indent=2))
+          Path('provenance/original-producer.txt').write_text(json.dumps(producer[0], indent=2))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
+          PYTHON
+      - name: Download original qualified image payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.transfer_diagnostic_run }}
+          name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: original
+      - name: Record native compression capability
+        run: |
+          uname -sm
+          command -v pigz || command -v gzip
+          df -h .
+      - name: Compare actual baseline and improved export and load
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/benchmark-transfer.py benchmark --input original --output improved \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
+          cp -R provenance improved/
+      - name: Upload improved replay payloads without recompression
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: improved/**
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain small timing and original-provenance evidence on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: transfer-timing-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: |
+            improved/**/*.txt
+            provenance/*.txt
+          if-no-files-found: warn
+
+  transfer-replay:
+    needs: transfer-benchmark
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Download improved image payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: replay
+      - name: Real checksum, Docker load and model-free runtime proof
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          source=$(python3 -c 'import json;print(json.load(open("replay/provenance/original-run.txt"))["head_sha"])')
+          python3 scripts/release/benchmark-transfer.py replay --input replay --output evidence \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$source"
+      - name: Retain actual load, startup and transfer evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: transfer-runtime-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: evidence/**
+          if-no-files-found: warn

@@ -96,3 +96,46 @@ These checks prove artifact identity and model-free container behavior. They do
 not prove native login, authenticated inference, clean macOS installation, or a
 complete listener update. Those require the install/update stories' separately
 recorded observations and explicit disposable-account authorization.
+
+
+## Candidate image transfer
+
+`export-image.py` streams `docker save` through bounded `pigz -1 -n` when present
+(up to four CPUs), or standard `gzip -1 -n`. It emits the existing gzip/Docker-load
+format and checksum filename selected by its caller. Multiple `--image` values
+share one archive, retaining Docker's shared-layer serialization for two sources.
+The archive's config hash set must match the inspected source/provider/platform
+identities before publication. Original distribution digests remain provenance;
+a Docker-load representation is never relabeled as an old registry digest.
+
+The adjacent `.metrics.txt` contains JSON for each actual image identity,
+compressor/version, process CPU, overlapped export/compression wall times, checksum
+and archive-verification costs, and compressed bytes. Export wall time includes
+pipe backpressure; those overlapping wall times must not be added together.
+Only the compressed payload is staged; owned temporary files and children are
+cleaned on failure. Existing outputs are refused. Actions uploads gzip payloads
+with `compression-level: 0` to avoid redundant ZIP deflation. Metadata consumers
+must continue downloading only native qualification records, not image payloads
+or transport telemetry.
+
+For build-free, nonpublishing native measurements, dispatch the existing
+`runner-release` workflow with `transfer_diagnostic_run` set to an exact retained
+same-repository candidate run ID. The diagnostic verifies the successful native
+producer, original source records, archive checksums and actual config hashes.
+It compares original gzip-default export/load against the selected faster
+compressor, retaining current/prior images together when provided by that run.
+Separate hosted upload/download steps retain their real timings. A downstream
+job changes an actual archive byte to prove checksum refusal before Docker load,
+restores and rechecks the original payload, loads it, and runs actual Git/browser,
+empty-tracker startup and graceful-shutdown checks for every retained source.
+This does not rebuild images or publish a registry/release. Missing or expired
+payloads fail; a successful metadata receipt alone is insufficient.
+
+Local transport fixtures run with:
+
+```sh
+python3 -m unittest discover -s scripts/release/tests -p test_image_export.py -v
+```
+
+Those fixtures exercise actual gzip/tar bytes and subprocess failure propagation;
+they do not replace native production-image benchmark/replay evidence.
