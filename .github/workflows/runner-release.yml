@@ -3,16 +3,51 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      preflight_revision:
+        description: Exact successful caller-owned package-checks output; empty runs qualification here
+        type: string
+        default: ''
       publish:
         type: boolean
         default: false
   workflow_dispatch:
+    inputs:
+      retain_diagnostic:
+        description: Preserve this explicitly requested diagnostic run across new commits
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: runner-candidate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  package-inputs:
+    if: inputs.preflight_revision == ''
+    uses: ./.github/workflows/package-checks.yml
+  qualification:
+    needs: package-inputs
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exact successful local or caller-owned preflight
+        env:
+          LOCAL_RESULT: ${{ needs.package-inputs.result }}
+          LOCAL_REVISION: ${{ needs.package-inputs.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.preflight_revision }}
+        run: |
+          if [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
   candidate:
+    needs: qualification
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -28,9 +63,8 @@ jobs:
         architecture: [arm64, x86_64]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Verify release version and run metadata tests
+      - name: Read preflight-validated release version
         run: |
-          python3 -m unittest discover -s scripts/release/tests -v
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
           if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
@@ -168,3 +202,19 @@ jobs:
           name: packaged-release
           path: dist/*
           if-no-files-found: error
+
+  candidate-qualification:
+    needs: [qualification, candidate, candidate-metadata]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all requested candidate work without accepting omitted failures
+        env:
+          PREFLIGHT: ${{ needs.qualification.result }}
+          RUNNERS: ${{ needs.candidate.result }}
+          METADATA: ${{ needs.candidate-metadata.result }}
+        run: |
+          test "$PREFLIGHT" = success
+          test "$RUNNERS" = success
+          test "$METADATA" = success
+          echo 'Exact-head preflight, native fixtures, all four provider/platform images and final metadata succeeded.' >> "$GITHUB_STEP_SUMMARY"

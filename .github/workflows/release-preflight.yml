@@ -1,0 +1,36 @@
+name: Release preflight
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Portable policy and package input preflight
+        run: python3 scripts/ci/release_tests.py portable
+      - name: Validate selected release version before native or image work
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          test -n "$version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+  native:
+    needs: portable
+    name: native-fixtures (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install native socket inspection utility
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y lsof
+      - name: Run native process and updater fixtures once for this OS and CPU
+        run: |
+          uname -sm
+          python3 scripts/ci/release_tests.py native
