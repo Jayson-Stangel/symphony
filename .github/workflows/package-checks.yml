@@ -1,5 +1,19 @@
 name: Package checks
 on:
+  workflow_call:
+    inputs:
+      retain_diagnostic:
+        description: Keep this caller-owned diagnostic qualification across new runs
+        type: boolean
+        default: false
+      portable_revision:
+        description: Successful exact-source output from caller-owned portable preflight
+        type: string
+        default: ''
+    outputs:
+      qualified_revision:
+        description: Exact source that passed portable, native and package-input checks
+        value: ${{ jobs.macos-package.outputs.qualified_revision }}
   workflow_dispatch:
     inputs:
       previous_revision:
@@ -9,51 +23,84 @@ on:
   pull_request:
   push:
     branches: [dev, main]
+concurrency:
+  group: package-checks-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  native-macos-package:
+  portable:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && inputs.portable_revision == ''
+    uses: ./.github/workflows/release-preflight.yml
+  qualification:
+    needs: [changes, portable]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful exact-head portable preflight
+        env:
+          CLASSIFICATION: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.portable_revision }}
+        run: |
+          test "$CLASSIFICATION" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CODE" = false ]; then
+            test "$LOCAL_RESULT" = skipped
+            test -z "$CALLER_REVISION"
+          elif [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
+  native:
+    needs: [changes, qualification]
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/release-native.yml
+  host-policy:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    name: native-macos-package (${{ matrix.runner }})
+    uses: ./.github/workflows/host-policy.yml
+  native-host-package:
+    needs: [changes, qualification, host-policy]
+    if: needs.changes.outputs.code == 'true'
+    name: native-host-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
-      matrix:
-        runner: [macos-14, macos-15-intel]
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Build both supported host architectures
-        run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
-      - name: Source-independent installation and host-helper regressions
-        env:
-          SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
-        run: python3 scripts/package/test-package.py -v
-      - name: Release selection and interrupted packaged update regressions
-        run: python3 -m unittest discover -s scripts/release/tests -v
-
-  linux-helper:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - name: Build static source-bound helper
-        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"
-      - name: Native shared helper contracts
-        env:
-          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+      - name: Build actual native macOS ARM64 helper
+        if: matrix.platform == 'macos'
         run: |
-          python3 scripts/package/test-package.py -v
-          python3 -m unittest discover -s scripts/release/tests -v
-      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+          mkdir -p "$RUNNER_TEMP/host-helper"
+          bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/host-helper/symphony-host" --native
+          (cd "$RUNNER_TEMP/host-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
+      - name: Build actual static Linux x86-64 helper
+        if: matrix.platform == 'linux_x86_64'
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/host-helper"
+      - name: Native source-independent shared helper contracts
         env:
-          HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/host-helper/symphony-host
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          test "$("$SYMPHONY_TEST_HOST_HELPER" build-revision)" = "$GITHUB_SHA"
+          test "$("$SYMPHONY_TEST_HOST_HELPER" host-platform)" = "$PLATFORM"
+          python3 scripts/package/test-package.py -v
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          HELPER: ${{ runner.temp }}/host-helper/symphony-host
         run: |
           set -euo pipefail
           docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
@@ -72,39 +119,37 @@ jobs:
             exec 8>>/contract/lock
             /symphony-host lock /contract/lock 8 acquire
             /symphony-host lock /contract/lock 8 inherited
-          ' | tee "$RUNNER_TEMP/linux-helper/ubuntu26.log"
-      - name: Build unmodified prior helper with the current SDK controller
-        if: inputs.previous_revision != ''
+          ' | tee "$RUNNER_TEMP/host-helper/ubuntu26.log"
+      - name: Build unmodified prior Linux helper with current SDK controller
+        if: matrix.platform == 'linux_x86_64' && inputs.previous_revision != ''
         env:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
-          set -euo pipefail
           source="$RUNNER_TEMP/prior-helper-source"
           bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
           bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
           SYMPHONY_TEST_HOST_HELPER="$RUNNER_TEMP/prior-helper/symphony-host" python3 "$source/scripts/package/test-package.py" -v
-      - uses: actions/upload-artifact@v4
-        if: inputs.previous_revision != ''
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.platform == 'linux_x86_64' && inputs.previous_revision != ''
         with:
           name: prior-linux-host-helper-${{ github.sha }}
           path: ${{ runner.temp }}/prior-helper/*
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - name: Retain actual exact-source platform helper and qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: linux-host-helper-${{ github.sha }}
-          path: ${{ runner.temp }}/linux-helper/*
+          name: native-host-helper-${{ matrix.platform }}-${{ github.sha }}
+          path: ${{ runner.temp }}/host-helper/*
           if-no-files-found: error
           retention-days: 30
 
-  # Keep the exact legacy ruleset context. A matrix creates suffixed check names;
-  # this aggregate cannot pass on a skipped, failed or cancelled native job.
   macos-package:
-    name: macos-package
+    needs: [changes, qualification, native, native-host-package]
     if: ${{ always() }}
-    needs: [changes, native-macos-package, linux-helper]
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
     steps:
       - name: Require a complete classification decision
         env:
@@ -113,22 +158,23 @@ jobs:
         run: |
           test "$RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
-      - name: Require every native package qualification job
-        if: needs.changes.outputs.code != 'false'
+      - name: Require every requested native and package-input qualification
         env:
-          MACOS_RESULT: ${{ needs.native-macos-package.result }}
-          LINUX_RESULT: ${{ needs.linux-helper.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          PORTABLE: ${{ needs.qualification.result }}
+          NATIVE: ${{ needs.native.result }}
+          PACKAGE: ${{ needs.native-host-package.result }}
         run: |
-          test "$MACOS_RESULT" = success
-          test "$LINUX_RESULT" = success
-      - name: Require intentionally omitted native jobs
-        if: needs.changes.outputs.code == 'false'
-        env:
-          MACOS_RESULT: ${{ needs.native-macos-package.result }}
-          LINUX_RESULT: ${{ needs.linux-helper.result }}
-        run: |
-          test "$MACOS_RESULT" = skipped
-          test "$LINUX_RESULT" = skipped
-      - name: Documentation-only qualification decision
-        if: needs.changes.outputs.code == 'false'
-        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+          test "$PORTABLE" = success
+          if [ "$CODE" = false ]; then
+            test "$NATIVE" = skipped
+            test "$PACKAGE" = skipped
+            echo 'Documentation-only event; behavioral checks intentionally omitted, not executed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            test "$NATIVE" = success
+            test "$PACKAGE" = success
+          fi
+      - id: qualified
+        if: needs.changes.outputs.code == 'true'
+        name: Bind successful qualification to the exact source
+        run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

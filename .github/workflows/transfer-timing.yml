@@ -1,0 +1,90 @@
+name: retained-transfer-timing
+
+on:
+  workflow_call:
+    inputs:
+      source_run:
+        type: string
+        required: true
+      provider:
+        type: string
+        default: claude
+      architecture:
+        type: string
+        default: x86_64
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing same-repository legacy combined image/records artifact run ID (no rebuild or export)
+        type: string
+        required: true
+      provider:
+        type: choice
+        options: [claude, codex]
+        default: claude
+      architecture:
+        type: choice
+        options: [x86_64, arm64]
+        default: x86_64
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  retained-payload-timing:
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify immutable source and native producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run }}
+          PROVIDER: ${{ inputs.provider }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re, subprocess
+          from pathlib import Path
+          assert os.environ['PROVIDER'] in ('codex', 'claude'), 'unsupported provider'
+          assert os.environ['ARCHITECTURE'] in ('arm64', 'x86_64'), 'unsupported native architecture'
+          run_id, repo = os.environ['RUN_ID'], os.environ['GITHUB_REPOSITORY']
+          assert re.fullmatch('[0-9]+', run_id), 'invalid immutable run ID'
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['head_repository']['full_name'] == repo, 'foreign source run'
+          assert re.fullmatch('[0-9a-f]{40}', run['head_sha']), 'invalid source revision'
+          jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
+          name = 'runner-' + os.environ['PROVIDER'] + '-' + os.environ['ARCHITECTURE']
+          producer = [job for job in jobs if job['name'] == name]
+          assert len(producer) == 1 and producer[0]['status'] == 'completed' and producer[0]['conclusion'] == 'success', 'native producer did not complete successfully'
+          runner = 'ubuntu-24.04-arm' if os.environ['ARCHITECTURE'] == 'arm64' else 'ubuntu-24.04'
+          assert runner in producer[0]['labels'], 'producer did not run on the selected native host'
+          Path('timing-evidence').mkdir()
+          Path('timing-evidence/source-run.txt').write_text(json.dumps(run, indent=2))
+          Path('timing-evidence/native-producer.txt').write_text(json.dumps(producer[0], indent=2))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
+          PYTHON
+      - name: Download only selected retained original gzip payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          name: runner-candidate-${{ inputs.provider }}-${{ inputs.architecture }}
+          path: original
+      - name: Measure actual retained checksum and archive identity verification
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+        run: |
+          python3 scripts/release/benchmark-transfer.py timing --input original --output timing-evidence \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
+      - name: Retain small timing and provenance receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: retained-timing-${{ inputs.provider }}-${{ inputs.architecture }}
+          path: timing-evidence/*
+          if-no-files-found: error
+          retention-days: 30

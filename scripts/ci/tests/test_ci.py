@@ -104,8 +104,11 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('case "$CODE" in',text)
             self.assertNotIn('\n    paths:',text)
             if name == 'package-checks':
-                # Package qualification fans out by OS/architecture; the exact
-                # required wrapper is exercised independently below.
+                # Package work moved into concurrent jobs. The named required
+                # aggregate executes only status checks; all heavy jobs are gated.
+                for heavy in ('portable', 'native', 'native-host-package'):
+                    block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
+                    self.assertIn("if: needs.changes.outputs.code == 'true'", block)
                 continue
             if name == 'runner-integration':
                 self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
@@ -128,18 +131,17 @@ class WorkflowContracts(unittest.TestCase):
             remaining=text[start:]
             boundary=re.search(r'\n  [a-z][a-z0-9-]*:',remaining)
             return remaining[:boundary.start()] if boundary else remaining
-        for name in ('native-macos-package','linux-helper'):
+        for name in ('native-host-package',):
             block=job(name)
-            self.assertIn('    needs: changes\n',block)
+            self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
             self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
-        self.assertIn('runner: [macos-14, macos-15-intel]',job('native-macos-package'))
+        self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
+        self.assertNotIn('macos-15-intel', text)
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
         wrapper=job('macos-package')
-        self.assertIn('needs: [changes, native-macos-package, linux-helper]',wrapper)
+        self.assertIn('needs: [changes, qualification, native, native-host-package]',wrapper)
         self.assertIn('if: ${{ always() }}',wrapper)
-        self.assertIn("if: needs.changes.outputs.code != 'false'",wrapper)
-        self.assertIn("if: needs.changes.outputs.code == 'false'",wrapper)
         self.assertIn('behavioral checks intentionally omitted, not executed.',wrapper)
         # Run both actual literal scripts, preserving bash -e semantics. A
         # classification failure cannot be hidden by skipped native jobs, and
@@ -151,14 +153,14 @@ class WorkflowContracts(unittest.TestCase):
                 if line and not line.startswith('          '): break
                 lines.append(line[10:])
             scripts.append('\n'.join(lines))
-        self.assertEqual(len(scripts),3)
+        self.assertEqual(len(scripts),2)
         statuses=('success','failure','cancelled','skipped','')
         with tempfile.TemporaryDirectory() as folder:
             for result,code in (('success','true'),('success','false'),('failure','false'),('cancelled','true'),('skipped','false'),('success',''),('success','invalid')):
                 for mac in statuses:
                     for linux in statuses:
-                        env=dict(os.environ,RESULT=result,CODE=code,MACOS_RESULT=mac,LINUX_RESULT=linux)
-                        command=scripts[0]+'\n'+scripts[2 if code=='false' else 1]
+                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE=linux,PACKAGE=mac,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
+                        command=scripts[0]+'\n'+scripts[1]
                         actual=subprocess.run(['bash','-e','-c',command],cwd=folder,env=env,capture_output=True,text=True)
                         expected=result=='success' and code in ('true','false') and (mac==linux==('skipped' if code=='false' else 'success'))
                         self.assertEqual(actual.returncode==0,expected,(result,code,mac,linux,actual.stderr))

@@ -140,6 +140,15 @@ func validateManifest(_ path: String) throws -> [String: Any] {
         guard let name = platform as? String, ["macos", "linux_x86_64"].contains(name),
               name != "linux_x86_64" || manifest["bundles"] != nil else { fail("invalid package platform") }
     }
+    if let raw = manifest["supported_hosts"] {
+        guard let hosts = raw as? [String: [String]], hosts == ["macos": ["arm64"], "linux_x86_64": ["x86_64"]],
+              bundle["architectures"] as? [String] == ["arm64"] else { fail("invalid supported host or macOS bundle architecture") }
+        if let bundles = manifest["bundles"] {
+            guard object(object(bundles)["linux_x86_64"])["architectures"] as? [String] == ["x86_64"] else { fail("invalid Linux bundle architecture") }
+        }
+    } else if bundle["architectures"] != nil || object(manifest["bundles"]).values.contains(where: { object($0)["architectures"] != nil }) {
+        fail("bundle architecture requires explicit supported host policy")
+    }
     return manifest
 }
 func gitValue(_ input: String) -> String {
@@ -241,7 +250,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1]
+let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -256,6 +265,14 @@ do {
         guard let resolved = realpath(path, nil) else { fail("cannot resolve path") }; defer { free(resolved) }
         print(([String(cString: resolved)] + suffix).joined(separator: "/").replacingOccurrences(of: "//", with: "/"))
     case "build-revision": print(compiledRevision)
+    case "host-architecture":
+        #if arch(arm64)
+        print("arm64")
+        #elseif arch(x86_64)
+        print("x86_64")
+        #else
+        fail("unsupported compiled host architecture")
+        #endif
     case "host-platform":
         #if os(macOS)
         print("macos")

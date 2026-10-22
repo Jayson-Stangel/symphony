@@ -1,0 +1,26 @@
+name: Supported native host policy
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Optional retained native platform filter; all returns both hosts
+        type: string
+        default: all
+    outputs:
+      matrix:
+        description: Exactly Linux x86-64 and macOS ARM64 native host targets
+        value: ${{ jobs.select.outputs.matrix }}
+permissions:
+  contents: read
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.policy.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - id: policy
+        name: Select supported native host targets
+        env:
+          HOST_PLATFORM: ${{ inputs.platform }}
+        run: python3 scripts/release/select-hosts.py --platform "$HOST_PLATFORM" >> "$GITHUB_OUTPUT"

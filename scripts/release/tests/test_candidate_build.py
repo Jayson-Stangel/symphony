@@ -75,7 +75,7 @@ class CleanUbuntuDriverTest(unittest.TestCase):
 
     def test_docker_contract_failure_cannot_be_hidden_by_successful_tee(self):
         with tempfile.TemporaryDirectory(prefix="symphony-clean-driver-") as directory:
-            root = Path(directory); (root / "linux-helper").mkdir()
+            root = Path(directory); (root / "host-helper").mkdir()
             docker = root / "docker"
             for status in (0, 23):
                 with self.subTest(docker_exit=status):
@@ -86,11 +86,11 @@ class CleanUbuntuDriverTest(unittest.TestCase):
                     result = subprocess.run(["bash", "-e", "-c", self.actual_workflow_script()],
                         text=True, capture_output=True, env=env)
                     self.assertEqual(result.returncode == 0, status == 0, result.stdout + result.stderr)
-                    self.assertIn(f"container result {status}", (root / "linux-helper/ubuntu26.log").read_text())
+                    self.assertIn(f"container result {status}", (root / "host-helper/ubuntu26.log").read_text())
 
     def test_present_forbidden_runtime_fails_at_absence_guard(self):
         with tempfile.TemporaryDirectory(prefix="symphony-clean-tools-") as directory:
-            root = Path(directory); (root / "linux-helper").mkdir()
+            root = Path(directory); (root / "host-helper").mkdir()
             scripts = {
                 "docker": '''#!/bin/sh
 while [ "$#" -gt 0 ] && [ "$1" != ubuntu:26.04 ]; do shift; done
