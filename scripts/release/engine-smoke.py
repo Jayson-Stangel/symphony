@@ -62,13 +62,27 @@ def process_table():
 
 class Descendants:
     """Retain child identities even after setsid or reparenting on shutdown."""
-    def __init__(self, root):
+    def __init__(self, root, lease, lsof):
         self.root = root
+        self.lease = lease
+        self.lsof = lsof
         self.identities = {}
         self.observe()
 
+    def lease_holders(self):
+        holders = subprocess.run([self.lsof, "-t", "--", str(self.lease)],
+                                 capture_output=True, text=True, timeout=5)
+        require(holders.returncode in (0, 1), "ownership descriptor inspection failed")
+        return {int(pid) for pid in holders.stdout.split()} - {os.getpid()}
+
     def observe(self):
         rows = process_table()
+        # The private inherited descriptor survives fork, setsid and reparenting,
+        # so ordinary daemon double-forks cannot erase test ownership between
+        # ancestry snapshots. Inspect only this test's inaccessible private file.
+        for pid in self.lease_holders():
+            if pid in rows:
+                self.identities[pid] = rows[pid][1]
         if self.root not in self.identities and self.root in rows:
             self.identities[self.root] = rows[self.root][1]
         changed = True
@@ -181,13 +195,13 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
             "SYMPHONY_INSTALL_DIR": str(root / "extract"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "C.UTF-8", "TERM": "dumb", "ERL_CRASH_DUMP": str(root / "logs" / "erl_crash.dump"),
         }
-        with (evidence_dir / "startup.log").open("wb") as log:
+        with (evidence_dir / "startup.log").open("wb") as log, (root / "ownership").open("wb") as lease:
             try:
                 process = subprocess.Popen([str(executable), "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
                                             "--agent", "claude", "--logs-root", str(root / "logs"), "--port", str(port), str(workflow)],
                                            cwd=root, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                           start_new_session=True)
-                descendants = Descendants(process.pid)
+                                           start_new_session=True, pass_fds=(lease.fileno(),))
+                descendants = Descendants(process.pid, root / "ownership", lsof)
                 result.update(pid=process.pid, port=port)
                 deadline = time.monotonic() + startup_timeout
                 healthy_since = None
@@ -204,6 +218,7 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                                 and b"Operations Dashboard" in dashboard and b"runner-identity" in dashboard,
                                 "dashboard content is not Symphony observability")
                         result["listener_pids"] = owned_listener(port, process, lsof)
+                        require(process.pid in descendants.lease_holders(), "engine discarded inherited test ownership descriptor")
                         if settled:
                             healthy_since = healthy_since or time.monotonic()
                             (evidence_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")

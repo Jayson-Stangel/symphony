@@ -201,7 +201,11 @@ and uses temporary homes, extraction/cache, logs, workspaces and an empty memory
 tracker. It observes actual dashboard content and typed empty JSON state for a
 bounded period, attributes the loopback listener to the new process session, then
 requires a zero exit after SIGTERM and disappearance of that session, listener and
-tracked descendant identities (including children that create a new session).
+tracked descendant identities. A private inherited ownership descriptor lets the
+controller find detached and double-forked children after reparenting; an engine
+that discards this descriptor fails qualification. Ancestry snapshots supplement
+that ownership marker. Inspection is limited to the test-owned private file and
+process identity metadata, without reading ambient process environments.
 Forced cleanup always fails qualification. Evidence artifacts retain identity,
 state, dashboard, startup/application logs and shutdown/cleanup results.
 
@@ -211,5 +215,5 @@ request is made. Engine buildability, native server liveness, native-agent login
 and installed-manager lifecycle are separate claims: this check proves the first
 two, and deliberately does not claim authenticated inference or issue-to-PR proof.
 Regression subprocess fixtures demonstrate rejection of early/banner exits, bad
-HTTP/state, false readiness, startup/shutdown timeouts and surviving or detached children;
+HTTP/state, false readiness, startup/shutdown timeouts and surviving, detached or double-forked children;
 those fixtures are controller tests, not substitutes for native artifact execution.

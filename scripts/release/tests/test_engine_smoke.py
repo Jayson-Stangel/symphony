@@ -41,6 +41,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                          b"Symphony Observability Operations Dashboard runner-identity")
     def log_message(self, *args):
         pass
+if MODE == "doublefork":
+    middle = os.fork()
+    if middle == 0:
+        if os.fork() != 0:
+            os._exit(0)
+        os.setsid()
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        while True:
+            time.sleep(1)
+    os.waitpid(middle, 0)
 if MODE in ("child_survives", "detached_child") and os.fork() == 0:
     if MODE == "detached_child":
         os.setsid()
@@ -64,12 +74,19 @@ class EngineSmokeTests(unittest.TestCase):
         executable.write_text(FIXTURE.replace("PYTHON", sys.executable).replace("MODE_VALUE", mode))
         executable.chmod(0o700)
         evidence = self.root / mode
-        kwargs = dict(startup_timeout=2, shutdown_timeout=0.4, hold_seconds=0.1)
-        if expected:
-            with self.assertRaisesRegex(SMOKE.SmokeFailure, expected):
+        kwargs = dict(startup_timeout=10, shutdown_timeout=2, hold_seconds=0.3)
+        try:
+            if expected:
+                with self.assertRaisesRegex(SMOKE.SmokeFailure, expected):
+                    SMOKE.qualify(executable, evidence, **kwargs)
+            else:
                 SMOKE.qualify(executable, evidence, **kwargs)
-        else:
-            SMOKE.qualify(executable, evidence, **kwargs)
+        except Exception:
+            for name in ("startup.log", "result.json"):
+                path = evidence / name
+                if path.exists():
+                    print(f"{mode} {name}: {path.read_text()}", file=sys.stderr)
+            raise
         result = json.loads((evidence / "result.json").read_text())
         self.assertTrue(SMOKE.port_closed(result["port"]))
         self.assertTrue(result["cleanup_process_group_gone"], result)
@@ -114,6 +131,12 @@ class EngineSmokeTests(unittest.TestCase):
 
     def test_detached_child_cannot_pass_and_is_cleaned(self):
         result = self.execute("detached_child", "child survived")
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["forced_cleanup"])
+        self.assertGreater(len(result["owned_pids"]), 1)
+
+    def test_doublefork_child_cannot_pass_and_is_cleaned(self):
+        result = self.execute("doublefork", "child survived")
         self.assertFalse(result["passed"])
         self.assertTrue(result["forced_cleanup"])
         self.assertGreater(len(result["owned_pids"]), 1)
