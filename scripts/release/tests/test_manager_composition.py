@@ -156,6 +156,20 @@ class ManagerComposition(unittest.TestCase):
             self.assertEqual(final['runners'], value['runners'])
             self.assertEqual(final['bundle']['sha256'], hashlib.sha256(b'actual mac native archive fixture').hexdigest())
 
+    def test_legacy_chain_requires_three_actual_sources_and_real_bridge_schemas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root/'previous').mkdir(); (root/'legacy').mkdir()
+            for folder, source, schema in ((root, 'c'*40, 2), (root/'previous', 'b'*40, 1), (root/'legacy', 'a'*40, 1)):
+                (folder/'release.json').write_text(json.dumps({'source_revision': source, 'schema_version': schema}))
+            selected = LIFECYCLE.package_selections(root, False, 'c'*40, True)
+            self.assertEqual([record['source_revision'] for _,record in selected], ['a'*40, 'b'*40, 'c'*40])
+            (root/'legacy/release.json').write_text(json.dumps({'source_revision': 'b'*40, 'schema_version': 1}))
+            with self.assertRaisesRegex(AssertionError, 'three distinct'):
+                LIFECYCLE.package_selections(root, False, 'c'*40, True)
+            (root/'legacy/release.json').write_text(json.dumps({'source_revision': 'a'*40, 'schema_version': 2}))
+            with self.assertRaisesRegex(AssertionError, 'actual schema1'):
+                LIFECYCLE.package_selections(root, False, 'c'*40, True)
+
     def test_separate_prior_is_verified_and_aliased_before_current_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             images = Path(directory)

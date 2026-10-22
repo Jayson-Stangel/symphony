@@ -79,14 +79,20 @@ def cleanup_container(name, controller_ids, storages, evidence):
     return name
 
 
-def package_selections(packages, current_only, revision):
+def package_selections(packages, current_only, revision, manager_update_only=False):
     current = json.loads((packages / "release.json").read_text())
     if current_only:
         assert current["source_revision"] == revision, "current-manager integration requires this exact manager source"
         return [(packages, current)]
     previous = json.loads((packages / "previous/release.json").read_text())
     assert current["source_revision"] != previous["source_revision"], "two distinct actual source revisions required"
-    return [(packages / "previous", previous), (packages, current)]
+    selected = [(packages / "previous", previous), (packages, current)]
+    if manager_update_only and (packages / 'legacy/release.json').exists():
+        legacy = json.loads((packages / 'legacy/release.json').read_text())
+        assert legacy['schema_version'] == previous['schema_version'] == 1 and current['schema_version'] == 2, 'legacy chain requires actual schema1 old/bridge and schema2 current packages'
+        assert len({legacy['source_revision'], previous['source_revision'], current['source_revision']}) == 3, 'three distinct actual manager sources required'
+        selected.insert(0, (packages / 'legacy', legacy))
+    return selected
 
 
 def verify_loaded_component(config, record, provider, independent):
@@ -114,9 +120,9 @@ def load_original_archive(run, folder, provider):
         run(['docker', 'load'], stdin=source)
 
 
-def stage_separate_previous(run, images, provider, previous):
+def stage_separate_previous(run, images, provider, previous, folder_name="previous"):
     """Load an original prior subject before current tags; retain its exact identity."""
-    folder = images / 'previous'
+    folder = images / folder_name
     if not folder.exists(): return None
     assert folder.is_dir() and not folder.is_symlink(), 'previous subjects must use an owned directory'
     load_original_archive(run, folder, provider)
@@ -158,10 +164,11 @@ def cleanup_negative_image(run, reference, token):
 def main():
     arguments = sys.argv[1:]
     current_only = bool(arguments and arguments[0] == "--current-manager-only")
-    if current_only:
+    manager_update_only = bool(arguments and arguments[0] == "--manager-only-update")
+    if current_only or manager_update_only:
         arguments = arguments[1:]
     if len(arguments) != 3:
-        raise SystemExit("Usage: package-lifecycle.py [--current-manager-only] PACKAGES RUNNER_ARCHIVES EVIDENCE")
+        raise SystemExit("Usage: package-lifecycle.py [--current-manager-only | --manager-only-update] PACKAGES RUNNER_ARCHIVES EVIDENCE")
     if os.uname().sysname != "Linux" or os.uname().machine != "x86_64":
         raise SystemExit("actual native Linux x86-64 is required")
     packages, images, evidence = (Path(p).resolve() for p in arguments)
@@ -184,7 +191,7 @@ def main():
               "nativeAuth": "STUB login entrypoints and Codex login status ONLY; no account/model requests",
               "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
               "diagnostic_artifact_run": os.environ.get("DIAGNOSTIC_ARTIFACT_RUN"),
-              "mode": "current-manager-only" if current_only else "two-revision-lifecycle",
+              "mode": "current-manager-only" if current_only else "manager-only-update" if manager_update_only else "two-revision-lifecycle",
               "qualified_runner_components": [], "checks": [], "passed": False}
 
     def run(args, expected=0, **kwargs):
@@ -259,10 +266,15 @@ def main():
         return external, archive
 
     try:
-        selections = package_selections(packages, current_only, result["source_revision"])
+        selections = package_selections(packages, current_only, result["source_revision"], manager_update_only)
         current = selections[-1][1]
         initial = selections[0][1]
-        previous = initial  # The full lifecycle uses a real previous source; single-manager mode never claims one.
+        previous = selections[-2][1] if len(selections) > 1 else initial
+        legacy_chain = len(selections) == 3
+        if legacy_chain:
+            result['mode'] = 'legacy-bridge-manager-only-update'
+        if manager_update_only:
+            assert previous['runners'] == current['runners'], 'manager-only update requires the exact unchanged original component records'
         assert current["source_revision"] == result["package_source_revision"], "candidate must match exact selected package source"
         assert result["diagnostic_artifact_run"] or result["package_source_revision"] == result["source_revision"], "acceptance candidate must match exact workflow head"
         source_archives = []
@@ -278,9 +290,9 @@ def main():
         for provider in ("codex", "claude"):
             # A separately verified old current-role subject may use the same
             # :candidate tag. Alias it locally before loading the new current.
-            previous_config = stage_separate_previous(run, images, provider, previous) if not current_only else None
+            previous_config = stage_separate_previous(run, images, provider, initial, "legacy" if legacy_chain else "previous") if not current_only else None
             load_original_archive(run, images, provider)
-            selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", previous)]
+            selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", initial)]
             for legacy_tag, manifest in selected:
                 qualified = manifest["runners"][provider]["x86_64"]
                 image = (f"localhost:5000/symphony-{provider}:previous" if legacy_tag == 'previous' and previous_config is not None
@@ -292,6 +304,8 @@ def main():
                 verify_loaded_component(loaded, qualified, provider, manifest["schema_version"] == 2)
                 if legacy_tag == 'previous' and previous_config is not None:
                     assert loaded['Id'] == previous_config, 'current archive replaced the selected old subject'
+                if legacy_chain and legacy_tag == 'previous':
+                    assert (loaded.get('Config', {}).get('Labels') or {}).get('com.symphony.protocol') in (None, ''), 'legacy fixture must retain the actual unlabeled old image'
                 docker("push", image)
                 observed = json.loads(docker("image", "inspect", image))[0]
                 assert original in observed.get("RepoDigests", []), ("original image digest changed", image, original)
@@ -325,12 +339,14 @@ def main():
 
         # The client sees only candidate downloads and isolated data, with the
         # same absolute path used for Docker bind mounts on the native host.
-        for source in source_archives + [folder / "release.json" for folder, _ in selections]:
-            target = root / ("old-" + source.name if source.parent.name == "previous" else "new-" + source.name)
-            shutil.copyfile(source, target)
-        first_manifest = root / ("new-release.json" if current_only else "old-release.json")
+        for index, (folder, manifest) in enumerate(selections):
+            prefix = 'new-' if index == len(selections)-1 else 'legacy-' if legacy_chain and index == 0 else 'old-'
+            for source in (source_archives[index], folder / 'release.json'):
+                shutil.copyfile(source, root / (prefix + source.name))
+        first_prefix = 'legacy-' if legacy_chain else 'new-' if current_only else 'old-'
+        first_manifest = root / (first_prefix + 'release.json')
         second_manifest = root / "new-release.json"
-        first_archive = root / (("new-" if current_only else "old-") + initial["bundles"]["linux_x86_64"]["filename"])
+        first_archive = root / (first_prefix + initial["bundles"]["linux_x86_64"]["filename"])
         second_archive = root / ("new-" + current["bundles"]["linux_x86_64"]["filename"])
         home = root / "home"; home.mkdir(mode=0o700)
         tools = root / "tools"; tools.mkdir()
@@ -412,7 +428,7 @@ fi
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
-            selected_agent = "claude" if current_only and number == 1 else "codex"
+            selected_agent = "claude" if (current_only or manager_update_only) and number == 1 else "codex"
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
             assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
@@ -425,7 +441,7 @@ fi
         assert identifiers[0] != identifiers[1]
         assert inspect(names[0], '{{index .Config.Labels "com.symphony.storage"}}') != inspect(names[1], '{{index .Config.Labels "com.symphony.storage"}}')
         name, repo, port = names[0], repositories[0], ports[0]
-        utility_image = previous["runners"]["codex"]["x86_64"]["image"]
+        utility_image = initial["runners"]["codex"]["x86_64"]["image"]
         auth_volumes = [prefix + "-codex-auth", *[n + "-claude-auth" for n in names]]
         for volume in auth_volumes:
             docker("run", "--rm", "--network", "none", "--read-only", "--entrypoint", "sh", "--volume", volume + ":/proof", utility_image,
@@ -455,6 +471,21 @@ fi
         assert inspect(name, "{{.State.Running}}") == "false"
         client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
+        if legacy_chain:
+            bridge_manifest = root/'old-release.json'
+            bridge_archive = root/('old-'+previous['bundles']['linux_x86_64']['filename'])
+            original_ids = {selected: (inspect(selected, '{{.Id}}'), inspect(selected, '{{.Image}}')) for selected in names}
+            original_metadata = [path.read_bytes() for path in metadata]
+            client_run([str(command), 'update', '--candidate-manifest', str(bridge_manifest), '--candidate-bundle', str(bridge_archive)], cwd=repo)
+            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == previous['source_revision']
+            assert {selected: (inspect(selected, '{{.Id}}'), inspect(selected, '{{.Image}}')) for selected in names} == original_ids
+            assert [path.read_bytes() for path in metadata] == original_metadata
+            unchanged()
+            client_run([str(command), 'runner', 'stop'], cwd=repo)
+            client_run([str(command), 'run', '--port', str(port)], cwd=repo); state(port); unchanged()
+            assert inspect(name, '{{.Image}}') == original_ids[name][1]
+            assert inspect(names[1], '{{.Id}}') == original_ids[names[1]][0] and metadata[1].read_bytes() == second_metadata
+            record('actual old schema1 manager to strict schema1 bridge retains both original unlabeled provider images and persistent project canaries')
         update_args = ["--candidate-manifest", str(second_manifest), "--candidate-bundle", str(second_archive)]
         if current["schema_version"] == 2:
             # This deliberately incompatible image is a negative fixture only:
@@ -507,6 +538,44 @@ fi
             unchanged()
             result["passed"] = True
             record("current exact-source installed manager exercises verified original runners; two-source update/failure/rollback not requested in this mode")
+            return
+        if manager_update_only:
+            runner_snapshot = {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.Image}}")) for selected in names}
+            metadata_snapshot = [path.read_bytes() for path in metadata]
+            client_run([str(command), "runner", "stop"], cwd=repo)
+            assert inspect(name, "{{.State.Running}}") == "false"
+            def retained():
+                assert {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.Image}}")) for selected in names} == runner_snapshot
+                assert [path.read_bytes() for path in metadata] == metadata_snapshot
+                assert inspect(name, "{{.State.Running}}") == "false"
+                assert inspect(names[1], "{{.State.Running}}") == "true"
+                assert not list((root / "config/runners").glob("*.transition*"))
+                unchanged()
+            client_run([str(command), "update", *update_args], cwd=repo)
+            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
+            retained()
+            client_run([str(command), "update", "--rollback-release"], cwd=repo)
+            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == previous['source_revision']
+            retained()
+            corrupted = json.loads(second_manifest.read_text())
+            corrupted['bundles']['linux_x86_64']['sha256'] = '0'*64
+            invalid = root/'manager-only-corrupt-manifest.json'; invalid.write_text(json.dumps(corrupted))
+            failed = client_run([str(command), 'update', '--candidate-manifest', str(invalid), '--candidate-bundle', str(second_archive)], cwd=repo, expected=1)
+            assert 'checksum mismatch' in failed.stdout
+            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == previous['source_revision']
+            retained()
+            client_run([str(command), 'update', *update_args], cwd=repo)
+            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
+            retained()
+            client_run([str(command), 'run', '--port', str(port)], cwd=repo); state(port); unchanged()
+            assert inspect(name, '{{.Image}}') == runner_snapshot[name][1]
+            assert inspect(names[1], '{{.Id}}') == runner_snapshot[names[1]][0] and metadata[1].read_bytes() == second_metadata
+            for selected_repo, selected_name in zip(repositories, names):
+                client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
+                assert inspect(selected_name, '{{.State.Running}}') == 'false'
+            unchanged()
+            result['passed'] = True
+            record('actual old90 to strict schema1 bridge to schema2 manager, rollback to bridge, checksum refusal, retry and restart preserve both unlabeled legacy projects and all canaries' if legacy_chain else 'two actual manager sources with exact unchanged runners: activation, rollback, checksum refusal, retry and restart preserve both projects and all canaries; legacy three-source chain not requested')
             return
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
