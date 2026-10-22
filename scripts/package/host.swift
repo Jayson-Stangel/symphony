@@ -76,6 +76,7 @@ func repository(_ input: String) throws -> (String, String) {
                 git = URL(fileURLWithPath: value, relativeTo: URL(fileURLWithPath: git.path, isDirectory: true)).standardizedFileURL
             }
             let config = try String(contentsOf: git.appendingPathComponent("config"), encoding: .utf8)
+            if matches(config, "(?im)^[ \\t]*(worktreeconfig[ \\t]*=|insteadof[ \\t]*=|pushinsteadof[ \\t]*=)") { fail("packaged repository identity does not support worktree config or URL rewrite rules; use an explicit local origin URL") }
             var origin = false
             var remote: String? = nil
             for raw in config.components(separatedBy: .newlines) {
@@ -96,7 +97,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2]
+let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -129,6 +130,7 @@ do {
     case "hash-blob":
         let value = Data(args[1].utf8); let header = Data("blob \(value.count)\0".utf8)
         print(Insecure.SHA1.hash(data: header + value).map { String(format: "%02x", $0) }.joined())
+    case "owned-file": _ = checkedInfo(args[1])
     case "owned-directory":
         let info = checkedInfo(args[1], directory: true)
         guard info.st_mode & 0o777 == 0o700 else { fail("unsafe owned directory") }

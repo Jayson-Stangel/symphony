@@ -1,5 +1,6 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
 packaged_install=true
+[ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
 symphony_home=$(cd "$symphony_home" && pwd -P)
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
 package_helper validate-manifest "$symphony_home/release.json" || exit 1
@@ -36,6 +37,7 @@ USAGE
 package_image() { package_helper get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; }
 package_release_image() {
   local runtime=$1 image=$2 agent=$3 revision=$4 platform
+  [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
   platform=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; check engine network access and release availability: $image"
@@ -63,8 +65,10 @@ package_use_project_image() {
   [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || return 0
   metadata=$(runner_env_file "$root")
   [ -f "$metadata" ] || return 0
+  package_helper owned-file "$metadata" || return
   image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
   case "$image" in sha256:*)
+    [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'retained runner image identity is invalid'
     [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" = "$agent" ] || return 0
     export SYMPHONY_RUNNER_IMAGE=$image
     ;;
@@ -94,6 +98,22 @@ package_stage_bundle() {
   printf '%s\n' "$destination"
 }
 
+package_preflight_links() {
+  local source target skill
+  source="$package_app_home/current/scripts/symphony"; target="$bin_dir/symphony"
+  if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target"
+  elif [ -e "$target" ]; then die "refusing to replace existing command: $target"; fi
+  for skill in "${managed_skills[@]}"; do
+    source="$package_app_home/current/.codex/skills/$skill"; target=$(global_skill_path "$skill")
+    if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing global skill link: $target"
+    elif [ -e "$target" ]; then die "refusing to replace existing global skill: $target"; fi
+  done
+  if [ -e "$package_app_home/current" ] || [ -L "$package_app_home/current" ]; then
+    [ -L "$package_app_home/current" ] || die 'application current path is not a managed release link'
+    [ "$(cd "$package_app_home/current" && pwd -P)" = "$package_app_home/releases/$package_version-$package_revision" ] || die 'another version is installed; use symphony update'
+  fi
+}
+
 package_install() (
   local stage_only=false skill source target destination next app_lock
   while [ "$#" -gt 0 ]; do
@@ -108,25 +128,13 @@ package_install() (
   done
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
   package_app_home=$(package_helper canonical-path "$package_app_home")
-  if ! "$stage_only"; then
-    source="$package_app_home/current/scripts/symphony"; target="$bin_dir/symphony"
-    if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target"
-    elif [ -e "$target" ]; then die "refusing to replace existing command: $target"; fi
-    for skill in "${managed_skills[@]}"; do
-      source="$package_app_home/current/.codex/skills/$skill"; target=$(global_skill_path "$skill")
-      if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing global skill link: $target"
-      elif [ -e "$target" ]; then die "refusing to replace existing global skill: $target"; fi
-    done
-    if [ -e "$package_app_home/current" ] || [ -L "$package_app_home/current" ]; then
-      [ -L "$package_app_home/current" ] || die 'application current path is not a managed release link'
-      [ "$(cd "$package_app_home/current" && pwd -P)" = "$package_app_home/releases/$package_version-$package_revision" ] || die 'another version is installed; use symphony update'
-    fi
-  fi
+  if ! "$stage_only"; then package_preflight_links; fi
   (umask 077; mkdir -p "$package_app_home")
   package_helper lock-directory "$package_app_home" || return
   app_lock="$package_app_home/update.lock"
   [ ! -L "$app_lock" ] || die 'unsafe application updater lock'
   exec 8>>"$app_lock"; package_helper lock "$app_lock" 8 acquire || return
+  if ! "$stage_only"; then package_preflight_links; fi
   destination=$(package_stage_bundle "$symphony_home") || return
   if "$stage_only"; then printf '%s\n' "$destination"; return; fi
   next="$package_app_home/.current-$$"

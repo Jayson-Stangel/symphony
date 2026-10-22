@@ -30,8 +30,9 @@ Create `symphony-download` before extracting. The project must already be a Git
 checkout with a remotely accessible, explicit `origin` URL. The packaged manager
 finds the repository and its local origin without host Git. Normal Git-generated
 configuration, quoted URLs, linked worktrees and repository paths with spaces are
-supported. A project using Git `include` or `includeIf` for its origin must first
-make that remote explicit in local configuration; the manager refuses ambiguous
+supported. A project using Git `include`, `includeIf`, per-worktree configuration, or local URL rewrite rules
+must first
+remove those indirections and make that remote explicit in local configuration; the manager refuses ambiguous
 identity rather than choosing a different repository. Cloning the target project
 and managing Docker installation are outside the installer.
 

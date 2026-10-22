@@ -108,6 +108,14 @@ class PackageTest(unittest.TestCase):
         with (repo / ".git/config").open("a") as config:
             config.write('\n[remote "origin"]\nurl = "https://github.com/owner/encoded%20path.git" # comment\n')
         self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"])))
+        original = (repo / ".git/config").read_text()
+        for extra in ('\n[extensions]\nworktreeConfig = true\n', '\n[url "ssh://git@example.invalid/"]\ninsteadOf = https://github.com/\n'):
+            (repo / ".git/config").write_text(original + extra)
+            self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
+        (repo / ".git/config").write_text(original)
+        # A symlinked Git directory still resolves the same explicit origin.
+        moved = repo / "git-metadata"; (repo / ".git").rename(moved); (repo / ".git").symlink_to(moved)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"])))
         with (repo / ".git/config").open("a") as config:
             config.write('\n[include]\npath = ../other\n')
         self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
@@ -160,6 +168,16 @@ PY
         self.assertFalse((self.root / "app/current").exists())
         self.assertFalse(canary.exists())
         self.assertIn("bundle checksum mismatch", result.stderr)
+
+    def test_mutable_or_foreign_image_overrides_are_rejected(self):
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        for image in ("mutable:latest", "sha256:" + "c" * 64, "ghcr.io/foreign/runner@sha256:" + "d" * 64):
+            result = call([command, "auth", "codex", "login"], env=dict(env, SYMPHONY_RUNNER_IMAGE=image))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("remove SYMPHONY_RUNNER_IMAGE", result.stderr)
+        self.assertFalse((self.root / "docker.calls").exists())
 
     def test_custom_app_dir_does_not_require_environment_override(self):
         bundle = self.bundle(); env = self.environment()
