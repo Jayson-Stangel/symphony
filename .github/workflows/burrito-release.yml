@@ -1,7 +1,13 @@
 name: burrito-release
 
 on:
+  # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
+    inputs:
+      controller_only:
+        description: Run only isolated controller fixtures on native macOS Intel (no artifacts or publication)
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -11,6 +17,7 @@ permissions:
 
 jobs:
   runners:
+    if: ${{ !inputs.controller_only }}
     uses: ./.github/workflows/runner-release.yml
     with:
       publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -19,6 +26,7 @@ jobs:
       packages: write
 
   build:
+    if: ${{ !inputs.controller_only }}
     name: build-${{ matrix.target }}
     runs-on: ubuntu-24.04
     strategy:
@@ -80,6 +88,13 @@ jobs:
           cd dist
 
           sha256sum "$artifact" > "$artifact.sha256"
+          python3 - "$artifact" "$GITHUB_SHA" "${{ matrix.target }}" <<'PYTHON'
+          import hashlib, json, pathlib, sys
+          artifact = pathlib.Path(sys.argv[1])
+          metadata = {"artifact": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                      "source_revision": sys.argv[2], "target": sys.argv[3]}
+          artifact.with_name(artifact.name + ".source.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
+          PYTHON
 
       - name: Upload release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -106,25 +121,53 @@ jobs:
             runner: macos-14
 
     steps:
+      - name: Checkout the exact candidate controller
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Download release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ matrix.target }}
           path: dist
 
-      - name: Smoke test executable
+      - name: Install Linux test controller utility
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y lsof
+
+      - name: Test false-green and cleanup regressions
+        run: python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
+
+      - name: Qualify actual standalone engine
         run: |
-          artifact="$(find dist -type f ! -name '*.sha256' -print -quit)"
-          test -n "$artifact"
-          chmod +x "$artifact"
+          if test "$GITHUB_REF_TYPE" = "tag"; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="${GITHUB_SHA::7}"
+          fi
+          python3 scripts/release/engine-smoke.py "dist/symphony-$version-${{ matrix.target }}" \
+            --source-revision "$GITHUB_SHA" --target "${{ matrix.target }}" \
+            --evidence-dir "$RUNNER_TEMP/engine-evidence-${{ matrix.target }}"
 
-          set +e
-          output="$(SYMPHONY_INSTALL_DIR="$RUNNER_TEMP/symphony-install" "$artifact" 2>&1)"
-          status=$?
-          set -e
+      - name: Retain native qualification evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engine-evidence-${{ matrix.target }}
+          path: ${{ runner.temp }}/engine-evidence-${{ matrix.target }}/
+          if-no-files-found: warn
 
-          test "$status" -eq 1
-          grep -F "This Symphony implementation is a low key engineering preview." <<<"$output"
+  controller-diagnostics:
+    if: inputs.controller_only
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the exact candidate controller
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Record controller platform and run isolated process fixtures
+        run: |
+          uname -sm
+          python3 -VV
+          python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
