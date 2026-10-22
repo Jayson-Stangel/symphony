@@ -227,7 +227,8 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                                 break
                         else:
                             healthy_since = None
-                    except (URLError, ConnectionError, TimeoutError):
+                    except (URLError, ConnectionError, TimeoutError) as exc:
+                        result["last_connection_error"] = f"{type(exc).__name__}: {exc}"
                         healthy_since = None
                     time.sleep(0.2)
                 else:

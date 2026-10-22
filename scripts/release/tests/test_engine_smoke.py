@@ -15,7 +15,11 @@ SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
 
 FIXTURE = '''#!PYTHON
-import http.server, json, os, signal, sys, time
+import faulthandler, sys
+faulthandler.enable()
+faulthandler.dump_traceback_later(5, repeat=True)
+print("fixture interpreter", sys.version, sys.executable, flush=True)
+import http.server, json, os, signal, time
 MODE = "MODE_VALUE"
 if MODE == "banner":
     print("This Symphony implementation is a low key engineering preview.")
@@ -58,7 +62,10 @@ if MODE in ("child_survives", "detached_child") and os.fork() == 0:
     while True:
         time.sleep(1)
 signal.signal(signal.SIGTERM, signal.SIG_IGN if MODE == "shutdown_timeout" else lambda *args: sys.exit(0))
-http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+print("fixture binding", port, flush=True)
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+print("fixture bound", port, flush=True)
+server.serve_forever()
 '''
 
 
