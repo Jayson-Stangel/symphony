@@ -100,6 +100,27 @@ def verify_loaded_component(config, record, provider, independent):
         assert labels.get("com.symphony.inputs.sha256") == record.get("input_identity"), "loaded original input identity differs"
 
 
+def cleanup_negative_image(run, reference, token):
+    """Remove only a diagnostic image carrying this run's unique ownership label."""
+    def absent(receipt, selected):
+        return receipt.returncode == 1 and receipt.stdout.strip() in ('', '[]') and (receipt.stderr or '').strip() in (
+            'Error response from daemon: No such image: ' + selected, 'Error: No such image: ' + selected)
+    receipt = run(['docker', 'image', 'inspect', reference], expected=None, separate_stderr=True)
+    if receipt.returncode:
+        assert absent(receipt, reference), ('negative image absence uncertain', reference, receipt.stdout, receipt.stderr)
+        return
+    images = json.loads(receipt.stdout)
+    assert len(images) == 1, 'ambiguous negative image receipt'
+    image = images[0]
+    identifier = image.get('Id', '')
+    assert re.fullmatch(r'sha256:[a-f0-9]{64}', identifier), 'invalid negative image config identity'
+    assert image.get('Config', {}).get('Labels', {}).get('com.symphony.lifecycle-negative') == token, 'refused foreign negative image'
+    run(['docker', 'image', 'rm', identifier])
+    for selected in (reference, identifier):
+        checked = run(['docker', 'image', 'inspect', selected], expected=None, separate_stderr=True)
+        assert absent(checked, selected), ('negative image remains or absence uncertain', selected, checked.stdout, checked.stderr)
+
+
 def main():
     arguments = sys.argv[1:]
     current_only = bool(arguments and arguments[0] == "--current-manager-only")
@@ -120,6 +141,7 @@ def main():
     client, registry = prefix + "-client", prefix + "-registry"
     owned = set()
     controller_ids = {}
+    negative_images = {}
     storages = set()
     owned_volumes = set()
     log = (evidence / "commands.log").open("w")
@@ -375,6 +397,47 @@ fi
         assert inspect(name, "{{.State.Running}}") == "false"
         client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
+        update_args = ["--candidate-manifest", str(second_manifest), "--candidate-bundle", str(second_archive)]
+        if current["schema_version"] == 2:
+            # This deliberately incompatible image is a negative fixture only:
+            # no Dockerfile build, export, qualified record or future baseline.
+            fixture = prefix + "-protocol-negative"
+            original_image = inspect(name, "{{.Image}}")
+            controller_ids[fixture] = acquire_container(run, "-d", "--name", fixture, "--network", "none",
+                                                       "--entrypoint", "sleep", original_image, "infinity")
+            owned.add(fixture)
+            negative_tag = "symphony-negative:" + namespace
+            negative_images[negative_tag] = namespace
+            committed = run(["docker", "commit", "--change", "LABEL com.symphony.protocol=2", "--change",
+                             "LABEL com.symphony.lifecycle-negative=" + namespace, controller_ids[fixture], negative_tag],
+                            separate_stderr=True)
+            negative_config = committed.stdout.strip()
+            assert re.fullmatch(r"sha256:[a-f0-9]{64}", negative_config) and negative_config != original_image
+            assert inspect(negative_config, '{{index .Config.Labels "com.symphony.protocol"}}') == "2"
+            assert inspect(negative_config, '{{index .Config.Labels "com.symphony.lifecycle-negative"}}') == namespace
+            original_metadata = metadata[0].read_bytes()
+            substituted, count = re.subn(rb"(?m)^SYMPHONY_RUNNER_IMAGE_ID=sha256:[a-f0-9]{64}$",
+                                        b"SYMPHONY_RUNNER_IMAGE_ID=" + negative_config.encode(), original_metadata)
+            assert count == 1, 'owned runner metadata has no unique config identity'
+            activation_links = {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
+                                for path in ('current', 'previous')}
+            containers_before = {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names}
+            try:
+                metadata[0].write_bytes(substituted)
+                failed = client_run([str(command), "update", *update_args], cwd=repo, expected=1)
+                assert 'retained runner protocol is incompatible with this manager' in failed.stdout
+                assert {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
+                        for path in ('current', 'previous')} == activation_links
+                assert {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names} == containers_before
+                assert metadata[0].read_bytes() == substituted and metadata[1].read_bytes() == second_metadata
+                assert inspect(names[1], "{{.Image}}") == second_image
+                unchanged()
+                result["incompatible_retained_fixture"] = {"original_config": original_image, "negative_config": negative_config,
+                    "protocol": 2, "qualified": False, "manager_activation_refused": True,
+                    "scope": "current package only" if current_only else "actual prior-to-current package update"}
+                record("actual incompatible retained config refuses before manager activation or project transition; both projects and canaries preserved")
+            finally:
+                metadata[0].write_bytes(original_metadata)
         if current_only:
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
             assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
@@ -385,7 +448,6 @@ fi
             result["passed"] = True
             record("current exact-source installed manager exercises verified original runners; two-source update/failure/rollback not requested in this mode")
             return
-        update_args = ["--candidate-manifest", str(second_manifest), "--candidate-bundle", str(second_archive)]
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
         assert inspect(name, "{{.State.Running}}") == "false"
@@ -469,6 +531,12 @@ fi
                     absent = cleanup_container(name, controller_ids, storages, evidence)
                     if absent:
                         removed.append(absent)
+                except Exception as error:
+                    cleanup_errors.append(str(error))
+            for reference, token in negative_images.items():
+                try:
+                    cleanup_negative_image(run, reference, token)
+                    removed.append(reference)
                 except Exception as error:
                     cleanup_errors.append(str(error))
             for volume in owned_volumes:

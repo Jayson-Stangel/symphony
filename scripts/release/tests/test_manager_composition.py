@@ -61,6 +61,35 @@ class ManagerComposition(unittest.TestCase):
                     self.assertEqual((output / 'actual-invocation').exists(), accepted)
                     if name == 'unsupported-host': self.assertFalse(output.exists())
 
+    def test_negative_image_cleanup_requires_owned_config_and_positive_absence(self):
+        reference, token, identifier = 'symphony-negative:test', 'owned-fixture-token', 'sha256:'+'d'*64
+        def run_for(label, unavailable=False, changed_after=False):
+            calls = []
+            def run(args, **kwargs):
+                calls.append(args)
+                if args[2] == 'rm':
+                    self.assertEqual(args[-1], identifier)
+                    return subprocess.CompletedProcess(args, 0, 'removed', '')
+                if len(calls) == 1:
+                    return subprocess.CompletedProcess(args, 0, json.dumps([{'Id': identifier, 'Config': {
+                        'Labels': {'com.symphony.lifecycle-negative': label}}}]), '')
+                if unavailable:
+                    return subprocess.CompletedProcess(args, 1, '', 'Cannot connect to Docker daemon')
+                if changed_after:
+                    return subprocess.CompletedProcess(args, 0, json.dumps([{'Id': 'sha256:'+'e'*64}]), '')
+                return subprocess.CompletedProcess(args, 1, '[]', 'Error response from daemon: No such image: '+args[-1])
+            return run, calls
+        run, calls = run_for(token)
+        LIFECYCLE.cleanup_negative_image(run, reference, token)
+        self.assertEqual(calls[1], ['docker', 'image', 'rm', identifier])
+        for label, unavailable, changed in [('foreign', False, False), (token, True, False), (token, False, True)]:
+            with self.subTest(label=label, unavailable=unavailable, changed=changed):
+                run, calls = run_for(label, unavailable, changed)
+                with self.assertRaises(AssertionError):
+                    LIFECYCLE.cleanup_negative_image(run, reference, token)
+                if label == 'foreign':
+                    self.assertFalse(any('rm' in call for call in calls))
+
     def test_single_manager_mode_requires_current_source_and_no_invented_previous(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
