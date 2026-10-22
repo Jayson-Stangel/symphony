@@ -5,7 +5,8 @@ on:
   push:
     branches: [dev]
 jobs:
-  macos-package:
+  native-macos-package:
+    name: native-macos-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -61,3 +62,20 @@ jobs:
           path: ${{ runner.temp }}/linux-helper/*
           if-no-files-found: error
           retention-days: 30
+
+  # Keep the exact legacy ruleset context. A matrix creates suffixed check names;
+  # this aggregate cannot pass on a skipped, failed or cancelled native job.
+  macos-package:
+    name: macos-package
+    if: ${{ always() }}
+    needs: [native-macos-package, linux-helper]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every native package qualification job
+        env:
+          MACOS_RESULT: ${{ needs.native-macos-package.result }}
+          LINUX_RESULT: ${{ needs.linux-helper.result }}
+        run: |
+          test "$MACOS_RESULT" = success
+          test "$LINUX_RESULT" = success
