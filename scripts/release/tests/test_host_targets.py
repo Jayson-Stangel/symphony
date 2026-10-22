@@ -19,6 +19,8 @@ class HostTargets(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/burrito-release.yml').read_text()
         self.assertEqual(workflow.count('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}'), 2)
         self.assertNotIn('macos-15-intel', workflow)
+        self.assertIn('engine_only:', workflow)
+        self.assertIn('!inputs.controller_only && !inputs.engine_only', workflow)
         self.assertNotIn('Download linux_arm64', workflow)
         self.assertNotIn('Download macos_x86_64', workflow)
         config = (ROOT / 'elixir/mix.exs').read_text()

@@ -183,6 +183,10 @@ a GitHub release or GHCR images. Production publication still requires its tag,
 repository variable and protected environment gates. Dispatch the exact reviewed
 head and record the workflow/job URLs; any subsequent commit requires another
 candidate run. A skipped or unavailable native runner is an acceptance gap.
+For bounded standalone-only native acceptance, dispatch the same exact feature
+head with `engine_only=true`. Both retained native engines build and execute;
+runner images and publication are intentionally omitted. This is standalone
+engine evidence, not a claim that image/package qualification ran.
 For a focused controller regression diagnosis, dispatch the same workflow with
 `controller_only=true`: this runs only the macOS ARM64 fixture tests and skips
 artifact building, native engine qualification and publication. Its success is
