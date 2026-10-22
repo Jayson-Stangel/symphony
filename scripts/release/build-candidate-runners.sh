@@ -5,22 +5,16 @@ provider=${1:?provider}; architecture=${2:?architecture}; output=${3:?output}; p
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
-owned_registry="candidate-${provider}-${architecture}-${GITHUB_RUN_ID:-local}-$RANDOM"
-registry_id=
+registry_state="$output/$provider-$architecture.registry-state.txt"
 cleanup() {
   local status=$?
   trap - EXIT
-  if [[ "$registry_id" =~ ^[a-f0-9]{64}$ ]]; then
-    docker rm -f "$registry_id" >/dev/null || status=1
-    if docker inspect "$registry_id" >/dev/null 2>&1; then
-      echo 'owned candidate registry remains after cleanup' >&2; status=1
-    fi
-  fi
+  python3 "$root/scripts/release/test_registry.py" cleanup "$registry_state" || status=1
   exit "$status"
 }
 trap cleanup EXIT
-registry_id=$(docker run -d --name "$owned_registry" -p 127.0.0.1:5000:5000 registry:3)
-[[ "$registry_id" =~ ^[a-f0-9]{64}$ ]] || { echo 'missing owned registry identity' >&2; exit 1; }
+python3 "$root/scripts/release/test_registry.py" start "$registry_state"
+registry_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["container_id"])' "$registry_state")
 images=()
 for selection in current previous; do
   source=$root; destination=$output; tag=candidate
@@ -35,8 +29,13 @@ for selection in current previous; do
   revision=$(git -C "$source" rev-parse HEAD)
   version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' "$source/elixir/mix.exs" | head -n1)
   image="localhost:5000/symphony-$provider:$tag"
-  docker build --target "$provider" -f "$source/runner/Dockerfile" \
-    --build-arg SYMPHONY_VERSION="$version" --build-arg SYMPHONY_REVISION="$revision" -t "$image" "$source"
+  if [ -n "${SYMPHONY_CANDIDATE_BUILD_COMMAND:-}" ]; then
+    [ -x "$SYMPHONY_CANDIDATE_BUILD_COMMAND" ] || { echo 'candidate build command is not executable' >&2; exit 1; }
+    "$SYMPHONY_CANDIDATE_BUILD_COMMAND" "$provider" "$architecture" "$source" "$image" "$version" "$revision" "$selection"
+  else
+    docker build --target "$provider" -f "$source/runner/Dockerfile" \
+      --build-arg SYMPHONY_VERSION="$version" --build-arg SYMPHONY_REVISION="$revision" -t "$image" "$source"
+  fi
   docker push "$image"
   digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
   docker image rm "$image"
@@ -55,4 +54,4 @@ for image in "${images[@]}"; do export_arguments+=(--image "$image"); done
 python3 "$root/scripts/release/export-image.py" "${export_arguments[@]}" \
   --output "$output/$provider-$architecture.docker.tar.gz" \
   --checksum-output "$output/$provider-$architecture.sha256"
-docker logs "$owned_registry" > "$output/$provider-$architecture.registry.log" 2>&1
+docker logs "$registry_id" > "$output/$provider-$architecture.registry.log" 2>&1
