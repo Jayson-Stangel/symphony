@@ -4,13 +4,14 @@ import argparse
 import json
 from pathlib import Path
 import secrets
+import re
 import subprocess
 
 LABEL = 'com.symphony.native-test-owner'
 
 
 def docker(*args):
-    return subprocess.check_output(['docker', *args], text=True, stderr=subprocess.PIPE).strip()
+    return subprocess.check_output(['docker', *args], text=True, stderr=subprocess.PIPE, timeout=120).strip()
 
 
 def start(path):
@@ -19,6 +20,8 @@ def start(path):
     path.write_text(json.dumps(state) + '\n')  # retained before acquisition, including uncertain create completion
     container = docker('create', '--name', state['name'], '--label', LABEL + '=' + token,
                        '-p', '127.0.0.1:5000:5000', 'registry:3')
+    if not re.fullmatch(r"[a-f0-9]{64}", container):
+        raise ValueError("invalid registry acquisition receipt; recover by owned unique name")
     state['container_id'] = container
     path.write_text(json.dumps(state) + '\n')
     docker('start', container)

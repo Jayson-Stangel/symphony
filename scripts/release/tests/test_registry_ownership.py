@@ -48,3 +48,10 @@ class RegistryOwnershipTest(unittest.TestCase):
         value = json.loads(self.path.read_text())
         self.assertEqual(value['cleanup'], 'pending')
         self.assertTrue(value['owner'])
+
+    def test_invalid_acquisition_receipt_retains_recoverable_owned_name(self):
+        with patch.object(registry, 'docker', return_value='invalid receipt') as run:
+            with self.assertRaisesRegex(ValueError, 'invalid registry acquisition'):
+                registry.start(self.path)
+            self.assertEqual(run.call_count, 1)
+        self.assertIsNone(json.loads(self.path.read_text())['container_id'])
