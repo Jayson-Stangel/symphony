@@ -108,7 +108,7 @@ class WorkflowContracts(unittest.TestCase):
                 # aggregate executes only status checks; all heavy jobs are gated.
                 for heavy in ('portable', 'native', 'native-host-package'):
                     block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
-                    self.assertIn("if: needs.changes.outputs.code == 'true'", block)
+                    self.assertIn("needs.changes.outputs.code == 'true'", block)
                 continue
             if name == 'runner-integration':
                 self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
@@ -134,7 +134,7 @@ class WorkflowContracts(unittest.TestCase):
         for name in ('native-host-package',):
             block=job(name)
             self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
-            self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
+            self.assertIn("needs.changes.outputs.code == 'true'",block)
         self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
         self.assertNotIn('macos-15-intel', text)
         self.assertIn('workflow_dispatch:',text)

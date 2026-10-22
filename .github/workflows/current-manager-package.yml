@@ -19,6 +19,7 @@ jobs:
   host-policy:
     uses: ./.github/workflows/host-policy.yml
   package:
+    if: ${{ always() && !cancelled() && needs.host-policy.result == 'success' }}
     needs: host-policy
     strategy:
       fail-fast: false
@@ -62,6 +63,7 @@ jobs:
             packages/package-source-*.txt
           if-no-files-found: error
   metadata:
+    if: ${{ always() && !cancelled() && needs.package.result == 'success' }}
     needs: package
     runs-on: ubuntu-24.04
     outputs:

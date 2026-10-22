@@ -88,6 +88,7 @@ jobs:
           path: manager-inputs/*
           if-no-files-found: error
   manager-package:
+    if: ${{ always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success' }}
     needs: [manager-inputs, helpers]
     uses: ./.github/workflows/current-manager-package.yml
     with:
