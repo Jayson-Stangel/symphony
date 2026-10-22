@@ -11,7 +11,7 @@ case "${EVENT:?}/${REF:?}" in
   push/refs/heads/dev|push/refs/heads/main|workflow_dispatch/refs/heads/dev|workflow_dispatch/refs/heads/main)
     namespace=trusted
     ;;
-  *) namespace="ref-$(printf '%s' "$REF" | sha256sum | cut -c1-20)" ;;
+  *) namespace="ref-$(printf '%s' "$REF" | shasum -a 256 | cut -c1-20)" ;;
 esac
 base_namespace=$namespace
 case "${CACHE_VARIANT:-}" in

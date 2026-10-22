@@ -129,8 +129,8 @@ imports the first run's exported GHA cache into a fresh builder. Inspect actual
 cache-import and layer-hit logs before claiming persistent cross-run reuse; a
 same-job hit alone is insufficient. The changed-recipe build imports the baseline
 snapshot but disables cache export, preserving the original dependency graph and
-avoiding an extra large snapshot that could evict the next run's warm baseline. Every build action also creates its own
-builder, so the ordinary three-phase probe exercises the cache service rather
+avoiding an extra large snapshot that could evict the next run's warm baseline.
+Every build action also creates its own builder, so the ordinary three-phase probe exercises the cache service rather
 than relying on a previously populated daemon builder.
 
 Retained `runner-cache-*` artifacts contain source/digest records, qualification
