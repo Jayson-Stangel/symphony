@@ -4,7 +4,9 @@ This guide installs the stable, source-backed Symphony command and runs a first
 Linear issue in an isolated container. One installation can serve multiple target
 repositories. Each repository has its own workflow, credentials, runner, and workspaces.
 
-For an existing installation, start with [operations](operations.md). To test changes
+For macOS release bundles without host build tools, use
+[packaged installation](packaged-install.md). For an existing source installation,
+start with [operations](operations.md). To test changes
 to Symphony before promotion, use the [development guide](development.md).
 
 ## Prerequisites

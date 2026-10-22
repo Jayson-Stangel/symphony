@@ -1,7 +1,9 @@
 # Operating Symphony
 
-Run project commands from the target repository. For a fresh installation, follow
-[getting started](getting-started.md). Use `symphony --help` for the command summary.
+This guide covers the source-backed installation. For macOS bundles, see
+[packaged installation](packaged-install.md). Run project commands from the target
+repository. For a fresh source installation, follow [getting started](getting-started.md).
+Use `symphony --help` for the command summary.
 
 ## Inspect and control a runner
 

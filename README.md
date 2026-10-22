@@ -67,12 +67,17 @@ merging. Existing workflows are preserved when Symphony is initialized or update
 
 ## Get started
 
-You will need Git, [mise](https://mise.jdx.dev/), a running Docker-compatible container
-engine, a repository the worker can clone and push to, tracker credentials, and an
-agent login. Codex is the default; Claude uses native subscription sign-in in its
+For the source installation below, you will need Git, [mise](https://mise.jdx.dev/),
+a running Docker-compatible container engine, a repository the worker can clone and
+push to, tracker credentials, and an agent login. Codex is the default; Claude uses native subscription sign-in in its
 qualified container profile. Host agent CLIs are unnecessary for container execution.
 
-Install the stable command in a dedicated checkout:
+On macOS 14 or later, a completed release bundle can run without a Symphony source
+checkout or host build tools. See [packaged installation](docs/packaged-install.md)
+for prerequisites, release verification, and setup. Existing source installations
+are not migrated automatically.
+
+For a source installation, install the stable command in a dedicated checkout:
 
 ```bash
 git clone --branch main https://github.com/Jayson-Stangel/symphony.git ~/src/symphony
@@ -87,14 +92,15 @@ to initialize a target repository, configure credentials and tracker scope, auth
 an agent, and run your first issue. The guide uses Linear; other supported trackers
 are described in the [configuration reference](elixir/README.md#configuration).
 
-Keep the stable checkout in place: the global command points to it. To change Symphony
+For source installations, keep the stable checkout in place: the global command points to it. To change Symphony
 itself or test `dev`, use a [separate development environment](docs/development.md).
 
 ## Documentation
 
 | I want to… | Read |
 | --- | --- |
-| Install Symphony and run a first project | [Getting started](docs/getting-started.md) |
+| Install from source and run a first project | [Getting started](docs/getting-started.md) |
+| Install a macOS release bundle without host build tools | [Packaged installation](docs/packaged-install.md) |
 | Inspect, drain, stop, update, or recover a runner | [Operations](docs/operations.md) |
 | Configure trackers, workspaces, hooks, models, or concurrency | [Configuration reference](elixir/README.md#configuration) |
 | Use Claude, configure its tools, or resolve native login and quota issues | [Claude runner guide](docs/claude.md) |

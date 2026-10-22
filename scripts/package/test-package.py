@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""macOS package and host-helper regression checks; no account/model requests."""
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))
+
+
+def call(args, **kwargs):
+    return subprocess.run([str(v) for v in args], text=True, capture_output=True, **kwargs)
+
+
+def manifest(version="1.2.3", revision=None):
+    revision = revision or call(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.strip()
+    runners = {}
+    for provider in ("codex", "claude"):
+        runners[provider] = {}
+        for arch, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
+            runners[provider][arch] = dict(platform=platform, image=f"ghcr.io/test/{provider}@sha256:" + "b" * 64,
+                source_revision=revision, tool_versions={tool: "1.0" for tool in (provider, "git", "node", "playwright")})
+    return dict(schema_version=1, version=version, source_revision=revision, channel="candidate",
+        host_architectures=["arm64", "x86_64"], runners=runners, bundle=dict(filename=f"symphony-{version}-macos.tar.gz"))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "native installed-macOS helper requires macOS")
+class PackageTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not HELPER.is_file():
+            result = call([ROOT / "scripts/release/build-host-helper.sh", HELPER, "--native"])
+            if result.returncode:
+                raise RuntimeError(result.stdout + result.stderr)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="symphony-package-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.identity_home = self.root / "identity-home"; self.identity_home.mkdir()
+        self.git_env = dict(os.environ, HOME=str(self.identity_home), XDG_CONFIG_HOME=str(self.identity_home / "xdg"),
+            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(self.identity_home / ".gitconfig"))
+        for name in list(self.git_env):
+            if (name.startswith("GIT_CONFIG_") and name not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")) or name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE", "GIT_CONFIG"):
+                self.git_env.pop(name)
+        self.file = self.root / "release.json"
+        self.file.write_text(json.dumps(manifest()))
+
+    def helper(self, *args, **kwargs):
+        kwargs.setdefault("env", self.git_env)
+        return call([HELPER, *args], **kwargs)
+
+    def assertOK(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout.strip()
+
+    def bundle(self):
+        output = self.root / "output"
+        self.assertOK(call([ROOT / "scripts/release/package.sh", self.file, output, HELPER]))
+        archive = output / manifest()["bundle"]["filename"]
+        extracted = self.root / "download"
+        extracted.mkdir()
+        self.assertOK(call(["tar", "-xzf", archive, "-C", extracted]))
+        return extracted
+
+    def environment(self):
+        tools = self.root / "tools"
+        tools.mkdir(exist_ok=True)
+        # Poison optional host runtimes; installed code must never execute these.
+        for tool in ("git", "python3", "node", "mise", "elixir", "erl", "swiftc", "codex", "claude"):
+            (tools / tool).write_text(f"#!/bin/sh\necho 'unexpected host dependency: {tool}' >&2\nexit 98\n")
+            (tools / tool).chmod(0o755)
+        docker = tools / "docker"
+        docker.write_text("#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$TEST_DOCKER_CALLS\"\ncase \"$1\" in info) exit 0 ;; image) exit 1 ;; pull) exit 29 ;; volume) exit 1 ;; *) exit 97 ;; esac\n")
+        docker.chmod(0o755)
+        return dict(os.environ, HOME=str(self.root / "home"), PATH=f"{tools}:/usr/bin:/bin",
+            SYMPHONY_HOME="", SYMPHONY_APP_HOME=str(self.root / "app"),
+            SYMPHONY_CONFIG_HOME=str(self.root / "config"), SYMPHONY_BIN_DIR=str(self.root / "bin"),
+            SYMPHONY_SKILLS_DIR=str(self.root / "skills"), SYMPHONY_RUNNER_NAMESPACE="package-fixture",
+            SYMPHONY_CONTAINER_RUNTIME=str(docker), TEST_DOCKER_CALLS=str(self.root / "docker.calls"))
+
+    def test_manifest_validation_and_typed_json(self):
+        self.assertOK(self.helper("validate-manifest", self.file))
+        for change in [lambda m: m.update(version="1.2.3\n"), lambda m: m.update(schema_version=True), lambda m: m.update(schema_version=1.0),
+                lambda m: m["runners"]["codex"]["arm64"].update(image="mutable:latest"),
+                lambda m: m["runners"]["claude"]["x86_64"].pop("tool_versions"),
+                lambda m: m["bundle"].update(filename="other.tar.gz"),
+                lambda m: m["runners"].update(other={})]:
+            value = copy.deepcopy(manifest()); change(value); self.file.write_text(json.dumps(value))
+            self.assertNotEqual(self.helper("validate-manifest", self.file).returncode, 0)
+        self.assertNotEqual(self.helper("get").returncode, 0)
+        self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":false}}').returncode, 1)
+        self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":0}}').returncode, 0)
+        self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
+
+    def test_git_identity_and_linked_worktree_match_git(self):
+        repo = self.root / "project with space"; repo.mkdir()
+        self.assertOK(call(["git", "init", "-q", repo], env=self.git_env))
+        remote = 'https://github.com/owner/example.git'
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", remote], env=self.git_env))
+        self.assertEqual(self.assertOK(self.helper("repository-root", repo)), str(repo))
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), remote)
+        self.assertEqual(self.assertOK(self.helper("hash-blob", remote)), self.assertOK(call(["git", "hash-object", "--stdin"], input=remote, env=self.git_env)))
+        self.assertOK(call(["git", "-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Fixture"], env=self.git_env))
+        worktree = self.root / "linked"
+        self.assertOK(call(["git", "-C", repo, "worktree", "add", "-qb", "fixture", worktree], env=self.git_env))
+        self.assertEqual(self.assertOK(self.helper("repository-remote", worktree)), remote)
+        with (repo / ".git/config").open("a") as config:
+            config.write('\n[remote "origin"]\nurl = "https://github.com/owner/encoded%20path.git" # comment\n')
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=self.git_env)))
+        original = (repo / ".git/config").read_text()
+        for extra in ('\n[extensions]\nworktreeConfig = true\n', '\n[url "ssh://git@example.invalid/"]\ninsteadOf = https://github.com/\n', '\n[url "ssh://git@example.invalid/"] insteadOf = https://github.com/\n'):
+            (repo / ".git/config").write_text(original + extra)
+            self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
+        (repo / ".git/config").write_text(original)
+        # A symlinked Git directory still resolves the same explicit origin.
+        moved = repo / "git-metadata"; (repo / ".git").rename(moved); (repo / ".git").symlink_to(moved)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=self.git_env)))
+        with (repo / ".git/config").open("a") as config:
+            config.write('\n[include]\npath = ../other\n')
+        self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
+
+    def test_external_git_identity_indirection_fails_without_exposing_values(self):
+        repo = self.root / "external-config-project"; repo.mkdir()
+        env = dict(self.git_env); env.pop("GIT_CONFIG_GLOBAL")
+        self.assertOK(call(["git", "init", "-q", repo], env=env))
+        raw = "https://mirror.example/owner/repository.git"
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", raw], env=env))
+        harmless = '[user]\n name = Fixture\n email = fixture@example.invalid\n[credential]\n helper = !echo PRIVATE-HELPER-MUST-NOT-RUN\n'
+        global_file = self.identity_home / ".gitconfig"; global_file.write_text(harmless)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=env)), raw)
+        rewrite = '[url "https://github.com/PRIVATE-REWRITE/"]\n insteadOf = https://mirror.example/\n'
+        xdg = Path(env["XDG_CONFIG_HOME"]) / "git/config"; xdg.parent.mkdir(parents=True)
+        system = self.root / "system.gitconfig"
+        custom = self.root / "custom.gitconfig"
+        for path, selected in ((global_file, env), (xdg, env),
+                (system, dict(env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM="0")),
+                (custom, dict(env, GIT_CONFIG_GLOBAL=str(custom)))):
+            with self.subTest(source=path.name):
+                global_file.write_text(harmless); xdg.write_text("")
+                path.write_text(rewrite)
+                effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=selected))
+                self.assertNotEqual(effective, raw)
+                result = self.helper("repository-remote", repo, env=selected)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("external Git configuration contains identity indirection", result.stderr)
+                self.assertNotIn("PRIVATE-REWRITE", result.stderr + result.stdout)
+        # Canonical /dev/null selections and ordinary empty files are supported.
+        selected_null = dict(env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null", GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_null)), raw)
+        custom.write_text(""); system.write_text("")
+        selected_empty = dict(env, GIT_CONFIG_GLOBAL=str(custom), GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_empty)), raw)
+        # Explicit global selection suppresses both standard HOME/XDG files.
+        global_file.write_text(rewrite); xdg.write_text(rewrite); custom.write_text(harmless)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=dict(env, GIT_CONFIG_GLOBAL=str(custom)))), raw)
+        included = self.root / "included.gitconfig"; included.write_text(rewrite)
+        for value in ('[include]\n path = ' + str(included) + '\n',
+                '[includeIf "gitdir:' + str(repo) + '/"]\n path = ' + str(included) + '\n',
+                '[remote "origin"]\n url = https://example.invalid/PRIVATE-ORIGIN.git\n',
+                '[remote.origin]\n url = https://example.invalid/PRIVATE-ORIGIN.git\n'):
+            custom.write_text(value)
+            selected = dict(env, GIT_CONFIG_GLOBAL=str(custom))
+            result = self.helper("repository-remote", repo, env=selected)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("identity indirection", result.stderr)
+            self.assertNotIn("PRIVATE-", result.stderr + result.stdout)
+        # NOSYSTEM follows Git boolean semantics, including false spelled '0'.
+        custom.write_text(harmless); system.write_text(rewrite)
+        for value, disabled in (("0", False), ("false", False), ("", False), ("1", True), ("true", True), ("2", True)):
+            selected = dict(env, GIT_CONFIG_GLOBAL=str(custom), GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM=value)
+            effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=selected))
+            result = self.helper("repository-remote", repo, env=selected)
+            self.assertEqual(effective == raw, disabled)
+            self.assertEqual(result.returncode == 0, disabled)
+            if disabled: self.assertEqual(result.stdout.strip(), raw)
+
+    def test_git_discovery_and_config_injection_environment_is_rejected(self):
+        repo = self.root / "environment-project"; repo.mkdir()
+        self.assertOK(call(["git", "init", "-q", repo], env=self.git_env))
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", "https://example.invalid/local.git"], env=self.git_env))
+        overrides = {"GIT_DIR": str(repo / ".git"), "GIT_COMMON_DIR": str(repo / ".git"), "GIT_WORK_TREE": str(self.root),
+            "GIT_CEILING_DIRECTORIES": str(self.root), "GIT_DISCOVERY_ACROSS_FILESYSTEM": "0",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "remote.origin.url", "GIT_CONFIG_VALUE_0": "PRIVATE-INJECTION",
+            "GIT_CONFIG_PARAMETERS": "PRIVATE-INJECTION", "GIT_CONFIG": str(self.file)}
+        for key, value in overrides.items():
+            result = self.helper("repository-remote", repo, env=dict(self.git_env, **{key: value}))
+            self.assertNotEqual(result.returncode, 0, key)
+            self.assertIn(key, result.stderr)
+            self.assertNotIn("PRIVATE-INJECTION", result.stderr + result.stdout)
+        injected = dict(self.git_env, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="url.https://injected.invalid/.insteadOf", GIT_CONFIG_VALUE_0="https://example.invalid/")
+        effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=injected))
+        self.assertEqual(effective, "https://injected.invalid/local.git")
+        self.assertNotEqual(self.helper("repository-root", repo, env=injected).returncode, 0)
+
+    def test_flock_matches_python_owner_and_exclusion(self):
+        lock = self.root / "lock"
+        script = '''exec 8>>"$1"; "$2" lock "$1" 8 acquire; "$2" lock "$1" 8 inherited; python3 - "$1" <<'PY'
+import fcntl,sys
+try:
+ fcntl.flock(open(sys.argv[1],'a'), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+ sys.exit(0)
+sys.exit(1)
+PY
+'''
+        self.assertOK(call(["bash", "-e", "-c", script, "fixture", lock, HELPER]))
+        self.assertNotEqual(call(["bash", "-c", 'exec 8>>"$1"; "$2" lock "$1" 8 inherited', "fixture", lock, HELPER]).returncode, 0)
+
+    def test_install_twice_source_free_init_doctor_and_failed_pull(self):
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        shutil.rmtree(bundle)
+        self.assertIn('"installation":"packaged"', self.assertOK(call([command, "--version"], env=env)))
+        self.assertIn('"ready":true', self.assertOK(call([command, "doctor", "--json"], env=env)))
+        repo = self.root / "project"; repo.mkdir(); (repo / ".git").mkdir()
+        (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/project.git\n')
+        self.assertIn("Project: initialized", self.assertOK(call([command, "init", "--linear-project", "disposable-fixture"], cwd=repo, env=env)))
+        original = (repo / "WORKFLOW.md").read_text()
+        self.assertOK(call([command, "init", "--linear-project", "preserve"], cwd=repo, env=env))
+        self.assertEqual((repo / "WORKFLOW.md").read_text(), original)
+        failed = call([command, "auth", "codex", "login"], cwd=repo, env=env)
+        self.assertNotEqual(failed.returncode, 0); self.assertIn("cannot pull released codex image", failed.stderr)
+        self.assertNotIn("build", (self.root / "docker.calls").read_text())
+        self.assertOK(call([command, "--version"], env=env))
+
+    def test_conflict_and_corrupt_install_do_not_activate(self):
+        bundle = self.bundle(); env = self.environment()
+        command = self.root / "bin/symphony"; command.parent.mkdir(); command.write_text("owned")
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0); self.assertEqual(command.read_text(), "owned")
+        self.assertFalse((self.root / "app").exists())
+        command.unlink()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        canary = self.root / "payload-ran"
+        (bundle / "scripts/symphony-package.sh").write_text(f"touch {canary}\n")
+        # Installer verifies shell payload before sourcing the manager library.
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "app/current").exists())
+        self.assertOK(call([command, "--version"], env=env))
+        self.assertFalse(canary.exists())
+        self.assertIn("bundle checksum mismatch", result.stderr)
+
+    def test_release_storage_conflicts_do_not_write_through_links(self):
+        bundle = self.bundle(); env = self.environment()
+        app = self.root / "app"; app.mkdir(mode=0o700)
+        foreign = self.root / "foreign"; foreign.mkdir()
+        canary = foreign / "keep"; canary.write_text("untouched")
+        releases = app / "releases"
+        for target in (foreign, self.root / "missing-target"):
+            with self.subTest(target=target.name):
+                releases.symlink_to(target)
+                result = call([bundle / "install.sh"], env=env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("unsafe or foreign metadata", result.stderr)
+                self.assertEqual(list(foreign.iterdir()), [canary])
+                self.assertEqual(canary.read_text(), "untouched")
+                self.assertFalse((self.root / "missing-target").exists())
+                self.assertFalse((app / "current").exists())
+                releases.unlink()
+        releases.write_text("owned file")
+        result = call([bundle / "install.sh", "--stage-only"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(releases.read_text(), "owned file")
+        releases.unlink(); releases.mkdir(mode=0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list(releases.iterdir()))
+        self.assertFalse((app / "current").exists())
+        # Canonical parent aliases may be intentional; only managed storage
+        # components themselves must be real owned directories.
+        releases.chmod(0o700)
+        version_path = releases / (manifest()["version"] + "-" + manifest()["source_revision"])
+        version_path.symlink_to(self.root / "missing-release")
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(version_path.is_symlink())
+        self.assertFalse((self.root / "missing-release").exists())
+        version_path.unlink()
+        alias = self.root / "parent-alias"; alias.symlink_to(self.root, target_is_directory=True)
+        self.assertOK(call([bundle / "install.sh", "--app-dir", alias / "app"], env=env))
+        self.assertIn('"ready":true', self.assertOK(call([self.root / "bin/symphony", "doctor", "--json"], env=env)))
+
+    def test_links_created_during_copy_are_preserved_before_activation(self):
+        bundle = self.bundle(); env = self.environment()
+        # Retain a separate already-installed manager as a usability canary.
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        existing = self.root / "bin/symphony"
+        before = self.assertOK(call([existing, "--version"], env=env))
+        cp = self.root / "tools/cp"
+        cp.write_text('#!/bin/bash\n/bin/cp "$@" || exit $?\n/bin/mkdir -p "$(dirname "$TEST_CONFLICT_TARGET")"\n/bin/ln -s /a/foreign/command "$TEST_CONFLICT_TARGET"\n')
+        cp.chmod(0o755)
+        for index, kind in enumerate(("command", "skill")):
+            with self.subTest(kind=kind):
+                base = self.root / f"competing-{index}"
+                candidate_env = dict(env, SYMPHONY_APP_HOME=str(base / "app"),
+                    SYMPHONY_BIN_DIR=str(base / "bin"), SYMPHONY_SKILLS_DIR=str(base / "skills"))
+                target = base / ("bin/symphony" if kind == "command" else "skills/symphony-commit")
+                candidate_env["TEST_CONFLICT_TARGET"] = str(target)
+                result = call([bundle / "install.sh"], env=candidate_env)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("refusing to replace", result.stderr)
+                self.assertEqual(os.readlink(target), "/a/foreign/command")
+                self.assertFalse((base / "app/current").is_symlink())
+                self.assertEqual(self.assertOK(call([existing, "--version"], env=env)), before)
+        # Final writes themselves must verify exact targets, not accept any link.
+        wrong = self.root / "wrong-link"; wrong.symlink_to("/a/foreign/command")
+        self.assertNotEqual(self.helper("ensure-link", "/expected/command", wrong).returncode, 0)
+        self.assertEqual(os.readlink(wrong), "/a/foreign/command")
+
+    def test_failed_stage_directory_creation_never_attempts_copy(self):
+        bundle = self.bundle(); env = self.environment()
+        tools = self.root / "tools"
+        (tools / "mktemp").write_text("#!/bin/sh\nexit 73\n"); (tools / "mktemp").chmod(0o755)
+        copied = self.root / "copy-called"
+        (tools / "cp").write_text(f"#!/bin/sh\ntouch {copied}\nexit 97\n"); (tools / "cp").chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(copied.exists())
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
+
+    def test_failed_stage_rename_never_activates_and_preserves_existing_install(self):
+        bundle = self.bundle(); env = self.environment()
+        mv = self.root / "tools/mv"; mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Installed Symphony", result.stdout)
+        self.assertFalse((self.root / "app/current").is_symlink())
+        self.assertFalse((self.root / "bin/symphony").is_symlink())
+        self.assertFalse(list((self.root / "app/releases").iterdir()))
+        mv.unlink()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        before = self.assertOK(call([command, "--version"], env=env))
+        # A second fresh staging destination isolates the rename failure while
+        # retaining the existing active manager and command.
+        script = 'source "$1" --help >/dev/null; package_app_home="$2"; package_stage_bundle "$3"'
+        other = self.root / "other-app"; other.mkdir(mode=0o700)
+        mv.write_text("#!/bin/sh\nexit 73\n"); mv.chmod(0o755)
+        result = call(["bash", "-e", "-c", script, "fixture", command, other, bundle], env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list((other / "releases").iterdir()))
+        self.assertEqual(self.assertOK(call([command, "--version"], env=env)), before)
+
+    def test_host_layouts_missing_engine_and_source_bound_archive(self):
+        mismatch = manifest(revision="c" * 40)
+        self.file.write_text(json.dumps(mismatch))
+        result = call([ROOT / "scripts/release/package.sh", self.file, self.root / "mismatch-output", HELPER])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("source differs", result.stderr)
+        self.file.write_text(json.dumps(manifest()))
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        uname = self.root / "tools/uname"
+        for architecture, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo Darwin ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
+            output = self.assertOK(call([command, "doctor", "--json"], env=env))
+            self.assertEqual(json.loads(output)["architecture"], architecture)
+            result = call([command, "auth", "codex", "login"], env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"pull --platform {platform}", (self.root / "docker.calls").read_text())
+        result = call([command, "doctor", "--json"], env=dict(env, SYMPHONY_CONTAINER_RUNTIME="/unavailable/engine"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(json.loads(result.stdout)["ready"])
+
+    def test_mutable_or_foreign_image_overrides_are_rejected(self):
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        for image in ("mutable:latest", "sha256:" + "c" * 64, "ghcr.io/foreign/runner@sha256:" + "d" * 64):
+            result = call([command, "auth", "codex", "login"], env=dict(env, SYMPHONY_RUNNER_IMAGE=image))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("remove SYMPHONY_RUNNER_IMAGE", result.stderr)
+        self.assertFalse((self.root / "docker.calls").exists())
+
+    def test_custom_app_dir_does_not_require_environment_override(self):
+        bundle = self.bundle(); env = self.environment()
+        env.pop("SYMPHONY_APP_HOME")
+        app = self.root / "custom-app"
+        self.assertOK(call([bundle / "install.sh", "--app-dir", app], env=env))
+        self.assertOK(call([bundle / "install.sh", "--app-dir", app], env=env))
+        shutil.rmtree(bundle)
+        command = self.root / "bin/symphony"
+        self.assertIn('"ready":true', self.assertOK(call([command, "doctor", "--json"], env=env)))
+        self.assertOK(call([command, "--version"], env=env))
+
+    def test_stage_only_does_not_activate_and_arch_failure_is_clear(self):
+        bundle = self.bundle(); env = self.environment()
+        path = self.assertOK(call([bundle / "install.sh", "--stage-only"], env=env))
+        self.assertTrue(Path(path).is_dir()); self.assertFalse((self.root / "app/current").exists())
+        uname = self.root / "tools/uname"; uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin ;; *) echo unsupported ;; esac\n'); uname.chmod(0o755)
+        result = call([bundle / "install.sh"], env=env)
+        self.assertNotEqual(result.returncode, 0); self.assertIn("unsupported host architecture", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
