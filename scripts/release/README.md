@@ -157,8 +157,9 @@ archives and the backwards-compatible combined manifest. No test controller can
 satisfy an unavailable native platform by replacing it with a compile or mock.
 
 For controller-only lifecycle diagnosis, manually dispatch
-`package-lifecycle-diagnostic` with a completed `runner-release` run ID and its
-exact current package source SHA. It downloads that run's real checksummed
+`runner-release` with `diagnostic_artifact_run` set to a completed run ID
+and `diagnostic_package_source_revision` set to its exact current package SHA.
+Only the diagnostic job runs in this mode. It downloads that run's real checksummed
 current/prior packages and x86-64 images, then uses the selected controller head.
 Evidence records the controller SHA, package SHA and diagnostic artifact run
 separately. This never publishes and does not replace final same-head native

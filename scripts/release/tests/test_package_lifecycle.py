@@ -88,7 +88,7 @@ class LifecycleControllerTest(unittest.TestCase):
                     if args == ["docker", "rm", "-f", identifier]:
                         return subprocess.CompletedProcess(args, 0, identifier)
                     if args == ["docker", "inspect", identifier]:
-                        return subprocess.CompletedProcess(args, 1, "")
+                        return subprocess.CompletedProcess(args, 1, "", "Error response from daemon: No such object")
                     self.fail("unexpected cleanup mutation: " + repr(args))
                 with patch.object(lifecycle.subprocess, "run", side_effect=run):
                     if observed_id == identifier:
@@ -107,3 +107,38 @@ class LifecycleControllerTest(unittest.TestCase):
                     with self.assertRaisesRegex(AssertionError, "refused foreign resource"):
                         lifecycle.cleanup_container("runner", {}, {"owned-storage"}, Path(directory))
                     run.assert_called_once()
+
+    def test_cleanup_daemon_errors_never_prove_container_or_volume_absence(self):
+        identifier = "a" * 64
+        for resource in ("container", "volume"):
+            for failure_at in ("initial", "after-removal"):
+                with self.subTest(resource=resource, failure_at=failure_at), tempfile.TemporaryDirectory() as directory:
+                    inspections = []
+                    def run(args, **kwargs):
+                        if "inspect" in args:
+                            inspections.append(args)
+                            if failure_at == "initial" or len(inspections) == 2:
+                                return subprocess.CompletedProcess(args, 1, "", "Cannot connect to Docker daemon")
+                            return subprocess.CompletedProcess(args, 0, json.dumps([{"Id": identifier, "Config": {"Labels": {}}}]), "")
+                        self.assertIn("rm", args)
+                        return subprocess.CompletedProcess(args, 0, "removed", "")
+                    with patch.object(lifecycle.subprocess, "run", side_effect=run):
+                        with self.assertRaisesRegex(AssertionError, "cannot verify resource absence"):
+                            if resource == "container":
+                                lifecycle.cleanup_container("client", {"client": identifier}, set(), Path(directory))
+                            else:
+                                lifecycle.cleanup_volume("owned-volume")
+
+    def test_volume_cleanup_requires_explicit_absence_after_successful_remove(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(args, 0, "[]", "")
+            if "rm" in args:
+                return subprocess.CompletedProcess(args, 0, "owned-volume", "")
+            return subprocess.CompletedProcess(args, 1, "", "Error response from daemon: get owned-volume: no such volume")
+        with patch.object(lifecycle.subprocess, "run", side_effect=run):
+            self.assertEqual(lifecycle.cleanup_volume("owned-volume"), "owned-volume")
+        self.assertEqual(calls, [["docker", "volume", "inspect", "owned-volume"],
+            ["docker", "volume", "rm", "owned-volume"], ["docker", "volume", "inspect", "owned-volume"]])

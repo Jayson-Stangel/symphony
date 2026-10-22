@@ -12,12 +12,21 @@ on:
         description: Full prior Linux-capable candidate source SHA for real two-revision package lifecycle
         type: string
         required: false
+      diagnostic_artifact_run:
+        description: Diagnostic only; reuse this completed runner-release run instead of building
+        type: string
+        required: false
+      diagnostic_package_source_revision:
+        description: Exact package source SHA in the diagnostic artifact run
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   candidate:
+    if: inputs.diagnostic_artifact_run == ''
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -321,6 +330,49 @@ jobs:
         if: always()
         with:
           name: ubuntu26-package-lifecycle-${{ github.sha }}
+          path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+
+  lifecycle-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnostic_artifact_run != ''
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate explicit diagnostic identities
+        env:
+          ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
+        run: |
+          [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]]
+          [[ "$PACKAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          echo 'DIAGNOSTIC ONLY: reused packages do not qualify this controller head for acceptance.'
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaged-candidate
+          path: packages
+          run-id: ${{ inputs.diagnostic_artifact_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runner-candidate-*-x86_64
+          path: runners
+          merge-multiple: true
+          run-id: ${{ inputs.diagnostic_artifact_run }}
+          github-token: ${{ github.token }}
+      - name: Diagnose actual Ubuntu lifecycle using selected real artifacts
+        env:
+          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
+          DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+        run: python3 scripts/release/package-lifecycle.py packages runners evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
           path: evidence/**
           if-no-files-found: error
           retention-days: 30

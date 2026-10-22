@@ -41,10 +41,28 @@ def remove_local_image(run, image):
     assert not present(), ("local image remains", image)
 
 
+def inspect_resource(arguments, absent_messages):
+    observed = subprocess.run(["docker", *arguments], text=True, capture_output=True, timeout=15)
+    if observed.returncode == 0:
+        return observed
+    diagnostic = observed.stdout + observed.stderr
+    assert observed.returncode == 1 and any(message in diagnostic.lower() for message in absent_messages), ("cannot verify resource absence", arguments, diagnostic)
+    return None
+
+
+def cleanup_volume(volume):
+    if inspect_resource(["volume", "inspect", volume], ("no such volume",)) is None:
+        return volume
+    deletion = subprocess.run(["docker", "volume", "rm", volume], text=True, capture_output=True, timeout=30)
+    assert deletion.returncode == 0, ("volume removal failed", volume, deletion.stdout, deletion.stderr)
+    assert inspect_resource(["volume", "inspect", volume], ("no such volume",)) is None, "volume remains: " + volume
+    return volume
+
+
 def cleanup_container(name, controller_ids, storages, evidence):
-    observed = subprocess.run(["docker", "inspect", name], text=True, capture_output=True, timeout=15)
-    if observed.returncode != 0:
-        return None  # A planned backup may never have been created.
+    observed = inspect_resource(["inspect", name], ("no such object", "no such container"))
+    if observed is None:
+        return name  # A planned backup may never have been created.
     config = json.loads(observed.stdout)[0]
     if name in controller_ids:
         safe = config["Id"] == controller_ids[name]
@@ -57,7 +75,7 @@ def cleanup_container(name, controller_ids, storages, evidence):
             subprocess.run(["docker", "logs", config["Id"]], stdout=output, stderr=subprocess.STDOUT, timeout=15)
     deletion = subprocess.run(["docker", "rm", "-f", config["Id"]], text=True, capture_output=True, timeout=30)
     assert deletion.returncode == 0, "container removal failed: " + name
-    assert subprocess.run(["docker", "inspect", config["Id"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode != 0, "container remains: " + name
+    assert inspect_resource(["inspect", config["Id"]], ("no such object", "no such container")) is None, "container remains: " + name
     return name
 
 
@@ -401,16 +419,10 @@ fi
                 except Exception as error:
                     cleanup_errors.append(str(error))
             for volume in owned_volumes:
-                observed = subprocess.run(["docker", "volume", "inspect", volume], text=True, capture_output=True, timeout=15)
-                if observed.returncode != 0:
-                    continue
-                deletion = subprocess.run(["docker", "volume", "rm", volume], text=True, capture_output=True, timeout=30)
-                if deletion.returncode != 0:
-                    cleanup_errors.append("volume removal failed: " + volume)
-                if subprocess.run(["docker", "volume", "inspect", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0:
-                    cleanup_errors.append("volume remains: " + volume)
-                else:
-                    removed.append(volume)
+                try:
+                    removed.append(cleanup_volume(volume))
+                except Exception as error:
+                    cleanup_errors.append(str(error))
             if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode != 0:
                 cleanup_errors.append("Docker unavailable; resource absence cannot be verified")
         except Exception as error:
