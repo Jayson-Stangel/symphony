@@ -200,8 +200,18 @@ fi
         repositories = [root / "one/service", root / "two/service"]
         identifiers, names, ports = [], [], []
         for number, repo in enumerate(repositories):
-            (repo / ".git").mkdir(parents=True)
-            (repo / ".git/config").write_text(f'[remote "origin"]\nurl = https://example.invalid/{number}/service.git\n')
+            repo.mkdir(parents=True)
+            # Preparing the target checkout is a controller responsibility,
+            # separate from installing/running the product in the clean client.
+            # Use real Git metadata, then poison Git for every product command.
+            git_env = {"PATH": os.environ["PATH"], "HOME": str(home), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
+            run(["git", "init", "--quiet", str(repo)], env=git_env)
+            run(["git", "-C", str(repo), "remote", "add", "origin", f"https://example.invalid/{number}/service.git"], env=git_env)
+            tracked = repo / "tracked-project-canary"; tracked.write_text("committed project canary\n")
+            run(["git", "-C", str(repo), "add", tracked.name], env=git_env)
+            run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"], env=git_env)
+            tracked.write_text(tracked.read_text() + "dirty project change\n")
+            (repo / "untracked-project-canary").write_text("untracked project evidence\n")
             client_run([str(command), "init", "--linear-project", "disposable-package-proof", "--local-skill", "commit"], cwd=repo)
             # No real tracker is ever started: replace the generated template
             # before launching the disposable fixture.
@@ -244,6 +254,7 @@ fi
         assert all(m["Type"] == "volume" for m in mount_before if m["Destination"] in ("/workspaces", "/var/lib/symphony"))
         canaries = [root / "config/projects" / (i + ".env") for i in identifiers]
         canaries += [r / "WORKFLOW.md" for r in repositories]
+        canaries += [r / filename for r in repositories for filename in ("tracked-project-canary", "untracked-project-canary")]
         canaries += [r / ".codex/skills/symphony-commit/SKILL.md" for r in repositories]
         hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries}
         def unchanged():
