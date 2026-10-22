@@ -98,7 +98,7 @@ jobs:
           ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           mkdir -p dist
-          docker run -d --name candidate-registry -p 127.0.0.1:5000:5000 registry:3
+          python3 scripts/release/test_registry.py start "$RUNNER_TEMP/native-registry.json"
           image="localhost:5000/symphony-$PROVIDER:candidate"
           docker push "$image"
           digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
@@ -113,7 +113,8 @@ jobs:
           docker tag "$digest" "$image"
           docker save "$image" | gzip > "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz"
           (cd dist && sha256sum ./*.docker.tar.gz > "$PROVIDER-$ARCHITECTURE.sha256")
-          docker logs candidate-registry > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
+          registry=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["container_id"])' "$RUNNER_TEMP/native-registry.json")
+          docker logs "$registry" > "dist/$PROVIDER-$ARCHITECTURE.registry.log" 2>&1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: payload
         with:
@@ -126,6 +127,7 @@ jobs:
           retention-days: 30
       - name: Seal original native record against immutable uploaded payload
         env:
+          GH_TOKEN: ${{ github.token }}
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
           ARTIFACT_ID: ${{ steps.payload.outputs.artifact-id }}
@@ -139,11 +141,42 @@ jobs:
         with:
           name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*.json
+          if-no-files-found: error
           retention-days: 30
+      - name: Remove only the qualification registry owned by this job
+        if: always()
+        run: python3 scripts/release/test_registry.py cleanup "$RUNNER_TEMP/native-registry.json"
+      - name: Retain registry cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/native-registry.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publication-preflight:
+    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    needs: [component-plan, candidate-metadata]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: runner-component-plan
+      - name: Refuse unsupported mixed-component publication before any image push
+        env:
+          MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          plan = json.load(open('component-plan.json'))
+          assert os.environ['MANIFEST_SCHEMA'] == '1', 'independent-component production publication requires integrated lifecycle qualification'
+          assert all(item['action'] == 'build' for group in plan['components'].values() for item in group.values()), 'mixed/reused production image publication is not qualified'
+          PYCODE
 
   publish:
     if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
-    needs: candidate
+    needs: [candidate, publication-preflight]
     environment: production-release
     permissions:
       contents: read
@@ -217,8 +250,10 @@ jobs:
           MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           python3 scripts/release/component_join.py --plan plan/component-plan.json --records candidate --output dist \
-            --schema "$MANIFEST_SCHEMA" ${BASELINE_RUN:+--baseline-run "$BASELINE_RUN"}
+            --schema "$MANIFEST_SCHEMA" "${args[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runner-candidate-metadata

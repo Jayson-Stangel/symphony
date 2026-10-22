@@ -121,9 +121,17 @@ def seal(args):
     with open(args.archive, "rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             checksum.update(block)
+    run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
+    job_inventory = api(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
+    require(job_inventory.get("total_count", 0) <= 100, "incomplete sealing job inventory")
+    allowed_jobs = (f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}")
+    jobs = [job for job in job_inventory.get("jobs", []) if job.get("name") in allowed_jobs]
+    require(len(jobs) == 1 and args.job_name in allowed_jobs, "native sealing job is missing or ambiguous")
+    native_label = "ubuntu-24.04-arm" if architecture == "arm64" else "ubuntu-24.04"
+    require(native_label in jobs[0].get("labels", []), "sealing job has wrong native platform")
     proof = {"repository": REPOSITORY, "run_id": int(os.environ["GITHUB_RUN_ID"]),
              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-             "controller_revision": os.environ["GITHUB_SHA"], "job_name": args.job_name,
+             "controller_revision": os.environ["GITHUB_SHA"], "job_name": jobs[0]["name"],
              "artifact_id": args.artifact_id, "artifact_name": f"runner-candidate-{provider}-{architecture}",
              "artifact_digest": args.artifact_digest, "archive_filename": args.archive_name,
              "archive_sha256": checksum.hexdigest(), "record_filename": args.record_name,

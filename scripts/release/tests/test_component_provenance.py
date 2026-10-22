@@ -5,6 +5,10 @@ import io
 import json
 from pathlib import Path
 import sys
+import os
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 import zipfile
 
@@ -105,6 +109,30 @@ class ComponentProofTest(unittest.TestCase):
         self.jobs["jobs"].append(copy.deepcopy(self.jobs["jobs"][0]))
         with self.assertRaises(ValueError):
             self.verify()
+
+
+class NativeSealTest(unittest.TestCase):
+    def test_seal_preserves_actual_reusable_job_and_shared_payload_record_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            native = record()
+            (root/'record.json').write_text(json.dumps(native))
+            (root/'payload').write_bytes(b'actual archive bytes fixture')
+            args = SimpleNamespace(record=str(root/'record.json'), archive=str(root/'payload'),
+                                   archive_name='codex-arm64.docker.tar.gz', record_name='previous/codex-arm64.json',
+                                   artifact_id=987, artifact_digest='sha256:'+'e'*64, job_name='runner-codex-arm64')
+            env = {'GITHUB_REPOSITORY': provenance.REPOSITORY, 'GITHUB_RUN_ID': '123',
+                   'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a'*40}
+            inventory = {'total_count': 1, 'jobs': [{'name': 'runners / runner-codex-arm64', 'labels': ['ubuntu-24.04-arm']}]}
+            with patch.dict(os.environ, env), patch.object(provenance, 'api', return_value=inventory):
+                provenance.seal(args)
+            sealed = json.loads((root/'record.json').read_text())
+            self.assertEqual(sealed['qualification']['job_name'], 'runners / runner-codex-arm64')
+            self.assertEqual(sealed['qualification']['record_filename'], 'previous/codex-arm64.json')
+            self.assertEqual(sealed['qualification']['archive_sha256'], hashlib.sha256((root/'payload').read_bytes()).hexdigest())
+            inventory['jobs'].append(copy.deepcopy(inventory['jobs'][0]))
+            with patch.dict(os.environ, env), patch.object(provenance, 'api', return_value=inventory), self.assertRaises(ValueError):
+                provenance.seal(args)
 
 
 class ComponentManifestTest(unittest.TestCase):
