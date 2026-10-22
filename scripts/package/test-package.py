@@ -44,10 +44,17 @@ class PackageTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="symphony-package-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        self.identity_home = self.root / "identity-home"; self.identity_home.mkdir()
+        self.git_env = dict(os.environ, HOME=str(self.identity_home), XDG_CONFIG_HOME=str(self.identity_home / "xdg"),
+            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(self.identity_home / ".gitconfig"))
+        for name in list(self.git_env):
+            if (name.startswith("GIT_CONFIG_") and name not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")) or name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE", "GIT_CONFIG"):
+                self.git_env.pop(name)
         self.file = self.root / "release.json"
         self.file.write_text(json.dumps(manifest()))
 
     def helper(self, *args, **kwargs):
+        kwargs.setdefault("env", self.git_env)
         return call([HELPER, *args], **kwargs)
 
     def assertOK(self, result):
@@ -95,30 +102,103 @@ class PackageTest(unittest.TestCase):
 
     def test_git_identity_and_linked_worktree_match_git(self):
         repo = self.root / "project with space"; repo.mkdir()
-        self.assertOK(call(["git", "init", "-q", repo]))
+        self.assertOK(call(["git", "init", "-q", repo], env=self.git_env))
         remote = 'https://github.com/owner/example.git'
-        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", remote]))
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", remote], env=self.git_env))
         self.assertEqual(self.assertOK(self.helper("repository-root", repo)), str(repo))
         self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), remote)
-        self.assertEqual(self.assertOK(self.helper("hash-blob", remote)), self.assertOK(call(["git", "hash-object", "--stdin"], input=remote)))
-        self.assertOK(call(["git", "-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Fixture"]))
+        self.assertEqual(self.assertOK(self.helper("hash-blob", remote)), self.assertOK(call(["git", "hash-object", "--stdin"], input=remote, env=self.git_env)))
+        self.assertOK(call(["git", "-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Fixture"], env=self.git_env))
         worktree = self.root / "linked"
-        self.assertOK(call(["git", "-C", repo, "worktree", "add", "-qb", "fixture", worktree]))
+        self.assertOK(call(["git", "-C", repo, "worktree", "add", "-qb", "fixture", worktree], env=self.git_env))
         self.assertEqual(self.assertOK(self.helper("repository-remote", worktree)), remote)
         with (repo / ".git/config").open("a") as config:
             config.write('\n[remote "origin"]\nurl = "https://github.com/owner/encoded%20path.git" # comment\n')
-        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"])))
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=self.git_env)))
         original = (repo / ".git/config").read_text()
-        for extra in ('\n[extensions]\nworktreeConfig = true\n', '\n[url "ssh://git@example.invalid/"]\ninsteadOf = https://github.com/\n'):
+        for extra in ('\n[extensions]\nworktreeConfig = true\n', '\n[url "ssh://git@example.invalid/"]\ninsteadOf = https://github.com/\n', '\n[url "ssh://git@example.invalid/"] insteadOf = https://github.com/\n'):
             (repo / ".git/config").write_text(original + extra)
             self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
         (repo / ".git/config").write_text(original)
         # A symlinked Git directory still resolves the same explicit origin.
         moved = repo / "git-metadata"; (repo / ".git").rename(moved); (repo / ".git").symlink_to(moved)
-        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"])))
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo)), self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=self.git_env)))
         with (repo / ".git/config").open("a") as config:
             config.write('\n[include]\npath = ../other\n')
         self.assertNotEqual(self.helper("repository-remote", repo).returncode, 0)
+
+    def test_external_git_identity_indirection_fails_without_exposing_values(self):
+        repo = self.root / "external-config-project"; repo.mkdir()
+        env = dict(self.git_env); env.pop("GIT_CONFIG_GLOBAL")
+        self.assertOK(call(["git", "init", "-q", repo], env=env))
+        raw = "https://mirror.example/owner/repository.git"
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", raw], env=env))
+        harmless = '[user]\n name = Fixture\n email = fixture@example.invalid\n[credential]\n helper = !echo PRIVATE-HELPER-MUST-NOT-RUN\n'
+        global_file = self.identity_home / ".gitconfig"; global_file.write_text(harmless)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=env)), raw)
+        rewrite = '[url "https://github.com/PRIVATE-REWRITE/"]\n insteadOf = https://mirror.example/\n'
+        xdg = Path(env["XDG_CONFIG_HOME"]) / "git/config"; xdg.parent.mkdir(parents=True)
+        system = self.root / "system.gitconfig"
+        custom = self.root / "custom.gitconfig"
+        for path, selected in ((global_file, env), (xdg, env),
+                (system, dict(env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM="0")),
+                (custom, dict(env, GIT_CONFIG_GLOBAL=str(custom)))):
+            with self.subTest(source=path.name):
+                global_file.write_text(harmless); xdg.write_text("")
+                path.write_text(rewrite)
+                effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=selected))
+                self.assertNotEqual(effective, raw)
+                result = self.helper("repository-remote", repo, env=selected)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("external Git configuration contains identity indirection", result.stderr)
+                self.assertNotIn("PRIVATE-REWRITE", result.stderr + result.stdout)
+        # Canonical /dev/null selections and ordinary empty files are supported.
+        selected_null = dict(env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null", GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_null)), raw)
+        custom.write_text(""); system.write_text("")
+        selected_empty = dict(env, GIT_CONFIG_GLOBAL=str(custom), GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM="0")
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=selected_empty)), raw)
+        # Explicit global selection suppresses both standard HOME/XDG files.
+        global_file.write_text(rewrite); xdg.write_text(rewrite); custom.write_text(harmless)
+        self.assertEqual(self.assertOK(self.helper("repository-remote", repo, env=dict(env, GIT_CONFIG_GLOBAL=str(custom)))), raw)
+        included = self.root / "included.gitconfig"; included.write_text(rewrite)
+        for value in ('[include]\n path = ' + str(included) + '\n',
+                '[includeIf "gitdir:' + str(repo) + '/"]\n path = ' + str(included) + '\n',
+                '[remote "origin"]\n url = https://example.invalid/PRIVATE-ORIGIN.git\n',
+                '[remote.origin]\n url = https://example.invalid/PRIVATE-ORIGIN.git\n'):
+            custom.write_text(value)
+            selected = dict(env, GIT_CONFIG_GLOBAL=str(custom))
+            result = self.helper("repository-remote", repo, env=selected)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("identity indirection", result.stderr)
+            self.assertNotIn("PRIVATE-", result.stderr + result.stdout)
+        # NOSYSTEM follows Git boolean semantics, including false spelled '0'.
+        custom.write_text(harmless); system.write_text(rewrite)
+        for value, disabled in (("0", False), ("false", False), ("", False), ("1", True), ("true", True), ("2", True)):
+            selected = dict(env, GIT_CONFIG_GLOBAL=str(custom), GIT_CONFIG_SYSTEM=str(system), GIT_CONFIG_NOSYSTEM=value)
+            effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=selected))
+            result = self.helper("repository-remote", repo, env=selected)
+            self.assertEqual(effective == raw, disabled)
+            self.assertEqual(result.returncode == 0, disabled)
+            if disabled: self.assertEqual(result.stdout.strip(), raw)
+
+    def test_git_discovery_and_config_injection_environment_is_rejected(self):
+        repo = self.root / "environment-project"; repo.mkdir()
+        self.assertOK(call(["git", "init", "-q", repo], env=self.git_env))
+        self.assertOK(call(["git", "-C", repo, "remote", "add", "origin", "https://example.invalid/local.git"], env=self.git_env))
+        overrides = {"GIT_DIR": str(repo / ".git"), "GIT_COMMON_DIR": str(repo / ".git"), "GIT_WORK_TREE": str(self.root),
+            "GIT_CEILING_DIRECTORIES": str(self.root), "GIT_DISCOVERY_ACROSS_FILESYSTEM": "0",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "remote.origin.url", "GIT_CONFIG_VALUE_0": "PRIVATE-INJECTION",
+            "GIT_CONFIG_PARAMETERS": "PRIVATE-INJECTION", "GIT_CONFIG": str(self.file)}
+        for key, value in overrides.items():
+            result = self.helper("repository-remote", repo, env=dict(self.git_env, **{key: value}))
+            self.assertNotEqual(result.returncode, 0, key)
+            self.assertIn(key, result.stderr)
+            self.assertNotIn("PRIVATE-INJECTION", result.stderr + result.stdout)
+        injected = dict(self.git_env, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="url.https://injected.invalid/.insteadOf", GIT_CONFIG_VALUE_0="https://example.invalid/")
+        effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=injected))
+        self.assertEqual(effective, "https://injected.invalid/local.git")
+        self.assertNotEqual(self.helper("repository-root", repo, env=injected).returncode, 0)
 
     def test_flock_matches_python_owner_and_exclusion(self):
         lock = self.root / "lock"

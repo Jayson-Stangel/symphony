@@ -30,11 +30,25 @@ Create `symphony-download` before extracting. The project must already be a Git
 checkout with a remotely accessible, explicit `origin` URL. The packaged manager
 finds the repository and its local origin without host Git. Normal Git-generated
 configuration, quoted URLs, linked worktrees and repository paths with spaces are
-supported. A project using Git `include`, `includeIf`, per-worktree configuration, or local URL rewrite rules
-must first
-remove those indirections and make that remote explicit in local configuration; the manager refuses ambiguous
-identity rather than choosing a different repository. Cloning the target project
-and managing Docker installation are outside the installer.
+supported. Identity must be explicit: repository or external Git configuration
+using includes, URL rewrite rules, external `remote.origin` definitions, or
+per-worktree configuration is refused before choosing credentials or storage.
+Ordinary global user name/email and credential-helper settings remain supported.
+The manager inspects `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` (defaulting to
+`~/.config/git/config`) and standard Apple/Homebrew system config locations; it
+honors explicit `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and the boolean
+`GIT_CONFIG_NOSYSTEM`. It never opens include targets or prints configuration
+contents. Where multiple Git distributions have system configurations, select the
+intended one explicitly to avoid ambiguity.
+
+Remove identity indirection and use the repository's explicit origin, or select
+non-indirect global/system files for the same environment used with Git. Explicit
+`/dev/null` config selection is supported. Unset Git discovery/relocation and
+config-injection overrides such as `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+`GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS`; the
+packaged manager refuses these rather than silently assigning a different
+repository identity. Cloning the target project and managing Docker installation
+are outside the installer.
 
 The printed project credentials file is outside the checkout, protected by the
 user's private configuration directory. Fill `LINEAR_API_KEY` and a fine-grained,
