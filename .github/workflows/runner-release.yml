@@ -299,7 +299,7 @@ jobs:
       - name: Download current exact-source qualified helper
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: ${{ matrix.platform == 'macos' && format('macos-host-helper-macos-14-{0}', github.sha) || format('linux-host-helper-{0}', github.sha) }}
+          name: ${{ format('native-host-helper-{0}-{1}', matrix.platform, github.sha) }}
           path: ${{ runner.temp }}/qualified-helper
       - name: Verify qualified helper source, platform and checksum
         env:

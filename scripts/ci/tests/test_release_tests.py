@@ -67,11 +67,11 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'
-        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped', LINUX='skipped')
+        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped')
         self.assertEqual(self.guard('package-checks.yml', name, docs), 0)
-        for key in ('PORTABLE', 'NATIVE', 'PACKAGE', 'LINUX'):
+        for key in ('PORTABLE', 'NATIVE', 'PACKAGE'):
             self.assertNotEqual(self.guard('package-checks.yml', name, dict(docs, **{key: 'failure'})), 0)
-        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success', LINUX='success')
+        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success')
         self.assertEqual(self.guard('package-checks.yml', name, code), 0)
         for key in code:
             if key != 'CODE':

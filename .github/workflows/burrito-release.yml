@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       controller_only:
-        description: Run only isolated controller fixtures on native macOS Intel (no artifacts or publication)
+        description: Run only isolated controller fixtures on native macOS ARM64 (no artifacts or publication)
         type: boolean
         default: false
   push:
@@ -23,6 +23,9 @@ jobs:
   qualification:
     if: ${{ !inputs.controller_only }}
     uses: ./.github/workflows/release-preflight.yml
+  host-policy:
+    uses: ./.github/workflows/host-policy.yml
+
   runners:
     needs: qualification
     if: ${{ !inputs.controller_only }}
@@ -36,14 +39,13 @@ jobs:
       packages: write
 
   build:
-    needs: qualification
+    needs: [qualification, host-policy]
     if: ${{ !inputs.controller_only }}
     name: build-${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        target: [linux_x86_64, linux_arm64, macos_x86_64, macos_arm64]
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
     defaults:
       run:
         working-directory: elixir
@@ -62,8 +64,12 @@ jobs:
       - name: Install Zig
         run: mise install zig@0.15.2
 
-      - name: Install xz
+      - name: Install Linux archive utility
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xz-utils
+      - name: Verify macOS archive utility
+        if: runner.os == 'macOS'
+        run: command -v xz || brew install xz
 
       - name: Install Mix dependencies
         run: |
@@ -98,7 +104,7 @@ jobs:
           cp "burrito_out/symphony_${{ matrix.target }}" "dist/$artifact"
           cd dist
 
-          sha256sum "$artifact" > "$artifact.sha256"
+          shasum -a 256 "$artifact" > "$artifact.sha256"
           python3 - "$artifact" "$GITHUB_SHA" "${{ matrix.target }}" <<'PYTHON'
           import hashlib, json, pathlib, sys
           artifact = pathlib.Path(sys.argv[1])
@@ -116,20 +122,11 @@ jobs:
 
   smoke:
     name: smoke-${{ matrix.target }}
-    needs: build
+    needs: [build, host-policy]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: linux_x86_64
-            runner: ubuntu-24.04
-          - target: linux_arm64
-            runner: ubuntu-24.04-arm
-          - target: macos_x86_64
-            runner: macos-15-intel
-          - target: macos_arm64
-            runner: macos-14
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
 
     steps:
       - name: Checkout the exact candidate controller
@@ -166,7 +163,7 @@ jobs:
 
   controller-diagnostics:
     if: inputs.controller_only
-    runs-on: macos-15-intel
+    runs-on: macos-14
     timeout-minutes: 10
     steps:
       - name: Checkout the exact candidate controller
@@ -194,18 +191,6 @@ jobs:
         with:
           name: linux_x86_64
           path: dist/linux_x86_64
-
-      - name: Download linux_arm64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: linux_arm64
-          path: dist/linux_arm64
-
-      - name: Download macos_x86_64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: macos_x86_64
-          path: dist/macos_x86_64
 
       - name: Download macos_arm64
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

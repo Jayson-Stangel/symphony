@@ -106,7 +106,7 @@ class WorkflowContracts(unittest.TestCase):
             if name == 'package-checks':
                 # Package work moved into concurrent jobs. The named required
                 # aggregate executes only status checks; all heavy jobs are gated.
-                for heavy in ('portable', 'native', 'native-macos-package', 'linux-helper'):
+                for heavy in ('portable', 'native', 'native-host-package'):
                     block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
                     self.assertIn("if: needs.changes.outputs.code == 'true'", block)
                 continue
@@ -122,15 +122,15 @@ class WorkflowContracts(unittest.TestCase):
             remaining=text[start:]
             boundary=re.search(r'\n  [a-z][a-z0-9-]*:',remaining)
             return remaining[:boundary.start()] if boundary else remaining
-        for name in ('native-macos-package','linux-helper'):
+        for name in ('native-host-package',):
             block=job(name)
-            self.assertIn('    needs: [changes, qualification]\n',block)
+            self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
             self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
-        self.assertIn('runner: [macos-14, macos-15-intel]',job('native-macos-package'))
+        self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
         wrapper=job('macos-package')
-        self.assertIn('needs: [changes, qualification, native, native-macos-package, linux-helper]',wrapper)
+        self.assertIn('needs: [changes, qualification, native, native-host-package]',wrapper)
         self.assertIn('if: ${{ always() }}',wrapper)
         self.assertIn('behavioral checks intentionally omitted, not executed.',wrapper)
         # Run both actual literal scripts, preserving bash -e semantics. A
@@ -149,7 +149,7 @@ class WorkflowContracts(unittest.TestCase):
             for result,code in (('success','true'),('success','false'),('failure','false'),('cancelled','true'),('skipped','false'),('success',''),('success','invalid')):
                 for mac in statuses:
                     for linux in statuses:
-                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE='skipped' if code=='false' else 'success',PACKAGE=mac,LINUX=linux,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
+                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE=linux,PACKAGE=mac,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
                         command=scripts[0]+'\n'+scripts[1]
                         actual=subprocess.run(['bash','-e','-c',command],cwd=folder,env=env,capture_output=True,text=True)
                         expected=result=='success' and code in ('true','false') and (mac==linux==('skipped' if code=='false' else 'success'))

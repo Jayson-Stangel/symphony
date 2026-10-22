@@ -30,6 +30,12 @@ codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-$runtime_prefix-codex-auth}
 managed_skills=(commit push pull linear land)
 packaged_install=false
 if [ -f "$symphony_home/release.json" ]; then
+  # A legacy updater may reenter this launcher before activating a staged
+  # bundle. Refuse unsupported hosts before invoking its native helper.
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64|Linux/x86_64) ;;
+    *) die 'packaged installs support only macOS ARM64 and Linux x86-64' ;;
+  esac
   [ -x "$symphony_home/libexec/symphony-host" ] || die 'release bundle is missing its native host helper'
   . "$symphony_home/scripts/symphony-package.sh"
 fi
