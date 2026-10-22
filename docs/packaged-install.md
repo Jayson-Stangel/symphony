@@ -119,3 +119,65 @@ source independence and host-tool exclusion. Native helper compilation and
 cross-architecture layout checks do not prove an actual clean Intel Mac or fresh
 macOS user installation. Container lifecycle observations, native authentication,
 authenticated inference and clean-Mac evidence must be recorded separately.
+
+## Updating a packaged installation
+
+Use the installed command from an initialized project. Ordinary `update` changes
+the shared manager and skills; `--agent` also transitions only that project's
+runner. Other projects keep their qualified image and retained storage until
+their own explicit transition.
+
+```sh
+symphony update                         # latest completed production manager
+symphony update --agent codex           # manager and this project's runner
+symphony update --release 0.0.4 --agent codex
+```
+
+The updater selects one non-draft, non-prerelease GitHub release, verifies its
+manifest and archive checksum, checks the bundle inventory, and stages the exact
+version without activating it. Downloads stay pinned to that release tag. The
+selected image must match the release revision, provider and architecture.
+Packaged updates use no host Git, build tools, Python, or local image build.
+Source installations retain their existing source updater.
+
+A runner transition uses the existing project ownership, drain/idle checks,
+admission checks and recovery journal. The shared manager changes only after
+the selected runner passes admission. Workflows, credentials, native login,
+dirty tracked files, untracked evidence, workspace/state volumes and repository
+ownership remain retained. A failed download or verification leaves the current
+manager and listener usable. A pending transition excludes another shared
+manager update, including one using alternate configuration paths.
+
+```sh
+# Retry an interrupted transition at its already selected release, without
+# consulting latest or requiring the original archive again:
+symphony update --agent codex
+# Restore the retained prior runner and its compatible manager after failure:
+symphony update --rollback-runner
+# After a completed update, transition back to the previous retained release:
+symphony update --rollback-release --agent codex
+```
+
+Use the same provider as the retained project when restoring a completed
+release. `--rollback-release` without `--agent` restores only the shared manager;
+project image pins remain unchanged. A previous release directory is retained
+and verified before recovery. An unfinished transition must first be retried or
+rolled back before selecting another release. Recovery refuses unknown owners,
+altered release bytes, incompatible images and unrelated current-manager links.
+Do not manually repoint `current`, remove transition metadata, or manipulate
+retained runner containers to bypass an updater refusal.
+
+For isolated candidate qualification, keep the separate namespace/application/
+configuration environment above and supply both build artifacts:
+
+```sh
+symphony update --candidate-manifest /tmp/candidate/release.json \
+  --candidate-bundle /tmp/candidate/symphony-VERSION-macos.tar.gz --agent codex
+python3 -m unittest discover -s scripts/release/tests -v
+```
+
+The candidate override requires a nonempty development namespace. It does not
+publish a release or authorize a stable rollout. Portable updater fixtures prove
+selection, verification, exclusion, interrupted activation, retry, and rollback
+control flow. Actual installed native/container observations and clean-machine
+and authenticated account acceptance remain separate evidence.

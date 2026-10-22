@@ -76,6 +76,9 @@ On macOS 14 or later, a completed release bundle can run without a Symphony sour
 checkout or host build tools. See [packaged installation](docs/packaged-install.md)
 for prerequisites, release verification, and setup. Existing source installations
 are not migrated automatically.
+Packaged `symphony update` verifies and stages one release before activating its
+manager and any selected project runner; see [packaged update and recovery](docs/packaged-install.md#updating-a-packaged-installation)
+for retry and retained prior-release rollback procedures.
 
 For a source installation, install the stable command in a dedicated checkout:
 
