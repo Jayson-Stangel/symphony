@@ -84,7 +84,7 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           mkdir -p "$RUNNER_TEMP/host-helper"
-          bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/host-helper/symphony-host"
+          bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/host-helper/symphony-host" --native
           (cd "$RUNNER_TEMP/host-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
       - name: Build actual static Linux x86-64 helper
         if: matrix.platform == 'linux_x86_64'

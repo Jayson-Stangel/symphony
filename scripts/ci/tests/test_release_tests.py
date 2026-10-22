@@ -110,5 +110,23 @@ class RetainedDiagnosticContractTest(unittest.TestCase):
         self.assertNotIn('inputs.controller_only', packages)
 
 
+class NativeHelperInvocationTest(unittest.TestCase):
+    def test_actual_current_mac_helper_step_passes_native_to_the_builder(self):
+        root = Path(__file__).resolve().parents[3]
+        text = (root / '.github/workflows/package-checks.yml').read_text()
+        block = text.split('      - name: Build actual native macOS ARM64 helper\n', 1)[1]
+        body = block.split('        run: |\n', 1)[1].split('      - ', 1)[0]
+        script = '\n'.join(line[10:] for line in body.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            bash = folder / 'bash'
+            bash.write_text('#!/usr/bin/env python3\nimport json,os,pathlib,sys\npathlib.Path(os.environ["CALLS"]).write_text(json.dumps(sys.argv[1:]))\nassert sys.argv[3:] == ["--native"]\npathlib.Path(sys.argv[2]).write_text("native invocation fixture")\n')
+            bash.chmod(0o755)
+            env = dict(os.environ, PATH=str(folder)+os.pathsep+os.environ['PATH'], RUNNER_TEMP=str(folder), CALLS=str(folder/'calls'))
+            subprocess.run(['/bin/bash', '-e', '-c', script], cwd=root, env=env, check=True)
+            import json
+            self.assertEqual(json.loads((folder/'calls').read_text()), ['scripts/release/build-host-helper.sh', str(folder/'host-helper/symphony-host'), '--native'])
+
+
 if __name__ == '__main__':
     unittest.main()

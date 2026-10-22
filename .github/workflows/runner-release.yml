@@ -243,7 +243,7 @@ jobs:
           mkdir -p dist
           python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
             --channel stable --platform-bundles --output "$RUNNER_TEMP/release.json" records/*.json
-          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host"
+          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host" --native
           else bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"; cp "$RUNNER_TEMP/linux-helper/symphony-host" "$RUNNER_TEMP/symphony-host"; fi
           bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist "$RUNNER_TEMP/symphony-host"
       - uses: actions/upload-artifact@v4
