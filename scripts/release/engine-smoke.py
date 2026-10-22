@@ -104,6 +104,8 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
     """Run a verified executable. Callers verify artifact identity before entering."""
     evidence_dir = Path(evidence_dir).resolve()
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    require(not Path("/opt/symphony/claude/helper.mjs").exists(),
+            "qualification requires absent host Claude helper; refusing to invoke host tooling")
     lsof = shutil.which("lsof")
     require(lsof, "lsof is required for process attribution (controller dependency)")
     result = {"passed": False, "forced_cleanup": False}
