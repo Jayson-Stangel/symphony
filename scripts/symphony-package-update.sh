@@ -88,9 +88,9 @@ package_verified_home() {
 package_atomic_link() {
   local target=$1 destination=$2 temporary
   [ ! -e "$destination" ] || [ -L "$destination" ] || die "refusing conflicting packaged path: $destination"
-  temporary=$(mktemp "$package_app_home/.activate.XXXXXX")
-  rm "$temporary"
-  ln -s "$target" "$temporary"
+  temporary=$(mktemp "$package_app_home/.activate.XXXXXX") || return
+  rm "$temporary" || return
+  ln -s "$target" "$temporary" || return
   # BSD and GNU mv follow a destination symlink to a directory unless the
   # destination is removed or rename(2) is used. The native helper owns rename.
   package_helper replace-link "$temporary" "$destination"
@@ -104,7 +104,7 @@ package_activate_home() {
   if [ -n "$previous" ]; then
     [ "$current" = "$previous" ] || die 'current packaged manager changed; updater refused activation'
   fi
-  package_atomic_link "$current" "$package_app_home/previous"
+  package_atomic_link "$current" "$package_app_home/previous" || return
   package_atomic_link "$target" "$package_app_home/current"
 }
 
@@ -130,7 +130,7 @@ package_finish_transition() {
   current=$(package_current_home)
   [ "$current" = "$previous" ] || [ "$current" = "$selected" ] || die 'current manager differs from the retained transition; activation refused'
   if [ "$current" != "$target" ]; then
-    package_activate_home "$target" "$current"
+    package_activate_home "$target" "$current" || return
   fi
   printf '%s\n' "$target" >"$journal/package.committed.next"
   mv "$journal/package.committed.next" "$journal/package.committed"
@@ -161,21 +161,21 @@ EOF
   # Bundles contain only ordinary files and directories. Reject links, devices,
   # and other special entries before extracting even a checksum-verified asset.
   tar -tvzf "$archive" | LC_ALL=C awk 'substr($0,1,1) != "-" && substr($0,1,1) != "d" {bad=1} END {exit bad}' || die 'release archive contains links or special files'
-  mkdir "$destination"
+  mkdir "$destination" || die 'release extraction directory cannot be created'
   tar -xzf "$archive" -C "$destination" || die 'release archive extraction failed'
 }
 
 package_stage_download() (
   set -e
   local requested=$1 candidate_manifest=$2 candidate_bundle=$3 temporary manifest bundle tag version revision filename checksum actual target agent arch field
-  temporary=$(mktemp -d "$package_app_home/.download.XXXXXX")
+  temporary=$(mktemp -d "$package_app_home/.download.XXXXXX") || return
   package_download_temporary=$temporary
   trap 'rm -rf -- "$package_download_temporary"' EXIT
   manifest="$temporary/release.json"
   if [ -n "$candidate_manifest" ]; then
     [ -n "$runner_namespace" ] || die 'candidate package updates require an isolated SYMPHONY_RUNNER_NAMESPACE'
     [ -r "$candidate_manifest" ] && [ -r "$candidate_bundle" ] || die 'candidate manifest and bundle must be readable files'
-    cp "$candidate_manifest" "$manifest"
+    cp "$candidate_manifest" "$manifest" || return
   else
     if [ -n "$requested" ]; then
       case "$requested" in *[!0-9A-Za-z.+-]*|'') die 'invalid release version' ;; esac
@@ -190,11 +190,11 @@ package_stage_download() (
     case "$tag" in *[!0-9A-Za-z.+-]*|'') die 'invalid production release tag' ;; v[0-9]*) ;; *) die 'invalid production release tag' ;; esac
     package_download "https://github.com/Jayson-Stangel/symphony/releases/download/$tag/release.json" "$manifest"
   fi
-  package_helper validate-manifest "$manifest"
-  version=$(package_helper get "$manifest" version)
-  revision=$(package_helper get "$manifest" source_revision)
-  filename=$(package_helper get "$manifest" bundle.filename)
-  checksum=$(package_helper get "$manifest" bundle.sha256)
+  package_helper validate-manifest "$manifest" || return
+  version=$(package_helper get "$manifest" version) || return
+  revision=$(package_helper get "$manifest" source_revision) || return
+  filename=$(package_helper get "$manifest" bundle.filename) || return
+  checksum=$(package_helper get "$manifest" bundle.sha256) || return
   case "$version" in ''|*[!0-9A-Za-z.+-]*) die 'invalid packaged release version' ;; esac
   [ "$filename" = "symphony-$version-macos.tar.gz" ] || die 'release bundle filename does not match version'
   case "$checksum" in *[!a-f0-9]*|'') die 'invalid release bundle checksum' ;; esac
@@ -203,15 +203,15 @@ package_stage_download() (
     [ "$(package_helper get "$manifest" channel)" = stable ] && [ "$tag" = "v$version" ] || die 'release manifest is not the selected production release'
   fi
   bundle="$temporary/$filename"
-  if [ -n "$candidate_manifest" ]; then cp "$candidate_bundle" "$bundle"
+  if [ -n "$candidate_manifest" ]; then cp "$candidate_bundle" "$bundle" || return
   else package_download "https://github.com/Jayson-Stangel/symphony/releases/download/$tag/$filename" "$bundle"; fi
-  actual=$(shasum -a 256 "$bundle"); actual=${actual%% *}
+  actual=$(shasum -a 256 "$bundle") || return; actual=${actual%% *}
   [ "$actual" = "$checksum" ] || die 'release bundle checksum mismatch; installed manager and runner retained'
   package_extract_bundle "$bundle" "$temporary/unpacked"
   [ "$(package_helper get "$temporary/unpacked/release.json" version)" = "$version" ] &&
     [ "$(package_helper get "$temporary/unpacked/release.json" source_revision)" = "$revision" ] || die 'bundle and release manifest identities differ'
-  package_helper validate-manifest "$temporary/unpacked/release.json"
-  package_helper verify-files "$temporary/unpacked"
+  package_helper validate-manifest "$temporary/unpacked/release.json" || return
+  package_helper verify-files "$temporary/unpacked" || return
   [ "$(package_helper get "$manifest" channel)" = "$(package_helper get "$temporary/unpacked/release.json" channel)" ] || die 'bundle and release channels differ'
   for agent in codex claude; do
     for arch in arm64 x86_64; do

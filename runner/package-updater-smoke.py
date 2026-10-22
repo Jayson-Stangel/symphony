@@ -29,6 +29,8 @@ if len(sys.argv) != 5 or sys.platform != "darwin":
     raise SystemExit(__doc__)
 inputs = [Path(value).resolve() for value in sys.argv[1:]]
 manifests = [json.loads(inputs[index].read_text()) for index in (0, 2)]
+if manifests[0]["runners"]["codex"]["arm64"]["image"] == manifests[1]["runners"]["codex"]["arm64"]["image"]:
+    raise SystemExit("update proof requires distinct selected Codex manifest digests")
 for index in (0, 1):
     if hashlib.sha256(inputs[index * 2 + 1].read_bytes()).hexdigest() != manifests[index]["bundle"]["sha256"]:
         raise SystemExit("candidate archive checksum differs")
@@ -114,7 +116,8 @@ def docker(*args):
 
 
 def launch(*args, project=0, expected=0, extra=None):
-    return run([*sandbox_prefix, command, *args], expected, cwd=projects[project], env=environment | (extra or {})).stdout
+    directory = projects[project] if projects[project].exists() else proof
+    return run([*sandbox_prefix, command, *args], expected, cwd=directory, env=environment | (extra or {})).stdout
 
 
 def free_port():
@@ -154,7 +157,10 @@ try:
     run([extracted / "install.sh"], env=environment)
     shutil.rmtree(extracted)
     assert current_version() == manifests[0]["version"]
-    launch("doctor", "--json", project=0) if projects[0].exists() else None
+    launch("doctor", "--json")
+    if sandbox:
+        denied = run([*sandbox_prefix, "/bin/cat", checkout / "scripts/symphony"], expected=None, env=environment)
+        assert denied.returncode != 0, "source checkout access was not denied"
     docker("volume", "create", auth_volume)
     for index, project in enumerate(projects):
         project.mkdir(parents=True)
@@ -221,6 +227,7 @@ try:
     # and qualified prior container must still support updater-controlled rollback.
     (proof / "activation-fault").touch()
     failure = update_second("--agent", "codex", expected=None)
+    assert "FAULT after actual resume" in failure
     assert current_version() == manifests[0]["version"]
     assert docker("inspect", "--format", "{{.State.Running}}", names[0] + "-before-update") == "false"
     app.chmod(0o700)

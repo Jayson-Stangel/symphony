@@ -208,6 +208,15 @@ class PackageUpdateTest(unittest.TestCase):
         self.assertEqual(self.current(), self.initial)
         self.assertEqual(evidence.read_text(), "keep me")
 
+    def test_invalid_external_schema_stops_before_staging_or_activation(self):
+        value = json.loads(self.second[0].read_text())
+        value["schema_version"] = 2
+        self.second[0].write_text(json.dumps(value))
+        result = self.candidate()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        self.assertFalse((self.app / "releases" / self.second[2].name).exists())
+
     def test_pending_transition_pins_retry_and_excludes_other_configuration(self):
         (self.app / "fail-transition").touch()
         result = self.candidate("--agent", "codex")
