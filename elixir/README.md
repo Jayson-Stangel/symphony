@@ -199,15 +199,14 @@ Symphony ships self-contained executables built with
 [Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and Symphony,
 but still expect `codex`, `git`, and the selected tracker credentials on the target machine.
 
-Supported release targets:
+Supported native release targets:
 
-- `macos_arm64`
-- `macos_x86_64`
-- `linux_arm64`
-- `linux_x86_64`
+- `macos_arm64` (Apple Silicon macOS)
+- `linux_x86_64` (Linux AMD64)
 
-`v*` tags qualify all four targets and the matching prebuilt runners before approved
-publication. A manual workflow run builds candidate artifacts without creating a release.
+`v*` tags qualify both native targets and the four prebuilt runner images
+(Codex and Claude on Linux ARM64 and AMD64) before approved publication. A manual
+workflow run builds candidate artifacts without creating a release.
 See the [release artifact contract](../scripts/release/README.md) for registry setup,
 production environment approval and the source-independent manager bundle contract.
 
