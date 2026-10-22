@@ -32,12 +32,6 @@ COPY runner/browser/smoke.cjs ./
 RUN node smoke.cjs
 
 FROM browser-tools AS common
-ARG SYMPHONY_VERSION=development
-ARG SYMPHONY_REVISION=unknown
-ARG TARGETARCH
-LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
-      org.opencontainers.image.revision=$SYMPHONY_REVISION \
-      com.symphony.architecture=$TARGETARCH
 WORKDIR /opt/symphony/elixir
 COPY elixir/mix.exs elixir/mix.lock ./
 RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod \
@@ -80,6 +74,14 @@ USER 11001:11001
 WORKDIR /var/lib/symphony
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/symphony-claude-runner"]
 
+# Identity belongs to the finished image, after every dependency/application layer.
+ARG SYMPHONY_VERSION=development
+ARG SYMPHONY_REVISION=unknown
+ARG TARGETARCH
+LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
+      org.opencontainers.image.revision=$SYMPHONY_REVISION \
+      com.symphony.architecture=$TARGETARCH
+
 # Credential-free Linux verification of the same transport and process ownership.
 FROM claude AS claude-test
 USER 0:0
@@ -100,3 +102,11 @@ LABEL com.symphony.agent=codex com.symphony.protocol=1
 ARG CODEX_VERSION=0.163.0
 RUN npm install --global "@openai/codex@$CODEX_VERSION"
 LABEL com.symphony.codex.version=$CODEX_VERSION
+
+# Keep revision-only changes out of the dependency and compilation cache keys.
+ARG SYMPHONY_VERSION=development
+ARG SYMPHONY_REVISION=unknown
+ARG TARGETARCH
+LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
+      org.opencontainers.image.revision=$SYMPHONY_REVISION \
+      com.symphony.architecture=$TARGETARCH
