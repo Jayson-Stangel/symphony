@@ -1,0 +1,5 @@
+name: Supply scoped Actions cache runtime
+description: Mask the standard Actions cache token and expose only cache runtime variables to the native build controller.
+runs:
+  using: node24
+  main: runtime.js
