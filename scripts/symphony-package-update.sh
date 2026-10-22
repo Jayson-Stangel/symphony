@@ -218,6 +218,7 @@ package_stage_download() (
   [ "$(package_helper get "$manifest" schema_version)" = "$(package_helper get "$temporary/unpacked/release.json" schema_version)" ] || die 'bundle and release schemas differ'
   [ "$(package_helper get "$manifest" runners)" = "$(package_helper get "$temporary/unpacked/release.json" runners)" ] || die 'bundle runner identity or qualification differs from release manifest'
   [ "$(package_helper get "$manifest" distribution 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" distribution 2>/dev/null || printf '{}')" ] || die 'bundle distribution differs from release manifest'
+  [ "$(package_helper get "$manifest" original_components 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" original_components 2>/dev/null || printf '{}')" ] || die 'bundle bridge original components differ from release manifest'
   if [ "$(package_helper get "$manifest" schema_version)" = 2 ]; then
     [ "$(package_helper get "$manifest" compatibility)" = "$(package_helper get "$temporary/unpacked/release.json" compatibility)" ] || die 'bundle compatibility differs from release manifest'
   fi

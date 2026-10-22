@@ -45,10 +45,23 @@ func validateManifest(_ path: String) throws -> [String: Any] {
         guard Set(compatibility.keys) == Set(["runner_protocol"]), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager/runner compatibility") }
     }
     guard Set(object(manifest["runners"]).keys) == Set(["codex", "claude"]) else { fail("both runner providers are required") }
+    let bridgeOriginals = object(manifest["original_components"])
+    if manifest["original_components"] != nil {
+        guard schema == 1, Set(bridgeOriginals.keys) == Set(["codex", "claude"]) else { fail("invalid bridge original components") }
+        for provider in ["codex", "claude"] { guard Set(object(bridgeOriginals[provider]).keys) == Set(["arm64", "x86_64"]) else { fail("incomplete bridge original components") } }
+    }
     for provider in ["codex", "claude"] {
         guard Set(object(object(manifest["runners"])[provider]).keys) == Set(["arm64", "x86_64"]) else { fail("both runner architectures are required") }
         for arch in ["arm64", "x86_64"] {
-            let runner = object(object(object(manifest["runners"])[provider])[arch])
+            let selected = object(object(object(manifest["runners"])[provider])[arch])
+            let runner = bridgeOriginals.isEmpty ? selected : object(object(bridgeOriginals[provider])[arch])
+            if !bridgeOriginals.isEmpty {
+                guard let originalImage = runner["image"] as? String, let selectedImage = selected["image"] as? String,
+                      matches(selectedImage, "^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$"),
+                      originalImage.split(separator: "@").last == selectedImage.split(separator: "@").last else { fail("bridge transfer changes original OCI digest") }
+                var expected = runner; expected["image"] = selectedImage; expected.removeValue(forKey: "qualification")
+                guard NSDictionary(dictionary: expected).isEqual(to: selected) else { fail("bridge selected image differs from original component") }
+            }
             let tools = object(runner["tool_versions"])
             for tool in [provider, "git", "node", "playwright"] { guard let value = tools[tool] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { fail("missing recorded tool version: \(tool)") } }
             guard let runnerRevision = runner["source_revision"] as? String, matches(runnerRevision, "^[a-f0-9]{40}$"),
@@ -56,7 +69,7 @@ func validateManifest(_ path: String) throws -> [String: Any] {
                   runner["platform"] as? String == (arch == "arm64" ? "linux/arm64" : "linux/amd64"),
                   let image = runner["image"] as? String,
                   matches(image, "^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$") else { fail("missing or invalid \(provider)/\(arch) release image") }
-            if schema == 2 {
+            if schema == 2 || !bridgeOriginals.isEmpty {
                 let proof = object(runner["qualification"])
                 let dependencies = object(runner["dependencies"])
                 guard let engine = tools["elixir"] as? String, !engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

@@ -47,6 +47,13 @@ class ReusePlannerTest(unittest.TestCase):
                 self.assertEqual(decision["runner"], before["runners"][provider][arch])
                 self.assertNotEqual(decision["runner"]["source_revision"], value["manager_source_revision"])
 
+    def test_same_source_schema1_bridge_requires_four_actual_current_components(self):
+        value=runner_reuse.plan(self.root,self.baseline,self.verify,self.inputs,same_source_bridge=True)
+        self.assertTrue(value['has_builds'])
+        self.assertEqual(len(value['build_matrix']['include']),4)
+        self.assertEqual(value['reuse_matrix']['include'],[])
+        self.assertTrue(all(item['source_revision']==value['manager_source_revision'] for item in value['build_matrix']['include']))
+
     def test_changed_provider_does_not_reuse_or_requalify_other_provider(self):
         def changed(root, provider, architecture):
             result = self.inputs(root, provider, architecture)

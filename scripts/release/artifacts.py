@@ -54,6 +54,20 @@ def validate(value, require_bundle=True):
             require(isinstance(tools, dict), "tool versions must be an object")
             for tool in (provider, "git", "node", "playwright"):
                 require(isinstance(tools.get(tool), str) and bool(tools[tool].strip()), f"missing {tool} version")
+    if "original_components" in value:
+        originals=value["original_components"]
+        require(schema == 1 and isinstance(originals,dict) and set(originals)==set(PROVIDERS), "invalid bridge original components")
+        for provider in PROVIDERS:
+            require(isinstance(originals[provider],dict) and set(originals[provider])==set(ARCHITECTURES), "incomplete bridge original components")
+            for architecture in ARCHITECTURES:
+                original=originals[provider][architecture]
+                require(isinstance(original,dict), "invalid bridge original component")
+                validate_component(original,provider,architecture)
+                expected=dict(original,image=runners[provider][architecture]["image"])
+                expected.pop("qualification",None)
+                require(original["source_revision"]==value["source_revision"] and expected==runners[provider][architecture],
+                        "bridge selected image differs from original component")
+                require(original["image"].split('@',1)[1]==runners[provider][architecture]["image"].split('@',1)[1], "bridge transfer changes original OCI digest")
     if "distribution" in value:
         require(schema == 2, "distribution mapping requires independent component schema")
         distribution = value["distribution"]

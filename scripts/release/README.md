@@ -77,15 +77,31 @@ first completed release; new GHCR packages may default to private. A failed
 anonymous digest pull fails publication. Approval remains an operator action for
 the exact production scope; setting the variable alone is not approval.
 
-After the normal review, promotion and release approval gates, create the matching
-`vVERSION` tag. All four native candidate image qualifications must pass before
-the protected publication jobs can push those exact tested images. Publication
-then removes login credentials, pulls each GHCR digest anonymously, reruns smoke,
-and records the actual public digest. The manager archive and checksum are built
-from those four records. A legacy schema-1 bridge binds them to its own revision;
-schema 2 preserves each actual runner revision and qualified payload origin. The packaged-manager prerequisite
-must be integrated: absent `package.sh`, production fails closed. No Burrito engine
-binary is needed to build or run the container manager bundle.
+After normal review, promotion and release approval, a matching `vVERSION` tag
+uses the complete source-bound component plan. Before the protected transfer job,
+all original native evidence and payload availability are reverified. Every
+reused public digest must already be anonymously available with raw manifest
+bytes and a registry digest header matching the exact original OCI digest.
+Missing reused distribution evidence refuses before any push.
+
+The protected job transfers only missing newly built components. It loads the
+original verified payload, checks the original config/source/input/platform,
+pushes that exact image and refuses any digest conversion. Already available
+original digests are never retagged or pushed. Manager-only schema2 releases run
+zero image build, export, transfer or repeated native qualification commands.
+The complete original records and separate immutable `distribution` map reach
+both internal and external manager manifests, built with already-qualified
+native helpers. Repository publication credentials reach only the registry
+client, never Docker build arguments or container environments.
+
+A strict schema1 bridge remains publishable: its plan requires all four actual
+current-source components. The legacy `runners` view selects their public refs;
+additive `original_components` retains every original native record unchanged.
+Both views must agree in source, config, tools and exact OCI digest. New native
+validators check this relation; old strict schema1 updaters keep their existing
+source-equals-manager contract. Manual runner-release defaults to this explicit
+bridge mode; ordinary callers and automated stable releases use schema2. No
+production publication has been exercised by the nonpublishing qualification.
 
 The GitHub release job runs only after every executable smoke and runner/bundle
 job succeeds. Stable download/update consumers select only a completed public
@@ -178,8 +194,8 @@ shared payload when appropriate. Every planned build requires a matching actual
 current-source native record at the terminal join. Unique registry ownership is
 recorded before acquisition, and always-cleanup verifies the exact name, label
 and ID before removing it. Cleanup evidence is retained even on qualification or
-upload failure. Unsupported schema-2 or mixed/reused production image publication
-refuses in one pre-publication gate before any matrix job can push.
+upload failure. Production preflight validates all selected components and public
+reuse availability before the single protected transfer job can push anything.
 
 ## Native Docker layer cache
 
@@ -480,8 +496,9 @@ changing that digest is rejected by Python and the native helper. Original runne
 records and proof remain unchanged. Installed consumers select the distribution
 reference but verify the original source, input identity, protocol and config ID.
 External and bundled manifests must carry identical distribution maps. This
-contract alone does not publish, transfer or establish availability of an alias;
-plan-aware availability checks and protected publication remain separate work.
+contract alone does not establish availability of an alias. Plan-aware protected
+publication verifies actual anonymous immutable availability and transfers only
+missing newly built components; candidate tests remain loopback-only.
 Ordinary current-manager helper scheduling
 ------------------------------------------
 

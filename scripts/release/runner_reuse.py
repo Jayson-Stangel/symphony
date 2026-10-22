@@ -12,7 +12,7 @@ from component_provenance import verify_origin
 from runner_inputs import identity
 
 
-def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None, browser_inputs=None):
+def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None, browser_inputs=None, same_source_bridge=False):
     manager = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     records = list(candidates or [])
     for provider, group in baseline.get("runners", {}).items():
@@ -58,7 +58,7 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                     continue
                 if matches_browser and provider not in browser_evidence[architecture]:
                     browser_evidence[architecture][provider] = {"record": record, "origin": receipt}
-                if matches and decision["action"] == "build":
+                if matches and not same_source_bridge and decision["action"] == "build":
                     original = {key: value for key, value in record.items() if key not in ("provider", "architecture")}
                     decision.update(action="reuse", reason="unchanged declared inputs; original qualified resolution retained",
                                     source_revision=record["source_revision"], runner=original, record=record,
@@ -101,6 +101,7 @@ def main():
     parser.add_argument("--baseline-run", type=int, help="exact authorized manual candidate qualification run (diagnostic plan only)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--require-reuse", action="store_true")
+    parser.add_argument("--same-source-bridge", action="store_true", help="qualify all four real current-source schema1 bridge images")
     args = parser.parse_args()
     try:
         artifacts.require(not (args.baseline and args.baseline_run), "choose one baseline selector")
@@ -116,7 +117,7 @@ def main():
         else:
             candidates = discover(candidate_run=args.baseline_run)
         verifier = lambda record: verify_origin(record, candidate_run=args.baseline_run)
-        result = plan(args.root, baseline, verify=verifier, candidates=candidates, browser_inputs=identity)
+        result = plan(args.root, baseline, verify=verifier, candidates=candidates, browser_inputs=identity, same_source_bridge=args.same_source_bridge)
         result["baseline_selection"] = {"mode": "explicit-manual-candidate" if args.baseline_run else
                                        "explicit-manifest" if args.baseline else "bounded-verified-fork-history",
                                        "run_id": args.baseline_run, "candidate_count": len(candidates or [])}
