@@ -36,8 +36,11 @@ def _prepare(root, plan, built, output, payloads, verify):
             artifacts.require(snapshot['input_identity'] == decision['input_identity'] == record['input_identity'],
                               'actual component input closure differs from current source')
             origin = verify(record)
-            if built is None:
+            if decision['action'] == 'reuse':
+                artifacts.require(record == decision['record'], 'selected original component changed after planning')
                 artifacts.require(origin == decision['origin'], 'original component origin changed after planning')
+            else:
+                artifacts.require(record['source_revision'] == revision, 'planned build requires actual current-source component')
             records.append(record)
             if payloads is not None and architecture == 'x86_64':
                 destination = payloads / provider

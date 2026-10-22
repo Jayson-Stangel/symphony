@@ -156,6 +156,26 @@ class ManagerComposition(unittest.TestCase):
             self.assertEqual(final['runners'], value['runners'])
             self.assertEqual(final['bundle']['sha256'], hashlib.sha256(b'actual mac native archive fixture').hexdigest())
 
+    def test_built_join_cannot_replace_a_valid_original_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'; root.mkdir()
+            plan = self.fixture(root)
+            original = Path(directory) / 'original'
+            verify = lambda record: {'original': record['image']}
+            with patch.object(PREPARE, 'identity', return_value={'input_identity': 'd' * 64}):
+                PREPARE.prepare(root, plan, None, original, None, verify)
+                built = json.loads((original / 'release.json').read_text())
+                replacement = copy.deepcopy(built)
+                replacement['runners']['codex']['arm64']['image'] = 'localhost:5000/symphony-codex@sha256:'+'e'*64
+                output = Path(directory) / 'changed-record'
+                with self.assertRaisesRegex(ValueError, 'component changed after planning'):
+                    PREPARE.prepare(root, plan, replacement, output, None, verify)
+                self.assertFalse(output.exists())
+                output = Path(directory) / 'changed-origin'
+                with self.assertRaisesRegex(ValueError, 'origin changed after planning'):
+                    PREPARE.prepare(root, plan, built, output, None, lambda record: {'original': record['image'], 'other_job': True})
+                self.assertFalse(output.exists())
+
     def test_changed_or_unavailable_component_never_publishes_preparation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'source'; root.mkdir()
