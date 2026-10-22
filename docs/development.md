@@ -177,14 +177,14 @@ UID migration and authenticated inference remain separate qualification.
 ### Native standalone engine qualification
 
 The `burrito-release` workflow can be manually dispatched on a feature branch.
-A branch dispatch builds candidate artifacts and runs all four existing native
-smoke targets (Linux x86-64/ARM64, macOS Intel/Apple Silicon), without publishing
+A branch dispatch builds candidate artifacts and runs exactly two native standalone
+smoke targets (Linux x86-64 and macOS ARM64), without publishing
 a GitHub release or GHCR images. Production publication still requires its tag,
 repository variable and protected environment gates. Dispatch the exact reviewed
 head and record the workflow/job URLs; any subsequent commit requires another
 candidate run. A skipped or unavailable native runner is an acceptance gap.
 For a focused controller regression diagnosis, dispatch the same workflow with
-`controller_only=true`: this runs only the macOS Intel fixture tests and skips
+`controller_only=true`: this runs only the macOS ARM64 fixture tests and skips
 artifact building, native engine qualification and publication. Its success is
 controller evidence only, never a substitute for the full native candidate run.
 

@@ -8,6 +8,10 @@ from pathlib import Path
 
 ARCHITECTURES = {"arm64": "linux/arm64", "x86_64": "linux/amd64"}
 PROVIDERS = ("codex", "claude")
+# The global architecture union stays compatible with strict schema1 validators.
+# Platform-specific declarations describe each actual native bundle truthfully.
+SUPPORTED_HOSTS = {host["platform"]: [host["architecture"]] for host in
+                   json.loads(Path(__file__).with_name("host-targets.json").read_text())["include"]}
 DIGEST_IMAGE = re.compile(r"[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}\Z")
 REVISION = re.compile(r"[0-9a-f]{40}\Z")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?\Z")
@@ -58,6 +62,13 @@ def validate(value, require_bundle=True):
     if "package_platform" in value:
         require(value["package_platform"] in ("macos", "linux_x86_64"), "invalid package platform")
         require(value["package_platform"] != "linux_x86_64" or "bundles" in value, "Linux package has no platform bundles")
+    if "supported_hosts" in value:
+        require(value["supported_hosts"] == SUPPORTED_HOSTS, "unsupported host platform policy")
+        require(bundle.get("architectures") == SUPPORTED_HOSTS["macos"], "macOS bundle architecture differs")
+        if "bundles" in value:
+            require(value["bundles"]["linux_x86_64"].get("architectures") == SUPPORTED_HOSTS["linux_x86_64"], "Linux bundle architecture differs")
+    elif "architectures" in bundle or any("architectures" in item for item in value.get("bundles", {}).values()):
+        require(False, "bundle architecture requires explicit supported host policy")
     return value
 
 
@@ -75,12 +86,13 @@ def assemble(args):
         "source_revision": args.revision,
         "channel": args.channel,
         "host_architectures": list(ARCHITECTURES),
+        "supported_hosts": SUPPORTED_HOSTS,
         "runners": runners,
-        "bundle": {"filename": f"symphony-{args.version}-macos.tar.gz"},
+        "bundle": {"filename": f"symphony-{args.version}-macos.tar.gz", "architectures": SUPPORTED_HOSTS["macos"]},
     }
     if getattr(args, "platform_bundles", False) or getattr(args, "linux_bundle", None):
         result["bundles"] = {"macos": result["bundle"],
-                             "linux_x86_64": {"filename": f"symphony-{args.version}-linux_x86_64.tar.gz"}}
+                             "linux_x86_64": {"filename": f"symphony-{args.version}-linux_x86_64.tar.gz", "architectures": SUPPORTED_HOSTS["linux_x86_64"]}}
     if getattr(args, "linux_bundle", None):
         linux = Path(args.linux_bundle)
         require(linux.name == result["bundles"]["linux_x86_64"]["filename"], "Linux bundle filename differs")

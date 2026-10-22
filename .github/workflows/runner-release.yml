@@ -253,7 +253,7 @@ jobs:
             fi
             mkdir -p "$destination"
             helper="$destination/symphony-host"
-            if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper"
+            if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
             else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
             bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
           done

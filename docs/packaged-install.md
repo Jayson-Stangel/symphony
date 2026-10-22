@@ -1,6 +1,6 @@
 # Packaged installation on macOS and Ubuntu
 
-On macOS 14 or later, or Ubuntu 26.04 x86-64, install Symphony from a completed stable
+On Apple Silicon macOS 14 or later, or Ubuntu 26.04 x86-64, install Symphony from a completed stable
 [GitHub release](https://github.com/Jayson-Stangel/symphony/releases). The manager
 uses prebuilt Linux runner images and a bundled native helper; end users need no
 Symphony source checkout, host Git, Python, Node, Codex, Claude, mise, Erlang,
@@ -62,8 +62,8 @@ symphony doctor
 ```
 
 Installation needs no sudo and does not run `symphony setup` or build an image.
-The macOS archive carries a universal Apple Silicon/Intel host helper. Apple Silicon
-selects the Linux ARM64 runner; Intel selects Linux AMD64. Missing artifacts or
+New macOS archives carry only an ARM64 Apple Silicon helper and select the Linux
+ARM64 runner. Intel macOS host installation is unsupported. Missing artifacts or
 failed pulls stop without choosing a different provider or architecture.
 `--version` and `doctor` report release identity without a Symphony `.git` directory.
 
@@ -83,8 +83,8 @@ symphony doctor
 
 The static Linux helper needs no Swift, SDK or crypto shared libraries. Ubuntu
 x86-64 selects the Linux AMD64 runner. Linux ARM64 host installation is explicitly
-unsupported; the existing Linux ARM64 runner/standalone engine remains supported
-for its own consumers. A wrong-platform bundle, missing image or unavailable
+unsupported. Linux ARM64 container runners remain required for Apple Silicon;
+new standalone engines support only Linux x86-64 and macOS ARM64. A wrong-platform bundle, missing image or unavailable
 Docker engine fails clearly without a build fallback. All following project,
 credential, native-login, runner, update and recovery commands apply to both hosts.
 The installed updater hashes downloads through the bundled helper and requires no
@@ -216,8 +216,8 @@ storage.
 
 ## Building and checking a candidate
 
-On a macOS development/CI host, create an internal release manifest with the
-JAY-686 tooling, then build the universal helper and archive:
+On an Apple Silicon macOS development/CI host, create an internal release manifest
+with the release tooling, then build the ARM64 helper and archive:
 
 ```sh
 bash scripts/release/package.sh /path/to/internal-release.json /tmp/candidate-output
@@ -225,8 +225,9 @@ python3 scripts/package/test-package.py -v
 ```
 
 The optional third packer argument supplies a prebuilt host helper. Use
-`build-host-helper.sh OUTPUT --native` only for local native-architecture checks;
-release builds omit `--native` and use `lipo` for both supported host layouts.
+`build-host-helper.sh OUTPUT` always builds only the matching retained host.
+`--native` selects the native Linux development build; Linux releases use the
+pinned static musl build. macOS builds contain only ARM64, with either option.
 Python and Swift are build/test dependencies, never installed-user dependencies.
 The archive inventory verifies manager, helper, workflow and skill bytes before
 staging. `install.sh --stage-only` verifies and stages an immutable release without
@@ -237,15 +238,14 @@ that project's explicit runner transition.
 
 Tests with a stub container CLI prove command selection, conflict/failure paths,
 source independence and host-tool exclusion. Native helper compilation and
-cross-architecture layout checks do not prove an actual clean Intel Mac or fresh
-macOS user installation. Container lifecycle observations, native authentication,
+layout checks do not prove an actual fresh macOS user installation. Container lifecycle observations, native authentication,
 authenticated inference and clean-Mac evidence must be recorded separately.
 
-Fresh-user qualification used Apple Silicon, Docker Desktop and native Claude
-login for a real issue-to-PR run and packaged update/recovery. Native Linux ARM64
-and AMD64 runner qualification and universal-helper builds are separate evidence.
-An actual Intel Mac walkthrough remains operator-deferred; OrbStack execution
-was not part of this fresh-user qualification.
+Historical fresh-user qualification used Apple Silicon, Docker Desktop and native
+Claude login for a real issue-to-PR run and packaged update/recovery. Its recorded
+Linux container and universal-helper evidence remains historical; it does not
+expand the current two-host policy. An Intel walkthrough was operator-deferred.
+OrbStack execution was not part of that fresh-user qualification.
 
 ## Updating a packaged installation
 
@@ -313,8 +313,8 @@ and authenticated account acceptance remain separate evidence.
 
 ## Native candidate evidence
 
-`Package checks` builds both macOS helper architectures and executes package,
-helper and updater regressions on native Apple Silicon, Intel and Linux x86-64.
+`Package checks` builds the ARM64 macOS and static Linux x86-64 helpers and executes
+package, helper and updater regressions on the two retained native hosts.
 The `runner-release` manual candidate path accepts `previous_revision`, the full
 SHA of a prior real Linux-capable candidate (not a fabricated revision string).
 It builds source-bound runner images and native archives for both revisions,
@@ -331,3 +331,24 @@ entrypoints/Codex login status are explicitly stubbed; this is not authenticated
 execution. Candidate CI creates no production tag, GHCR publication or GitHub
 release. Its evidence is valid only for the recorded source SHA and artifact
 checksums; a skipped or unavailable native platform remains an acceptance gap.
+
+
+## Retained host policy and legacy migration
+
+`scripts/release/host-targets.json` selects exactly Linux x86-64 and macOS ARM64
+standalone/helper qualification. Both providers still publish Linux ARM64 and
+AMD64 container runners. New manifests declare `supported_hosts` and exact
+per-bundle `architectures`; the schema1 global `host_architectures` union remains
+`["arm64", "x86_64"]` across those two distinct hosts. An ARM-only macOS bundle
+is never advertised as universal. Legacy filename and image/source checks remain.
+
+New installers and launchers refuse Intel macOS and Linux ARM64 before invoking
+a native helper or activating a release. Source development operation is separate.
+An unchanged legacy Intel macOS updater can still select and stage the generic
+macOS archive: its installed validator ignores the additive host policy. The new
+launcher then refuses before helper execution or activation, retaining the current
+command and project data. This is a known limit of legacy selection, not a claim
+that the old updater avoids downloading a wrong-architecture artifact. Apple
+Silicon upgrade/rollback acceptance requires execution through the installed old
+updater with real source-bound old/new ARM helpers; fixture metadata is not image
+lifecycle or authenticated inference evidence.
