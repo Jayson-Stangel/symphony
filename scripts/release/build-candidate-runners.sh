@@ -29,12 +29,25 @@ for selection in current previous; do
   revision=$(git -C "$source" rev-parse HEAD)
   version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' "$source/elixir/mix.exs" | head -n1)
   image="localhost:5000/symphony-$provider:$tag"
+  record_flags=(); build_flags=()
+  unset SYMPHONY_CANDIDATE_INPUT_IDENTITY
+  if [ "${SYMPHONY_CANDIDATE_CAPTURE_INPUTS:-}" = 1 ]; then
+    inputs="$destination/$provider-$architecture.inputs.txt"
+    python3 "$root/scripts/release/runner_inputs.py" --root "$source" --provider "$provider" --architecture "$architecture" --output "$inputs"
+    SYMPHONY_CANDIDATE_INPUT_IDENTITY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input_identity"])' "$inputs")
+    export SYMPHONY_CANDIDATE_INPUT_IDENTITY
+    if [ "$selection" = current ] && [ -n "${SYMPHONY_CANDIDATE_EXPECTED_INPUT_IDENTITY:-}" ]; then
+      [ "$SYMPHONY_CANDIDATE_INPUT_IDENTITY" = "$SYMPHONY_CANDIDATE_EXPECTED_INPUT_IDENTITY" ] || { echo 'selected input identity differs from current plan' >&2; exit 1; }
+    fi
+    record_flags=(--inputs "$inputs" --source-root "$source" --archive-tag "$image")
+    build_flags=(--build-arg "SYMPHONY_INPUT_IDENTITY=$SYMPHONY_CANDIDATE_INPUT_IDENTITY")
+  fi
   if [ -n "${SYMPHONY_CANDIDATE_BUILD_COMMAND:-}" ]; then
     [ -x "$SYMPHONY_CANDIDATE_BUILD_COMMAND" ] || { echo 'candidate build command is not executable' >&2; exit 1; }
     "$SYMPHONY_CANDIDATE_BUILD_COMMAND" "$provider" "$architecture" "$source" "$image" "$version" "$revision" "$selection"
   else
     docker build --target "$provider" -f "$source/runner/Dockerfile" \
-      --build-arg SYMPHONY_VERSION="$version" --build-arg SYMPHONY_REVISION="$revision" -t "$image" "$source"
+      --build-arg SYMPHONY_VERSION="$version" --build-arg SYMPHONY_REVISION="$revision" ${build_flags[@]+"${build_flags[@]}"} -t "$image" "$source"
   fi
   docker push "$image"
   digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
@@ -44,7 +57,7 @@ for selection in current previous; do
   docker pull "$digest"
   bash "$root/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
   python3 "$root/scripts/release/record.py" --image "$digest" --provider "$provider" --architecture "$architecture" \
-    --revision "$revision" --output "$destination/$provider-$architecture.json"
+    --revision "$revision" ${record_flags[@]+"${record_flags[@]}"} --output "$destination/$provider-$architecture.json"
   docker tag "$digest" "$image"
   images+=("$image")
 done

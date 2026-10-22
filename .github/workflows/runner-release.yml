@@ -121,6 +121,8 @@ jobs:
         env:
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
+          SYMPHONY_CANDIDATE_CAPTURE_INPUTS: '1'
+          SYMPHONY_CANDIDATE_EXPECTED_INPUT_IDENTITY: ${{ matrix.input_identity }}
           SYMPHONY_CANDIDATE_BUILD_COMMAND: ${{ github.workspace }}/scripts/release/build-runner-cached.sh
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
@@ -468,11 +470,7 @@ jobs:
               bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
               manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"; revision=$PREVIOUS_REVISION
             fi
-            mkdir -p "$destination"
-            helper="$destination/symphony-host"
-            if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper"
-            else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
-            bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
+            bash scripts/release/build-manager-package.sh "$manifest" "$destination" "$PLATFORM" "$source" "$revision"
           done
       - uses: actions/upload-artifact@v4
         with:

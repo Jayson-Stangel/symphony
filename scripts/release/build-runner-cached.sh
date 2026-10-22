@@ -29,6 +29,11 @@ for partition in "$namespace" trusted; do
 done
 scope="runner-v1-$arch-$namespace-$provider"
 [ "$selection" != previous ] || scope="$scope-prior"
+input_flags=()
+if [ -n "${SYMPHONY_CANDIDATE_INPUT_IDENTITY:-}" ]; then
+  [[ "$SYMPHONY_CANDIDATE_INPUT_IDENTITY" =~ ^[a-f0-9]{64}$ ]] || { echo 'invalid selected build input identity' >&2; exit 1; }
+  input_flags=(--build-arg "SYMPHONY_INPUT_IDENTITY=$SYMPHONY_CANDIDATE_INPUT_IDENTITY")
+fi
 docker buildx build --load --platform "linux/$arch" --target "$provider" -f "$source/runner/Dockerfile" \
   --build-arg "SYMPHONY_VERSION=$version" --build-arg "SYMPHONY_REVISION=$revision" \
-  "${flags[@]}" --cache-to "type=gha,scope=$scope,mode=max" -t "$image" "$source"
+  ${input_flags[@]+"${input_flags[@]}"} "${flags[@]}" --cache-to "type=gha,scope=$scope,mode=max" -t "$image" "$source"
