@@ -21,6 +21,8 @@ if op == 'get':
     value = json.loads(pathlib.Path(args[0]).read_text())
     for key in args[1].split('.'): value = value[key]
     print(json.dumps(value) if isinstance(value, (bool, dict, list)) else value)
+elif op == 'sha256':
+    print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest())
 elif op == 'validate-manifest':
     value = json.loads(pathlib.Path(args[0]).read_text())
     assert value['schema_version'] == 1 and len(value['source_revision']) == 40
@@ -67,6 +69,9 @@ runner_namespace=${SYMPHONY_RUNNER_NAMESPACE:-}
 bin_dir=$package_app_home/bin
 skills_dir=$package_app_home/skills
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
+package_platform=macos
+package_bundle_field() { printf 'bundle.%s\n' "$1"; }
+package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
 source_revision() { package_helper get "$symphony_home/release.json" source_revision; }
 resolve_runner_home() { mkdir -p "$runner_home"; }
 validate_agent() { case "$1" in codex|claude) ;; *) die 'bad fixture agent' ;; esac; }

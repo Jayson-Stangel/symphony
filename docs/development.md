@@ -225,6 +225,24 @@ The fixture HTTP server binds numeric loopback directly without reverse DNS;
 startup failure logs include fixture stacks and the last connection error. This
 avoids a proven hosted Intel macOS `getfqdn` stall without altering the engine.
 
+## Ubuntu package candidate qualification
+
+Build the portable helper on native Linux x86-64 with
+`bash scripts/release/build-linux-host-helper.sh /tmp/linux-helper`. Installed
+Ubuntu 26.04 hosts need no Swift or helper interpreter. Shared contract tests run
+with `SYMPHONY_TEST_HOST_HELPER=/tmp/linux-helper/symphony-host python3 scripts/package/test-package.py -v`;
+retain native OS/architecture, source SHA, SDK/toolchain and artifact checksums.
+
+For real two-revision lifecycle qualification, manually run `runner-release` on
+the exact feature head with `previous_revision` set to a real earlier candidate
+that already supports Linux packages. Inspect publication conditions first: the
+manual feature-ref run must retain `publish=false` and cannot publish images or
+releases. It builds both actual source revisions and runs the clean Ubuntu26.04
+source-independent installed manager/updater against real Docker. Candidate
+controller tools are test dependencies, distinct from installed product runtime
+dependencies. See [the evidence contract](packaged-install.md#native-candidate-evidence).
+
+
 
 ## CI event and documentation policy
 

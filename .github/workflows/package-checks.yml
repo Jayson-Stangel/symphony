@@ -1,15 +1,110 @@
 name: Package checks
 on:
+  workflow_dispatch:
+    inputs:
+      previous_revision:
+        description: Optional full prior source SHA for nonpublishing two-source helper build diagnosis
+        type: string
+        required: false
   pull_request:
   push:
     branches: [dev, main]
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  macos-package:
+  native-macos-package:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: native-macos-package (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build both supported host architectures
+        run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
+      - name: Source-independent installation and host-helper regressions
+        env:
+          SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
+        run: python3 scripts/package/test-package.py -v
+      - name: Release selection and interrupted packaged update regressions
+        run: python3 -m unittest discover -s scripts/release/tests -v
+
+  linux-helper:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build static source-bound helper
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"
+      - name: Native shared helper contracts
+        env:
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          python3 scripts/package/test-package.py -v
+          python3 -m unittest discover -s scripts/release/tests -v
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        env:
+          HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
+            uname -sm
+            cat /etc/os-release
+            for tool in swift swiftc python3 node git mise elixir erl; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                printf "unexpected helper runtime dependency present: %s\n" "$tool" >&2
+                exit 1
+              fi
+            done
+            test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
+            test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+            mkdir -m700 /contract
+            /symphony-host owned-directory /contract
+            exec 8>>/contract/lock
+            /symphony-host lock /contract/lock 8 acquire
+            /symphony-host lock /contract/lock 8 inherited
+          ' | tee "$RUNNER_TEMP/linux-helper/ubuntu26.log"
+      - name: Build unmodified prior helper with the current SDK controller
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/prior-helper-source"
+          bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
+          bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
+          SYMPHONY_TEST_HOST_HELPER="$RUNNER_TEMP/prior-helper/symphony-host" python3 "$source/scripts/package/test-package.py" -v
+      - uses: actions/upload-artifact@v4
+        if: inputs.previous_revision != ''
+        with:
+          name: prior-linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/prior-helper/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-helper/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # Keep the exact legacy ruleset context. A matrix creates suffixed check names;
+  # this aggregate cannot pass on a skipped, failed or cancelled native job.
+  macos-package:
+    name: macos-package
     if: ${{ always() }}
-    runs-on: macos-14
+    needs: [changes, native-macos-package, linux-helper]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Require a complete classification decision
         env:
@@ -18,19 +113,22 @@ jobs:
         run: |
           test "$RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
-      - uses: actions/checkout@v4
-        if: needs.changes.outputs.code != 'false'
-      - name: Build both supported host architectures
-        if: needs.changes.outputs.code != 'false'
-        run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
-      - name: Source-independent installation and host-helper regressions
+      - name: Require every native package qualification job
         if: needs.changes.outputs.code != 'false'
         env:
-          SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
-        run: python3 scripts/package/test-package.py -v
-      - name: Release selection and interrupted packaged update regressions
-        if: needs.changes.outputs.code != 'false'
-        run: python3 -m unittest discover -s scripts/release/tests -v
+          MACOS_RESULT: ${{ needs.native-macos-package.result }}
+          LINUX_RESULT: ${{ needs.linux-helper.result }}
+        run: |
+          test "$MACOS_RESULT" = success
+          test "$LINUX_RESULT" = success
+      - name: Require intentionally omitted native jobs
+        if: needs.changes.outputs.code == 'false'
+        env:
+          MACOS_RESULT: ${{ needs.native-macos-package.result }}
+          LINUX_RESULT: ${{ needs.linux-helper.result }}
+        run: |
+          test "$MACOS_RESULT" = skipped
+          test "$LINUX_RESULT" = skipped
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
