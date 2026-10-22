@@ -365,3 +365,19 @@ The GitHub cache quota is shared across these bounded snapshots. Missing or
 partly evicted blobs can force dependency rebuilding even after an initial
 `CACHED` marker; report the later errors and actual timings, not marker counts
 alone. No other workflow's cache is deleted to make a probe succeed.
+
+Ordinary current-manager helper scheduling
+------------------------------------------
+
+`runner-integration` gates expensive work on the shared portable preflight. The
+`native-manager-helpers` reusable workflow then builds and qualifies the exact
+current-source Linux x86-64 static helper and macOS ARM64 helper concurrently
+with changed-component planning/building. It uses the shared two-host policy,
+runs each host's native package contracts and the clean Ubuntu helper proof, and
+retains source-bound checksums in same-run artifacts. Current-manager assembly
+requires that successful source revision, verifies the downloaded checksum before
+restoring executable permissions, and rechecks actual source/platform/CPU through
+the shared builder. It does not compile a second current helper after images
+finish. The terminal current-manager guard requires portable and helper success
+as well as the actual package/component decisions; cancelled or skipped native
+qualification cannot produce a successful behavioral receipt.

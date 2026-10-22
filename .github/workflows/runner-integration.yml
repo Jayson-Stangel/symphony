@@ -18,8 +18,17 @@ concurrency:
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  plan:
+  portable:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/release-preflight.yml
+  helpers:
+    needs: portable
+    uses: ./.github/workflows/native-manager-helpers.yml
+    with:
+      portable_revision: ${{ needs.portable.outputs.qualified_revision }}
+  plan:
+    needs: [changes, portable]
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/component-plan.yml
     with:
@@ -78,12 +87,13 @@ jobs:
           path: manager-inputs/*
           if-no-files-found: error
   manager-package:
-    needs: manager-inputs
+    needs: [manager-inputs, helpers]
     uses: ./.github/workflows/current-manager-package.yml
     with:
       metadata_artifact: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      helper_revision: ${{ needs.helpers.outputs.qualified_revision }}
   listener-and-cleanup:
-    needs: [changes, plan, runners, manager-inputs, manager-package]
+    needs: [changes, portable, helpers, plan, runners, manager-inputs, manager-package]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -92,6 +102,8 @@ jobs:
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          PORTABLE: ${{ needs.portable.result }}
+          HELPERS: ${{ needs.helpers.result }}
           PLAN: ${{ needs.plan.result }}
           HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
           RUNNERS: ${{ needs.runners.result }}
@@ -100,8 +112,10 @@ jobs:
         run: |
           test "$RESULT" = success
           case "$CODE" in
-            false) test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
+            false) test "$PORTABLE" = skipped; test "$HELPERS" = skipped; test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
             true)
+              test "$PORTABLE" = success
+              test "$HELPERS" = success
               test "$PLAN" = success
               test "$INPUTS" = success
               test "$PACKAGE" = success
