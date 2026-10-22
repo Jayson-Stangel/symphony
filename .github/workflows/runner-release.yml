@@ -51,6 +51,15 @@ jobs:
           path: dist/**
           if-no-files-found: error
           retention-days: 30
+      - name: Retain small source-bound records for metadata consumers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: |
+            dist/*.json
+            dist/previous/*.json
+          if-no-files-found: error
+          retention-days: 30
 
   publish:
     if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
@@ -113,7 +122,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: runner-candidate-*
+          pattern: runner-records-*
           path: candidate
           merge-multiple: true
       - name: Assemble source-independent candidate metadata
@@ -260,9 +269,13 @@ jobs:
           merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
-          pattern: runner-candidate-*
+          pattern: runner-records-*
           path: records
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: runner-candidate-metadata
+          path: records
       - name: Bind both platform archives without changing the legacy macOS contract
         env:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
