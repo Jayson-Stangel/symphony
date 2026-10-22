@@ -15,6 +15,13 @@ EXPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXPORT)
 
 
+def observed(operation, *arguments):
+    start, cpu = time.monotonic(), time.process_time()
+    value = operation(*arguments)
+    return value, {'wall_seconds': time.monotonic() - start,
+                   'cpu_seconds': time.process_time() - cpu}
+
+
 def inspect(image):
     return json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True, timeout=30))[0]
 
@@ -123,7 +130,7 @@ def main():
         if not records:
             raise ValueError('missing original qualification records')
         digest = checksum_record(archive.with_name(prefix + '.sha256'), archive.name)
-        verified_checksum(archive, digest)
+        _, input_checksum = observed(verified_checksum, archive, digest)
         if index == 0 and not any(record.get('source_revision') == args.source_revision for record in records):
             raise ValueError('current record differs from selected run source')
         corruption = None
@@ -132,12 +139,13 @@ def main():
             corruption_probe(archive, digest)
             corruption = {'refused_before_load': True, 'restored_original_sha256': digest,
                           'wall_seconds': time.monotonic() - start}
-        images = identities(archive, records, args.provider, args.architecture)
+        images, identity_verification = observed(identities, archive, records, args.provider, args.architecture)
         image_ids = [value['image_id'] for value in images]
         tags = [value['tag'] for value in images]
         result = {'original_records': records, 'input_archive': str(archive),
                   'input_bytes': archive.stat().st_size, 'input_sha256': digest, 'image_ids': image_ids,
-                  'input_load': load(archive, image_ids), 'actual_corruption_probe': corruption}
+                  'input_load': load(archive, image_ids), 'actual_corruption_probe': corruption,
+                  'input_checksum': input_checksum, 'input_identity_verification': identity_verification}
         result['status'] = 'loaded; remaining qualification incomplete'
         results.append(result)
         (args.output / 'transfer-results.txt').write_text(json.dumps(results, indent=2, sort_keys=True) + '\n')
@@ -148,8 +156,8 @@ def main():
             with baseline.open('wb') as stream:
                 result['baseline'] = EXPORT.pipeline(['docker', 'save', *tags], ['gzip'], stream)
             result['baseline']['bytes'] = baseline.stat().st_size
-            result['baseline']['sha256'] = EXPORT.checksum(baseline)
-            EXPORT.verify_tar(baseline, image_ids)
+            result['baseline']['sha256'], result['baseline']['checksum'] = observed(EXPORT.checksum, baseline)
+            _, result['baseline']['archive_verification'] = observed(EXPORT.verify_tar, baseline, image_ids)
             result['baseline']['load'] = load(baseline, image_ids)
             baseline.unlink()
             target = args.output / str(index)
