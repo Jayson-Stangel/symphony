@@ -183,6 +183,10 @@ a GitHub release or GHCR images. Production publication still requires its tag,
 repository variable and protected environment gates. Dispatch the exact reviewed
 head and record the workflow/job URLs; any subsequent commit requires another
 candidate run. A skipped or unavailable native runner is an acceptance gap.
+For a focused controller regression diagnosis, dispatch the same workflow with
+`controller_only=true`: this runs only the macOS Intel fixture tests and skips
+artifact building, native engine qualification and publication. Its success is
+controller evidence only, never a substitute for the full native candidate run.
 
 Each build retains the executable, SHA-256 sidecar and `.source.json` identity
 (source revision, target, artifact name and checksum). On a matching native host:
@@ -217,3 +221,6 @@ two, and deliberately does not claim authenticated inference or issue-to-PR proo
 Regression subprocess fixtures demonstrate rejection of early/banner exits, bad
 HTTP/state, false readiness, startup/shutdown timeouts and surviving, detached or double-forked children;
 those fixtures are controller tests, not substitutes for native artifact execution.
+The fixture HTTP server binds numeric loopback directly without reverse DNS;
+startup failure logs include fixture stacks and the last connection error. This
+avoids a proven hosted Intel macOS `getfqdn` stall without altering the engine.

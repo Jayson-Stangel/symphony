@@ -17,9 +17,8 @@ SPEC.loader.exec_module(SMOKE)
 FIXTURE = '''#!PYTHON
 import faulthandler, sys
 faulthandler.enable()
-faulthandler.dump_traceback_later(5, repeat=True)
 print("fixture interpreter", sys.version, sys.executable, flush=True)
-import http.server, json, os, signal, time
+import http.server, json, os, signal, socketserver, time
 MODE = "MODE_VALUE"
 if MODE == "banner":
     print("This Symphony implementation is a low key engineering preview.")
@@ -62,8 +61,16 @@ if MODE in ("child_survives", "detached_child") and os.fork() == 0:
     while True:
         time.sleep(1)
 signal.signal(signal.SIGTERM, signal.SIG_IGN if MODE == "shutdown_timeout" else lambda *args: sys.exit(0))
+# HTTPServer.server_bind does a reverse DNS lookup through getfqdn. The
+# numeric loopback-only fixture needs no DNS and hosted Intel macOS may stall
+# there; retain real socket bind/listen/request handling without that lookup.
+class FixtureServer(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+faulthandler.dump_traceback_later(5, repeat=True)
 print("fixture binding", port, flush=True)
-server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server = FixtureServer(("127.0.0.1", port), Handler)
 print("fixture bound", port, flush=True)
 server.serve_forever()
 '''
