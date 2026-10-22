@@ -98,6 +98,8 @@ package_stage_bundle() {
     package_helper verify-files "$stage" || { rm -rf "$stage"; return 1; }
     mv "$stage" "$destination" || { rm -rf "$stage"; return 1; }
   fi
+  package_helper owned-directory "$destination" || return
+  package_helper verify-files "$destination" || return
   printf '%s\n' "$destination"
 }
 
