@@ -238,10 +238,8 @@ jobs:
             source=$PWD; manifest="$PWD/metadata/release.json"; destination="$PWD/dist"
             if [ "$selection" = previous ]; then
               [ -n "$PREVIOUS_REVISION" ] || continue
-              git fetch origin "$PREVIOUS_REVISION"
               source="$RUNNER_TEMP/previous-package"
-              git clone --no-hardlinks --no-checkout "$PWD" "$source"
-              git -C "$source" checkout --detach "$PREVIOUS_REVISION"
+              bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
               manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"
             fi
             mkdir -p "$destination"

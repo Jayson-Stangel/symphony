@@ -28,8 +28,7 @@ for selection in current previous; do
     [ -n "$previous" ] || continue
     [[ "$previous" =~ ^[a-f0-9]{40}$ ]] || { echo 'previous_revision must be a full source SHA' >&2; exit 1; }
     source="$RUNNER_TEMP/previous-source"
-    git -C "$root" fetch origin "$previous"
-    git -C "$root" worktree add --detach "$source" "$previous"
+    bash "$root/scripts/release/prepare-candidate-source.sh" "$previous" "$source"
     destination="$output/previous"; mkdir -p "$destination"; tag=previous
     grep -q 'package_platform=linux_x86_64' "$source/scripts/symphony-package.sh" || { echo 'previous source lacks Linux package capability' >&2; exit 1; }
   fi
