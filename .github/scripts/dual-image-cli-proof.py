@@ -152,6 +152,17 @@ def main():
             assert {item['tag'] for item in exported_images} == set(tags)
             result['output_sha256'] = output_digest; result['output_bytes'] = output.stat().st_size
             result['verified_exported_images'] = exported_images
+            for identifier in identifiers:
+                subprocess.run(['docker', 'image', 'rm', '--force', identifier], check=True, timeout=60)
+            for reference in [*tags, *identifiers]:
+                assert absent(reference), 'original image remains before actual output replay'
+            result['output_preload_absence_verified'] = True
+            result['output_docker_load'] = BENCH.load(output, list(identifiers))
+            for selected in images:
+                actual = BENCH.inspect(selected['tag'])
+                assert actual['Id'] == selected['image_id'], 'output load changed original tag/config identity'
+                assert actual['Config']['Labels']['org.opencontainers.image.revision'] == selected['record']['source_revision']
+            result['output_loaded_tags_and_configs_verified'] = True
             result['passed'] = True
         result['owned_temporary_payloads_deleted'] = True
     except BaseException as error:
