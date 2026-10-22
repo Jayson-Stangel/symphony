@@ -1,17 +1,19 @@
 # Getting started
 
-This guide installs the stable, source-backed Symphony command and runs a first
-Linear issue in an isolated container. One installation can serve multiple target
-repositories. Each repository has its own workflow, credentials, runner, and workspaces.
+This guide connects an existing repository to Symphony and runs one disposable
+Linear issue into a reviewable PR. One installation can serve multiple repositories;
+each has its own workflow, credentials, runner, and workspaces.
 
-For macOS release bundles without host build tools, use
-[packaged installation](packaged-install.md). For an existing source installation,
-start with [operations](operations.md). To test changes
-to Symphony before promotion, use the [development guide](development.md).
+On macOS, start with the [release bundle](packaged-install.md), then continue at
+[initialize a repository](#initialize-a-repository) below. A bundle needs no Symphony
+source checkout or host build/agent tools. The source installation alternative is
+included below. For an existing installation, see [operations](operations.md).
+To develop Symphony or test `dev`, use the [development guide](development.md).
 
 ## Prerequisites
 
-- Git and [mise](https://mise.jdx.dev/) on the host.
+- An installed Symphony command: a macOS [release bundle](packaged-install.md),
+  or the [source installation](#install-a-stable-runtime) below.
 - A running Docker-compatible engine: Docker Desktop or OrbStack on macOS, or Docker
   Engine or rootless Podman on Unix. Set `SYMPHONY_CONTAINER_RUNTIME=docker` or `podman`
   to select one explicitly.
@@ -20,6 +22,7 @@ to Symphony before promotion, use the [development guide](development.md).
 - A Codex login, or a supported native Claude subscription login for the
   [Claude runner](claude.md).
 
+Only the source installation requires host Git and [mise](https://mise.jdx.dev/).
 Source setup installs the Erlang/OTP, Elixir, and Node.js versions pinned in
 `elixir/mise.toml`. Target repositories do not need Elixir or mise. Container images
 supply the agent CLI, GitHub CLI, Git, and browser tools; host Codex and GitHub CLI
@@ -27,7 +30,11 @@ are optional for host debugging and manual access checks.
 
 ## Install a stable runtime
 
-Choose a dedicated location that will remain available to the global command:
+For a macOS release bundle, follow [packaged installation](packaged-install.md)
+and skip to [project initialization](#initialize-a-repository); do not run `setup`.
+
+For the source alternative, choose a dedicated location that will remain available
+to the global command:
 
 ```bash
 git clone --branch main https://github.com/Jayson-Stangel/symphony.git ~/src/symphony
@@ -86,7 +93,10 @@ workspace setup, models, reasoning effort, and concurrency.
 Open the exact credential path printed by `init`. By default it is
 `~/.config/symphony/projects/<repository-identity>.env`, where the identity combines
 the repository basename and a hash of its normalized `origin` URL. Do not infer the
-path from the basename alone. Add the values locally:
+path from the basename alone. A custom `SYMPHONY_CONFIG_HOME` or runner namespace
+changes this location; use the path printed in the same environment where you will
+run Symphony. Repeated `init` preserves an existing credential file. Add the values
+locally:
 
 ```dotenv
 LINEAR_API_KEY=YOUR_LINEAR_API_KEY
@@ -147,7 +157,8 @@ Wait until the dashboard shows zero active workers, then stop the runner:
 symphony runner stop
 ```
 
-Stopping retains the container, workspaces, logs, and native login. Restart it with
-a matching `symphony run`, then use `symphony runner resume` to clear the explicit drain
-when ready. Read [operations](operations.md) for persistence, recovery,
+Stopping retains the container, workspaces, logs, and native login. Restart Claude
+with `symphony run --agent claude --port PORT`, or Codex with
+`symphony run --port PORT`, using the original port. Then use
+`symphony runner resume` to clear the explicit drain when ready. Read [operations](operations.md) for persistence, recovery,
 updates, and deliberate local skill overrides.
