@@ -96,3 +96,22 @@ These checks prove artifact identity and model-free container behavior. They do
 not prove native login, authenticated inference, clean macOS installation, or a
 complete listener update. Those require the install/update stories' separately
 recorded observations and explicit disposable-account authorization.
+
+### Portable host helper (candidate qualification)
+
+On macOS, `bash scripts/release/build-host-helper.sh /tmp/symphony-host` retains
+one universal Intel/Apple Silicon executable. `--native` is a development-only
+single-architecture build. On native Linux x86-64, install the matching Swift
+6.1.2 toolchain and Static Linux SDK, then use the same command, or run
+`bash scripts/release/build-linux-host-helper.sh /tmp/linux-helper` with Docker.
+The latter pins the Swift build container, SDK integrity checksum and portable
+Crypto/ASN.1 revisions. These are build dependencies, never installed runtime
+requirements. Linux ARM64 manager/helper support is outside this contract.
+
+`Package checks` executes the shared hash, typed JSON, identity, path/link and
+inherited-descriptor lock contracts on native macOS and Linux. The Linux artifact
+must have no ELF interpreter or required shared libraries and is additionally
+executed in clean Ubuntu 26.04 without Swift, Git or scripting runtimes. The
+retained artifact includes SHA-256 and clean-container evidence, bound to the
+workflow source SHA. CI controller utilities are distinct from helper runtime
+requirements. Cross-compiling a binary does not prove native execution.

@@ -1,8 +1,24 @@
 // Release-built host utilities. No user machine compiler or scripting runtime is needed.
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import CoreFoundation
+#if canImport(Darwin)
 import Darwin
+#else
+#if canImport(Musl)
+import Musl
+#else
+import Glibc
+#endif
+// Glibc also exports a struct named flock. Bind the BSD flock syscall explicitly;
+// POSIX process locks do not preserve ownership through an inherited descriptor.
+@_silgen_name("flock")
+func flock(_ descriptor: Int32, _ operation: Int32) -> Int32
+#endif
 
 func fail(_ message: String) -> Never { FileHandle.standardError.write(Data(("symphony: " + message + "\n").utf8)); exit(1) }
 func read(_ path: String) throws -> Data { try Data(contentsOf: URL(fileURLWithPath: path)) }
@@ -86,7 +102,7 @@ func checkGitIdentityEnvironment() {
     for path in Set(paths) {
         if URL(fileURLWithPath: path).resolvingSymlinksInPath().path == "/dev/null" { continue }
         var info = stat()
-        if stat(path, &info) != 0 {
+        if fstatat(AT_FDCWD, path, &info, 0) != 0 {
             if errno == ENOENT { continue }
             fail("cannot inspect selected external Git configuration; check its access before using the packaged manager")
         }
@@ -209,6 +225,12 @@ do {
             guard line.count > 66 else { fail("invalid bundle inventory") }
             let digest = String(line.prefix(64)); let path = String(line.dropFirst(66))
             guard matches(digest, "^[a-f0-9]{64}$"), !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { fail("unsafe bundle inventory path") }
+            let components = path.split(separator: "/").filter { $0 != "." }
+            var parent = root
+            for component in components.dropLast() {
+                parent.appendPathComponent(String(component))
+                _ = checkedInfo(parent.path, directory: true)
+            }
             let url = root.appendingPathComponent(path); _ = checkedInfo(url.path)
             let observed = SHA256.hash(data: try read(url.path)).map { String(format: "%02x", $0) }.joined()
             guard observed == digest else { fail("bundle checksum mismatch: \(path)") }

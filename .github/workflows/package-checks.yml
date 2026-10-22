@@ -16,3 +16,45 @@ jobs:
         run: python3 scripts/package/test-package.py -v
       - name: Release selection and interrupted packaged update regressions
         run: python3 -m unittest discover -s scripts/release/tests -v
+
+  linux-helper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build static source-bound helper
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"
+      - name: Native shared helper contracts
+        env:
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          python3 scripts/package/test-package.py -v \
+            PackageTest.test_manifest_validation_and_typed_json \
+            PackageTest.test_git_identity_and_linked_worktree_match_git \
+            PackageTest.test_external_git_identity_indirection_fails_without_exposing_values \
+            PackageTest.test_git_discovery_and_config_injection_environment_is_rejected \
+            PackageTest.test_inventory_hashing_unsafe_paths_and_links \
+            PackageTest.test_lock_survives_helper_exit_and_releases_after_last_inheritor \
+            PackageTest.test_flock_matches_python_owner_and_exclusion
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        env:
+          HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
+            uname -sm
+            cat /etc/os-release
+            for tool in swift swiftc python3 node git mise elixir erl; do ! command -v "$tool"; done
+            test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
+            test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+            mkdir -m700 /contract
+            /symphony-host owned-directory /contract
+            exec 8>>/contract/lock
+            /symphony-host lock /contract/lock 8 acquire
+            /symphony-host lock /contract/lock 8 inherited
+          ' | tee "$RUNNER_TEMP/linux-helper/ubuntu26.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-helper/*
+          if-no-files-found: error
+          retention-days: 30

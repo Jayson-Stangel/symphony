@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""macOS package and host-helper regression checks; no account/model requests."""
+"""Native macOS/Linux package and helper regressions; no account/model requests."""
 import copy
 import hashlib
 import json
@@ -31,7 +31,7 @@ def manifest(version="1.2.3", revision=None):
         host_architectures=["arm64", "x86_64"], runners=runners, bundle=dict(filename=f"symphony-{version}-macos.tar.gz"))
 
 
-@unittest.skipUnless(sys.platform == "darwin", "native installed-macOS helper requires macOS")
+@unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
 class PackageTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -98,6 +98,8 @@ class PackageTest(unittest.TestCase):
         self.assertNotEqual(self.helper("get").returncode, 0)
         self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":false}}').returncode, 1)
         self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":0}}').returncode, 0)
+        for count in ("0.0", "false", "true", "1.5", '"0"'):
+            self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":' + count + '}}').returncode, 1)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
 
     def test_git_identity_and_linked_worktree_match_git(self):
@@ -199,6 +201,61 @@ class PackageTest(unittest.TestCase):
         effective = self.assertOK(call(["git", "-C", repo, "remote", "get-url", "origin"], env=injected))
         self.assertEqual(effective, "https://injected.invalid/local.git")
         self.assertNotEqual(self.helper("repository-root", repo, env=injected).returncode, 0)
+
+    def test_inventory_hashing_unsafe_paths_and_links(self):
+        directory = self.root / "inventory"; directory.mkdir()
+        content = directory / "payload"; content.write_bytes(b"actual helper inventory")
+        digest = hashlib.sha256(content.read_bytes()).hexdigest()
+        inventory = directory / "files.sha256"
+        inventory.write_text(f"{digest}  ./payload\n")
+        self.assertOK(self.helper("verify-files", directory))
+        content.write_bytes(b"tampered")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        content.write_bytes(b"actual helper inventory")
+        for name in ("../inventory/payload", str(content)):
+            inventory.write_text(f"{digest}  {name}\n")
+            self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        link = directory / "link"; link.symlink_to(content)
+        inventory.write_text(f"{digest}  ./link\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        outside = self.root / "outside"; outside.mkdir()
+        (outside / "payload").write_bytes(content.read_bytes())
+        (directory / "parent").symlink_to(outside, target_is_directory=True)
+        inventory.write_text(f"{digest}  ./parent/payload\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        os.link(content, directory / "hardlink")
+        inventory.write_text(f"{digest}  ./hardlink\n")
+        self.assertNotEqual(self.helper("verify-files", directory).returncode, 0)
+        target = directory / "activation"; target.write_text("unrelated")
+        self.assertNotEqual(self.helper("ensure-link", "payload", target).returncode, 0)
+        self.assertEqual(target.read_text(), "unrelated")
+        staged = directory / "staged"; staged.symlink_to("payload")
+        self.assertNotEqual(self.helper("replace-link", staged, target).returncode, 0)
+        target.unlink()
+        self.assertOK(self.helper("replace-link", staged, target))
+        self.assertEqual(os.readlink(target), "payload")
+
+    def test_lock_survives_helper_exit_and_releases_after_last_inheritor(self):
+        lock = self.root / "inherited.lock"
+        with lock.open("a") as owner:
+            fd = owner.fileno()
+            self.assertOK(self.helper("lock", lock, fd, "acquire", pass_fds=(fd,)))
+            self.assertOK(self.helper("lock", lock, fd, "inherited", pass_fds=(fd,)))
+            # A different open description must remain excluded after the helper exits.
+            with lock.open("a") as competitor:
+                self.assertNotEqual(self.helper("lock", lock, competitor.fileno(), "acquire",
+                    pass_fds=(competitor.fileno(),)).returncode, 0)
+            child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                stdin=subprocess.PIPE, pass_fds=(fd,))
+            self.addCleanup(lambda: child.poll() is None and child.kill())
+        # The original parent has closed its descriptor; only the child retains it.
+        with lock.open("a") as competitor:
+            self.assertNotEqual(self.helper("lock", lock, competitor.fileno(), "acquire",
+                pass_fds=(competitor.fileno(),)).returncode, 0)
+            child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0)
+            self.assertOK(self.helper("lock", lock, competitor.fileno(), "acquire",
+                pass_fds=(competitor.fileno(),)))
 
     def test_flock_matches_python_owner_and_exclusion(self):
         lock = self.root / "lock"
