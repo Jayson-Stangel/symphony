@@ -162,3 +162,30 @@ reported verified-input rebuild. Unknown source closure stops before any reuse.
 A `--require-reuse` diagnostic fails if any rebuild would be needed. Reused records
 preserve every original digest/label/source and never cause export/upload just to
 associate the image with a new manager head.
+
+Ordinary event planning and original payload retrieval
+----------------------------------------------------
+
+`component-plan.yml` resolves the same committed Docker input closure and bounded
+original native evidence on ordinary PR and dev/main push events. The full plan
+is retained as a source-bound artifact; job outputs contain only explicit
+`build`/`reuse` decisions. Browser CI builds and executes browser qualification
+only when its browser closure requires a build. Reuse keeps the original native
+qualification and records that decision explicitly. A missing, failed or
+cancelled plan cannot become a successful omission. Documentation-only events
+continue to omit both planning and behavioral work.
+
+`reuse_payload.py --plan PLAN --provider codex --architecture x86_64
+--destination NEW_DIRECTORY` independently rechecks the original origin and
+current committed closure, downloads the original immutable artifact, verifies
+its archive digest, then selects and verifies the exact Docker archive member.
+It retains the original record, checksum and origin beside those actual bytes.
+It never builds, exports, uploads or renames an image. `--prior` requires an
+available original prior record; it never fabricates one. Download, checksum and
+member failures leave no completed destination or successful receipt.
+
+Payload retrieval is preparation for the existing packaged-manager lifecycle
+consumer. It does not itself prove Docker config identity, runtime behavior or
+current-manager integration. Ordinary runner integration must retain its real
+behavioral checks until the native package lifecycle prerequisite is available
+and that consumer is composed with these archives and the actual new manager.

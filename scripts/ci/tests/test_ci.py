@@ -100,12 +100,15 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('  '+job+':',text)
             self.assertIn('if: ${{ always() }}',text)
             self.assertIn('test "$RESULT" = success',text)
-            self.assertIn('case "$CODE" in true|false)',text)
+            self.assertIn('case "$CODE" in',text)
             self.assertNotIn('\n    paths:',text)
             steps=text.split('    steps:\n',1)[1]
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
-                self.assertIn("if: needs.changes.outputs.code != 'false'",step)
+                if name == 'browser-smoke':
+                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 ==", step)
+                else:
+                    self.assertIn("if: needs.changes.outputs.code != 'false'",step)
 
     def test_actual_wrapper_guard_from_empty_workspace(self):
         text=(ROOT/'.github/workflows/make-all.yml').read_text()
