@@ -58,7 +58,49 @@ func gitValue(_ input: String) -> String {
     guard !value.isEmpty, !value.contains("\n"), !value.contains("\r") else { fail("invalid origin URL") }
     return value
 }
+// Inspect only selected config files. Indirection is refused without reading its
+// targets, so identity never silently differs from Git's effective origin.
+func checkGitIdentityEnvironment() {
+    let env = ProcessInfo.processInfo.environment
+    let supported = Set(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"])
+    let relocation = Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE", "GIT_CONFIG"])
+    if let key = env.keys.sorted().first(where: { relocation.contains($0) || ($0.hasPrefix("GIT_CONFIG_") && !supported.contains($0)) }) {
+        fail("packaged repository identity does not support \(key); unset that Git environment override")
+    }
+    var noSystem = false
+    if let value = env["GIT_CONFIG_NOSYSTEM"]?.lowercased() {
+        if ["true", "yes", "on"].contains(value) { noSystem = true }
+        else if ["", "false", "no", "off"].contains(value) { noSystem = false }
+        else if let number = Int(value) { noSystem = number != 0 }
+        else { fail("GIT_CONFIG_NOSYSTEM must be a Git boolean; unset or correct it") }
+    }
+    let home = env["HOME"] ?? NSHomeDirectory()
+    let xdg = env["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? home + "/.config"
+    var paths: [String]
+    if let global = env["GIT_CONFIG_GLOBAL"] { paths = global.isEmpty ? [] : [global] }
+    else { paths = [xdg + "/git/config", home + "/.gitconfig"] }
+    if !noSystem {
+        if let system = env["GIT_CONFIG_SYSTEM"] { if !system.isEmpty { paths.append(system) } }
+        else { paths += ["/etc/gitconfig", "/opt/homebrew/etc/gitconfig", "/usr/local/etc/gitconfig"] }
+    }
+    for path in Set(paths) {
+        if URL(fileURLWithPath: path).resolvingSymlinksInPath().path == "/dev/null" { continue }
+        var info = stat()
+        if stat(path, &info) != 0 {
+            if errno == ENOENT { continue }
+            fail("cannot inspect selected external Git configuration; check its access before using the packaged manager")
+        }
+        guard info.st_mode & S_IFMT == S_IFREG,
+              let config = try? String(contentsOfFile: path, encoding: .utf8) else { fail("cannot read selected external Git configuration as a regular UTF-8 file") }
+        let indirection = matches(config, #"(?im)^[ \t]*\[(include(if)?|url)([ \t\].])"#)
+        let remote = matches(config, #"(?im)^[ \t]*\[remote([ \t]+"origin"|\.origin)[ \t]*\]"#)
+        if indirection || remote {
+            fail("external Git configuration contains identity indirection (include, URL rewrite, or origin); remove it or select explicit non-indirect GIT_CONFIG_GLOBAL/SYSTEM files")
+        }
+    }
+}
 func repository(_ input: String) throws -> (String, String) {
+    checkGitIdentityEnvironment()
     var root = URL(fileURLWithPath: input).standardizedFileURL.resolvingSymlinksInPath()
     while root.path != "/" {
         let marker = root.appendingPathComponent(".git")
@@ -76,6 +118,7 @@ func repository(_ input: String) throws -> (String, String) {
                 git = URL(fileURLWithPath: value, relativeTo: URL(fileURLWithPath: git.path, isDirectory: true)).standardizedFileURL
             }
             let config = try String(contentsOf: git.appendingPathComponent("config"), encoding: .utf8)
+            if matches(config, #"(?im)^[ \t]*\[url([ \t\].])"#) { fail("packaged repository identity does not support local URL rewrite sections; use an explicit local origin URL") }
             if matches(config, "(?im)^[ \\t]*(worktreeconfig[ \\t]*=|insteadof[ \\t]*=|pushinsteadof[ \\t]*=)") { fail("packaged repository identity does not support worktree config or URL rewrite rules; use an explicit local origin URL") }
             var origin = false
             var remote: String? = nil
