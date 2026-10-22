@@ -80,11 +80,14 @@ def verify_origin(record, fetch=api, now=None):
     require(len(data) <= MAX_RECORD_BYTES and "sha256:" + hashlib.sha256(data).hexdigest() == metadata["digest"],
             "original record artifact checksum differs")
     name = proof["archive_filename"].removesuffix(".docker.tar.gz") + ".json"
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        require(sum(item.file_size for item in archive.infolist()) <= MAX_RECORD_BYTES,
-                "qualification record expands beyond its limit")
-        require(archive.namelist().count(name) == 1, "original native record is missing or duplicated")
-        original = json.loads(archive.read(name))
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            require(sum(item.file_size for item in archive.infolist()) <= MAX_RECORD_BYTES,
+                    "qualification record expands beyond its limit")
+            require(archive.namelist().count(name) == 1, "original native record is missing or duplicated")
+            original = json.loads(archive.read(name))
+    except (zipfile.BadZipFile, RuntimeError):
+        raise ValueError("corrupt or unsupported original record archive; reuse refused") from None
     require(original == record, "record differs from the original native qualification")
     return {"run_id": run_id, "artifact_id": payload["id"], "artifact_digest": payload["digest"],
             "record_artifact_id": metadata["id"], "record_artifact_digest": metadata["digest"]}

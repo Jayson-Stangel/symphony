@@ -87,7 +87,7 @@ class ComponentProofTest(unittest.TestCase):
             self.verify()
         self.zip = b"not a ZIP"
         self.metadata["digest"] = "sha256:" + hashlib.sha256(self.zip).hexdigest()
-        with self.assertRaises(zipfile.BadZipFile):
+        with self.assertRaisesRegex(ValueError, 'corrupt or unsupported'):
             self.verify()
 
     def test_wrong_platform_failed_cancelled_or_ambiguous_jobs_refuse(self):
