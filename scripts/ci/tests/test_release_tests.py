@@ -67,11 +67,11 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'
-        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped')
+        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped', LINUX='skipped')
         self.assertEqual(self.guard('package-checks.yml', name, docs), 0)
-        for key in ('PORTABLE', 'NATIVE', 'PACKAGE'):
+        for key in ('PORTABLE', 'NATIVE', 'PACKAGE', 'LINUX'):
             self.assertNotEqual(self.guard('package-checks.yml', name, dict(docs, **{key: 'failure'})), 0)
-        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success')
+        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success', LINUX='success')
         self.assertEqual(self.guard('package-checks.yml', name, code), 0)
         for key in code:
             if key != 'CODE':
@@ -79,9 +79,13 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
         name = 'Require all requested candidate work without accepting omitted failures'
-        good = dict(PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success')
+        good = dict(PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40)
         self.assertEqual(self.guard('runner-release.yml', name, good), 0)
+        self.assertEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='skipped')), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='success')), 0)
         for key in good:
+            if key == 'PREVIOUS_REVISION':
+                continue
             for result in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **{key: result})), 0)
 

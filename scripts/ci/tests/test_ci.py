@@ -106,7 +106,7 @@ class WorkflowContracts(unittest.TestCase):
             if name == 'package-checks':
                 # Package work moved into concurrent jobs. The named required
                 # aggregate executes only status checks; all heavy jobs are gated.
-                for heavy in ('portable', 'native', 'host-package'):
+                for heavy in ('portable', 'native', 'native-macos-package', 'linux-helper'):
                     block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
                     self.assertIn("if: needs.changes.outputs.code == 'true'", block)
                 continue
@@ -114,6 +114,46 @@ class WorkflowContracts(unittest.TestCase):
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
                 self.assertIn("if: needs.changes.outputs.code != 'false'",step)
+
+    def test_package_matrix_and_actual_required_wrapper(self):
+        text=(ROOT/'.github/workflows/package-checks.yml').read_text()
+        def job(name):
+            start=text.index('  '+name+':\n')
+            remaining=text[start:]
+            boundary=re.search(r'\n  [a-z][a-z0-9-]*:',remaining)
+            return remaining[:boundary.start()] if boundary else remaining
+        for name in ('native-macos-package','linux-helper'):
+            block=job(name)
+            self.assertIn('    needs: [changes, qualification]\n',block)
+            self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
+        self.assertIn('runner: [macos-14, macos-15-intel]',job('native-macos-package'))
+        self.assertIn('workflow_dispatch:',text)
+        self.assertIn('previous_revision:',text)
+        wrapper=job('macos-package')
+        self.assertIn('needs: [changes, qualification, native, native-macos-package, linux-helper]',wrapper)
+        self.assertIn('if: ${{ always() }}',wrapper)
+        self.assertIn('behavioral checks intentionally omitted, not executed.',wrapper)
+        # Run both actual literal scripts, preserving bash -e semantics. A
+        # classification failure cannot be hidden by skipped native jobs, and
+        # a code decision requires every native result to be successful.
+        scripts=[]
+        for body in wrapper.split('        run: |\n')[1:]:
+            lines=[]
+            for line in body.splitlines():
+                if line and not line.startswith('          '): break
+                lines.append(line[10:])
+            scripts.append('\n'.join(lines))
+        self.assertEqual(len(scripts),2)
+        statuses=('success','failure','cancelled','skipped','')
+        with tempfile.TemporaryDirectory() as folder:
+            for result,code in (('success','true'),('success','false'),('failure','false'),('cancelled','true'),('skipped','false'),('success',''),('success','invalid')):
+                for mac in statuses:
+                    for linux in statuses:
+                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE='skipped' if code=='false' else 'success',PACKAGE=mac,LINUX=linux,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
+                        command=scripts[0]+'\n'+scripts[1]
+                        actual=subprocess.run(['bash','-e','-c',command],cwd=folder,env=env,capture_output=True,text=True)
+                        expected=result=='success' and code in ('true','false') and (mac==linux==('skipped' if code=='false' else 'success'))
+                        self.assertEqual(actual.returncode==0,expected,(result,code,mac,linux,actual.stderr))
 
     def test_actual_wrapper_guard_from_empty_workspace(self):
         text=(ROOT/'.github/workflows/make-all.yml').read_text()

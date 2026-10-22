@@ -14,6 +14,12 @@ on:
       qualified_revision:
         description: Exact source that passed portable, native and package-input checks
         value: ${{ jobs.macos-package.outputs.qualified_revision }}
+  workflow_dispatch:
+    inputs:
+      previous_revision:
+        description: Optional full prior source SHA for nonpublishing two-source helper build diagnosis
+        type: string
+        required: false
   pull_request:
   push:
     branches: [dev, main]
@@ -57,20 +63,104 @@ jobs:
     needs: [changes, qualification]
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/release-native.yml
-  host-package:
+  native-macos-package:
     needs: [changes, qualification]
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-14
+    name: native-macos-package (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Build both supported host architectures
         run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
       - name: Source-independent installation and host-helper regressions
         env:
           SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
         run: python3 scripts/package/test-package.py -v
+
+      - name: Checksum exact-source macOS helper
+        run: (cd /tmp && shasum -a 256 symphony-host > symphony-host.sha256)
+      - name: Retain exact-source helper for package assembly
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-host-helper-${{ matrix.runner }}-${{ github.sha }}
+          path: |
+            /tmp/symphony-host
+            /tmp/symphony-host.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-helper:
+    needs: [changes, qualification]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build static source-bound helper
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"
+      - name: Native shared helper contracts
+        env:
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          python3 scripts/package/test-package.py -v
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        env:
+          HELPER: ${{ runner.temp }}/linux-helper/symphony-host
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
+            uname -sm
+            cat /etc/os-release
+            for tool in swift swiftc python3 node git mise elixir erl; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                printf "unexpected helper runtime dependency present: %s\n" "$tool" >&2
+                exit 1
+              fi
+            done
+            test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
+            test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+            mkdir -m700 /contract
+            /symphony-host owned-directory /contract
+            exec 8>>/contract/lock
+            /symphony-host lock /contract/lock 8 acquire
+            /symphony-host lock /contract/lock 8 inherited
+          ' | tee "$RUNNER_TEMP/linux-helper/ubuntu26.log"
+      - name: Build unmodified prior helper with the current SDK controller
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/prior-helper-source"
+          bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
+          bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
+          SYMPHONY_TEST_HOST_HELPER="$RUNNER_TEMP/prior-helper/symphony-host" python3 "$source/scripts/package/test-package.py" -v
+      - uses: actions/upload-artifact@v4
+        if: inputs.previous_revision != ''
+        with:
+          name: prior-linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/prior-helper/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-host-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/linux-helper/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # Keep the exact legacy ruleset context. A matrix creates suffixed check names;
+  # this aggregate cannot pass on a skipped, failed or cancelled native job.
   macos-package:
-    needs: [changes, qualification, native, host-package]
+    needs: [changes, qualification, native, native-macos-package, linux-helper]
     if: ${{ always() }}
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
@@ -88,16 +178,19 @@ jobs:
           CODE: ${{ needs.changes.outputs.code }}
           PORTABLE: ${{ needs.qualification.result }}
           NATIVE: ${{ needs.native.result }}
-          PACKAGE: ${{ needs.host-package.result }}
+          PACKAGE: ${{ needs.native-macos-package.result }}
+          LINUX: ${{ needs.linux-helper.result }}
         run: |
           test "$PORTABLE" = success
           if [ "$CODE" = false ]; then
             test "$NATIVE" = skipped
             test "$PACKAGE" = skipped
+            test "$LINUX" = skipped
             echo 'Documentation-only event; behavioral checks intentionally omitted, not executed.' >> "$GITHUB_STEP_SUMMARY"
           else
             test "$NATIVE" = success
             test "$PACKAGE" = success
+            test "$LINUX" = success
           fi
       - id: qualified
         if: needs.changes.outputs.code == 'true'
