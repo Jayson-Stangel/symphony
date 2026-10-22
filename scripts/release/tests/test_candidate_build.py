@@ -50,6 +50,12 @@ esac
                 "codex", "x86_64", str(root / "output")], text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 44, result.stdout + result.stderr)
             self.assertEqual(removal.read_text().strip(), "rm --force " + "1".zfill(64))
+            output = root / "output"
+            self.assertTrue((output / "codex-x86_64.registry-state.txt").exists())
+            # Execute the producer's actual top-level small-record glob: diagnostics
+            # cannot masquerade as native records at metadata assembly.
+            (output / "codex-x86_64.json").write_text('{"provider":"codex"}')
+            self.assertEqual([path.name for path in output.glob("*.json")], ["codex-x86_64.json"])
 
 
 class CleanUbuntuDriverTest(unittest.TestCase):

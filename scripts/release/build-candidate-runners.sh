@@ -5,7 +5,7 @@ provider=${1:?provider}; architecture=${2:?architecture}; output=${3:?output}; p
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
-registry_state="$output/$provider-$architecture.registry-state.json"
+registry_state="$output/$provider-$architecture.registry-state.txt"
 cleanup() {
   local status=$?
   trap - EXIT
