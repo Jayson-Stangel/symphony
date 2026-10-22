@@ -76,6 +76,46 @@ class HostTargets(unittest.TestCase):
                         self.assertFalse(args.exists())
                         self.assertFalse(output.parent.exists())
 
+    def test_packaged_launcher_refuses_unsupported_host_before_native_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / 'bundle'
+            (bundle / 'scripts').mkdir(parents=True)
+            (bundle / 'libexec').mkdir()
+            (bundle / 'scripts/symphony').write_text((ROOT / 'scripts/symphony').read_text())
+            (bundle / 'release.json').write_text('{}')
+            (bundle / 'libexec/symphony-host').write_text('#!/bin/bash\necho helper >> "$TEST_CALLS"\nexit 99\n')
+            (bundle / 'libexec/symphony-host').chmod(0o755)
+            (bundle / 'scripts/symphony-package.sh').write_text('echo package >> "$TEST_CALLS"\nexit 42\n')
+            fake = root / 'tools'
+            fake.mkdir()
+            (fake / 'uname').write_text('#!/bin/bash\ncase "$1" in -s) echo "$TEST_OS" ;; -m) echo "$TEST_ARCH" ;; esac\n')
+            (fake / 'uname').chmod(0o755)
+            current = root / 'current'
+            current.symlink_to(bundle, target_is_directory=True)
+            canary = root / 'project-data'
+            canary.write_bytes(b'preserve project data\x00')
+            for system, architecture, supported in [('Darwin', 'arm64', True), ('Linux', 'x86_64', True),
+                                                       ('Darwin', 'x86_64', False), ('Linux', 'aarch64', False)]:
+                with self.subTest(system=system, architecture=architecture):
+                    calls = root / 'calls'
+                    if calls.exists():
+                        calls.unlink()
+                    env = dict(os.environ, SYMPHONY_HOME=str(bundle),
+                               PATH=str(fake) + os.pathsep + os.environ['PATH'],
+                               TEST_OS=system, TEST_ARCH=architecture, TEST_CALLS=str(calls))
+                    result = subprocess.run(['bash', str(current / 'scripts/symphony'), '_complete-package-update'],
+                                            env=env, text=True, capture_output=True)
+                    if supported:
+                        self.assertEqual(result.returncode, 42)
+                        self.assertEqual(calls.read_text(), 'package\n')
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('only macOS ARM64 and Linux x86-64', result.stderr)
+                        self.assertFalse(calls.exists())
+                    self.assertEqual(current.readlink(), bundle)
+                    self.assertEqual(canary.read_bytes(), b'preserve project data\x00')
+
     def test_both_linux_container_architectures_and_providers_remain(self):
         workflow = (ROOT / '.github/workflows/runner-release.yml').read_text()
         self.assertIn('provider: [codex, claude]', workflow)
