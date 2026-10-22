@@ -105,6 +105,25 @@ def verify_tar(path, image_ids):
     return uncompressed_bytes
 
 
+def publish_files(pairs):
+    """Publish without overwrite; on failure remove only links we still own."""
+    created = []
+    try:
+        for source, destination in pairs:
+            identity = source.stat()
+            os.link(source, destination)
+            created.append((destination, identity.st_dev, identity.st_ino))
+    except BaseException:
+        for destination, device, inode in reversed(created):
+            try:
+                observed = destination.lstat()
+                if (observed.st_dev, observed.st_ino) == (device, inode):
+                    destination.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
 def export(image, output, checksum_output):
     # Keep transport telemetry outside the *.json runner-record namespace.
     metrics_output = output.with_name(output.name + '.metrics.txt')
@@ -156,8 +175,7 @@ def export(image, output, checksum_output):
         check.write_text(digest + '  ' + output.name + '\n')
         record = stage / 'metrics'
         record.write_text(json.dumps(metrics, indent=2, sort_keys=True) + '\n')
-        for source, destination in ((compressed, output), (check, checksum_output), (record, metrics_output)):
-            os.link(source, destination)
+        publish_files(((compressed, output), (check, checksum_output), (record, metrics_output)))
     return metrics
 
 

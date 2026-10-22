@@ -10,6 +10,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+import os
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location('image_export', ROOT / 'scripts/release/export-image.py')
@@ -94,6 +96,50 @@ class ExportTransport(unittest.TestCase):
                 BENCH.identities(archive, records[:1], 'codex', 'x86_64')
             with self.assertRaisesRegex(ValueError, 'differs from original'):
                 BENCH.identities(archive, records, 'claude', 'x86_64')
+
+    def test_failed_second_or_third_publication_cleans_owned_outputs_and_retries(self):
+        for failure_at in (2, 3):
+            with self.subTest(failure_at=failure_at), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                pairs = []
+                for index in range(3):
+                    source, target = root / ('source' + str(index)), root / ('target' + str(index))
+                    source.write_text('payload' + str(index))
+                    pairs.append((source, target))
+                original = os.link
+                calls = []
+                def fail_link(source, destination):
+                    calls.append(destination)
+                    if len(calls) == failure_at:
+                        raise OSError('injected publication failure')
+                    original(source, destination)
+                with mock.patch.object(EXPORT.os, 'link', side_effect=fail_link):
+                    with self.assertRaisesRegex(OSError, 'injected'):
+                        EXPORT.publish_files(pairs)
+                self.assertTrue(all(not target.exists() for _, target in pairs))
+                EXPORT.publish_files(pairs)
+                self.assertEqual([target.read_text() for _, target in pairs], ['payload0', 'payload1', 'payload2'])
+
+    def test_publication_cleanup_preserves_raced_foreign_destination_and_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pairs = []
+            for index in range(3):
+                source = root / ('source' + str(index)); source.write_text('ours')
+                pairs.append((source, root / ('target' + str(index))))
+            original = os.link
+            def race(source, destination):
+                if destination == pairs[2][1]:
+                    pairs[0][1].unlink()
+                    pairs[0][1].write_text('foreign replacement')
+                    destination.write_text('foreign raced destination')
+                original(source, destination)
+            with mock.patch.object(EXPORT.os, 'link', side_effect=race):
+                with self.assertRaises(FileExistsError):
+                    EXPORT.publish_files(pairs)
+            self.assertEqual(pairs[0][1].read_text(), 'foreign replacement')
+            self.assertFalse(pairs[1][1].exists())
+            self.assertEqual(pairs[2][1].read_text(), 'foreign raced destination')
 
     def test_source_failure_cannot_be_hidden_by_successful_gzip(self):
         with tempfile.TemporaryFile() as stream:
