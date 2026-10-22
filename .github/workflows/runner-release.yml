@@ -87,6 +87,7 @@ jobs:
     uses: ./.github/workflows/package-checks.yml
     with:
       portable_revision: ${{ github.sha }}
+      previous_revision: ${{ inputs.previous_revision }}
       retain_diagnostic: ${{ inputs.retain_diagnostic }}
   qualification:
     needs: portable
@@ -111,6 +112,15 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.previous_revision != ''
+        with:
+          fetch-depth: 0
+      - name: Refuse unavailable or incapable selected prior before native fanout
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
   candidate:
     needs: qualification
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
@@ -357,6 +367,26 @@ jobs:
           chmod +x symphony-host
           test "$(./symphony-host build-revision)" = "$GITHUB_SHA"
           test "$(./symphony-host host-platform)" = "$PLATFORM"
+      - name: Download exact prior helper qualified alongside current images
+        if: inputs.previous_revision != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualified-prior-helper
+      - name: Verify prior helper checksum, source and native CPU
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP/qualified-prior-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod +x symphony-host
+          test "$(./symphony-host build-revision)" = "$PREVIOUS_REVISION"
+          test "$(./symphony-host host-platform)" = "$PLATFORM"
+          if [ "$PLATFORM" = macos ]; then test "$(lipo -archs symphony-host)" = arm64
+          else readelf -h symphony-host | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'; fi
       - name: Build source-bound native candidate archives
         env:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
@@ -373,9 +403,7 @@ jobs:
             mkdir -p "$destination"
             helper="$RUNNER_TEMP/qualified-helper/symphony-host"
             if [ "$selection" = previous ]; then
-              helper="$destination/symphony-host"
-              if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
-              else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
+              helper="$RUNNER_TEMP/qualified-prior-helper/symphony-host"
             fi
             bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
           done

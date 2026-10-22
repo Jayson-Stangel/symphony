@@ -159,6 +159,26 @@ class EngineOnlyCoverageTest(unittest.TestCase):
         self.assertIn('test_engine_smoke.py', [path.name for path in (root / 'scripts/release/tests').glob('test_*.py')])
 
 
+class PriorHelperSchedulingTest(unittest.TestCase):
+    def test_prior_capabilities_and_helpers_precede_image_artifact_joins(self):
+        root = Path(__file__).resolve().parents[3]
+        runner = (root / '.github/workflows/runner-release.yml').read_text()
+        packages = (root / '.github/workflows/package-checks.yml').read_text()
+        call = packages.split('  workflow_call:', 1)[1].split('    outputs:', 1)[0]
+        self.assertIn('      previous_revision:', call)
+        self.assertIn('previous_revision: ${{ inputs.previous_revision }}', runner.split('  qualification:',1)[0])
+        qualification = runner.split('  qualification:',1)[1].split('  candidate:',1)[0]
+        self.assertIn('verify-prior-source.py "$PREVIOUS_REVISION"', qualification)
+        early = packages.split('      - name: Build prior helper early',1)[1].split('      - name: Retain actual exact-source',1)[0]
+        self.assertIn('"$helper" --native', early)
+        self.assertIn('build-linux-host-helper.sh', early)
+        self.assertIn('prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}', early)
+        late = runner.split('      - name: Build source-bound native candidate archives',1)[1].split('      - uses:',1)[0]
+        self.assertIn('qualified-prior-helper/symphony-host', late)
+        self.assertNotIn('build-host-helper.sh', late)
+        self.assertNotIn('build-linux-host-helper.sh', late)
+
+
 class NativeHelperInvocationTest(unittest.TestCase):
     def test_actual_current_mac_helper_step_passes_native_to_the_builder(self):
         root = Path(__file__).resolve().parents[3]
