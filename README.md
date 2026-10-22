@@ -503,3 +503,6 @@ skills; it pulls versioned runner images instead of building them. See
 [packaged installation](docs/packaged-install.md) for the short setup sequence,
 conflict handling and the distinction between candidate proof and clean-Mac
 qualification.
+Packaged `symphony update` verifies and stages one release before activating its
+manager and any selected project runner; the same updater supports retained
+rollback and interrupted transition recovery.

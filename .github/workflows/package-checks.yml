@@ -14,3 +14,5 @@ jobs:
         env:
           SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
         run: python3 scripts/package/test-package.py -v
+      - name: Release selection and interrupted packaged update regressions
+        run: python3 -m unittest discover -s scripts/release/tests -v

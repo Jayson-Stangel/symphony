@@ -781,3 +781,6 @@ For container use without a Symphony source checkout or host build tools, instal
 the macOS release bundle using [the packaged installation guide](../docs/packaged-install.md).
 The source `mise`/Mix instructions above remain the development and optional host
 execution path.
+Packaged updates select a verified production archive and immutable runner digest,
+retain per-project image pins, and reuse the existing drain/transition/recovery
+contract; see the guide for retry and prior-release rollback commands.
