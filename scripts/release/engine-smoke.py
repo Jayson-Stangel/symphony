@@ -13,7 +13,7 @@ import socket
 import subprocess
 import tempfile
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, build_opener
 
 
@@ -229,6 +229,8 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                             healthy_since = None
                     except (URLError, ConnectionError, TimeoutError) as exc:
                         result["last_connection_error"] = f"{type(exc).__name__}: {exc}"
+                        if isinstance(exc, HTTPError):
+                            exc.close()
                         healthy_since = None
                     time.sleep(0.2)
                 else:
