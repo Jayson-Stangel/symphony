@@ -21,6 +21,8 @@ class HostTargets(unittest.TestCase):
         self.assertNotIn('macos-15-intel', workflow)
         self.assertIn('engine_only:', workflow)
         self.assertIn('!inputs.controller_only && !inputs.engine_only', workflow)
+        runner_call = workflow.split('  runners:\n', 1)[1].split('  build:', 1)[0]
+        self.assertIn('      actions: read', runner_call)
         self.assertNotIn('Download linux_arm64', workflow)
         self.assertNotIn('Download macos_x86_64', workflow)
         config = (ROOT / 'elixir/mix.exs').read_text()

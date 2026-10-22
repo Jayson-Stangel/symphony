@@ -542,7 +542,7 @@ PY
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
         uname = self.root / "tools/uname"
-        for architecture, platform in ((("arm64", "linux/arm64"), ("x86_64", "linux/amd64")) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
+        for architecture, platform in ((("arm64", "linux/arm64"),) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
             uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {"Darwin" if sys.platform == "darwin" else "Linux"} ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
             output = self.assertOK(call([command, "doctor", "--json"], env=env))
             self.assertEqual(json.loads(output)["architecture"], architecture)
@@ -559,9 +559,12 @@ PY
         (bundle / "libexec/symphony-host").write_text(f"#!/bin/sh\ntouch '{canary}'\nexit 99\n")
         uname = self.root / "tools/uname"
         other_os = "Linux" if sys.platform == "darwin" else "Darwin"
-        for system, architecture, reason in (("Linux", "aarch64", "unsupported host"),
-                                            ("Windows_NT", "x86_64", "unsupported host"),
-                                            (other_os, "x86_64", "bundle platform")):
+        other_architecture = "x86_64" if other_os == "Linux" else "arm64"
+        policy = "macOS ARM64 and Linux x86-64"
+        for system, architecture, reason in (("Linux", "aarch64", policy),
+                                            ("Darwin", "x86_64", policy),
+                                            ("Windows_NT", "x86_64", policy),
+                                            (other_os, other_architecture, "bundle platform")):
             uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; *) echo {architecture} ;; esac\n')
             uname.chmod(0o755)
             for command in ([bundle / "install.sh"], [bundle / "scripts/symphony", "--version"]):
