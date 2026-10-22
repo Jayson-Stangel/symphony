@@ -93,13 +93,14 @@ def main():
     parser.add_argument('--built-metadata', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--payloads', type=Path)
+    parser.add_argument('--baseline-run', type=int, help='explicit manual original-record run only')
     args = parser.parse_args()
-    # This helper is owned by the provenance producer. It authorizes only this
-    # exact active native run, or verifies protected-history original evidence.
-    from component_provenance import verify_current_origin
+    # Producer-owned policy verifies this exact active run, protected history,
+    # or an explicitly selected original-record run in manual diagnostics.
+    from component_provenance import selection_verifier
     prepare(args.root, json.loads(args.plan.read_text()),
             json.loads(args.built_metadata.read_text()) if args.built_metadata else None,
-            args.output, args.payloads, verify_current_origin)
+            args.output, args.payloads, selection_verifier(args.baseline_run, root=args.root))
 
 
 if __name__ == '__main__':

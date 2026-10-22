@@ -4,6 +4,11 @@ on:
   push:
     branches: [dev, main]
   workflow_dispatch:
+    inputs:
+      baseline_run:
+        description: Optional explicit authorized original-record run for pre-merge diagnostics
+        type: string
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -17,12 +22,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/component-plan.yml
+    with:
+      baseline_run: ${{ inputs.baseline_run }}
   runners:
     needs: plan
     if: needs.plan.outputs.has_builds == 'true'
     uses: ./.github/workflows/runner-release.yml
     with:
       manifest_schema: '2'
+      baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
       publish: false
     permissions:
@@ -58,8 +66,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
           args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -120,9 +130,12 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
-            --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners"
+            --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners" "${args[@]}"
       - name: Execute the installed current manager with original immutable runners
         if: needs.changes.outputs.code == 'true'
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence

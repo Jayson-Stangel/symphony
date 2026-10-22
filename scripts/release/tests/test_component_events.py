@@ -25,6 +25,17 @@ class ComponentEvents(unittest.TestCase):
                                         env=dict(os.environ, RESULT='success', CODE=code, PLAN=plan, BROWSER=browser))
                 self.assertEqual(result.returncode == 0, success, (code, plan, browser))
 
+    def test_manual_baseline_is_rejected_before_discovery_on_ordinary_events(self):
+        workflow = (ROOT / '.github/workflows/component-plan.yml').read_text()
+        block = workflow.split('        run: |\n', 1)[1].split('          python3 scripts/release/runner_reuse.py', 1)[0]
+        script = '\n'.join(line[10:] for line in block.splitlines())
+        for event, run, accepted in (('pull_request', '', True), ('push', '', True),
+                                     ('pull_request', '123', False), ('push', '123', False),
+                                     ('workflow_dispatch', '123', True), ('workflow_dispatch', 'not-a-run', False)):
+            with self.subTest(event=event, run=run):
+                result = subprocess.run(['bash', '-e', '-c', script], env=dict(os.environ, GITHUB_EVENT_NAME=event, BASELINE_RUN=run))
+                self.assertEqual(result.returncode == 0, accepted)
+
     def test_current_manager_wrapper_rejects_missing_failed_or_cancelled_evidence(self):
         workflow = (ROOT / '.github/workflows/runner-integration.yml').read_text()
         section = workflow.split('      - name: Require complete current-manager and component decisions\n', 1)[1]
