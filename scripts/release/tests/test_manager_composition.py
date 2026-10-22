@@ -156,6 +156,34 @@ class ManagerComposition(unittest.TestCase):
             self.assertEqual(final['runners'], value['runners'])
             self.assertEqual(final['bundle']['sha256'], hashlib.sha256(b'actual mac native archive fixture').hexdigest())
 
+    def test_separate_prior_is_verified_and_aliased_before_current_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            images = Path(directory)
+            (images / 'previous').mkdir()
+            for folder, content in ((images, b'actual-current-archive-fixture'), (images/'previous', b'actual-previous-archive-fixture')):
+                (folder/'codex-x86_64.docker.tar.gz').write_bytes(content)
+                (folder/'codex-x86_64.sha256').write_text(hashlib.sha256(content).hexdigest()+'  codex-x86_64.docker.tar.gz\n')
+            record = FIXTURE.record('codex', 'x86_64')
+            record['archive_tag'] = 'localhost:5000/symphony-codex:candidate'
+            original = copy.deepcopy(record)
+            config = {'Id': record['image_config'], 'Architecture': 'amd64', 'Config': {'Labels': {
+                'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64', 'org.opencontainers.image.revision': record['source_revision'],
+                'com.symphony.inputs.sha256': record['input_identity'], 'com.symphony.protocol': '1'}}}
+            calls = []
+            def run(args, **kwargs):
+                calls.append((args, kwargs.get('stdin').read() if kwargs.get('stdin') else None))
+                return subprocess.CompletedProcess(args, 0, json.dumps([config]) if 'inspect' in args else '')
+            selected = LIFECYCLE.stage_separate_previous(run, images, 'codex', {'schema_version': 2, 'runners': {'codex': {'x86_64': record}}})
+            LIFECYCLE.load_original_archive(run, images, 'codex')
+            self.assertEqual(selected, record['image_config'])
+            self.assertEqual(calls[0][1], b'actual-previous-archive-fixture')
+            self.assertEqual(calls[2][0], ['docker', 'tag', record['archive_tag'], 'localhost:5000/symphony-codex:previous'])
+            self.assertEqual(calls[-1][1], b'actual-current-archive-fixture')
+            self.assertEqual(record, original, 'local role alias mutated original qualification')
+            (images/'previous/codex-x86_64.sha256').write_text('0'*64+'  codex-x86_64.docker.tar.gz\n')
+            with self.assertRaisesRegex(AssertionError, 'checksum differs'):
+                LIFECYCLE.stage_separate_previous(run, images, 'codex', {'schema_version': 2, 'runners': {'codex': {'x86_64': record}}})
+
     def test_distribution_alias_preserves_complete_original_records_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'source'; root.mkdir()

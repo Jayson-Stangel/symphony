@@ -100,6 +100,40 @@ def verify_loaded_component(config, record, provider, independent):
         assert labels.get("com.symphony.inputs.sha256") == record.get("input_identity"), "loaded original input identity differs"
 
 
+def load_original_archive(run, folder, provider):
+    archive = folder / f"{provider}-x86_64.docker.tar.gz"
+    sidecar = folder / f"{provider}-x86_64.sha256"
+    assert archive.is_file() and not archive.is_symlink() and sidecar.is_file() and not sidecar.is_symlink()
+    fields = sidecar.read_text().strip().split()
+    assert len(fields) == 2 and re.fullmatch('[a-f0-9]{64}', fields[0]) and fields[1] in (archive.name, './'+archive.name), 'original archive checksum identity differs'
+    digest = hashlib.sha256()
+    with archive.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024*1024), b''): digest.update(block)
+    assert digest.hexdigest() == fields[0], 'original archive checksum differs'
+    with archive.open('rb') as source:
+        run(['docker', 'load'], stdin=source)
+
+
+def stage_separate_previous(run, images, provider, previous):
+    """Load an original prior subject before current tags; retain its exact identity."""
+    folder = images / 'previous'
+    if not folder.exists(): return None
+    assert folder.is_dir() and not folder.is_symlink(), 'previous subjects must use an owned directory'
+    load_original_archive(run, folder, provider)
+    record = previous['runners'][provider]['x86_64']
+    # The adapter selects the original current role. New schema2 records retain
+    # their actual archive_tag; historical90 current records predate that field.
+    original = record.get('archive_tag', f'localhost:5000/symphony-{provider}:candidate')
+    assert original in (f'localhost:5000/symphony-{provider}:candidate', f'localhost:5000/symphony-{provider}:previous')
+    observed = json.loads(run(['docker', 'image', 'inspect', original]).stdout)[0]
+    verify_loaded_component(observed, record, provider, previous['schema_version'] == 2)
+    alias = f'localhost:5000/symphony-{provider}:previous'
+    run(['docker', 'tag', original, alias])
+    checked = json.loads(run(['docker', 'image', 'inspect', alias]).stdout)[0]
+    assert checked['Id'] == observed['Id'], 'local previous-role alias changes original config'
+    return observed['Id']
+
+
 def cleanup_negative_image(run, reference, token):
     """Remove only a diagnostic image carrying this run's unique ownership label."""
     def absent(receipt, selected):
@@ -242,20 +276,22 @@ def main():
         controller_ids[registry] = acquire_container(run, "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
         owned.add(registry)
         for provider in ("codex", "claude"):
-            archive = images / f"{provider}-x86_64.docker.tar.gz"
-            expected = (images / f"{provider}-x86_64.sha256").read_text().split()[0]
-            assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
-            with archive.open("rb") as source:
-                # Docker load handles the gzip archive; no shell pipeline status ambiguity.
-                run(["docker", "load"], stdin=source)
+            # A separately verified old current-role subject may use the same
+            # :candidate tag. Alias it locally before loading the new current.
+            previous_config = stage_separate_previous(run, images, provider, previous) if not current_only else None
+            load_original_archive(run, images, provider)
             selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", previous)]
             for legacy_tag, manifest in selected:
                 qualified = manifest["runners"][provider]["x86_64"]
-                image = qualified.get("archive_tag", f"localhost:5000/symphony-{provider}:{legacy_tag}")
+                image = (f"localhost:5000/symphony-{provider}:previous" if legacy_tag == 'previous' and previous_config is not None
+                         else qualified.get("archive_tag", f"localhost:5000/symphony-{provider}:{legacy_tag}"))
                 assert image in (f"localhost:5000/symphony-{provider}:candidate", f"localhost:5000/symphony-{provider}:previous"), "foreign original archive tag"
                 original = qualified["image"]
                 assert re.fullmatch(f"localhost:5000/symphony-{provider}@sha256:[a-f0-9]{{64}}", original), "original digest must use the isolated candidate registry route"
-                verify_loaded_component(json.loads(docker("image", "inspect", image))[0], qualified, provider, manifest["schema_version"] == 2)
+                loaded = json.loads(docker("image", "inspect", image))[0]
+                verify_loaded_component(loaded, qualified, provider, manifest["schema_version"] == 2)
+                if legacy_tag == 'previous' and previous_config is not None:
+                    assert loaded['Id'] == previous_config, 'current archive replaced the selected old subject'
                 docker("push", image)
                 observed = json.loads(docker("image", "inspect", image))[0]
                 assert original in observed.get("RepoDigests", []), ("original image digest changed", image, original)
