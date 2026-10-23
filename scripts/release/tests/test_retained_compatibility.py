@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = (ROOT/'scripts/symphony-package.sh').read_text()
-CHECKS = SOURCE[SOURCE.index('package_retained_image_compatible() {'):SOURCE.index('package_build_image() {')]
+CHECKS = SOURCE[SOURCE.index('package_selected_image_compatible() {'):SOURCE.index('package_build_image() {')]
 UPDATER = (ROOT/'scripts/symphony-package-update.sh').read_text()
 COMPLETE = UPDATER[UPDATER.index('complete_package_update() {'):]
 BUILD = SOURCE[SOURCE.index('package_build_image() {'):SOURCE.index('# A shared manager update')]
@@ -47,6 +47,7 @@ package_helper() {
  get/schema_version) echo "$SCHEMA" ;;
  get/runners.codex.x86_64.image) echo "${EXPECTED_DIGEST:-$DIGEST}" ;;
  get/runners.codex.x86_64.source_revision) echo "${EXPECTED_REVISION:-$REVISION}" ;;
+ validate-selected-image/*) cat >/dev/null ;;
  owned-file/) test -f "$2" && test ! -L "$2" ;;
  owned-directory/) test -d "$2" && test ! -L "$2" ;;
  *) exit 91 ;;
