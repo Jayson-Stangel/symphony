@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       previous_artifact_run:
-        description: Exact historical schema1 current-package run for download-only installed update tests
+        description: Exact qualified current-manager package run for download-only installed update tests
         type: string
         default: ''
       legacy_artifact_run:
@@ -49,7 +49,7 @@ on:
   workflow_dispatch:
     inputs:
       previous_artifact_run:
-        description: Exact historical schema1 current-package run for download-only installed update tests
+        description: Exact qualified current-manager package run for download-only installed update tests
         type: string
         default: ''
       legacy_artifact_run:

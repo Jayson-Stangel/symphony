@@ -126,6 +126,95 @@ class PreviousSubjectTest(unittest.TestCase):
         self.assertTrue((self.root/'packages/previous/release.json').exists())
         self.assertFalse((self.root/'images/previous').exists())
         self.assertEqual(json.loads((self.root/'evidence/previous-package-subject.json').read_text())['observed_x86_64'],{})
+    def independent_fixture(self):
+        value=copy.deepcopy(self.manifest);value.update(schema_version=2,compatibility={'runner_protocol':1})
+        records=[];origins={};original_jobs=[];original_source='b'*40
+        for provider in ('codex','claude'):
+            for arch in ('arm64','x86_64'):
+                item=component_record(provider,arch)
+                item['source_revision']=original_source
+                item['qualification'].update(run_id=456,controller_revision=original_source,source_revision=original_source)
+                payload=next((x for x in self.artifacts if x['name']=='runner-candidate-'+provider+'-x86_64'))
+                if arch=='x86_64':
+                    config=json.dumps({'os':'linux','architecture':'amd64','config':{'Labels':{
+                        'com.symphony.agent':provider,'com.symphony.architecture':'amd64','org.opencontainers.image.revision':original_source,
+                        'com.symphony.protocol':'1','com.symphony.inputs.sha256':item['input_identity']}}}).encode()
+                    item['image_config']='sha256:'+hashlib.sha256(config).hexdigest()
+                    item['archive_tag']=f'localhost:5000/symphony-{provider}:candidate'
+                    output=io.BytesIO()
+                    with tarfile.open(fileobj=output,mode='w:gz') as archive:
+                        filename=hashlib.sha256(config).hexdigest()+'.json'
+                        info=tarfile.TarInfo(filename);info.size=len(config);archive.addfile(info,io.BytesIO(config))
+                        raw=json.dumps([{'Config':filename,'RepoTags':[item['archive_tag']],'Layers':[]}]).encode()
+                        info=tarfile.TarInfo('manifest.json');info.size=len(raw);archive.addfile(info,io.BytesIO(raw))
+                    archive_bytes=output.getvalue();item['qualification']['archive_sha256']=hashlib.sha256(archive_bytes).hexdigest()
+                    name=provider+'-x86_64.docker.tar.gz'
+                    raw=zipped({name:archive_bytes,provider+'-x86_64.sha256':item['qualification']['archive_sha256']+'  '+name+'\n'})
+                    self.payloads[payload['id']]=raw
+                    payload.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw),
+                        workflow_run={'id':456,'head_sha':original_source})
+                records.append(item)
+                value['runners'][provider][arch]={k:v for k,v in item.items() if k not in ('provider','architecture')}
+                origins[provider+'-'+arch]={'run_id':456,'run_attempt':1,'job_name':item['qualification']['job_name'],
+                    'controller_revision':original_source,'artifact_id':payload['id'],'artifact_digest':payload['digest']}
+                original_jobs.append(dict(id=100+len(original_jobs),name=item['qualification']['job_name'],status='completed',conclusion='success',
+                    labels=['ubuntu-24.04-arm' if arch=='arm64' else 'ubuntu-24.04'],
+                    started_at='2026-10-22T00:00:00Z',completed_at='2026-10-22T23:59:59Z'))
+        plan={'planning_complete':True,'manager_source_revision':self.revision,'components':{}}
+        for item in records:
+            plan['components'].setdefault(item['provider'],{})[item['architecture']]={'action':'reuse','record':item,
+                'input_identity':item['input_identity'],'origin':origins[item['provider']+'-'+item['architecture']]}
+        files={'release.json':json.dumps(value),'component-plan.json':json.dumps(plan)}
+        files.update({item['provider']+'-'+item['architecture']+'.json':json.dumps(item) for item in records})
+        raw=zipped(files);meta=self.artifacts[0];self.payloads[meta['id']]=raw
+        meta.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw))
+        bundle=value['bundles']['linux_x86_64'];raw=zipped({'release.json':json.dumps(value),bundle['filename']:b'opaque actual old Linux archive fixture'})
+        package=self.artifacts[1];self.payloads[package['id']]=raw
+        package.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw))
+        self.jobs=[j for j in self.jobs if not j['name'].startswith('runner-')]
+        for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
+            self.jobs.append(dict(id=300+len(self.jobs),name='package-inputs / native-host-package ('+runner+')',
+                status='completed',conclusion='success',labels=[runner]))
+        next(j for j in self.jobs if j['name']=='candidate-metadata')['steps']=[{
+            'name':'Join exact planned native components without exporting reused payloads','status':'completed','conclusion':'success'}]
+        def api(path,binary=False):
+            if path=='actions/runs/456/attempts/1/jobs?per_page=100':return {'total_count':len(original_jobs),'jobs':original_jobs}
+            if path.startswith('actions/artifacts/') and not binary:return next(x for x in self.artifacts if x['id']==int(path.split('/')[2]))
+            return self.api(path,binary)
+        def verify(record,**kwargs):return origins[record['provider']+'-'+record['architecture']]
+        return value,records,api,verify
+
+    def test_schema2_prior_manager_uses_original_native_sources_without_claiming_current_native_jobs(self):
+        value,records,api,verify=self.independent_fixture()
+        with patch.object(subject.proof,'verify_origin',side_effect=verify) as checked:
+            selected=subject.select(123,self.source,api)
+            self.assertEqual(checked.call_count,4)
+        self.assertTrue(all(identifier>=100 for identifier in selected['native_jobs'].values()))
+        self.assertEqual(len(selected['manager_helper_jobs']),2)
+        subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',self.download)
+        retained=json.loads((self.root/'packages/previous/release.json').read_text())
+        self.assertEqual(retained,value)
+        observed=json.loads((self.root/'evidence/previous-package-subject.json').read_text())
+        for actual in observed['observed_x86_64'].values():
+            self.assertEqual(actual['source_revision'],'b'*40)
+            self.assertNotEqual(actual['source_revision'],selected['source_revision'])
+            self.assertEqual(actual['protocol'],'1');self.assertEqual(actual['input_identity'],'d'*64)
+
+    def test_schema2_prior_requires_manager_lifecycle_and_helpers_separately_from_native_join(self):
+        for kind in ('helper','lifecycle','join','origin'):
+            with self.subTest(kind=kind):
+                jobs,items,payloads=copy.deepcopy(self.jobs),copy.deepcopy(self.artifacts),copy.deepcopy(self.payloads)
+                value,records,api,verify=self.independent_fixture()
+                if kind=='helper':next(j for j in self.jobs if 'native-host-package' in j['name'])['conclusion']='failure'
+                if kind=='lifecycle':next(j for j in self.jobs if j['name']=='ubuntu-package-lifecycle')['conclusion']='failure'
+                if kind=='join':next(j for j in self.jobs if j['name']=='candidate-metadata')['steps'][0]['conclusion']='failure'
+                def checked(item,**kwargs):
+                    actual=verify(item,**kwargs)
+                    return dict(actual,artifact_id=999) if kind=='origin' else actual
+                with patch.object(subject.proof,'verify_origin',side_effect=checked),self.assertRaises(ValueError):
+                    subject.select(123,self.source,api)
+                self.jobs,self.artifacts,self.payloads=jobs,items,payloads
+
     def test_failed_native_or_foreign_expired_ambiguous_origin_refuses_before_download(self):
         for variant in ('native','foreign','expired','duplicate'):
             with self.subTest(variant=variant):

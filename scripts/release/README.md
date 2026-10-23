@@ -547,7 +547,7 @@ to 2, outside every runner Docker input closure. Engine version and original
 runner labels remain their actual original values.
 
 Manual full candidates may select `previous_artifact_run` from an actual successful
-schema1 current-package run. Cheap common qualification first checks that exact
+current-manager package run. Cheap common qualification first checks that exact
 fork/workflow/source/attempt, every native image and package stage, prior installed
 lifecycle, immutable metadata and available payload service identities. The final
 Ubuntu lifecycle consumer independently repeats those checks, downloads only the
@@ -624,3 +624,17 @@ its existing protected-history origin requirements, and cannot instantiate this
 manual override. Thus a Claude-only candidate can retain the original Codex
 components, and a downstream retry can select those same successful components
 without rebuilding, exporting, uploading or requalifying them.
+
+
+A schema2 prior manager is independent of its runner components. Its selector
+requires its actual source-bound package jobs, both native helper qualifications,
+and installed manager lifecycle to succeed. It also verifies the complete joined
+selection and all four original native/payload proofs before retrieving anything
+large. It fetches the actual prior manager bundle and only the original x86-64
+payloads; every archive config, source, protocol, input identity and checksum is
+checked against that original record. It never invents native jobs or images at
+the newer manager revision. Original tags remain unchanged; the existing isolated
+loader creates only a local previous-role alias. This stricter prior-manager
+eligibility is distinct from component reuse after a downstream manager failure:
+successful component artifacts can resume, while an unsuccessful manager cannot
+be used as a qualified installed update subject.

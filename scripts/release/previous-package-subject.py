@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retrieve a verified historical schema1 package/current-image test subject; never rebuild it."""
+"""Retrieve a verified prior manager and its original native image subjects; never rebuild them."""
 import argparse
 from datetime import datetime,timezone
 import hashlib
@@ -42,8 +42,10 @@ def select(run_id,root,fetch=proof.api):
     run=fetch(f'actions/runs/{run_id}');source=run.get('head_sha')
     proof.run_identity(run_id,source,fetch)
     artifacts.require(type(run.get('run_attempt')) is int and run['run_attempt']>0,'historical run attempt missing')
+    trusted=True
     try:proof.trusted_lineage(source,fetch)
     except ValueError:
+        trusted=False
         artifacts.require(os.environ.get('GITHUB_EVENT_NAME')=='workflow_dispatch','pre-merge historical subject requires exact manual selection')
     artifacts.require(subprocess.run(['git','-C',str(root),'merge-base','--is-ancestor',source,controller],
                                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,
@@ -51,12 +53,6 @@ def select(run_id,root,fetch=proof.api):
     inventory=fetch(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")
     artifacts.require(inventory.get('total_count',0)<=100,'historical stage discovery incomplete')
     jobs=inventory['jobs'];native={}
-    for provider in artifacts.PROVIDERS:
-        for arch in artifacts.ARCHITECTURES:
-            stage=job(jobs,f'runner-{provider}-{arch}')
-            expected='ubuntu-24.04-arm' if arch=='arm64' else 'ubuntu-24.04'
-            artifacts.require(expected in stage.get('labels',[]),'historical qualification was not on actual native architecture')
-            native[provider+'-'+arch]=stage
     metadata=job(jobs,'candidate-metadata');packaged=job(jobs,'packaged-candidate-metadata')
     lifecycle=job(jobs,'ubuntu-package-lifecycle')
     for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
@@ -82,24 +78,62 @@ def select(run_id,root,fetch=proof.api):
                           sum(item.file_size for item in archive.infolist())<=proof.MAX_RECORD_BYTES,'historical metadata member is ambiguous or oversized')
         manifest=json.loads(archive.read('release.json'))
     artifacts.validate(manifest,require_bundle=False)
-    artifacts.require(manifest['schema_version']==1 and manifest['source_revision']==source,'historical subject must be the actual current schema1 source')
-    for provider,group in manifest.get('original_components',manifest['runners']).items():
-        for architecture,record in group.items():
-            if 'qualification' in record:
-                native_proof=record['qualification']
-                artifacts.require(native_proof.get('run_id')==run_id and native_proof.get('controller_revision')==source,
-                                  'schema1 bridge record was not qualified by this exact current run')
-                proof.verify_origin(dict(record,provider=provider,architecture=architecture),fetch=fetch,
-                    candidate_run=(run_id if os.environ.get('GITHUB_EVENT_NAME')=='workflow_dispatch' and run.get('event')=='workflow_dispatch' else None))
-    payloads={provider:artifact(f'runner-candidate-{provider}-x86_64',MAX_PAYLOAD,native[provider+'-x86_64']) for provider in artifacts.PROVIDERS}
+    artifacts.require(manifest['source_revision']==source,'historical manager must be the actual selected current source')
+    originals=manifest.get('original_components',manifest['runners']);origins={};helper_jobs={}
+    if manifest['schema_version']==2:
+        from component_selection import records_from_join,manual_verifier,JOIN_STEP
+        bundle=records_from_join(raw)
+        steps=[item for item in metadata.get('steps',[]) if item.get('name')==JOIN_STEP]
+        artifacts.require(len(steps)==1 and steps[0].get('status')=='completed' and steps[0].get('conclusion')=='success',
+                          'schema2 prior manager has no successful complete component join')
+        verifier=proof.verify_origin if trusted else manual_verifier(run_id,fetch=fetch)
+        for record in bundle['records']:
+            origin=verifier(record,fetch=fetch) if trusted else verifier(record)
+            decision=bundle['plan']['components'][record['provider']][record['architecture']]
+            if decision['action']=='reuse':
+                artifacts.require(origin==decision['origin'],'prior manager selected original origin differs')
+            key=record['provider']+'-'+record['architecture'];origins[key]=origin
+            native[key]=proof.selected_job(origin['run_id'],origin['run_attempt'],origin['job_name'],record['architecture'],fetch)
+        for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
+            names=('package-inputs / native-host-package ('+runner+')','runners / package-inputs / native-host-package ('+runner+')')
+            found=[item for item in jobs if item['name'] in names]
+            artifacts.require(len(found)==1 and found[0].get('status')=='completed' and found[0].get('conclusion')=='success' and
+                              runner in found[0].get('labels',[]),'schema2 prior manager native helper qualification missing')
+            helper_jobs[platform]=found[0]['id']
+        payloads={}
+        for provider in artifacts.PROVIDERS:
+            origin=origins[provider+'-x86_64'];item=fetch(f"actions/artifacts/{origin['artifact_id']}")
+            proof.available(item,'runner-candidate-'+provider+'-x86_64',origin['artifact_digest'],origin['run_id'],
+                            origin['controller_revision'],datetime.now(timezone.utc))
+            artifacts.require(item['size_in_bytes']<=MAX_PAYLOAD,'original prior payload exceeds bound')
+            within(item,native[provider+'-x86_64']);payloads[provider]=item
+    else:
+        for provider in artifacts.PROVIDERS:
+            for arch in artifacts.ARCHITECTURES:
+                stage=job(jobs,f'runner-{provider}-{arch}')
+                expected='ubuntu-24.04-arm' if arch=='arm64' else 'ubuntu-24.04'
+                artifacts.require(expected in stage.get('labels',[]),'historical qualification was not on actual native architecture')
+                native[provider+'-'+arch]=stage
+        for provider,group in originals.items():
+            for architecture,record in group.items():
+                if 'qualification' in record:
+                    native_proof=record['qualification']
+                    artifacts.require(native_proof.get('run_id')==run_id and native_proof.get('controller_revision')==source,
+                                      'schema1 bridge record was not qualified by this exact current run')
+                    origins[provider+'-'+architecture]=proof.verify_origin(dict(record,provider=provider,architecture=architecture),fetch=fetch,
+                        candidate_run=(run_id if not trusted and run.get('event')=='workflow_dispatch' else None))
+        payloads={provider:artifact(f'runner-candidate-{provider}-x86_64',MAX_PAYLOAD,native[provider+'-x86_64']) for provider in artifacts.PROVIDERS}
     package=artifact('packaged-candidate',MAX_PACKAGE,packaged)
     return {'run_id':run_id,'run_attempt':run['run_attempt'],'source_revision':source,'role':'current',
             'native_jobs':{key:value['id'] for key,value in native.items()},'lifecycle_job':lifecycle['id'],
-            'metadata_artifact':meta,'package_artifact':package,'payload_artifacts':payloads,'manifest':manifest}
+            'metadata_artifact':meta,'package_artifact':package,'payload_artifacts':payloads,'manifest':manifest,
+            'original_native_origins':origins,'manager_helper_jobs':helper_jobs}
 
 
-def archive_config(path,provider,source):
-    tag=f'localhost:5000/symphony-{provider}:candidate'
+def archive_config(path,provider,source,record=None):
+    tag=(record or {}).get('archive_tag',f'localhost:5000/symphony-{provider}:candidate')
+    artifacts.require(tag in (f'localhost:5000/symphony-{provider}:candidate',f'localhost:5000/symphony-{provider}:previous'),
+                      'historical archive role outside supported original repository')
     with tarfile.open(path,'r:gz') as archive:
         item=archive.getmember('manifest.json');artifacts.require(item.size<=1024*1024,'historical Docker manifest oversized')
         values=json.load(archive.extractfile(item))
@@ -132,7 +166,7 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
             artifacts.require(archive.namelist().count('release.json')==1 and archive.getinfo('release.json').file_size<=proof.MAX_RECORD_BYTES,
                               'historical package manifest missing or oversized')
             raw=archive.read('release.json');manifest=json.loads(raw);artifacts.validate(manifest)
-            artifacts.require(manifest['schema_version']==1 and manifest['source_revision']==selected['source_revision'] and
+            artifacts.require(manifest['schema_version']==selected['manifest']['schema_version'] and manifest['source_revision']==selected['source_revision'] and
                               manifest['runners']==selected['manifest']['runners'] and
                               manifest.get('original_components')==selected['manifest'].get('original_components'),
                               'historical package/native identities differ')
@@ -159,12 +193,16 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
                 artifacts.require(checksum(old_images/name)==match[1],'historical image archive checksum differs')
                 (old_images/receipt).write_bytes(raw_receipt)
             payload.unlink()
-            actual=archive_config(old_images/name,provider,selected['source_revision'])
-            record=manifest['runners'][provider]['x86_64']
+            record=manifest.get('original_components',manifest['runners'])[provider]['x86_64']
+            actual=archive_config(old_images/name,provider,record['source_revision'],record)
+            if manifest['schema_version']==2:
+                artifacts.require(actual['protocol']=='1' and actual['input_identity']==record['input_identity'] and
+                                  record['qualification']['archive_sha256']==match[1],
+                                  'prior original protocol/input/archive checksum differs')
             if 'image_config' in record:artifacts.require(record['image_config']==actual['image_config'],'historical recorded config differs')
             observed[provider]=dict(actual,image=record['image'],archive_sha256=match[1],payload_artifact_id=artifact['id'],payload_artifact_digest=artifact['digest'])
         (evidence/(selection+'-package-subject.json')).write_text(json.dumps(dict(selected,observed_x86_64=observed,
-            qualification_kind='historical schema1 package integration subject; not a new component qualification',
+            qualification_kind='historical verified manager package integration subject; original native qualification retained',
             prior_image_build_executed=False,prior_image_export_executed=False,prior_large_upload_executed=False,
             package_only=package_only),indent=2,sort_keys=True)+'\n')
         previous.rename(packages/selection)
