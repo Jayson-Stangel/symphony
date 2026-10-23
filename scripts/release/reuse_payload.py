@@ -32,8 +32,9 @@ def checksum(path):
     return digest.hexdigest()
 
 
-def download(artifact_id, path, max_bytes=MAX_ARTIFACT_BYTES):
+def download(artifact_id, path, max_bytes=None):
     require(type(artifact_id) is int and artifact_id > 0, 'invalid payload artifact ID')
+    if max_bytes is None:max_bytes=MAX_ARTIFACT_BYTES
     require(type(max_bytes) is int and 0 < max_bytes <= MAX_ARTIFACT_BYTES, 'invalid artifact download bound')
     command = api_command(f'actions/artifacts/{artifact_id}/zip', binary=True)
     with path.open('xb') as output, subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
