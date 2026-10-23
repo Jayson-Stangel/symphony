@@ -3,21 +3,92 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      previous_artifact_run:
+        description: Exact qualified current-manager package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
+      component_plan_artifact:
+        description: Exact same-run source-bound component plan from the ordinary caller
+        type: string
+        default: ''
+      baseline_run:
+        description: Exact manually authorized record run; rejected outside workflow_dispatch
+        type: string
+        default: ''
+      manifest_schema:
+        description: Candidate metadata schema; independent components use schema 2
+        type: string
+        default: '2'
+      compose_packages:
+        description: Assemble native manager packages in this producer (ordinary integration composes separately)
+        type: boolean
+        default: true
+      previous_revision:
+        description: Optional full prior Linux-capable source for actual two-revision package lifecycle
+        type: string
+        default: ''
+      retain_diagnostic:
+        description: Preserve this caller-owned diagnostic and its package checks
+        type: boolean
+        default: false
+      preflight_revision:
+        description: Exact successful caller-owned portable preflight output; empty runs it here
+        type: string
+        default: ''
       publish:
         type: boolean
         default: false
   workflow_dispatch:
     inputs:
+      previous_artifact_run:
+        description: Exact qualified current-manager package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
+      compose_packages:
+        description: Assemble manager packages and full qualification (false runs components only)
+        type: boolean
+        default: true
+      resume_native_run:
+        description: Recover small records only from this original manual native run with the known downstream sealing failure
+        type: string
+        default: ''
+      baseline_run:
+        description: Exact authorized manual native candidate run (empty uses verified fork history)
+        type: string
+        default: ''
+      manifest_schema:
+        description: Candidate schema (1 bridge with same-source runners, 2 independent components)
+        type: choice
+        options: ['1', '2']
+        default: '1'
+      retain_diagnostic:
+        description: Preserve this explicitly requested diagnostic run across new commits
+        type: boolean
+        default: false
       transfer_diagnostic_run:
         description: Existing same-repository runner candidate run ID for build-free transfer diagnosis (empty builds candidates)
         type: string
         required: false
-
       transfer_replay_run:
         description: Existing successful transfer benchmark run ID for replay/digest proof only (no export)
         type: string
         required: false
-
       transfer_timing_run:
         description: Existing legacy combined payload run ID for one read-only checksum/identity timing job
         type: string
@@ -30,7 +101,6 @@ on:
         type: choice
         options: [x86_64, arm64]
         default: x86_64
-
       cache_probe:
         description: Only run bounded native cold/warm/changed-input cache qualification
         type: boolean
@@ -56,30 +126,95 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: runner-candidate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  component-plan:
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && inputs.resume_native_run == '' && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    runs-on: ubuntu-24.04
+    outputs:
+      has_builds: ${{ steps.plan.outputs.has_builds }}
+      build_matrix: ${{ steps.plan.outputs.build_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: inputs.component_plan_artifact != ''
+        with:
+          name: ${{ inputs.component_plan_artifact }}
+          path: selected-plan
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          MANIFEST_SCHEMA: ${{ inputs.manifest_schema }}
+          SELECTED_PLAN_ARTIFACT: ${{ inputs.component_plan_artifact }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+        run: |
+          test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
+          if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            [[ "$LEGACY_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1
+            test "$MANAGER_ONLY_UPDATE" = true
+            test -n "$PREVIOUS_ARTIFACT_RUN"
+            test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
+          if [ "$MANAGER_ONLY_UPDATE" = true ]; then test -n "$PREVIOUS_ARTIFACT_RUN"; fi
+          args=()
+          if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--compatible-originals); fi
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          if [ -n "$SELECTED_PLAN_ARTIFACT" ]; then
+            cp selected-plan/component-plan.json component-plan.json
+          else
+            python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
+          fi
+          python3 - <<'PYCODE'
+          import json, os
+          plan = json.load(open('component-plan.json'))
+          assert plan.get('manager_source_revision') == os.environ['GITHUB_SHA'] and plan.get('planning_complete') is True
+          assert type(plan['has_builds']) is bool
+          if os.environ['MANAGER_ONLY_UPDATE'] == 'true':
+              assert plan['has_builds'] is False, 'declared manager-only update would require runner builds'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('has_builds=' + str(plan['has_builds']).lower() + '\n')
+              output.write('build_matrix=' + json.dumps(plan['build_matrix'], separators=(',', ':')) + '\n')
+          PYCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-component-plan
+          path: component-plan.json
+          retention-days: 30
   candidate:
-    if: ${{ !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    needs: [qualification, component-plan]
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && needs.component-plan.result == 'success' && !inputs.cache_probe && inputs.resume_native_run == '' && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run && needs.component-plan.outputs.has_builds == 'true' }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.native_runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        provider: [codex, claude]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
-        architecture: [arm64, x86_64]
+      matrix: ${{ fromJSON(needs.component-plan.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Verify release version and run metadata tests
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read preflight-validated release version
         run: |
-          python3 -m unittest discover -s scripts/release/tests -v
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Capture committed effective build inputs
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          EXPECTED_IDENTITY: ${{ matrix.input_identity }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/component-inputs.json"
+          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input_identity"])' "$RUNNER_TEMP/component-inputs.json")" = "$EXPECTED_IDENTITY"
       - name: Configure native cache for actual current and prior source builds
         uses: ./.github/actions/configure-runner-cache
       - name: Build exact native runner candidates and verify digest pulls
@@ -87,120 +222,137 @@ jobs:
         env:
           PROVIDER: ${{ matrix.provider }}
           ARCHITECTURE: ${{ matrix.architecture }}
+          SYMPHONY_CANDIDATE_CAPTURE_INPUTS: '1'
+          SYMPHONY_CANDIDATE_EXPECTED_INPUT_IDENTITY: ${{ matrix.input_identity }}
           SYMPHONY_CANDIDATE_BUILD_COMMAND: ${{ github.workspace }}/scripts/release/build-runner-cached.sh
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: bash scripts/release/build-candidate-runners.sh "$PROVIDER" "$ARCHITECTURE" dist "$PREVIOUS_REVISION"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: payload
         with:
           name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/**
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
-      - name: Retain small source-bound records for metadata consumers
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Seal original native record against immutable uploaded payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          ARTIFACT_ID: ${{ steps.payload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.payload.outputs.artifact-digest }}
+        run: |
+          python3 scripts/release/component_provenance.py seal --record "dist/$PROVIDER-$ARCHITECTURE.json" \
+            --archive "dist/$PROVIDER-$ARCHITECTURE.docker.tar.gz" --archive-name "$PROVIDER-$ARCHITECTURE.docker.tar.gz" \
+            --record-name "$PROVIDER-$ARCHITECTURE.json" --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --job-name "runner-$PROVIDER-$ARCHITECTURE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: |
-            dist/*.json
-            dist/previous/*.json
+          path: dist/*.json
           if-no-files-found: error
           retention-days: 30
       - name: Retain attempted native registry cleanup evidence
         if: ${{ always() && steps.native-build.outcome != 'skipped' && steps.native-build.outcome != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*.registry-state.txt
           if-no-files-found: error
           retention-days: 30
 
+  publication-preflight:
+    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    needs: [component-plan, candidate-metadata, candidate-qualification]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-component-plan
+          path: plan
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-candidate-metadata
+          path: metadata
+      - name: Verify every original and public reuse digest before any image push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/component_publication.py --plan plan/component-plan.json --metadata metadata/release.json --output prepared/publication-plan.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-distribution-plan
+          path: prepared/publication-plan.json
+          if-no-files-found: error
+
   publish:
-    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
-    needs: candidate
+    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    needs: publication-preflight
     environment: production-release
     permissions:
       contents: read
+      actions: read
       packages: write
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        provider: [codex, claude]
-        architecture: [arm64, x86_64]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: candidate
-      - name: Publish tested image and verify anonymous digest pull
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-distribution-plan
+          path: prepared
+      - name: Transfer only missing new components and preserve original image identities
         env:
           GH_TOKEN: ${{ github.token }}
-          PROVIDER: ${{ matrix.provider }}
-          ARCHITECTURE: ${{ matrix.architecture }}
-        run: |
-          (cd candidate && sha256sum --check ./*.sha256)
-          gzip -dc "candidate/$PROVIDER-$ARCHITECTURE.docker.tar.gz" | docker load
-          repository="ghcr.io/${GITHUB_REPOSITORY,,}-$PROVIDER"
-          image="$repository:$GITHUB_REF_NAME-$ARCHITECTURE"
-          docker tag "localhost:5000/symphony-$PROVIDER:candidate" "$image"
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker push "$image"
-          digest=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -F "$repository@sha256:")
-          docker logout ghcr.io
-          docker image rm "$image" "localhost:5000/symphony-$PROVIDER:candidate"
-          if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
-          if docker image inspect "$digest" >/dev/null 2>&1; then echo "Selected image is still cached; refusing false pull proof." >&2; exit 1; fi
-          docker pull "$digest"
-          bash scripts/release/runner-smoke.sh "$digest" "$PROVIDER" "$ARCHITECTURE" "$GITHUB_SHA"
-          mkdir -p dist
-          python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
-            --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          SYMPHONY_PRODUCTION_RELEASES: ${{ vars.SYMPHONY_PRODUCTION_RELEASES }}
+        run: python3 scripts/release/component_publication.py --prepared prepared/publication-plan.json --output stable/release.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: runner-stable-${{ matrix.provider }}-${{ matrix.architecture }}
-          path: dist/*.json
+          name: runner-stable-metadata
+          path: stable/release.json
           if-no-files-found: error
 
   candidate-metadata:
-    needs: candidate
+    needs: [component-plan, candidate]
+    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && !inputs.cache_probe && inputs.resume_native_run == '' && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run && needs.component-plan.result == 'success' && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-component-plan
+          path: plan
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.component-plan.outputs.has_builds == 'true'
         with:
           pattern: runner-records-*
           path: candidate
           merge-multiple: true
-      - name: Assemble source-independent candidate metadata
+      - name: Join exact planned native components without exporting reused payloads
         env:
-          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SCHEMA: ${{ inputs.manifest_schema || '1' }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
         run: |
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
-          mkdir -p dist
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel candidate --platform-bundles --output dist/release.json candidate/*.json
-          if [ -n "$PREVIOUS_REVISION" ]; then
-            git fetch origin "$PREVIOUS_REVISION"
-            old_version=$(git show "$PREVIOUS_REVISION:elixir/mix.exs" | sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' | head -n1)
-            mkdir -p dist/previous
-            python3 scripts/release/artifacts.py assemble --version "$old_version" --revision "$PREVIOUS_REVISION" \
-              --channel candidate --platform-bundles --output dist/previous/release.json candidate/previous/*.json
-          fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          python3 scripts/release/component_join.py --plan plan/component-plan.json --records candidate --output dist \
+            --schema "$MANIFEST_SCHEMA" "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-candidate-metadata
-          path: dist/**
+          path: dist/*
 
   packaged-release-platform:
+    if: ${{ always() && !cancelled() && needs.publish.result == 'success' }}
     needs: publish
     strategy:
       fail-fast: false
@@ -213,61 +365,68 @@ jobs:
     runs-on: ${{ matrix.runner }}
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          pattern: runner-stable-*
-          path: records
-          merge-multiple: true
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runner-stable-metadata
+          path: metadata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ format('native-host-helper-{0}-{1}', matrix.platform, github.sha) }}
+          path: ${{ runner.temp }}/qualified-helper
+      - name: Verify original native helper checksum before restoring executable mode
+        run: |
+          cd "$RUNNER_TEMP/qualified-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod 755 symphony-host
       - name: Assemble native manager archive from tested stable image identities
         env:
           PLATFORM: ${{ matrix.platform }}
         run: |
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          test -f scripts/release/package.sh || { echo 'Packaged manager prerequisite is not integrated; refusing incomplete stable release.' >&2; exit 1; }
+          python3 scripts/release/manager_version.py
           mkdir -p dist
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel stable --platform-bundles --output "$RUNNER_TEMP/release.json" records/*.json
-          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host"
-          else bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"; cp "$RUNNER_TEMP/linux-helper/symphony-host" "$RUNNER_TEMP/symphony-host"; fi
-          bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist "$RUNNER_TEMP/symphony-host"
-      - uses: actions/upload-artifact@v4
+          bash scripts/release/build-manager-package.sh "$PWD/metadata/release.json" "$PWD/dist" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$RUNNER_TEMP/qualified-helper/symphony-host"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release-platform-${{ matrix.platform }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
   packaged-release:
+    if: ${{ always() && !cancelled() && needs.packaged-release-platform.result == 'success' }}
     needs: packaged-release-platform
     runs-on: ubuntu-24.04
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: runner-stable-*
-          path: records
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
+          name: runner-stable-metadata
+          path: metadata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packaged-release-platform-*
           path: dist
           merge-multiple: true
       - name: Bind matching Linux and legacy macOS manager archives
         run: |
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
-          python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
-            --channel stable --bundle "dist/symphony-$version-macos.tar.gz" \
-            --linux-bundle "dist/symphony-$version-linux_x86_64.tar.gz" --output dist/release.json records/*.json
+          python3 scripts/release/manager_version.py
+          python3 scripts/release/finalize-manager-packages.py metadata/release.json dist
           python3 scripts/release/artifacts.py validate dist/release.json
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release
           path: dist/*
           if-no-files-found: error
 
   cache-probe:
-    if: inputs.cache_probe && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && inputs.resume_native_run == '' && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -282,7 +441,7 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Prepare isolated registry and evidence
         id: registry
         run: |
@@ -354,7 +513,7 @@ jobs:
         run: python3 scripts/release/runner-cache-probe.py changed
       - name: Retain native build and transfer measurements
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-cache-${{ matrix.provider }}-${{ matrix.architecture }}-${{ github.sha }}
           path: ${{ runner.temp }}/runner-cache-measurements/**
@@ -368,7 +527,8 @@ jobs:
           test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker rm -f "$REGISTRY_ID"
   packaged-candidate:
-    needs: candidate-metadata
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages }}
+    needs: [candidate-metadata, package-inputs]
     strategy:
       fail-fast: false
       matrix:
@@ -380,11 +540,48 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runner-candidate-metadata
           path: metadata
+      - name: Download current exact-source qualified helper
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ format('native-host-helper-{0}-{1}', matrix.platform, github.sha) }}
+          path: ${{ runner.temp }}/qualified-helper
+      - name: Verify qualified helper source, platform and checksum
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP/qualified-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod +x symphony-host
+          test "$(./symphony-host build-revision)" = "$GITHUB_SHA"
+          test "$(./symphony-host host-platform)" = "$PLATFORM"
+      - name: Download exact prior helper qualified alongside current images
+        if: inputs.previous_revision != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualified-prior-helper
+      - name: Verify prior helper checksum, source and native CPU
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP/qualified-prior-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod +x symphony-host
+          test "$(./symphony-host build-revision)" = "$PREVIOUS_REVISION"
+          test "$(./symphony-host host-platform)" = "$PLATFORM"
+          if [ "$PLATFORM" = macos ]; then test "$(lipo -archs symphony-host)" = arm64
+          else readelf -h symphony-host | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'; fi
       - name: Build source-bound native candidate archives
         env:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
@@ -398,13 +595,11 @@ jobs:
               bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
               manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"; revision=$PREVIOUS_REVISION
             fi
-            mkdir -p "$destination"
-            helper="$destination/symphony-host"
-            if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper"
-            else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
-            bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
+            helper="$RUNNER_TEMP/qualified-helper/symphony-host"
+            if [ "$selection" = previous ]; then helper="$RUNNER_TEMP/qualified-prior-helper/symphony-host"; fi
+            bash scripts/release/build-manager-package.sh "$manifest" "$destination" "$PLATFORM" "$source" "$revision" ${helper:+"$helper"}
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-candidate-${{ matrix.platform }}
           path: dist/**
@@ -412,21 +607,17 @@ jobs:
           retention-days: 30
 
   packaged-candidate-metadata:
+    if: ${{ always() && !cancelled() && needs.packaged-candidate.result == 'success' }}
     needs: packaged-candidate
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packaged-candidate-*
           path: packages
           merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: runner-records-*
-          path: records
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runner-candidate-metadata
           path: records
@@ -440,15 +631,12 @@ jobs:
               [ -n "$PREVIOUS_REVISION" ] || continue
               directory=packages/previous; inputs=records/previous; revision=$PREVIOUS_REVISION
             fi
-            version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json")
-            python3 scripts/release/artifacts.py assemble --version "$version" --revision "$revision" --channel candidate \
-              --bundle "$directory/symphony-$version-macos.tar.gz" \
-              --linux-bundle "$directory/symphony-$version-linux_x86_64.tar.gz" \
-              --output "$directory/release.json" "$inputs"/codex-*.json "$inputs"/claude-*.json
+            python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json"
+            GITHUB_SHA="$revision" python3 scripts/release/finalize-manager-packages.py "$inputs/release.json" "$directory"
             python3 scripts/release/artifacts.py validate "$directory/release.json"
             (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-candidate
           path: packages/**
@@ -456,24 +644,75 @@ jobs:
           retention-days: 30
 
   ubuntu-package-lifecycle:
-    if: inputs.previous_revision != ''
-    needs: packaged-candidate-metadata
+    if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && (inputs.previous_revision != '' || inputs.previous_artifact_run != '') }}
+    needs: [component-plan, packaged-candidate-metadata]
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Record exact lifecycle request before artifact retrieval
+        env:
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+        run: |
+          mkdir -p evidence
+          python3 - <<'PYCODE'
+          import json,os,pathlib
+          pathlib.Path('evidence/lifecycle-request.json').write_text(json.dumps({key:os.environ[key] for key in
+              ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','PREVIOUS_ARTIFACT_RUN','LEGACY_ARTIFACT_RUN','MANAGER_ONLY_UPDATE')},indent=2)+'\n')
+          PYCODE
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-candidate
           path: packages
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: runner-candidate-*-x86_64
-          path: runners
-          merge-multiple: true
+          name: runner-component-plan
+          path: plan
+      - name: Retrieve exact selected original current payloads without export or upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+        run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata packages/release.json \
+            --output "$RUNNER_TEMP/lifecycle-current-metadata" --payloads runners "${args[@]}"
+      - name: Retrieve verified actual historical package and native payloads only as test subjects
+        if: inputs.previous_artifact_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          args=()
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then args+=(--package-only); fi
+          python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --packages packages --images runners --evidence evidence "${args[@]}"
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$LEGACY_ARTIFACT_RUN" --packages packages --images runners --evidence evidence --selection legacy
+          fi
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
-        run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
+        env:
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+        run: |
+          args=()
+          if [ "$MANAGER_ONLY_UPDATE" = true ]; then args+=(--manager-only-update); fi
+          python3 scripts/release/package-lifecycle.py "${args[@]}" packages runners evidence
+      - name: Retain small actual lifecycle, origin and cleanup receipts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ubuntu26-package-lifecycle-summary-${{ github.sha }}
+          path: |
+            evidence/result.json
+            evidence/lifecycle-request.json
+            evidence/*-package-subject.json
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ubuntu26-package-lifecycle-${{ github.sha }}
@@ -482,14 +721,15 @@ jobs:
           retention-days: 30
 
   lifecycle-diagnostic:
-    if: github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.resume_native_run == '' && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     permissions:
       contents: read
       actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate explicit diagnostic identities
         env:
           ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
@@ -498,13 +738,13 @@ jobs:
           [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]]
           [[ "$PACKAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           echo 'DIAGNOSTIC ONLY: reused packages do not qualify this controller head for acceptance.'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-candidate
           path: packages
           run-id: ${{ inputs.diagnostic_artifact_run }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-candidate-*-x86_64
           path: runners
@@ -516,7 +756,7 @@ jobs:
           PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
         run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
@@ -524,16 +764,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  retained-transfer-timing:
-    if: ${{ inputs.transfer_timing_run != '' && !inputs.cache_probe }}
-    uses: ./.github/workflows/transfer-timing.yml
-    with:
-      source_run: ${{ inputs.transfer_timing_run }}
-      provider: ${{ inputs.transfer_timing_provider }}
-      architecture: ${{ inputs.transfer_timing_architecture }}
-
-  transfer-benchmark:
-    if: ${{ inputs.transfer_diagnostic_run != '' && !inputs.transfer_replay_run && !inputs.transfer_timing_run && !inputs.cache_probe }}
+  recover-native-records:
+    if: github.event_name == 'workflow_dispatch' && inputs.resume_native_run != ''
+    name: recover-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -547,7 +780,191 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate exclusive small-record recovery request
+        env:
+          CACHE_PROBE: ${{ inputs.cache_probe }}
+          PREVIOUS: ${{ inputs.previous_revision }}
+          DIAGNOSTIC: ${{ inputs.diagnostic_artifact_run }}
+        run: |
+          test "$CACHE_PROBE" != true
+          test -z "$PREVIOUS"
+          test -z "$DIAGNOSTIC"
+      - name: Verify original native stages and replay only the retained immutable payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN: ${{ inputs.resume_native_run }}
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/recover_native_record.py --run-id "$ORIGINAL_RUN" --attempt 1 \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output recovered
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: recovered/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain original-stage and replay identity/cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-record-recovery-${{ matrix.provider }}-${{ matrix.architecture }}
+          path: recovered/*.txt
+          if-no-files-found: warn
+          retention-days: 30
+  recovered-record-qualification:
+    needs: recover-native-records
+    if: github.event_name == 'workflow_dispatch' && inputs.resume_native_run != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: runner-records-*
+          path: recovered
+          merge-multiple: true
+      - name: Reverify all original qualifications and independent successful recovery origins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, sys
+          sys.path.insert(0, 'scripts/release')
+          import component_provenance as proof
+          records = list(pathlib.Path('recovered').glob('*.json'))
+          assert len(records) == 4
+          results = {}
+          for path in records:
+              record = json.loads(path.read_text())
+              key = record['provider'] + '-' + record['architecture']
+              assert key not in results
+              results[key] = proof.verify_origin(record, candidate_run=int(os.environ['GITHUB_RUN_ID']))
+          assert set(results) == {provider+'-'+arch for provider in ('codex','claude') for arch in ('arm64','x86_64')}
+          pathlib.Path('recovery-summary.json').write_text(json.dumps(results, indent=2, sort_keys=True)+'\n')
+          PYCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-record-recovery-summary
+          path: recovery-summary.json
+          if-no-files-found: error
+          retention-days: 30
+  portable:
+    if: inputs.preflight_revision == '' && inputs.resume_native_run == ''
+    uses: ./.github/workflows/release-preflight.yml
+  qualification:
+    needs: portable
+    if: ${{ always() && inputs.resume_native_run == '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exact successful local or caller-owned preflight
+        env:
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.preflight_revision }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          CACHE_PROBE: ${{ inputs.cache_probe }}
+          DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+        run: |
+          if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
+          test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
+          if [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.previous_revision != ''
+        with:
+          fetch-depth: 0
+      - name: Refuse unavailable or incapable selected prior before native fanout
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        with:
+          fetch-depth: 0
+      - name: Verify historical source and native/package availability before current fanout
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --check-only early-subjects/previous.json
+          fi
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$LEGACY_ARTIFACT_RUN" --check-only early-subjects/legacy.json
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        with:
+          name: historical-package-subject-plan
+          path: early-subjects/*.json
+          if-no-files-found: error
+          retention-days: 30
+  package-inputs:
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    needs: qualification
+    uses: ./.github/workflows/package-checks.yml
+    with:
+      portable_revision: ${{ github.sha }}
+      previous_revision: ${{ inputs.previous_revision }}
+      retain_diagnostic: ${{ inputs.retain_diagnostic }}
+  candidate-qualification:
+    needs: [component-plan, qualification, package-inputs, candidate, candidate-metadata, packaged-candidate-metadata, ubuntu-package-lifecycle]
+    if: ${{ always() && inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all requested candidate work without accepting omitted failures
+        env:
+          PREFLIGHT: ${{ needs.qualification.result }}
+          PACKAGES: ${{ needs.package-inputs.result }}
+          RUNNERS: ${{ needs.candidate.result }}
+          HAS_BUILDS: ${{ needs.component-plan.outputs.has_builds }}
+          METADATA: ${{ needs.candidate-metadata.result }}
+          BUNDLES: ${{ needs.packaged-candidate-metadata.result }}
+          LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+        run: |
+          test "$PREFLIGHT" = success
+          test "$PACKAGES" = success
+          case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac
+          test "$METADATA" = success
+          test "$BUNDLES" = success
+          if [ -n "$PREVIOUS_REVISION" ] || [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then test "$LIFECYCLE" = success
+          else test "$LIFECYCLE" = skipped; fi
+          echo 'Exact-head preflight, native fixtures, all selected provider/platform components and native package archives succeeded. Two-source lifecycle is required when a prior revision was requested.' >> "$GITHUB_STEP_SUMMARY"
+  retained-transfer-timing:
+    if: ${{ inputs.resume_native_run == '' && inputs.transfer_timing_run != '' && !inputs.cache_probe }}
+    uses: ./.github/workflows/transfer-timing.yml
+    with:
+      source_run: ${{ inputs.transfer_timing_run }}
+      provider: ${{ inputs.transfer_timing_provider }}
+      architecture: ${{ inputs.transfer_timing_architecture }}
+
+  transfer-benchmark:
+    if: ${{ inputs.resume_native_run == '' && inputs.transfer_diagnostic_run != '' && !inputs.transfer_replay_run && !inputs.transfer_timing_run && !inputs.cache_probe }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [codex, claude]
+        architecture: [arm64, x86_64]
+        include:
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify original run and successful native producer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -575,7 +992,7 @@ jobs:
               output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
           PYTHON
       - name: Download original qualified image payloads
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.transfer_diagnostic_run }}
@@ -595,7 +1012,7 @@ jobs:
             --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
           cp -R provenance improved/
       - name: Upload improved replay payloads without recompression
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
           path: improved/**
@@ -604,7 +1021,7 @@ jobs:
           retention-days: 30
       - name: Retain small timing and original-provenance evidence on failure
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-timing-${{ matrix.provider }}-${{ matrix.architecture }}
           path: |
@@ -612,8 +1029,9 @@ jobs:
             provenance/*.txt
           if-no-files-found: warn
 
+
   transfer-replay:
-    if: ${{ always() && !inputs.transfer_timing_run && !inputs.cache_probe && (inputs.transfer_replay_run != '' || needs.transfer-benchmark.result == 'success') }}
+    if: ${{ inputs.resume_native_run == '' && always() && !inputs.transfer_timing_run && !inputs.cache_probe && (inputs.transfer_replay_run != '' || needs.transfer-benchmark.result == 'success') }}
     needs: transfer-benchmark
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -628,7 +1046,7 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify completed benchmark source before replay
         env:
           GH_TOKEN: ${{ github.token }}
@@ -655,7 +1073,7 @@ jobs:
           Path('evidence/transport-source.txt').write_text(json.dumps({'run':run, 'producer':producer[0]}, indent=2))
           PYTHON
       - name: Download improved image payloads
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.transfer_replay_run || github.run_id }}
@@ -671,7 +1089,7 @@ jobs:
             --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$source"
       - name: Retain actual load, startup and transfer evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-runtime-${{ matrix.provider }}-${{ matrix.architecture }}
           path: evidence/**

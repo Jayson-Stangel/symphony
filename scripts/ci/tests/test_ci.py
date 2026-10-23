@@ -81,6 +81,120 @@ class EventReplay(unittest.TestCase):
             self.assertFalse(classifier.classify(event,name)[0])
 
 
+class BrowserRouting(unittest.TestCase):
+    def test_real_event_ranges(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], stderr=subprocess.PIPE).decode().strip()
+            recipe = ('FROM example/base@sha256:' + 'a' * 64 + ' AS browser-tools\n'
+                      'COPY runner/browser/package*.json /browser/\nCOPY runner/browser/smoke.cjs /browser/\nRUN npm ci\n')
+            def commit(path, content='fixture'):
+                p = Path(folder) / path
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content)
+                git('add', '--all'); git('commit', '-qm', 'fixture')
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            commit('runner/Dockerfile', recipe)
+            base = commit('README.md')
+            original = os.getcwd(); os.chdir(folder)
+            try:
+                previous = base
+                relevant = [
+                    'runner/browser/package-lock.json', 'runner/browser/smoke.cjs',
+                    'runner/Dockerfile', '.dockerignore', 'runner/Dockerfile.dockerignore',
+                    '.github/actions/build-runner/action.yml',
+                    'scripts/release/runner-cache-policy.sh', 'runner/node-smoke.sh',
+                    '.github/workflows/browser-smoke.yml',
+                    '.github/workflows/change-classification.yml',
+                    'scripts/ci/classify_changes.py', 'scripts/ci/tests/test_browser_scope.py',
+                ]
+                for path in ['elixir/lib/app.ex', 'docs/guide.md'] + relevant:
+                    content = recipe.replace('RUN npm ci', 'RUN npm ci --ignore-scripts') if path == 'runner/Dockerfile' else 'fixture'
+                    head = commit(path, content)
+                    event = {'before': previous, 'after': head}
+                    paths = classifier.changed_paths(event, 'push')
+                    self.assertEqual(classifier.browser_required(paths, event, 'push'), path in relevant, path)
+                    previous = head
+                # Full mixed PR retains browser changes behind a later app commit.
+                head = commit('elixir/lib/later.ex')
+                for target in ('dev', 'main'):
+                    event = {'pull_request': {'base': {'sha': base, 'ref': target}, 'head': {'sha': head}}}
+                    self.assertTrue(classifier.browser_required(classifier.classify(event, 'pull_request')[2], event, 'pull_request'))
+                # Exact push excludes earlier browser commits.
+                event = {'before': previous, 'after': head}
+                self.assertFalse(classifier.browser_required(classifier.changed_paths(event, 'push'), event, 'push'))
+                git('mv', 'runner/browser/smoke.cjs', 'unrelated.cjs'); git('commit', '-qm', 'rename')
+                renamed = git('rev-parse', 'HEAD')
+                event = {'before': head, 'after': renamed}
+                self.assertTrue(classifier.browser_required(classifier.changed_paths(event, 'push'), event, 'push'))
+                git('rm', 'runner/browser/package-lock.json'); git('commit', '-qm', 'delete')
+                deleted = git('rev-parse', 'HEAD')
+                event = {'before': renamed, 'after': deleted}
+                self.assertTrue(classifier.browser_required(classifier.changed_paths(event, 'push'), event, 'push'))
+                for before in ('f'*40, '0'*40, 'invalid', deleted):
+                    event = {'before': before, 'after': deleted}
+                    self.assertTrue(classifier.browser_required(classifier.classify(event, 'push')[2], event, 'push'))
+                git('checkout', '-qb', 'stale', base)
+                stale = commit('other.ex')
+                event = {'pull_request': {'base': {'sha': stale}, 'head': {'sha': head}}}
+                self.assertTrue(classifier.browser_required(classifier.classify(event, 'pull_request')[2], event, 'pull_request'))
+            finally:
+                os.chdir(original)
+
+    def test_actual_browser_wrapper(self):
+        text = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        steps = text.split('      - ')[1:]
+        guard = steps[0].split('        run: |\n')[1]
+        guard = '\n'.join(line[10:] for line in guard.splitlines() if line.strip())
+        # Browser qualification remains gated for both decisions, including checkout/action.
+        for step in steps[1:4]:
+            self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'", step)
+        self.assertIn("needs.changes.outputs.browser == 'false'", steps[4])
+        self.assertIn('intentionally omitted', steps[4])
+        self.assertIn("needs.changes.outputs.code == 'false'", steps[5])
+        self.assertIn('intentionally omitted, not executed', steps[5])
+        for result in ('success', 'failure', 'cancelled', 'skipped', ''):
+            for code in ('true', 'false', '', 'invalid'):
+                for browser in ('true', 'false', '', 'invalid'):
+                    actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser))
+                    valid = code in ('true', 'false') and browser in ('true', 'false') and (code == 'true' or browser == 'false')
+                    self.assertEqual(actual.returncode == 0, result == 'success' and valid)
+        self.assertIn('--user 11001:11001 --entrypoint node', text)
+        self.assertIn('--entrypoint node symphony-browser-test', text)
+        # Candidate consumers continue to run actual-image qualification.
+        release = (ROOT / '.github/workflows/runner-release.yml').read_text()
+        smoke = (ROOT / 'scripts/release/runner-smoke.sh').read_text()
+        self.assertNotIn('outputs.browser', release)
+        self.assertIn('smoke.cjs', smoke)
+
+    def test_cli_publishes_both_decisions(self):
+        workflow = (ROOT / '.github/workflows/change-classification.yml').read_text()
+        self.assertIn('value: ${{ jobs.classify.outputs.browser }}', workflow)
+        self.assertIn('browser: ${{ steps.changes.outputs.browser }}', workflow)
+        with tempfile.TemporaryDirectory() as folder:
+            event = Path(folder) / 'event'; event.write_text('{}')
+            output = Path(folder) / 'output'
+            summary = Path(folder) / 'summary'
+            subprocess.run(['python3', str(ROOT / 'scripts/ci/classify_changes.py')],
+                env=dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME='push',
+                         GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)),
+                capture_output=True, check=True)
+            self.assertEqual(output.read_text(), 'code=true\nbrowser=true\n')
+            self.assertIn('Browser qualification required: **true**', summary.read_text())
+
+    def test_malformed_event_fails_without_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            event = Path(folder) / 'event'; event.write_text('{')
+            output = Path(folder) / 'output'
+            result = subprocess.run(['python3', str(ROOT / 'scripts/ci/classify_changes.py')],
+                env=dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME='push', GITHUB_OUTPUT=str(output)),
+                capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(output.exists())
+
+
 class Metadata(unittest.TestCase):
     def setUp(self):
         self.template=(ROOT/'.github/pull_request_template.md').read_text()
@@ -101,16 +215,28 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('  '+job+':',text)
             self.assertIn('if: ${{ always() }}',text)
             self.assertIn('test "$RESULT" = success',text)
-            self.assertIn('case "$CODE" in true|false)',text)
+            self.assertIn('case "$CODE" in',text)
             self.assertNotIn('\n    paths:',text)
             if name == 'package-checks':
-                # Package qualification fans out by OS/architecture; the exact
-                # required wrapper is exercised independently below.
+                # Package work moved into concurrent jobs. The named required
+                # aggregate executes only status checks; all heavy jobs are gated.
+                for heavy in ('portable', 'native', 'native-host-package'):
+                    block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
+                    self.assertIn("needs.changes.outputs.code == 'true'", block)
                 continue
-            steps=text.split('    steps:\n',1)[1]
+            if name == 'runner-integration':
+                self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
+                steps=text.split('  listener-and-cleanup:\n',1)[1].split('    steps:\n',1)[1]
+            else:
+                steps=text.split('    steps:\n',1)[1]
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
-                self.assertIn("if: needs.changes.outputs.code != 'false'",step)
+                if name == 'browser-smoke':
+                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser ==", step)
+                elif name == 'runner-integration':
+                    self.assertIn("needs.changes.outputs.code == 'true'", step)
+                else:
+                    self.assertIn("if: needs.changes.outputs.code != 'false'",step)
 
     def test_package_matrix_and_actual_required_wrapper(self):
         text=(ROOT/'.github/workflows/package-checks.yml').read_text()
@@ -119,18 +245,17 @@ class WorkflowContracts(unittest.TestCase):
             remaining=text[start:]
             boundary=re.search(r'\n  [a-z][a-z0-9-]*:',remaining)
             return remaining[:boundary.start()] if boundary else remaining
-        for name in ('native-macos-package','linux-helper'):
+        for name in ('native-host-package',):
             block=job(name)
-            self.assertIn('    needs: changes\n',block)
-            self.assertIn("    if: needs.changes.outputs.code == 'true'\n",block)
-        self.assertIn('runner: [macos-14, macos-15-intel]',job('native-macos-package'))
+            self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
+            self.assertIn("needs.changes.outputs.code == 'true'",block)
+        self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
+        self.assertNotIn('macos-15-intel', text)
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
         wrapper=job('macos-package')
-        self.assertIn('needs: [changes, native-macos-package, linux-helper]',wrapper)
+        self.assertIn('needs: [changes, qualification, native, native-host-package]',wrapper)
         self.assertIn('if: ${{ always() }}',wrapper)
-        self.assertIn("if: needs.changes.outputs.code != 'false'",wrapper)
-        self.assertIn("if: needs.changes.outputs.code == 'false'",wrapper)
         self.assertIn('behavioral checks intentionally omitted, not executed.',wrapper)
         # Run both actual literal scripts, preserving bash -e semantics. A
         # classification failure cannot be hidden by skipped native jobs, and
@@ -142,14 +267,14 @@ class WorkflowContracts(unittest.TestCase):
                 if line and not line.startswith('          '): break
                 lines.append(line[10:])
             scripts.append('\n'.join(lines))
-        self.assertEqual(len(scripts),3)
+        self.assertEqual(len(scripts),2)
         statuses=('success','failure','cancelled','skipped','')
         with tempfile.TemporaryDirectory() as folder:
             for result,code in (('success','true'),('success','false'),('failure','false'),('cancelled','true'),('skipped','false'),('success',''),('success','invalid')):
                 for mac in statuses:
                     for linux in statuses:
-                        env=dict(os.environ,RESULT=result,CODE=code,MACOS_RESULT=mac,LINUX_RESULT=linux)
-                        command=scripts[0]+'\n'+scripts[2 if code=='false' else 1]
+                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE=linux,PACKAGE=mac,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
+                        command=scripts[0]+'\n'+scripts[1]
                         actual=subprocess.run(['bash','-e','-c',command],cwd=folder,env=env,capture_output=True,text=True)
                         expected=result=='success' and code in ('true','false') and (mac==linux==('skipped' if code=='false' else 'success'))
                         self.assertEqual(actual.returncode==0,expected,(result,code,mac,linux,actual.stderr))

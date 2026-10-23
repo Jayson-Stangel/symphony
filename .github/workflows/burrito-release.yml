@@ -4,8 +4,32 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      previous_artifact_run:
+        description: Exact qualified current-manager package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
+      previous_revision:
+        description: Optional full prior Linux-capable source for actual two-revision package lifecycle
+        type: string
+        default: ''
+      retain_diagnostic:
+        description: Preserve this explicitly requested full candidate across new commits
+        type: boolean
+        default: false
+      engine_only:
+        description: Qualify only the two native standalone engines; omit runner images and publication
+        type: boolean
+        default: false
       controller_only:
-        description: Run only isolated controller fixtures on native macOS Intel (no artifacts or publication)
+        description: Run only isolated controller fixtures on native macOS ARM64 (no artifacts or publication)
         type: boolean
         default: false
   push:
@@ -15,11 +39,34 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: engine-candidate-${{ github.event_name }}-${{ github.ref }}-${{ (inputs.controller_only || inputs.retain_diagnostic) && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.controller_only && !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
-  runners:
+  qualification:
     if: ${{ !inputs.controller_only }}
+    uses: ./.github/workflows/release-preflight.yml
+  host-policy:
+    uses: ./.github/workflows/host-policy.yml
+
+  engine-fixtures:
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
+    uses: ./.github/workflows/release-native.yml
+
+  runners:
+    needs: qualification
+    if: ${{ !inputs.controller_only && !inputs.engine_only }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
+      previous_revision: ${{ inputs.previous_revision }}
+      previous_artifact_run: ${{ inputs.previous_artifact_run }}
+      legacy_artifact_run: ${{ inputs.legacy_artifact_run }}
+      manager_only_update: ${{ inputs.manager_only_update }}
+      preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
+      manifest_schema: ${{ needs.qualification.outputs.release_schema }}
       publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: read
@@ -27,23 +74,23 @@ jobs:
       packages: write
 
   build:
+    needs: [qualification, host-policy]
     if: ${{ !inputs.controller_only }}
     name: build-${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        target: [linux_x86_64, linux_arm64, macos_x86_64, macos_arm64]
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
     defaults:
       run:
         working-directory: elixir
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
@@ -52,8 +99,12 @@ jobs:
       - name: Install Zig
         run: mise install zig@0.15.2
 
-      - name: Install xz
+      - name: Install Linux archive utility
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xz-utils
+      - name: Verify macOS archive utility
+        if: runner.os == 'macOS'
+        run: command -v xz || brew install xz
 
       - name: Install Mix dependencies
         run: |
@@ -64,13 +115,7 @@ jobs:
       - name: Verify release tag matches project version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          project_version="$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' mix.exs | head -n 1)"
-          expected_tag="v$project_version"
-
-          if test -z "$project_version" || test "$GITHUB_REF_NAME" != "$expected_tag"; then
-            echo "Release tag $GITHUB_REF_NAME does not match mix.exs version $project_version."
-            exit 1
-          fi
+          python3 ../scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"
 
       - name: Build Burrito executable
         run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite
@@ -88,7 +133,7 @@ jobs:
           cp "burrito_out/symphony_${{ matrix.target }}" "dist/$artifact"
           cd dist
 
-          sha256sum "$artifact" > "$artifact.sha256"
+          shasum -a 256 "$artifact" > "$artifact.sha256"
           python3 - "$artifact" "$GITHUB_SHA" "${{ matrix.target }}" <<'PYTHON'
           import hashlib, json, pathlib, sys
           artifact = pathlib.Path(sys.argv[1])
@@ -98,7 +143,7 @@ jobs:
           PYTHON
 
       - name: Upload release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
           path: elixir/dist/*
@@ -106,27 +151,18 @@ jobs:
 
   smoke:
     name: smoke-${{ matrix.target }}
-    needs: build
+    needs: [build, host-policy]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: linux_x86_64
-            runner: ubuntu-24.04
-          - target: linux_arm64
-            runner: ubuntu-24.04-arm
-          - target: macos_x86_64
-            runner: macos-15-intel
-          - target: macos_arm64
-            runner: macos-14
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
 
     steps:
       - name: Checkout the exact candidate controller
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ matrix.target }}
           path: dist
@@ -134,9 +170,6 @@ jobs:
       - name: Install Linux test controller utility
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lsof
-
-      - name: Test false-green and cleanup regressions
-        run: python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
       - name: Qualify actual standalone engine
         run: |
@@ -151,7 +184,7 @@ jobs:
 
       - name: Retain native qualification evidence even on failure
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-evidence-${{ matrix.target }}
           path: ${{ runner.temp }}/engine-evidence-${{ matrix.target }}/
@@ -159,11 +192,11 @@ jobs:
 
   controller-diagnostics:
     if: inputs.controller_only
-    runs-on: macos-15-intel
+    runs-on: macos-14
     timeout-minutes: 10
     steps:
       - name: Checkout the exact candidate controller
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Record controller platform and run isolated process fixtures
         run: |
           uname -sm
@@ -171,7 +204,7 @@ jobs:
           python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    if: ${{ !inputs.engine_only && !inputs.controller_only && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
     needs: [build, smoke, runners]
     environment: production-release
     runs-on: ubuntu-24.04
@@ -180,34 +213,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download linux_x86_64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux_x86_64
           path: dist/linux_x86_64
 
-      - name: Download linux_arm64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: linux_arm64
-          path: dist/linux_arm64
-
-      - name: Download macos_x86_64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: macos_x86_64
-          path: dist/macos_x86_64
-
       - name: Download macos_arm64
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos_arm64
           path: dist/macos_arm64
 
       - name: Download packaged-release
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-release
           path: dist/packaged-release

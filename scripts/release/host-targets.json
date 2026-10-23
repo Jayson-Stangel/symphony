@@ -1,0 +1,18 @@
+{
+  "include": [
+    {
+      "target": "linux_x86_64",
+      "runner": "ubuntu-24.04",
+      "os": "Linux",
+      "architecture": "x86_64",
+      "platform": "linux_x86_64"
+    },
+    {
+      "target": "macos_arm64",
+      "runner": "macos-14",
+      "os": "Darwin",
+      "architecture": "arm64",
+      "platform": "macos"
+    }
+  ]
+}

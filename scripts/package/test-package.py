@@ -27,10 +27,10 @@ def manifest(version="1.2.3", revision=None):
         for arch, platform in (("arm64", "linux/arm64"), ("x86_64", "linux/amd64")):
             runners[provider][arch] = dict(platform=platform, image=f"ghcr.io/test/{provider}@sha256:" + "b" * 64,
                 source_revision=revision, tool_versions={tool: "1.0" for tool in (provider, "git", "node", "playwright")})
-    bundle = dict(filename=f"symphony-{version}-macos.tar.gz")
+    bundle = dict(filename=f"symphony-{version}-macos.tar.gz", architectures=["arm64"])
     return dict(schema_version=1, version=version, source_revision=revision, channel="candidate",
-        host_architectures=["arm64", "x86_64"], runners=runners, bundle=bundle,
-        bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz")))
+        host_architectures=["arm64", "x86_64"], supported_hosts={"macos": ["arm64"], "linux_x86_64": ["x86_64"]}, runners=runners, bundle=bundle,
+        bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz", architectures=["x86_64"])))
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
@@ -90,11 +90,16 @@ class PackageTest(unittest.TestCase):
 
     def test_manifest_validation_and_typed_json(self):
         self.assertOK(self.helper("validate-manifest", self.file))
+        self.assertEqual(self.assertOK(self.helper("host-architecture")), os.uname().machine)
         for change in [lambda m: m.update(version="1.2.3\n"), lambda m: m.update(schema_version=True), lambda m: m.update(schema_version=1.0),
                 lambda m: m["runners"]["codex"]["arm64"].update(image="mutable:latest"),
                 lambda m: m["runners"]["claude"]["x86_64"].pop("tool_versions"),
                 lambda m: m["bundle"].update(filename="other.tar.gz"),
-                lambda m: m["runners"].update(other={})]:
+                lambda m: m["runners"].update(other={}),
+                lambda m: m["supported_hosts"]["macos"].append("x86_64"),
+                lambda m: m["supported_hosts"].update(linux_arm64=["arm64"]),
+                lambda m: m["bundle"].update(architectures=["arm64", "x86_64"]),
+                lambda m: m["bundles"]["linux_x86_64"].update(architectures=["arm64"])]:
             value = copy.deepcopy(manifest()); change(value); self.file.write_text(json.dumps(value))
             self.assertNotEqual(self.helper("validate-manifest", self.file).returncode, 0)
         self.assertNotEqual(self.helper("get").returncode, 0)
@@ -103,6 +108,91 @@ class PackageTest(unittest.TestCase):
         for count in ("0.0", "false", "true", "1.5", '"0"'):
             self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":' + count + '}}').returncode, 1)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
+
+    def test_component_manifest_keeps_original_sources_and_strict_compatibility(self):
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider, runners in value['runners'].items():
+            for arch, runner in runners.items():
+                runner.update(source_revision='a' * 40, input_identity='c' * 64, protocol=1, image_config='sha256:'+'9'*64,
+                              dependencies={'resolution_policy': 'retain-original-qualified-resolution',
+                                            'base_images': ['base@sha256:' + 'a' * 64],
+                                            'os_packages': {'git': '1.0'}, 'build_options': {'TARGETARCH': 'arm64' if arch == 'arm64' else 'amd64'}})
+                runner['tool_versions']['elixir'] = 'Elixir fixture / OTP fixture'
+                runner['qualification'] = {'repository': 'Jayson-Stangel/symphony', 'run_id': 123, 'run_attempt': 1,
+                    'controller_revision': 'b' * 40, 'job_name': f'runner-{provider}-{arch}', 'artifact_id': 456,
+                    'artifact_name': f'runner-candidate-{provider}-{arch}', 'artifact_digest': 'sha256:' + 'd' * 64,
+                    'archive_filename': f'{provider}-{arch}.docker.tar.gz', 'archive_sha256': 'e' * 64,
+                    **{key: runner[key] for key in ('source_revision', 'input_identity', 'image')}}
+        value['distribution'] = {provider: {arch: 'ghcr.io/immutable/'+provider+'@'+runner['image'].split('@')[1]
+            for arch,runner in group.items()} for provider,group in value['runners'].items()}
+        self.file.write_text(json.dumps(value))
+        self.assertOK(self.helper('validate-manifest', self.file))
+        changes = [lambda m: m['distribution']['codex'].update(arm64='ghcr.io/changed@sha256:'+'f'*64),
+                   lambda m: m['distribution']['codex'].pop('arm64'),
+                   lambda m: m['runners']['codex']['arm64'].pop('image_config'),
+                   lambda m: m.update(schema_version=1),
+                   lambda m: m['compatibility'].update(runner_protocol=True),
+                   lambda m: m['compatibility'].update(runner_protocol=2),
+                   lambda m: m['runners']['codex']['arm64'].update(protocol=1.0),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(run_id=True),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(repository='foreign/repo'),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(source_revision='0' * 40),
+                   lambda m: m['runners']['codex']['arm64']['dependencies'].update(os_packages={})]
+        for change in changes:
+            invalid = copy.deepcopy(value)
+            change(invalid)
+            self.file.write_text(json.dumps(invalid))
+            self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
+
+    def test_schema1_bridge_original_components_preserve_strict_native_proof(self):
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('bridge_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value=manifest();originals={}
+        for provider in ('codex','claude'):
+            originals[provider]={}
+            for arch in ('arm64','x86_64'):
+                original=fixture.record(provider,arch)
+                original['source_revision']=value['source_revision']
+                original['qualification']['source_revision']=value['source_revision']
+                originals[provider][arch]=original
+                selected=copy.deepcopy(original)
+                selected['image']='ghcr.io/distribution/'+provider+'@'+original['image'].split('@')[1]
+                selected.pop('qualification')
+                value['runners'][provider][arch]=selected
+        value['original_components']=originals
+        self.file.write_text(json.dumps(value));self.assertOK(self.helper('validate-manifest',self.file))
+        for mutate in (lambda m:m['runners']['codex']['arm64'].update(image='ghcr.io/changed@sha256:'+'0'*64),
+                       lambda m:m['original_components']['claude']['x86_64']['qualification'].update(run_id=True)):
+            broken=copy.deepcopy(value);mutate(broken);self.file.write_text(json.dumps(broken))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
+
+    def test_recovered_component_records_keep_failed_job_and_separate_origins(self):
+        sys.path.insert(0, str(ROOT / 'scripts/release'))
+        import artifacts
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('recovery_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider in ('codex', 'claude'):
+            for arch in ('arm64', 'x86_64'):
+                record = fixture.record(provider, arch)
+                value['runners'][provider][arch] = {key: field for key, field in record.items() if key not in ('provider','architecture')}
+        proof = value['runners']['codex']['arm64']['qualification']
+        proof.update(record_origin={'run_id':789,'run_attempt':1,'controller_revision':'c'*40,'job_name':'recover-codex-arm64'},
+                     payload_origin={'run_id':123,'controller_revision':'a'*40},
+                     native_step_recovery={'job_id':1234,'original_job_conclusion':'failure','build_step_number':5,'qualification_step_number':6,
+                         'payload_step_number':7,'failure_step_number':8,'cleanup_step_number':10,
+                         'failure_reason':'bare-upload-artifact-sha256','log_sha256':'e'*64})
+        artifacts.validate(value, require_bundle=False)
+        self.file.write_text(json.dumps(value)); self.assertOK(self.helper('validate-manifest',self.file))
+        for field, invalid_value in (('job_id',True),('qualification_step_number',1.0),('original_job_conclusion','success'),('failure_reason','runtime-failure')):
+            changed = copy.deepcopy(value)
+            changed['runners']['codex']['arm64']['qualification']['native_step_recovery'][field] = invalid_value
+            self.file.write_text(json.dumps(changed))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
 
     def test_additive_platform_manifest_and_legacy_mac_contract(self):
         value = manifest()
@@ -290,8 +380,7 @@ PY
         self.assertOK(call(["bash", "-e", "-c", script, "fixture", lock, HELPER]))
         self.assertNotEqual(call(["bash", "-c", 'exec 8>>"$1"; "$2" lock "$1" 8 inherited', "fixture", lock, HELPER]).returncode, 0)
 
-    @unittest.skipUnless(sys.platform == "darwin", "old macOS updater must execute on macOS")
-    def test_actual_legacy_macos_updater_accepts_new_manifest_and_roundtrip(self):
+    def legacy_macos_upgrade_fixture(self):
         # The test controller builds actual old/current source-bound managers.
         # Runner records are metadata fixtures: this test makes no lifecycle or
         # Linux-artifact claim and never pulls an image or authenticates.
@@ -303,6 +392,8 @@ PY
         self.assertOK(call([legacy / "scripts/release/build-host-helper.sh", old_helper, "--native"]))
         old_manifest = manifest(version="1.2.2", revision=legacy_revision)
         old_manifest.pop("bundles")
+        old_manifest.pop("supported_hosts")
+        old_manifest["bundle"].pop("architectures")
         old_internal = self.root / "old-internal.json"; old_internal.write_text(json.dumps(old_manifest))
         old_output = self.root / "old-output"
         self.assertOK(call([legacy / "scripts/release/package.sh", old_internal, old_output, old_helper]))
@@ -324,6 +415,11 @@ PY
         self.assertOK(call([old_download / "install.sh"], env=env))
         command = self.root / "bin/symphony"
         self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+        return legacy_revision, old_external, old_archive, current_external, current_archive, env, command
+
+    @unittest.skipUnless(sys.platform == "darwin", "old macOS updater must execute on macOS")
+    def test_actual_legacy_macos_updater_accepts_new_manifest_and_roundtrip(self):
+        legacy_revision, old_external, old_archive, current_external, current_archive, env, command = self.legacy_macos_upgrade_fixture()
         self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
         self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], manifest()["source_revision"])
         # New updater must also understand prior manifest shape, and retain
@@ -333,6 +429,79 @@ PY
         self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
         self.assertOK(call([command, "update", "--candidate-manifest", old_external, "--candidate-bundle", old_archive], env=env))
         self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+
+    @unittest.skipUnless(sys.platform == "darwin", "legacy Mac policy replay requires native macOS")
+    def test_actual_legacy_updater_intel_policy_replay_stages_but_cannot_activate_arm_bundle(self):
+        # Real old installed updater/helper, actual new ARM bundle. uname replay
+        # tests Intel selection semantics on ARM, not native Intel qualification.
+        legacy_revision, _, _, current_external, current_archive, env, command = self.legacy_macos_upgrade_fixture()
+        current = self.root / 'app/current'
+        command_target, current_target = command.readlink(), current.readlink()
+        canary = self.root / 'config/project-data'
+        canary.parent.mkdir(exist_ok=True)
+        canary.write_bytes(b'preserved project data\x00')
+        uname = self.root / 'tools/uname'
+        uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; *) exec /usr/bin/uname "$@" ;; esac\n')
+        uname.chmod(0o755)
+        failed = call([command, 'update', '--candidate-manifest', current_external, '--candidate-bundle', current_archive], env=env)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn('packaged installs support only macOS ARM64 and Linux x86-64', failed.stderr)
+        # Known compatibility limit: the unchanged legacy selector can copy the
+        # ARM archive before the new launcher refuses; never claim no selection.
+        staged = self.root / 'app/releases' / ('1.2.3-' + manifest()['source_revision'])
+        self.assertTrue(staged.is_dir())
+        self.assertEqual(json.loads((staged/'release.json').read_text())['bundle']['architectures'], ['arm64'])
+        self.assertEqual(command.readlink(), command_target)
+        self.assertEqual(current.readlink(), current_target)
+        self.assertFalse((self.root/'app/previous').exists())
+        self.assertFalse((self.root/'app/pending-transition').exists())
+        self.assertEqual(canary.read_bytes(), b'preserved project data\x00')
+        self.assertFalse((self.root/'docker.calls').exists())
+        uname.unlink()
+        self.assertEqual(json.loads(self.assertOK(call([command, '--version'], env=env)))['source_revision'], legacy_revision)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Mach-O slice validation requires native macOS")
+    def test_supplied_universal_helper_refused_before_packaging(self):
+        # Exercise the architecture refusal without creating any Intel payload.
+        # The fake inspection result represents a supplied universal helper;
+        # the sentinel proves refusal happens before helper execution.
+        tools = self.root/'inspection-tools'; tools.mkdir()
+        inspected = self.root/'inspection.calls'
+        lipo = tools/'lipo'
+        lipo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_INSPECTION_CALLS"\n'
+                        '[ "$1" = -archs ] || exit 99\nprintf "arm64 x86_64\\n"\n')
+        lipo.chmod(0o755)
+        sentinel = self.root/'helper-executed'
+        helper = self.root/'helper-sentinel'
+        helper.write_text('#!/bin/sh\ntouch "$TEST_HELPER_EXECUTED"\nexit 99\n')
+        helper.chmod(0o755)
+        env = dict(os.environ, PATH=f'{tools}:' + os.environ['PATH'],
+                   TEST_INSPECTION_CALLS=str(inspected), TEST_HELPER_EXECUTED=str(sentinel))
+        output = self.root/'universal-output'
+        refused = call([ROOT/'scripts/release/package.sh', self.file, output, helper], env=env)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('macOS helper must contain only arm64', refused.stderr)
+        self.assertEqual(len(inspected.read_text().splitlines()), 1)
+        self.assertTrue(inspected.read_text().startswith('-archs '))
+        self.assertFalse(sentinel.exists())
+        self.assertFalse(list(output.glob('*.tar.gz')))
+        self.assertFalse((self.root/'app').exists())
+
+    def test_unsupported_installer_refuses_before_helper_or_activation(self):
+        bundle = self.bundle()
+        env = self.environment()
+        canary = self.root/'project-canary'; canary.write_bytes(b'keep data\x00')
+        uname = self.root/'tools/uname'
+        for system, architecture in [('Darwin', 'x86_64'), ('Linux', 'aarch64')]:
+            with self.subTest(system=system, architecture=architecture):
+                uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; -m) echo {architecture} ;; esac\n')
+                uname.chmod(0o755)
+                refused = call([bundle/'install.sh'], env=env)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn('packaged installs support macOS ARM64 and Linux x86-64', refused.stderr)
+                self.assertFalse((self.root/'app').exists())
+                self.assertFalse((self.root/'bin/symphony').exists())
+                self.assertEqual(canary.read_bytes(), b'keep data\x00')
 
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
@@ -479,13 +648,15 @@ PY
         self.file.write_text(json.dumps(mismatch))
         result = call([ROOT / "scripts/release/package.sh", self.file, self.root / "mismatch-output", HELPER])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("source differs", result.stderr)
+        self.assertIn("manager input selection refused: manager manifest differs from actual checkout", result.stderr)
+        self.assertFalse(list((self.root / "mismatch-output").glob("*.tar.gz")))
+        self.assertFalse((self.root / "app/current").exists())
         self.file.write_text(json.dumps(manifest()))
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
         uname = self.root / "tools/uname"
-        for architecture, platform in ((("arm64", "linux/arm64"), ("x86_64", "linux/amd64")) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
+        for architecture, platform in ((("arm64", "linux/arm64"),) if sys.platform == "darwin" else (("x86_64", "linux/amd64"),)):
             uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {"Darwin" if sys.platform == "darwin" else "Linux"} ;; *) echo {architecture} ;; esac\n'); uname.chmod(0o755)
             output = self.assertOK(call([command, "doctor", "--json"], env=env))
             self.assertEqual(json.loads(output)["architecture"], architecture)
@@ -502,9 +673,12 @@ PY
         (bundle / "libexec/symphony-host").write_text(f"#!/bin/sh\ntouch '{canary}'\nexit 99\n")
         uname = self.root / "tools/uname"
         other_os = "Linux" if sys.platform == "darwin" else "Darwin"
-        for system, architecture, reason in (("Linux", "aarch64", "unsupported host"),
-                                            ("Windows_NT", "x86_64", "unsupported host"),
-                                            (other_os, "x86_64", "bundle platform")):
+        other_architecture = "x86_64" if other_os == "Linux" else "arm64"
+        policy = "macOS ARM64 and Linux x86-64"
+        for system, architecture, reason in (("Linux", "aarch64", policy),
+                                            ("Darwin", "x86_64", policy),
+                                            ("Windows_NT", "x86_64", policy),
+                                            (other_os, other_architecture, "bundle platform")):
             uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo {system} ;; *) echo {architecture} ;; esac\n')
             uname.chmod(0o755)
             for command in ([bundle / "install.sh"], [bundle / "scripts/symphony", "--version"]):

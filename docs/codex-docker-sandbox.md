@@ -98,6 +98,21 @@ candidate only in a descriptive comment; both compile to identical policy bytes
 with Forge's parser. The earlier broad audit profile is diagnostic only and is
 never selected by this launcher.
 
+## Selected and historical environments
+
+Manager-only activation preserves the selected immutable runtime image. It does
+not install this capability into an old image. A fresh Codex start or transition
+requires the real protected-readiness diagnostic embedded in a compatible rebuilt
+image; an older protocol-1 image lacking that diagnostic refuses preflight before
+drain. Explicitly select a rebuilt compatible Codex environment through the
+normal environment-selection workflow, then retry the transition. The updater
+never silently replaces a selected or team-owned environment to obtain this fix.
+
+Historical `previous` image builds run their pinned source tree's own committed
+smoke/startup contract, with an explicit historical-only evidence receipt. That
+original proof does not establish today's protected readiness. Current component
+builds always run the current protected-command qualifier.
+
 ## Qualification and evidence limits
 
 Run `bash runner/codex-sandbox-smoke.sh IMAGE` to verify the immutable image with

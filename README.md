@@ -67,7 +67,7 @@ merging. Existing workflows are preserved when Symphony is initialized or update
 
 ## Get started
 
-On macOS 14 or later, or Ubuntu 26.04 x86-64 when its archive is available,
+On Apple Silicon macOS 14 or later, or Ubuntu 26.04 x86-64 when its archive is available,
 download the matching manager bundle and `release.json` from a
 [completed stable release](https://github.com/Jayson-Stangel/symphony/releases).
 Install and start Docker Engine on Ubuntu, or Docker Desktop/OrbStack on macOS,
@@ -140,3 +140,7 @@ see [update procedures](docs/operations.md#update-the-stable-installation).
 Licensed under [Apache License 2.0](LICENSE). This project is derived from
 [OpenAI Symphony](https://github.com/openai/symphony); see [NOTICE](NOTICE) for the
 upstream copyright notice.
+
+Teams can select their own compatible development environments through installed
+Symphony. See [team-owned environments](docs/team-environments.md) for immutable
+per-project selection, maintained templates and manager-update behavior.

@@ -1377,7 +1377,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     legacy_project_id() { printf service; }
     source_revision() { printf fixture-revision; }
     package_image() { printf fixture-image; }
+    package_transition_image() { printf fixture-image; }
     package_release_image() { return 0; }
+    package_transition_image_compatible() { return 0; }
     package_helper() {
       case "$1" in lock-directory) return 0 ;; sha256) shasum -a 256 "$2" | cut -d ' ' -f 1 ;; *) return 1 ;; esac
     }
