@@ -116,7 +116,7 @@ def verify_config(raw, record):
         require(type(record['input_identity']) is str and re.fullmatch('[a-f0-9]{64}', record['input_identity']), 'invalid original inputs')
         expected['com.symphony.inputs.sha256'] = record['input_identity']
     if 'protocol' in record:
-        require(record['protocol'] == 1, 'unsupported original protocol')
+        require(type(record['protocol']) is int and record['protocol'] == 1, 'unsupported original protocol')
         expected['com.symphony.protocol'] = '1'
     require(all(labels.get(key) == expected_value for key, expected_value in expected.items()), 'original source/provider/input/protocol differs')
     return value
@@ -127,7 +127,7 @@ def validate_graphs(root, records, exact=True):
     root = Path(root)
     require(root.resolve() == root.absolute(), 'graph directory is symlinked')
     index = strict(read(root / 'index.json', MAX_METADATA))
-    require(type(index) is dict and set(index) == {'schema_version', 'images'} and index['schema_version'] == 1 and type(index['images']) is list, 'invalid index')
+    require(type(index) is dict and set(index) == {'schema_version', 'images'} and type(index['schema_version']) is int and index['schema_version'] == 1 and type(index['images']) is list, 'invalid index')
     require(0 < len(index['images']) <= 16, 'image count bound exceeded')
     entries = {}
     for entry in index['images']:

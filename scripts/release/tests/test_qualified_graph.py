@@ -165,6 +165,15 @@ class GraphTransport(unittest.TestCase):
         (root / 'blobs/sha256' / ('f' * 64)).write_bytes(b'orphan')
         with self.assertRaisesRegex(ValueError, 'unreferenced'): graph.validate_graphs(root, fixture.records[:1], exact=False)
 
+    def test_boolean_schema_or_protocol_is_not_an_integer_version(self):
+        fixture = Fixture(); root = fixture.write(self.root / 'graph')
+        index = json.loads((root / 'index.json').read_text()); index['schema_version'] = True
+        (root / 'index.json').write_bytes(encode(index))
+        with self.assertRaisesRegex(ValueError, 'invalid index'): graph.validate_graphs(root, fixture.records)
+        index['schema_version'] = 1; (root / 'index.json').write_bytes(encode(index))
+        records = [dict(record, protocol=True) for record in fixture.records]
+        with self.assertRaisesRegex(ValueError, 'protocol'): graph.validate_graphs(root, records)
+
     def test_mixed_docker_save_foreign_member_and_graph_symlink_parent_refuse(self):
         fixture = Fixture(); root = fixture.write(self.root / 'graph')
         with self.assertRaisesRegex(ValueError, 'outside graph-only'):
