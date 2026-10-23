@@ -42,7 +42,7 @@ class ActualPayloadTests(unittest.TestCase):
             path.write_bytes(self.zip)
         return payload.retrieve(self.record, self.origin, destination,
                                 verify=verify or (lambda record: copy.deepcopy(self.origin)),
-                                fetch=fetch or downloaded)
+                                fetch=fetch or downloaded, validate=lambda *args: None)
 
     def test_manual_candidate_override_cannot_be_granted_by_a_plan_or_ordinary_event(self):
         for event in ('pull_request', 'push', None):
@@ -104,6 +104,16 @@ class ActualPayloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ValueError, 'missing or duplicate'):
                 self.retrieve(Path(temporary) / 'current')
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_missing_or_corrupt_graph_refuses_before_local_receipt_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / 'current'
+            def downloaded(artifact_id, path):path.write_bytes(self.zip)
+            def refuse(*args):raise ValueError('qualified graph missing/corrupt')
+            with self.assertRaisesRegex(ValueError, 'graph missing/corrupt'):
+                payload.retrieve(self.record, self.origin, destination, verify=lambda _:copy.deepcopy(self.origin),
+                                 fetch=downloaded, validate=refuse)
             self.assertEqual(list(Path(temporary).iterdir()), [])
 
     def test_existing_destination_and_failed_download_preserve_foreign_work(self):

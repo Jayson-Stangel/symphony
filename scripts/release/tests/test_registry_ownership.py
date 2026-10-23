@@ -78,6 +78,17 @@ class RegistryOwnershipTest(unittest.TestCase):
                 run.assert_not_called()
                 self.assertEqual(self.path.read_bytes(), original)
 
+    def test_deletion_is_explicit_boolean_and_retains_owned_registry_boundary(self):
+        with patch.object(registry, 'docker', return_value='a'*64) as run:
+            registry.start(self.path, delete_enabled=True)
+            self.assertIn('REGISTRY_STORAGE_DELETE_ENABLED=true', run.call_args_list[0].args)
+            self.assertIn('--label', run.call_args_list[0].args)
+        before=self.path.read_bytes()
+        for value in (1,'true',None):
+            with patch.object(registry, 'docker') as run, self.assertRaises(ValueError):
+                registry.start(self.path, delete_enabled=value)
+            run.assert_not_called(); self.assertEqual(self.path.read_bytes(),before)
+
     def test_cleanup_removes_and_confirms_only_associated_anonymous_volume(self):
         volume = 'a' * 64
         value = {'Name':'/unique-owned-name','Id':'exact-container-id',

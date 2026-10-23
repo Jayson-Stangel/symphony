@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -119,48 +120,29 @@ def verify_unchanged_manager_components(previous, current):
 
 
 def verify_loaded_component(config, record, provider, independent):
-    labels = config.get("Config", {}).get("Labels") or {}
-    assert (config.get("Architecture") == "amd64" and record.get("platform") == "linux/amd64" and
-            labels.get("com.symphony.agent") == provider and labels.get("com.symphony.architecture") == "amd64" and
-            labels.get("org.opencontainers.image.revision") == record["source_revision"]), "loaded original image source/platform/provider differs"
-    if independent:
-        assert config.get("Id") == record.get("image_config"), "loaded original image config differs"
-        assert labels.get("com.symphony.protocol") == str(record.get("protocol")) == "1", "loaded original runner protocol differs"
-        assert labels.get("com.symphony.inputs.sha256") == record.get("input_identity"), "loaded original input identity differs"
+    from component_restore import verify_runtime_image
+    verify_runtime_image(config, dict(record, provider=provider, architecture='x86_64'), record['image'])
 
 
-def load_original_archive(run, folder, provider):
-    archive = folder / f"{provider}-x86_64.docker.tar.gz"
-    sidecar = folder / f"{provider}-x86_64.sha256"
-    assert archive.is_file() and not archive.is_symlink() and sidecar.is_file() and not sidecar.is_symlink()
-    fields = sidecar.read_text().strip().split()
-    assert len(fields) == 2 and re.fullmatch('[a-f0-9]{64}', fields[0]) and fields[1] in (archive.name, './'+archive.name), 'original archive checksum identity differs'
-    digest = hashlib.sha256()
-    with archive.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024*1024), b''): digest.update(block)
-    assert digest.hexdigest() == fields[0], 'original archive checksum differs'
-    with archive.open('rb') as source:
-        run(['docker', 'load'], stdin=source)
+def transition_locks(folder):
+    result = {}
+    for path in Path(folder).glob('*.transition*'):
+        info = path.lstat()
+        assert path.name.endswith('.transition.lock') and stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1 and path.read_bytes() == b'', 'unexpected pending transition or unsafe lock'
+        result[path.name] = (info.st_dev, info.st_ino, info.st_uid, info.st_mode, info.st_size)
+    return result
 
 
-def stage_separate_previous(run, images, provider, previous, folder_name="previous"):
-    """Load an original prior subject before current tags; retain its exact identity."""
-    folder = images / folder_name
-    if not folder.exists(): return None
-    assert folder.is_dir() and not folder.is_symlink(), 'previous subjects must use an owned directory'
-    load_original_archive(run, folder, provider)
-    record = previous['runners'][provider]['x86_64']
-    # The adapter selects the original current role. New schema2 records retain
-    # their actual archive_tag; historical90 current records predate that field.
-    original = record.get('archive_tag', f'localhost:5000/symphony-{provider}:candidate')
-    assert original in (f'localhost:5000/symphony-{provider}:candidate', f'localhost:5000/symphony-{provider}:previous')
-    observed = json.loads(run(['docker', 'image', 'inspect', original]).stdout)[0]
-    verify_loaded_component(observed, record, provider, previous['schema_version'] == 2)
-    alias = f'localhost:5000/symphony-{provider}:previous'
-    run(['docker', 'tag', original, alias])
-    checked = json.loads(run(['docker', 'image', 'inspect', alias]).stdout)[0]
-    assert checked['Id'] == observed['Id'], 'local previous-role alias changes original config'
-    return observed['Id']
+def stage_candidate_descriptor(template, value, folder):
+    folder = Path(folder); folder.mkdir()
+    if (Path(template).parent / 'manager-core.json').exists():
+        shutil.copyfile(Path(template).parent / 'manager-core.json', folder / 'manager-core.json')
+    path = folder / 'release.json'; path.write_text(json.dumps(value))
+    from manager_envelope import load_release
+    import artifacts
+    if 'manager_envelope' in value:load_release(path)
+    else:artifacts.validate(value)
+    return path
 
 
 def cleanup_negative_image(run, reference, token):
@@ -184,6 +166,21 @@ def cleanup_negative_image(run, reference, token):
         assert absent(checked, selected), ('negative image remains or absence uncertain', selected, checked.stdout, checked.stderr)
 
 
+def stage_manager_selections(root, selections):
+    """Each descriptor keeps its own exact sibling core and bundle filename."""
+    result = {}
+    for index, (folder, manifest) in enumerate(selections):
+        role = 'new' if index == len(selections) - 1 else 'legacy' if len(selections) == 3 and index == 0 else 'old'
+        target = Path(root) / 'selected-packages' / role
+        target.mkdir(parents=True, exist_ok=False)
+        for source in (folder / 'release.json', folder / manifest['bundles']['linux_x86_64']['filename']):
+            shutil.copyfile(source, target / source.name)
+        if (folder / 'manager-core.json').exists():
+            shutil.copyfile(folder / 'manager-core.json', target / 'manager-core.json')
+        result[role] = target
+    return result
+
+
 def main():
     arguments = sys.argv[1:]
     current_only = bool(arguments and arguments[0] == "--current-manager-only")
@@ -202,7 +199,8 @@ def main():
         raise SystemExit("run the controller as an ordinary CI user")
     namespace = "package-" + uuid.uuid4().hex[:12]
     prefix = "symphony-" + namespace
-    client, registry = prefix + "-client", prefix + "-registry"
+    client = prefix + "-client"
+    registry_state = evidence / "registry-state.txt"
     owned = set()
     controller_ids = {}
     negative_images = {}
@@ -265,7 +263,7 @@ def main():
         # changing its state. The throwaway utility process uses the real image.
         return docker("run", "--rm", "--network", "none", "--read-only", "--volumes-from", name + ":ro",
                       "--entrypoint", "sh", inspect(name, "{{.Image}}"), "-ceu",
-                      "sha256sum /workspaces/proof/edited /workspaces/proof/untracked /var/lib/symphony/proof-state; git -C /workspaces/proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -C /workspaces/proof status --porcelain")
+                      "sha256sum /workspaces/proof/edited /workspaces/proof/untracked /var/lib/symphony/proof-state; git -c safe.directory=/workspaces/proof -C /workspaces/proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -c safe.directory=/workspaces/proof -C /workspaces/proof status --porcelain")
 
     def negative_archive(source_archive, manifest, mode):
         directory = root / ("negative-" + mode); directory.mkdir()
@@ -285,7 +283,10 @@ def main():
             for path in sorted(directory.iterdir()):
                 output.add(path, arcname="./" + path.name)
         outer["bundles"]["linux_x86_64"]["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
-        external = root / (mode + ".json"); external.write_text(json.dumps(outer))
+        external_dir = root / (mode + "-descriptor"); external_dir.mkdir()
+        if (packages / "manager-core.json").exists():
+            shutil.copyfile(packages / "manager-core.json", external_dir / "manager-core.json")
+        external = external_dir / "release.json"; external.write_text(json.dumps(outer))
         return external, archive
 
     try:
@@ -311,69 +312,45 @@ def main():
             source_archives.append(archive)
         result["packages"] = [{"source_revision": manifest["source_revision"], **manifest["bundles"]["linux_x86_64"]}
                               for _, manifest in selections]
-        controller_ids[registry] = acquire_container(run, "-d", "--name", registry, "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "-p", "127.0.0.1:5000:5000", "registry:3")
-        owned.add(registry)
+        from component_restore import prepare_graphs, restore_component
+        import test_registry
+        graphs = prepare_graphs(images, current, initial, root / "qualified-graphs",
+                                current_only=current_only, legacy=legacy_chain)
+        # All selected archive hashes and graph closures were verified before
+        # acquiring a registry or performing the first image/network mutation.
+        test_registry.start(registry_state, delete_enabled=True)
         for provider in ("codex", "claude"):
-            # A separately verified old current-role subject may use the same
-            # :candidate tag. Alias it locally before loading the new current.
-            previous_config = stage_separate_previous(run, images, provider, initial, "legacy" if legacy_chain else "previous") if not current_only else None
-            load_original_archive(run, images, provider)
             selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", initial)]
-            for legacy_tag, manifest in selected:
-                qualified = manifest["runners"][provider]["x86_64"]
-                image = (f"localhost:5000/symphony-{provider}:previous" if legacy_tag == 'previous' and previous_config is not None
-                         else qualified.get("archive_tag", f"localhost:5000/symphony-{provider}:{legacy_tag}"))
-                assert image in (f"localhost:5000/symphony-{provider}:candidate", f"localhost:5000/symphony-{provider}:previous"), "foreign original archive tag"
+            for role, manifest in selected:
+                graph = graphs[(role, provider)]
+                qualified = graph["record"]
                 original = qualified["image"]
                 assert re.fullmatch(f"localhost:5000/symphony-{provider}@sha256:[a-f0-9]{{64}}", original), "original digest must use the isolated candidate registry route"
-                loaded = json.loads(docker("image", "inspect", image))[0]
-                verify_loaded_component(loaded, qualified, provider, manifest["schema_version"] == 2)
-                if legacy_tag == 'previous' and previous_config is not None:
-                    assert loaded['Id'] == previous_config, 'current archive replaced the selected old subject'
-                if legacy_chain and legacy_tag == 'previous':
-                    assert (loaded.get('Config', {}).get('Labels') or {}).get('com.symphony.protocol') in (None, ''), 'legacy fixture must retain the actual unlabeled old image'
-                docker("push", image)
-                observed = json.loads(docker("image", "inspect", image))[0]
-                assert original in observed.get("RepoDigests", []), ("original image digest changed", image, original)
-                docker("pull", original)
-                pulled = json.loads(docker("image", "inspect", original))[0]
-                verify_loaded_component(pulled, qualified, provider, manifest["schema_version"] == 2)
+                pulled = restore_component(run, graph, registry_state)
+                if legacy_chain and role == 'previous':
+                    assert (pulled.get('Config', {}).get('Labels') or {}).get('com.symphony.protocol') in (None, ''), 'legacy fixture must retain the actual unlabeled old image'
                 alias = manifest.get("distribution", {}).get(provider, {}).get("x86_64")
                 if alias is not None:
-                    assert manifest["schema_version"] == 2
                     expected_alias = f"localhost:5000/symphony-distribution-{provider}@" + original.split("@", 1)[1]
                     assert alias == expected_alias, "diagnostic distribution must preserve original digest in the isolated repository"
-                    alias_tag = f"localhost:5000/symphony-distribution-{provider}:" + legacy_tag
-                    distribution_aliases.update((alias_tag, alias))
-                    docker("tag", original, alias_tag)
-                    docker("push", alias_tag)
-                    assert alias in json.loads(docker("image", "inspect", alias_tag))[0].get("RepoDigests", []), "alias changed original OCI digest"
-                    # Remove the alias references before the actual registry
-                    # pull. Shared original layers/config remain valid; they
-                    # are not fresh anonymous network-download evidence.
-                    remove_local_image(run, alias_tag)
-                    remove_local_image(run, alias)
-                    docker("pull", alias)
-                    distributed = json.loads(docker("image", "inspect", alias))[0]
-                    verify_loaded_component(distributed, qualified, provider, True)
-                    assert distributed["Id"] == pulled["Id"], "alias changed original config"
+                    distribution_aliases.add(alias)
+                    distributed = restore_component(run, graph, registry_state, destination=alias)
+                    assert distributed["Id"] == pulled["Id"], "alias changed original runtime identity"
                 result["qualified_runner_components"].append({"provider": provider, "architecture": "x86_64",
                     "manager_source_revision": manifest["source_revision"], "runner_source_revision": qualified["source_revision"],
-                    "image": original, "distribution_image": alias, "observed_image_config": pulled["Id"],
-                    "input_identity": qualified.get("input_identity"), "protocol": qualified.get("protocol")})
+                    "image": original, "distribution_image": alias, "observed_runtime_id": pulled["Id"],
+                    "original_image_config": qualified["image_config"], "input_identity": qualified.get("input_identity"),
+                    "protocol": qualified.get("protocol"), "transport": "verified-exact-qualified-graph-v1"})
         record("actual source-bound manager package and original runner checksums" if current_only else "two real source-bound package and runner revision checksums")
 
         # The client sees only candidate downloads and isolated data, with the
         # same absolute path used for Docker bind mounts on the native host.
-        for index, (folder, manifest) in enumerate(selections):
-            prefix = 'new-' if index == len(selections)-1 else 'legacy-' if legacy_chain and index == 0 else 'old-'
-            for source in (source_archives[index], folder / 'release.json'):
-                shutil.copyfile(source, root / (prefix + source.name))
-        first_prefix = 'legacy-' if legacy_chain else 'new-' if current_only else 'old-'
-        first_manifest = root / (first_prefix + 'release.json')
-        second_manifest = root / "new-release.json"
-        first_archive = root / (first_prefix + initial["bundles"]["linux_x86_64"]["filename"])
-        second_archive = root / ("new-" + current["bundles"]["linux_x86_64"]["filename"])
+        staged = stage_manager_selections(root, selections)
+        first_role = 'legacy' if legacy_chain else 'new' if current_only else 'old'
+        first_manifest = staged[first_role] / 'release.json'
+        second_manifest = staged['new'] / 'release.json'
+        first_archive = staged[first_role] / initial['bundles']['linux_x86_64']['filename']
+        second_archive = staged['new'] / current['bundles']['linux_x86_64']['filename']
         home = root / "home"; home.mkdir(mode=0o700)
         tools = root / "tools"; tools.mkdir()
         for name in ("git", "python", "python3", "node", "mise", "swift", "swiftc", "elixir", "erl", "shasum", "codex", "claude"):
@@ -459,7 +436,7 @@ fi
             state(port)
             assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
             selected_reference = initial.get("distribution", {}).get(selected_agent, {}).get("x86_64", initial["runners"][selected_agent]["x86_64"]["image"])
-            assert inspect(name, "{{.Config.Image}}") == selected_reference, "installed manager did not select the manifest distribution reference"
+            assert inspect(name, "{{.Config.Image}}") in (selected_reference, inspect(selected_reference, "{{.Id}}")), "installed manager did not select the validated immutable image"
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
                 dashboard = response.read().decode()
             assert "Symphony" in dashboard and "<html" in dashboard.lower(), dashboard[:200]
@@ -503,8 +480,8 @@ fi
         client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
         if legacy_chain:
-            bridge_manifest = root/'old-release.json'
-            bridge_archive = root/('old-'+previous['bundles']['linux_x86_64']['filename'])
+            bridge_manifest = staged['old']/'release.json'
+            bridge_archive = staged['old']/previous['bundles']['linux_x86_64']['filename']
             original_ids = {selected: (inspect(selected, '{{.Id}}'), inspect(selected, '{{.Image}}')) for selected in names}
             original_metadata = [path.read_bytes() for path in metadata]
             client_run([str(command), 'update', '--candidate-manifest', str(bridge_manifest), '--candidate-bundle', str(bridge_archive)], cwd=repo)
@@ -542,7 +519,7 @@ fi
             activation_links = {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
                                 for path in ('current', 'previous')}
             containers_before = {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names}
-            assert not list((root / "config/runners").glob("*.transition*")), "unexpected pending transition before negative fixture"
+            locks_before_negative = transition_locks(root / "config/runners")
             try:
                 metadata[0].write_bytes(substituted)
                 failed = client_run([str(command), "update", *update_args], cwd=repo, expected=1)
@@ -550,7 +527,7 @@ fi
                 assert {path: os.readlink(root / 'app' / path) if (root / 'app' / path).is_symlink() else None
                         for path in ('current', 'previous')} == activation_links
                 assert {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.State.Running}}")) for selected in names} == containers_before
-                assert not list((root / "config/runners").glob("*.transition*")), "incompatible runner created a project transition"
+                assert transition_locks(root / "config/runners") == locks_before_negative, "incompatible runner changed transition locks"
                 assert metadata[0].read_bytes() == substituted and metadata[1].read_bytes() == second_metadata
                 assert inspect(names[1], "{{.Image}}") == second_image
                 unchanged()
@@ -573,6 +550,7 @@ fi
         if manager_update_only:
             runner_snapshot = {selected: (inspect(selected, "{{.Id}}"), inspect(selected, "{{.Image}}")) for selected in names}
             metadata_snapshot = [path.read_bytes() for path in metadata]
+            manager_only_locks = transition_locks(root / "config/runners")
             client_run([str(command), "runner", "stop"], cwd=repo)
             assert inspect(name, "{{.State.Running}}") == "false"
             def retained():
@@ -580,7 +558,7 @@ fi
                 assert [path.read_bytes() for path in metadata] == metadata_snapshot
                 assert inspect(name, "{{.State.Running}}") == "false"
                 assert inspect(names[1], "{{.State.Running}}") == "true"
-                assert not list((root / "config/runners").glob("*.transition*"))
+                assert transition_locks(root / "config/runners") == manager_only_locks
                 unchanged()
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
@@ -590,9 +568,9 @@ fi
             retained()
             corrupted = json.loads(second_manifest.read_text())
             corrupted['bundles']['linux_x86_64']['sha256'] = '0'*64
-            invalid = root/'manager-only-corrupt-manifest.json'; invalid.write_text(json.dumps(corrupted))
+            invalid = stage_candidate_descriptor(second_manifest, corrupted, root/'manager-only-corrupt')
             failed = client_run([str(command), 'update', '--candidate-manifest', str(invalid), '--candidate-bundle', str(second_archive)], cwd=repo, expected=1)
-            assert 'checksum mismatch' in failed.stdout
+            assert 'release bundle checksum mismatch' in failed.stdout
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == previous['source_revision']
             retained()
             client_run([str(command), 'update', *update_args], cwd=repo)
@@ -639,9 +617,7 @@ fi
         assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
         unchanged()
-        load_original_archive(run, images, primary_agent)
-        docker("push", f"localhost:5000/symphony-{primary_agent}:candidate")
-        assert image in json.loads(docker("image", "inspect", f"localhost:5000/symphony-{primary_agent}:candidate"))[0].get("RepoDigests", [])
+        restore_component(run, graphs[("candidate", primary_agent)], registry_state)
         record("actual missing image/digest pull refuses before journal or manager activation; checksummed image restored for retry")
         (root / "fault").write_text("create")
         client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=97)
@@ -666,9 +642,9 @@ fi
         record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
         corrupt = json.loads(second_manifest.read_text()); corrupt["bundles"]["linux_x86_64"]["sha256"] = "0" * 64
-        corrupted_manifest = root / "corrupt.json"; corrupted_manifest.write_text(json.dumps(corrupt))
+        corrupted_manifest = stage_candidate_descriptor(second_manifest, corrupt, root / "corrupt")
         failed = client_run([str(command), "update", "--candidate-manifest", str(corrupted_manifest), "--candidate-bundle", str(second_archive)], cwd=repo, expected=1)
-        assert "checksum mismatch" in failed.stdout
+        assert "release bundle checksum mismatch" in failed.stdout
         bad_platform_manifest, bad_platform_archive = negative_archive(second_archive, json.loads(second_manifest.read_text()), "platform")
         failed = client_run([str(command), "update", "--candidate-manifest", str(bad_platform_manifest), "--candidate-bundle", str(bad_platform_archive)], cwd=repo, expected=1)
         assert "platform" in failed.stdout
@@ -689,6 +665,13 @@ fi
         cleanup_errors = []
         removed = []
         try:
+            if registry_state.exists():
+                try:
+                    import test_registry
+                    test_registry.cleanup(registry_state)
+                    removed.append("owned-qualification-registry")
+                except Exception as error:
+                    cleanup_errors.append("registry cleanup: " + str(error))
             for name in list(owned):
                 try:
                     absent = cleanup_container(name, controller_ids, storages, evidence)

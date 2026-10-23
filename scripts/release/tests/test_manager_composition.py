@@ -140,15 +140,15 @@ class ManagerComposition(unittest.TestCase):
 
     def test_loaded_runner_checks_original_source_config_protocol_and_inputs(self):
         record = {'platform': 'linux/amd64', 'source_revision': 'b' * 40,
-                  'image_config': 'sha256:' + 'c' * 64, 'protocol': 1, 'input_identity': 'd' * 64}
-        config = {'Architecture': 'amd64', 'Id': record['image_config'], 'Config': {'Labels': {
+                  'image': 'localhost:5000/symphony-codex@sha256:'+'a'*64, 'image_config': 'sha256:' + 'c' * 64, 'protocol': 1, 'input_identity': 'd' * 64}
+        config = {'Os':'linux', 'RepoDigests':[record['image']], 'Architecture': 'amd64', 'Id': record['image_config'], 'Config': {'Labels': {
             'org.opencontainers.image.revision': record['source_revision'], 'com.symphony.agent': 'codex',
             'com.symphony.architecture': 'amd64', 'com.symphony.protocol': '1',
             'com.symphony.inputs.sha256': record['input_identity']}}}
         LIFECYCLE.verify_loaded_component(config, record, 'codex', True)
         for field, value in (('source_revision', 'a' * 40), ('image_config', 'sha256:' + 'e' * 64),
                              ('protocol', 2), ('input_identity', 'f' * 64)):
-            with self.subTest(field=field), self.assertRaises(AssertionError):
+            with self.subTest(field=field), self.assertRaises(ValueError):
                 LIFECYCLE.verify_loaded_component(config, dict(record, **{field: value}), 'codex', True)
 
     def fixture(self, root):
@@ -203,33 +203,22 @@ class ManagerComposition(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'actual schema1'):
                 LIFECYCLE.package_selections(root, False, 'c'*40, True)
 
-    def test_separate_prior_is_verified_and_aliased_before_current_archive(self):
+    def test_selected_manager_descriptors_keep_distinct_sibling_cores(self):
         with tempfile.TemporaryDirectory() as directory:
-            images = Path(directory)
-            (images / 'previous').mkdir()
-            for folder, content in ((images, b'actual-current-archive-fixture'), (images/'previous', b'actual-previous-archive-fixture')):
-                (folder/'codex-x86_64.docker.tar.gz').write_bytes(content)
-                (folder/'codex-x86_64.sha256').write_text(hashlib.sha256(content).hexdigest()+'  codex-x86_64.docker.tar.gz\n')
-            record = FIXTURE.record('codex', 'x86_64')
-            record['archive_tag'] = 'localhost:5000/symphony-codex:candidate'
-            original = copy.deepcopy(record)
-            config = {'Id': record['image_config'], 'Architecture': 'amd64', 'Config': {'Labels': {
-                'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64', 'org.opencontainers.image.revision': record['source_revision'],
-                'com.symphony.inputs.sha256': record['input_identity'], 'com.symphony.protocol': '1'}}}
-            calls = []
-            def run(args, **kwargs):
-                calls.append((args, kwargs.get('stdin').read() if kwargs.get('stdin') else None))
-                return subprocess.CompletedProcess(args, 0, json.dumps([config]) if 'inspect' in args else '')
-            selected = LIFECYCLE.stage_separate_previous(run, images, 'codex', {'schema_version': 2, 'runners': {'codex': {'x86_64': record}}})
-            LIFECYCLE.load_original_archive(run, images, 'codex')
-            self.assertEqual(selected, record['image_config'])
-            self.assertEqual(calls[0][1], b'actual-previous-archive-fixture')
-            self.assertEqual(calls[2][0], ['docker', 'tag', record['archive_tag'], 'localhost:5000/symphony-codex:previous'])
-            self.assertEqual(calls[-1][1], b'actual-current-archive-fixture')
-            self.assertEqual(record, original, 'local role alias mutated original qualification')
-            (images/'previous/codex-x86_64.sha256').write_text('0'*64+'  codex-x86_64.docker.tar.gz\n')
-            with self.assertRaisesRegex(AssertionError, 'checksum differs'):
-                LIFECYCLE.stage_separate_previous(run, images, 'codex', {'schema_version': 2, 'runners': {'codex': {'x86_64': record}}})
+            root=Path(directory);selections=[]
+            for role, content in (('old',b'actual old core bytes'),('new',b'actual new core bytes')):
+                folder=root/role;folder.mkdir();(folder/'release.json').write_text(role)
+                (folder/'bundle.tar.gz').write_bytes(b'actual bundle')
+                (folder/'manager-core.json').write_bytes(content)
+                selections.append((folder,{'bundles':{'linux_x86_64':{'filename':'bundle.tar.gz'}}}))
+            staged=LIFECYCLE.stage_manager_selections(root/'client',selections)
+            self.assertNotEqual(staged['old'],staged['new'])
+            for role in ('old','new'):
+                self.assertEqual((staged[role]/'manager-core.json').read_bytes(),(root/role/'manager-core.json').read_bytes())
+                self.assertEqual((staged[role]/'release.json').read_text(),role)
+            (root/'old/manager-core.json').unlink()
+            legacy=LIFECYCLE.stage_manager_selections(root/'legacy-client',selections)
+            self.assertFalse((legacy['old']/'manager-core.json').exists(),'legacy package must not invent core')
 
     def test_distribution_alias_preserves_complete_original_records_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:

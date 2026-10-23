@@ -14,15 +14,17 @@ def docker(*args):
     return subprocess.check_output(['docker', *args], text=True, stderr=subprocess.PIPE, timeout=120).strip()
 
 
-def start(path, host_port=5000):
+def start(path, host_port=5000, delete_enabled=False):
     if type(host_port) is not int or not 1 <= host_port <= 65535:
         raise ValueError('registry host port must be an integer between 1 and 65535')
+    if type(delete_enabled) is not bool: raise ValueError('registry deletion policy must be boolean')
     token = secrets.token_hex(16)
     state = {'name': 'symphony-native-' + token, 'owner': token, 'container_id': None, 'cleanup': 'pending',
              'host_port': host_port}
     path.write_text(json.dumps(state) + '\n')  # retained before acquisition, including uncertain create completion
+    options = ['--env', 'REGISTRY_STORAGE_DELETE_ENABLED=true'] if delete_enabled else []
     container = docker('create', '--name', state['name'], '--label', LABEL + '=' + token,
-                       '-p', f'127.0.0.1:{host_port}:5000', 'registry:3')
+                       '-p', f'127.0.0.1:{host_port}:5000', *options, 'registry:3')
     if not re.fullmatch(r"[a-f0-9]{64}", container):
         raise ValueError("invalid registry acquisition receipt; recover by owned unique name")
     state['container_id'] = container

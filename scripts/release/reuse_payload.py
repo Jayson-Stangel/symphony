@@ -3,8 +3,8 @@
 
 Planning proves metadata availability; this consumer independently rechecks the
 origin, downloads its actual bytes and checks both artifact and archive hashes.
-The existing lifecycle controller remains responsible for loading and exercising
-these archives with the current manager package.
+The graph must verify before publication of local receipts; lifecycle consumers
+restore its original raw bytes before pulling the unchanged immutable digest.
 """
 import argparse
 import hashlib
@@ -75,7 +75,7 @@ def origin_verifier(baseline_run, event):
     return lambda record:verify_origin(record,candidate_run=None)
 
 
-def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=download):
+def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=download, validate=None):
     """Write one source-bound archive/record pair into a new directory only."""
     origin = verify(record)
     require(origin == expected_origin, 'original payload origin changed since planning')
@@ -102,6 +102,13 @@ def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=d
             with bundle.open(members[0]) as source, archive.open('xb') as output:
                 shutil.copyfileobj(source, output, length=1024 * 1024)
         require(checksum(archive) == origin['archive_sha256'], 'original image archive checksum differs')
+        # An archive hash alone cannot authorize Docker-save conversion. New
+        # normal payloads must contain the complete exact qualified OCI graph.
+        if validate is None:
+            from qualified_graph import extract_archive
+            extract_archive(archive, [record], staging / "graph-validation")
+        else:
+            validate(archive, [record], staging / "graph-validation")
         record_name = f"{record['provider']}-{record['architecture']}.json"
         (prepared / record_name).write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
         archive.with_name(archive.name.removesuffix('.docker.tar.gz') + '.sha256').write_text(
