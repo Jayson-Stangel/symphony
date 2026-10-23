@@ -248,7 +248,7 @@ def main():
             target = args.output / str(index)
             target.mkdir()
             output = target / archive.name
-            result['improved'] = EXPORT.export(tags, output, target / (prefix + '.sha256'))
+            result['improved'] = EXPORT.export(tags, output, target / (prefix + '.sha256'), legacy_diagnostic=True)
             if {value['image_id'] for value in result['improved']['images']} != set(image_ids):
                 raise ValueError('improved export changed image config identity')
             for record_file in record_files:
