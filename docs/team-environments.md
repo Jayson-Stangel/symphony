@@ -64,8 +64,23 @@ under the current isolation rules; Symphony does not add service orchestration.
 
 The Codex example installs ESPHome 2025.9.3 and yamllint for the real
 `Jayson-Stangel/home-assistant-voice-te` repository; `esphome config
-home-assistant-voice.yaml` is its dependency-bearing validation command. The template installs Python's venv OS support before creating its isolated tool environment. Use the team's existing setup commands rather than
-assuming every project needs these packages.
+home-assistant-voice.yaml` is its dependency-bearing validation command. The
+template installs Python's venv OS support before creating its isolated tool
+environment. It links the repository tools into `/usr/local/bin` because the
+agent's login shell can replace image `ENV PATH`. The build tests that same login
+shell path with actual version commands. Use the team's existing setup commands
+rather than assuming every project needs these packages.
+
+Before selection, qualify the team's image with a credential-free login-shell
+smoke check using the team's image tag:
+
+```bash
+docker run --rm --network none --read-only --entrypoint /bin/bash team/project:reviewed \
+  -lc 'command -v esphome && esphome version && command -v yamllint && yamllint --version'
+```
+
+This verifies tool discovery in the agent's shell environment; the installed
+selector and authenticated repository task remain separate acceptance checks.
 
 ## Evidence boundaries
 
