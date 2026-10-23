@@ -28,19 +28,21 @@ class RegistryClosureTest(unittest.TestCase):
                 owner.calls.append((self.command,self.path))
                 digest=self.path.rsplit('/',1)[-1]
                 mapping={owner.digest:owner.manifest,owner.configuration['digest']:owner.config,owner.layer_descriptor['digest']:owner.layer}
-                if owner.variant=='missing' and digest==owner.layer_descriptor['digest']:
+                if owner.variant in ('missing','cached-head-missing') and digest==owner.layer_descriptor['digest'] and not (owner.variant=='cached-head-missing' and self.command=='HEAD'):
                     self.send_error(404);return
                 if owner.variant=='permission' and digest==owner.layer_descriptor['digest']:
                     self.send_error(403);return
                 body=mapping.get(digest)
                 if body is None:self.send_error(404);return
-                self.send_response(200)
+                ranged=self.headers.get('Range')=='bytes=0-0'
+                self.send_response(206 if ranged else 200)
+                if ranged:self.send_header('Content-Range','bytes 0-0/'+str(len(body)))
                 self.send_header('Docker-Content-Digest',digest)
-                self.send_header('Content-Length',str(len(body)))
+                self.send_header('Content-Length','1' if ranged else str(len(body)))
                 self.end_headers()
                 if self.command!='HEAD':
                     if owner.variant=='corrupt' and digest==owner.layer_descriptor['digest']:body=b'x'*len(body)
-                    self.wfile.write(body)
+                    self.wfile.write(body[:1] if ranged else body)
             do_GET=handle_request
             do_HEAD=handle_request
             def log_message(self,*args):pass
@@ -58,7 +60,7 @@ class RegistryClosureTest(unittest.TestCase):
         self.assertTrue(closure.registry_available(self.image,fetch=self.fetch))
         self.assertIn(('GET','/v2/distribution/fixture/blobs/'+self.configuration['digest']),self.calls)
         self.assertIn(('HEAD','/v2/distribution/fixture/blobs/'+self.layer_descriptor['digest']),self.calls)
-        self.assertNotIn(('GET','/v2/distribution/fixture/blobs/'+self.layer_descriptor['digest']),self.calls)
+        self.assertIn(('GET','/v2/distribution/fixture/blobs/'+self.layer_descriptor['digest']),self.calls)
     def test_new_transfer_streams_actual_layer_bytes_and_rejects_corruption(self):
         self.assertTrue(closure.registry_available(self.image,fetch=self.fetch,full=True))
         self.assertIn(('GET','/v2/distribution/fixture/blobs/'+self.layer_descriptor['digest']),self.calls)
@@ -66,7 +68,7 @@ class RegistryClosureTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'layer checksum'):
             closure.registry_available(self.image,fetch=self.fetch,full=True)
     def test_missing_and_permission_denied_blobs_refuse_despite_valid_manifest(self):
-        for variant in ('missing','permission'):
+        for variant in ('missing','cached-head-missing','permission'):
             with self.subTest(variant=variant):
                 self.variant=variant
                 with self.assertRaises(HTTPError):closure.registry_available(self.image,fetch=self.fetch)

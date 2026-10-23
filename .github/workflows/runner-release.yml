@@ -3,6 +3,18 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      previous_artifact_run:
+        description: Exact historical schema1 current-package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
       component_plan_artifact:
         description: Exact same-run source-bound component plan from the ordinary caller
         type: string
@@ -36,6 +48,18 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      previous_artifact_run:
+        description: Exact historical schema1 current-package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
       compose_packages:
         description: Assemble manager packages and full qualification (false runs components only)
         type: boolean
@@ -128,8 +152,19 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           MANIFEST_SCHEMA: ${{ inputs.manifest_schema }}
           SELECTED_PLAN_ARTIFACT: ${{ inputs.component_plan_artifact }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
         run: |
           test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
+          if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            [[ "$LEGACY_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1
+            test "$MANAGER_ONLY_UPDATE" = true
+            test -n "$PREVIOUS_ARTIFACT_RUN"
+            test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
+          if [ "$MANAGER_ONLY_UPDATE" = true ]; then test "$MANIFEST_SCHEMA" = 2; test -n "$PREVIOUS_ARTIFACT_RUN"; fi
           args=()
           if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--same-source-bridge); fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
@@ -144,6 +179,8 @@ jobs:
           plan = json.load(open('component-plan.json'))
           assert plan.get('manager_source_revision') == os.environ['GITHUB_SHA'] and plan.get('planning_complete') is True
           assert type(plan['has_builds']) is bool
+          if os.environ['MANAGER_ONLY_UPDATE'] == 'true':
+              assert plan['has_builds'] is False, 'declared manager-only update would require runner builds'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('has_builds=' + str(plan['has_builds']).lower() + '\n')
               output.write('build_matrix=' + json.dumps(plan['build_matrix'], separators=(',', ':')) + '\n')
@@ -580,24 +617,83 @@ jobs:
           retention-days: 30
 
   ubuntu-package-lifecycle:
-    if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && inputs.previous_revision != '' }}
-    needs: packaged-candidate-metadata
+    if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && (inputs.previous_revision != '' || inputs.previous_artifact_run != '') }}
+    needs: [component-plan, packaged-candidate-metadata]
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Record exact lifecycle request before artifact retrieval
+        env:
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+        run: |
+          mkdir -p evidence
+          python3 - <<'PYCODE'
+          import json,os,pathlib
+          pathlib.Path('evidence/lifecycle-request.json').write_text(json.dumps({key:os.environ[key] for key in
+              ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','PREVIOUS_ARTIFACT_RUN','LEGACY_ARTIFACT_RUN','MANAGER_ONLY_UPDATE')},indent=2)+'\n')
+          PYCODE
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: packaged-candidate
           path: packages
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.manifest_schema == '1'
         with:
           pattern: runner-candidate-*-x86_64
           path: runners
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.manifest_schema == '2'
+        with:
+          name: runner-component-plan
+          path: plan
+      - name: Retrieve exact selected schema2 current payloads without export or upload
+        if: inputs.manifest_schema == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+        run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata packages/release.json \
+            --output "$RUNNER_TEMP/lifecycle-current-metadata" --payloads runners "${args[@]}"
+      - name: Retrieve verified actual historical package and native payloads only as test subjects
+        if: inputs.previous_artifact_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          args=()
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then args+=(--package-only); fi
+          python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --packages packages --images runners --evidence evidence "${args[@]}"
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$LEGACY_ARTIFACT_RUN" --packages packages --images runners --evidence evidence --selection legacy
+          fi
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
-        run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
+        env:
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+        run: |
+          args=()
+          if [ "$MANAGER_ONLY_UPDATE" = true ]; then args+=(--manager-only-update); fi
+          python3 scripts/release/package-lifecycle.py "${args[@]}" packages runners evidence
+      - name: Retain small actual lifecycle, origin and cleanup receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ubuntu26-package-lifecycle-summary-${{ github.sha }}
+          path: |
+            evidence/result.json
+            evidence/lifecycle-request.json
+            evidence/*-package-subject.json
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: ubuntu26-package-lifecycle-${{ github.sha }}
@@ -752,7 +848,7 @@ jobs:
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
         run: |
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
-          if [ -n "${PREVIOUS_REVISION:-}" ]; then [[ "$PREVIOUS_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1; fi
+          test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
           if [ -n "$CALLER_REVISION" ]; then
             test "$LOCAL_RESULT" = skipped
             test "$CALLER_REVISION" = "$GITHUB_SHA"
@@ -760,6 +856,30 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        with:
+          fetch-depth: 0
+      - name: Verify historical source and native/package availability before current fanout
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --check-only early-subjects/previous.json
+          fi
+          if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
+            python3 scripts/release/previous-package-subject.py --run-id "$LEGACY_ARTIFACT_RUN" --check-only early-subjects/legacy.json
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.previous_artifact_run != '' || inputs.legacy_artifact_run != ''
+        with:
+          name: historical-package-subject-plan
+          path: early-subjects/*.json
+          if-no-files-found: error
+          retention-days: 30
   package-inputs:
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     needs: qualification
@@ -782,13 +902,14 @@ jobs:
           BUNDLES: ${{ needs.packaged-candidate-metadata.result }}
           LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
         run: |
           test "$PREFLIGHT" = success
           test "$PACKAGES" = success
           case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac
           test "$METADATA" = success
           test "$BUNDLES" = success
-          if [ -n "$PREVIOUS_REVISION" ]; then test "$LIFECYCLE" = success
+          if [ -n "$PREVIOUS_REVISION" ] || [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then test "$LIFECYCLE" = success
           else test "$LIFECYCLE" = skipped; fi
           echo 'Exact-head preflight, native fixtures, all selected provider/platform components and native package archives succeeded. Two-source lifecycle is required when a prior revision was requested.' >> "$GITHUB_STEP_SUMMARY"
   retained-transfer-timing:

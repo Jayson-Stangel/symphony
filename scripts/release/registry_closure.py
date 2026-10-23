@@ -15,9 +15,16 @@ ACCEPT=', '.join(('application/vnd.oci.image.index.v1+json','application/vnd.oci
                  'application/vnd.docker.distribution.manifest.list.v2+json','application/vnd.docker.distribution.manifest.v2+json'))
 
 
-def request(url,headers=None,method='GET',blob_digest=None,blob_size=None):
+def request(url,headers=None,method='GET',blob_digest=None,blob_size=None,range_size=None):
     deadline=time.monotonic()+900
+    if range_size is not None:headers=dict(headers or {},Range='bytes=0-0')
     with urlopen(Request(url,headers=headers or {},method=method),timeout=60) as response:
+        if range_size is not None:
+            require(response.status==206 and response.headers.get('Content-Range')=='bytes 0-0/'+str(range_size),
+                    'registry did not prove bounded anonymous blob read')
+            data=response.read(2)
+            require(len(data)==1,'registry blob range response differs')
+            return data,response.headers
         if blob_digest is not None:
             count=0;digest=hashlib.sha256()
             while True:
@@ -105,6 +112,11 @@ def registry_available(image,fetch=request,full=False):
             _,headers=read('blobs/'+digest,method='HEAD')
             require(headers.get('Docker-Content-Digest')==digest and headers.get('Content-Length')==str(size),
                     'anonymous layer unavailable or metadata differs')
+            # HEAD can be served from descriptor caches. Force an actual bounded
+            # storage read too, without downloading an unchanged layer again.
+            sample,sample_headers=read('blobs/'+digest,range_size=size)
+            require(len(sample)==1 and sample_headers.get('Content-Range')=='bytes 0-0/'+str(size),
+                    'anonymous layer bytes unavailable despite metadata')
     def walk(digest,data,depth):
         nonlocal manifests
         require(time.monotonic()<deadline,'anonymous manifest closure deadline exceeded')

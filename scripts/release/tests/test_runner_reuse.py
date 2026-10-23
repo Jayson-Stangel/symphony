@@ -100,6 +100,12 @@ class ManagerVersionTest(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text("1.2.4\n")
             self.assertEqual(manager_version.read(folder), "1.2.4")
+            policy=path.with_name('release-schema');policy.write_text('1\n')
+            self.assertEqual(manager_version.schema(folder),1)
+            policy.write_text('2\n');self.assertEqual(manager_version.schema(folder),2)
+            for invalid_policy in ('2','2.0\n','true\n','3\n',' 1\n'):
+                policy.write_text(invalid_policy)
+                with self.assertRaises(ValueError):manager_version.schema(folder)
             for invalid in ("1.2.4", "1.2.4\nextra\n", "1.2\n", " 1.2.4\n"):
                 path.write_text(invalid)
                 with self.assertRaises(ValueError):

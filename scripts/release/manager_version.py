@@ -12,8 +12,16 @@ def read(root):
     return value.rstrip("\n")
 
 
+def schema(root):
+    value=(Path(root)/"scripts/release/release-schema").read_text()
+    if value not in ("1\n","2\n"):
+        raise ValueError("invalid committed release schema policy")
+    return int(value.rstrip("\n"))
+
+
 if __name__ == "__main__":
     try:
-        print(read(Path(__file__).resolve().parents[2]))
+        if sys.argv[1:] not in ([],["--schema"]):raise ValueError("unknown manager release identity option")
+        print(schema(Path(__file__).resolve().parents[2]) if sys.argv[1:] == ["--schema"] else read(Path(__file__).resolve().parents[2]))
     except (ValueError, OSError) as error:
         sys.exit(str(error))

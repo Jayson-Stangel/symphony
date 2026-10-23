@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 
 import artifacts
+import manager_version
 from component_provenance import REPOSITORY, selection_verifier
 from reuse_payload import retrieve
 from runner_inputs import identity
@@ -144,6 +145,7 @@ def main():
         artifacts.require(os.environ.get('SYMPHONY_PRODUCTION_RELEASES')=='enabled' and os.environ.get('GITHUB_REF_TYPE')=='tag',
                           'publication requires protected production tag context')
         prepared=json.loads(args.prepared.read_text())
+        artifacts.require(prepared['manifest']['schema_version']==manager_version.schema(args.root),'publication format differs from committed release schema policy')
         artifacts.require(prepared['manager_source_revision']==revision and os.environ.get('GITHUB_REF_NAME')=='v'+prepared['manifest']['version'],
                           'publication tag/source differs')
         # Credentials reach only the registry client, never Docker build args or images.
@@ -154,7 +156,9 @@ def main():
         finally:docker('logout','ghcr.io',timeout=120)
     else:
         artifacts.require(args.plan is not None and args.metadata is not None,'publication planning inputs missing')
-        result=plan_distribution(json.loads(args.plan.read_text()),json.loads(args.metadata.read_text()),revision,verify,
+        metadata=json.loads(args.metadata.read_text())
+        artifacts.require(metadata['schema_version']==manager_version.schema(args.root), 'publication format differs from committed release schema policy')
+        result=plan_distribution(json.loads(args.plan.read_text()),metadata,revision,verify,
                                  lambda p,a:identity(args.root,p,a)['input_identity'])
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')

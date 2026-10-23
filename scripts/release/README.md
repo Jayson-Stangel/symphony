@@ -107,7 +107,8 @@ additive `original_components` retains every original native record unchanged.
 Both views must agree in source, config, tools and exact OCI digest. New native
 validators check this relation; old strict schema1 updaters keep their existing
 source-equals-manager contract. Manual runner-release defaults to this explicit
-bridge mode; ordinary callers and automated stable releases use schema2. No
+bridge mode; ordinary component integration uses schema2, while the protected
+automated release follows the committed release-schema policy. No
 production publication has been exercised by the nonpublishing qualification.
 
 The GitHub release job runs only after every executable smoke and runner/bundle
@@ -532,3 +533,39 @@ installed manager's selected container reference. Both native ARM payloads retai
 their original qualification; this x86-64 lifecycle does not claim ARM alias
 runtime proof. Alias references and the deliberately incompatible protocol2
 negative fixture are cleanup-owned diagnostics, never new reusable baselines.
+
+
+The committed `scripts/release/release-schema` selects the production manager
+format independently of both the manager version and engine `mix.exs` version.
+It starts at 1 so the normal protected tag path can publish an actual strict
+schema1 bridge. Shared preflight validates the policy and exports it to Burrito's
+runner caller; publication rejects a format that differs from that committed
+policy. First publish and install an approved bridge version through the ordinary
+stable release path; a candidate-only bridge cannot migrate stable installations.
+Only a later, separately versioned manager release changes `manager-version` and this policy
+to 2, outside every runner Docker input closure. Engine version and original
+runner labels remain their actual original values.
+
+Manual full candidates may select `previous_artifact_run` from an actual successful
+schema1 current-package run. Cheap common qualification first checks that exact
+fork/workflow/source/attempt, every native image and package stage, prior installed
+lifecycle, immutable metadata and available payload service identities. The final
+Ubuntu lifecycle consumer independently repeats those checks, downloads only the
+needed historical Linux package and x86 image payloads, verifies ZIP/member hashes
+and actual selected config/source/provider/platform, and preserves old records.
+Historical images are never rebuilt, exported or uploaded as new candidate
+artifacts. `legacy_artifact_run` additionally supplies an actual old installed
+package for a three-package manager-only migration; `manager_only_update` refuses
+if the current source plan needs any runner build. Original archive tags and
+immutable digests remain provenance even when the isolated loader creates a
+local role alias. Small lifecycle summary artifacts retain original sources,
+checksums, request/checkpoints and cleanup independently of full evidence.
+
+The manual ordinary `distribution_alias` proof additionally runs a tiny synthetic
+OCI closure probe after actual manager/alias integration cleanup. Its new owned
+registry is separate from qualified runners. Complete blob checksums, an actual
+missing storage blob, a real HTTP permission denial and a foreign digest are
+negative protocol fixtures; they never become native image qualifications or
+reusable records. Reuse availability reads each config and a bounded byte range
+from each layer as well as HEAD metadata, so descriptor caches cannot alone prove
+that the stored blob is readable. New publication transfers checksum every byte.

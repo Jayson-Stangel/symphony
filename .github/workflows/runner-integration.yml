@@ -170,6 +170,19 @@ jobs:
       - name: Execute the installed current manager with original immutable runners
         if: needs.changes.outputs.code == 'true'
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
+      - name: Prove anonymous closure refusal with a separate tiny owned synthetic registry
+        if: github.event_name == 'workflow_dispatch' && inputs.distribution_alias && needs.changes.outputs.code == 'true'
+        run: python3 scripts/release/probe-registry-closure.py --output evidence
+      - name: Retain small current-manager and distribution cleanup receipts
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ordinary-current-manager-summary-${{ github.sha }}
+          path: |
+            evidence/result.json
+            evidence/registry-closure-evidence.json
+            evidence/registry-closure-state.txt
+          if-no-files-found: warn
       - name: Retain actual current-manager and owned cleanup evidence
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

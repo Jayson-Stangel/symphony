@@ -10,6 +10,24 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class ComponentEvents(unittest.TestCase):
+    def test_production_policy_and_tag_bind_manager_version_independently_of_engine(self):
+        workflow=(ROOT/'.github/workflows/release-preflight.yml').read_text()
+        section=workflow.split('      - name: Validate selected release version before native or image work\n',1)[1]
+        body=section.split('        run: |\n',1)[1].split('      - ',1)[0]
+        script='\n'.join(line[10:] for line in body.splitlines())
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'elixir').mkdir();(root/'scripts/release').mkdir(parents=True)
+            (root/'elixir/mix.exs').write_text('    version: "0.0.4",\n')
+            (root/'scripts/release/manager-version').write_text('0.0.5\n')
+            (root/'scripts/release/manager_version.py').write_text((ROOT/'scripts/release/manager_version.py').read_text())
+            for policy,tag,expected in (('1\n','v0.0.5',True),('2\n','v0.0.5',True),('2\n','v0.0.4',False),('3\n','v0.0.5',False)):
+                (root/'scripts/release/release-schema').write_text(policy)
+                result=subprocess.run(['bash','-e','-c',script],cwd=root,capture_output=True,
+                    env=dict(os.environ,GITHUB_REF_TYPE='tag',GITHUB_REF_NAME=tag))
+                self.assertEqual(result.returncode==0,expected,(policy,tag,result.stderr))
+        caller=(ROOT/'.github/workflows/burrito-release.yml').read_text()
+        self.assertIn('manifest_schema: ${{ needs.qualification.outputs.release_schema }}',caller)
+
     def test_browser_wrapper_requires_complete_plan_except_explicit_docs(self):
         workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
         block = workflow.split('        run: |\n', 1)[1].split('      - ', 1)[0]

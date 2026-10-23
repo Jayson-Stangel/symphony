@@ -32,8 +32,9 @@ def checksum(path):
     return digest.hexdigest()
 
 
-def download(artifact_id, path):
+def download(artifact_id, path, max_bytes=MAX_ARTIFACT_BYTES):
     require(type(artifact_id) is int and artifact_id > 0, 'invalid payload artifact ID')
+    require(type(max_bytes) is int and 0 < max_bytes <= MAX_ARTIFACT_BYTES, 'invalid artifact download bound')
     command = api_command(f'actions/artifacts/{artifact_id}/zip', binary=True)
     with path.open('xb') as output, subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
         try:
@@ -50,7 +51,7 @@ def download(artifact_id, path):
                     if not block:
                         break
                     received += len(block)
-                    require(received <= MAX_ARTIFACT_BYTES, 'downloaded artifact exceeds consumer bound')
+                    require(received <= max_bytes, 'downloaded artifact exceeds consumer bound')
                     output.write(block)
             code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
             if code:

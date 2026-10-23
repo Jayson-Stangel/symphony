@@ -4,6 +4,18 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      previous_artifact_run:
+        description: Exact historical schema1 current-package run for download-only installed update tests
+        type: string
+        default: ''
+      legacy_artifact_run:
+        description: Exact old schema1 run retained across bridge and schema2 updates
+        type: string
+        default: ''
+      manager_only_update:
+        description: Require unchanged components and test actual manager-only update/rollback
+        type: boolean
+        default: false
       previous_revision:
         description: Optional full prior Linux-capable source for actual two-revision package lifecycle
         type: string
@@ -45,7 +57,11 @@ jobs:
     with:
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
+      previous_artifact_run: ${{ inputs.previous_artifact_run }}
+      legacy_artifact_run: ${{ inputs.legacy_artifact_run }}
+      manager_only_update: ${{ inputs.manager_only_update }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
+      manifest_schema: ${{ needs.qualification.outputs.release_schema }}
       publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: read
