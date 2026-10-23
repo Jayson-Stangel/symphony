@@ -405,6 +405,53 @@ func validateRuntimeImage(_ manifest: [String: Any], provider: String, arch: Str
           (receipt["RepoDigests"] as? [String])?.contains(reference) == true else { fail("runtime image config or qualified manifest identity differs") }
 }
 
+// Selected environments retain their actual embedded runtime identity independently
+// from the host manager. Admission checks the integration layout, not source equality.
+func validateSelectedImage(provider: String, arch: String, identity: String, data: Data) throws {
+    guard ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch),
+          matches(identity, "^sha256:[a-f0-9]{64}$"), data.count <= 1024 * 1024,
+          let receipts = try json(data) as? [[String: Any]], receipts.count == 1 else { fail("invalid selected environment image receipt") }
+    let image = receipts[0], config = object(image["Config"]), labels = object(config["Labels"])
+    guard image["Id"] as? String == identity else { fail("selected environment immutable image identity differs") }
+    guard image["Os"] as? String == "linux", image["Architecture"] as? String == (arch == "arm64" ? "arm64" : "amd64") else { fail("selected environment platform is incompatible with this host") }
+    guard labels["com.symphony.agent"] as? String == provider else { fail("selected environment provider differs; select an image for the requested agent") }
+    guard labels["com.symphony.protocol"] as? String == "1" else { fail("selected environment runner protocol is unsupported; rebuild from a compatible template") }
+    guard let revision = labels["org.opencontainers.image.revision"] as? String, matches(revision, "^[a-f0-9]{40}$") else { fail("selected environment has no truthful embedded runtime source revision") }
+    let entrypoint = config["Entrypoint"] as? [String], user = config["User"] as? String ?? ""
+    let expected = provider == "codex" ? ["/usr/local/bin/symphony-runner"] : ["/usr/bin/tini", "-g", "--", "/usr/local/bin/symphony-claude-runner"]
+    guard entrypoint == expected else { fail("selected environment entrypoint does not meet the runner contract") }
+    var environment: [String: String] = [:]
+    for entry in config["Env"] as? [String] ?? [] {
+        let parts = entry.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { fail("selected environment contains invalid environment metadata") }
+        let key = String(parts[0])
+        if ["HOME", "CLAUDE_CONFIG_DIR", "SYMPHONY_CONTAINERIZED"].contains(key), environment[key] != nil { fail("selected environment contains ambiguous runtime environment metadata") }
+        environment[key] = String(parts[1])
+    }
+    if provider == "claude" {
+        guard user == "11001:11001", config["WorkingDir"] as? String == "/var/lib/symphony",
+              environment["HOME"] == "/home/claude", environment["CLAUDE_CONFIG_DIR"] == "/home/claude/.claude",
+              environment["SYMPHONY_CONTAINERIZED"] == "1" else { fail("selected Claude environment must preserve UID/GID 11001 and its native auth/runtime layout") }
+    } else {
+        guard ["", "0", "0:0", "root", "root:root"].contains(user),
+              config["WorkingDir"] as? String == "/opt/symphony/elixir",
+              environment["HOME"] == nil || environment["HOME"] == "/root" else { fail("selected Codex environment must preserve root user and its native auth/runtime layout") }
+    }
+}
+
+func validateEnvironmentSelection(_ path: String) throws {
+    let info = checkedInfo(path)
+    guard info.st_size <= 16384, info.st_mode & 0o077 == 0 else { fail("selected environment metadata must be private and bounded") }
+    let record = object(try json(read(path)))
+    guard Set(record.keys) == Set(["schema_version", "provider", "image_id", "reference", "runtime_revision", "platform", "protocol"]),
+          integer(record["schema_version"]) == 1, integer(record["protocol"]) == 1,
+          ["codex", "claude"].contains(record["provider"] as? String ?? ""),
+          matches(record["image_id"] as? String ?? "", "^sha256:[a-f0-9]{64}$"),
+          matches(record["runtime_revision"] as? String ?? "", "^[a-f0-9]{40}$"),
+          ["linux/arm64", "linux/amd64"].contains(record["platform"] as? String ?? ""),
+          matches(record["reference"] as? String ?? "", "^[a-zA-Z0-9][a-zA-Z0-9._/@:+-]{0,511}$") else { fail("invalid selected environment metadata; reselect a compatible image") }
+}
+
 func gitValue(_ input: String) -> String {
     var result = "", quoted = false, escaped = false
     for ch in input {
@@ -504,7 +551,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -550,6 +597,17 @@ do {
         if lstat(args[2], &info) == 0 { guard info.st_mode & S_IFMT == S_IFLNK, info.st_uid == geteuid() else { fail("refusing to replace an unmanaged activation path") } }
         else if errno != ENOENT { fail("cannot inspect activation path") }
         guard rename(args[1], args[2]) == 0 else { fail("cannot activate release link") }
+    case "validate-environment-selection": try validateEnvironmentSelection(args[1])
+    case "validate-selected-image":
+        var data = Data()
+        let limit = 1024 * 1024
+        while data.count <= limit {
+            let chunk = FileHandle.standardInput.readData(ofLength: min(65536, limit + 1 - data.count))
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        guard data.count <= limit else { fail("selected environment receipt exceeds bounded input") }
+        try validateSelectedImage(provider: args[1], arch: args[2], identity: args[3], data: data)
     case "validate-runtime-image":
         var data = Data()
         let limit = 1024 * 1024

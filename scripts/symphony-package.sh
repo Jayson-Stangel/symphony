@@ -42,6 +42,8 @@ Usage:
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner start|stop|status|doctor|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]
+  symphony environment select --agent codex|claude IMAGE
+  symphony environment show [--json]
 
 This release bundle requires Docker Engine (Ubuntu) or Docker Desktop/OrbStack
 (macOS). No host build or
@@ -78,6 +80,14 @@ package_release_image() {
     "$runtime" image inspect "$image" | package_helper validate-runtime-image "$symphony_home/release.json" "$agent" "$package_arch" "$image" || die 'runner config or qualified manifest differs from original component'
   fi
 }
+# One compatibility admission for explicitly selected and retained protocol-1
+# images. Inspect is metadata validation, not runtime requalification or a build.
+package_selected_image_compatible() {
+  local runtime=$1 image=$2 agent=$3
+  "$runtime" image inspect "$image" >/dev/null 2>&1 || die 'selected environment image is missing; obtain the exact image and select it again'
+  "$runtime" image inspect "$image" | package_helper validate-selected-image "$agent" "$package_arch" "$image" || die 'selected environment is incompatible; inspect its runtime, provider and layout requirements'
+}
+
 # Validate retained project images independently of the selected release image.
 # An unlabeled historical image needs exact immutable previous-schema1 evidence.
 package_retained_image_compatible() {
@@ -89,7 +99,7 @@ package_retained_image_compatible() {
   platform=linux/arm64; [ "$package_arch" != x86_64 ] || platform=linux/amd64
   [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'retained runner platform differs'
   protocol=$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")
-  [ "$protocol" != 1 ] || return 0
+  if [ "$protocol" = 1 ]; then package_selected_image_compatible "$runtime" "$image" "$agent"; return; fi
   case "$protocol" in ''|'<no value>') ;; *) die 'retained runner protocol is incompatible with this manager' ;; esac
   directory="$runner_home/compatibility"
   receipt="$directory/${image#sha256:}.schema1"
@@ -120,6 +130,7 @@ package_retained_image_compatible() {
 package_check_retained_images() {
   local previous=$1 metadata image agent runtime
   runtime=$(container_runtime)
+  if declare -F selected_environment_validate_all >/dev/null; then selected_environment_validate_all "$runtime" || return; fi
   for metadata in "$runner_home"/*.env; do
     [ -e "$metadata" ] || [ -L "$metadata" ] || continue
     package_helper owned-file "$metadata" || return
@@ -144,9 +155,38 @@ package_build_image() {
   esac
 }
 
+# Explicit environment selection wins. A manager transition otherwise retains
+# the same-provider project image instead of silently selecting the new default.
+package_transition_image() {
+  local root=$1 agent=$2 image= metadata
+  if declare -F selected_environment_image >/dev/null; then image=$(selected_environment_image "$root" "$agent") || return; fi
+  if [ -n "$image" ]; then printf '%s\n' "$image"; return; fi
+  metadata=$(runner_env_file "$root") || return
+  if [ -e "$metadata" ] || [ -L "$metadata" ]; then
+    package_helper owned-file "$metadata" || return
+    if [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" = "$agent" ]; then
+      image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
+      [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'invalid retained runner image identity'
+      printf '%s\n' "$image"; return
+    fi
+  fi
+  package_image "$agent"
+}
+
+package_transition_image_compatible() {
+  local runtime=$1 image=$2 agent=$3 revision=$4 previous=
+  case "$image" in
+    sha256:*)
+      if [ -L "$package_app_home/previous" ] && [ -d "$package_app_home/previous" ]; then previous=$(cd "$package_app_home/previous" && pwd -P) || return; fi
+      package_retained_image_compatible "$runtime" "$image" "$agent" "$previous" ;;
+    *) package_release_image "$runtime" "$image" "$agent" "$revision" ;;
+  esac
+}
+
 # A shared manager update must not silently change another project's retained image.
 package_use_project_image() {
   local root=$1 agent=$2 metadata image revision
+  if declare -F environment_use_project >/dev/null; then environment_use_project "$root" "$agent" || return; fi
   [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || return 0
   metadata=$(runner_env_file "$root")
   [ -f "$metadata" ] || return 0
@@ -261,7 +301,7 @@ package_install() (
 )
 
 package_doctor() {
-  local json=false ready=true agent=codex
+  local json=false ready=true agent=codex root= selected=null selection_file= runtime=
   while [ "$#" -gt 0 ]; do
     case "$1" in --json) json=true; shift ;; --host) die 'packaged installs run in containers; host execution needs a source development install' ;;
       --bin-dir|--config-dir|--skills-dir) [ "$#" -ge 2 ] || die "$1 requires a path"; case "$1" in --bin-dir) bin_dir=$2 ;; --config-dir) config_home=$2 ;; --skills-dir) skills_dir=$2 ;; esac; shift 2 ;;
@@ -272,10 +312,26 @@ package_doctor() {
   [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$package_app_home/current/scripts/symphony" ] || ready=false
   global_skills_ready || ready=false
   package_helper verify-files "$symphony_home" >/dev/null || ready=false
+  if declare -F environment_selection_file >/dev/null; then
+    root=$(repo_root 2>/dev/null) || root=
+    if [ -n "$root" ]; then
+      selection_file=$(environment_selection_file "$root") || ready=false
+      if [ -e "$selection_file" ] || [ -L "$selection_file" ]; then
+        if environment_selection_read "$selection_file"; then
+          selected=$(cat "$selection_file")
+          runtime=$(container_runtime) || ready=false
+          if [ -n "$runtime" ]; then
+            package_selected_image_compatible "$runtime" "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" provider)" || ready=false
+          fi
+        else ready=false; fi
+      fi
+    fi
+  fi
   if "$json"; then
-    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s"}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)"
+    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
   else
     printf 'Symphony %s (%s), packaged %s %s\nReady: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    if [ "$selected" != null ]; then printf 'Selected environment: %s (runtime %s)\n' "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" runtime_revision)"; fi
     "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2
   fi
   "$ready"
