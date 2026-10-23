@@ -63,9 +63,17 @@ failure/timeout rules. External services remain team-managed and must be reachab
 under the current isolation rules; Symphony does not add service orchestration.
 
 The Codex example installs ESPHome 2025.9.3 and yamllint for the real
-`Jayson-Stangel/home-assistant-voice-te` repository; `esphome config
-home-assistant-voice.yaml` is its dependency-bearing validation command. The
-template installs Python's venv OS support before creating its isolated tool
+`Jayson-Stangel/home-assistant-voice-te` repository. Its build workflow selects
+`home-assistant-voice.factory.yaml` and `home-assistant-voice.8mb.yaml`, which add
+provisioning to the reusable `home-assistant-voice.yaml` base. The base alone
+requires WiFi/provisioning configuration. The dependency-bearing configuration
+check uses the actual factory target:
+
+```bash
+esphome config home-assistant-voice.factory.yaml
+```
+
+The template installs Python's venv OS support before creating its isolated tool
 environment. It links the repository tools into `/usr/local/bin` because the
 agent's login shell can replace image `ENV PATH`. The build tests that same login
 shell path with actual version commands. Use the team's existing setup commands
