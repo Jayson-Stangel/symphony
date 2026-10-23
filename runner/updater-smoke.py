@@ -45,7 +45,12 @@ if a[0]=='build':
  sys.exit(subprocess.call([real,'tag',image,tag]))
 if a[0]=='run' and '--entrypoint' in a and a[a.index('--entrypoint')+1]=='codex' and a[-2:]==['login','status']:
  print('STUB native authentication status; no credentials/inference');sys.exit(0)
-p=subprocess.run([real,*a]); fault=r/'fault'
+fault=r/'fault'
+if a[0]=='run' and '--check-codex-sandbox' in a and fault.exists() and fault.read_text().strip()=='sandbox-namespace':
+ # Real Codex helper, with a stricter owned filter simulating unavailable namespaces.
+ a=[('seccomp='+str(r/'namespace-denied.json')) if value.startswith('seccomp=') else value for value in a]
+ fault.unlink()
+p=subprocess.run([real,*a])
 if p.returncode==0 and a[0]=='stop' and (r/'hold-stop').exists():
  (r/'stop-observed').touch(); deadline=time.monotonic()+60
  while (r/'hold-stop').exists():
@@ -128,6 +133,21 @@ try:
  preservation=preserved()
  initial_id=inspect(name,'{{.Id}}');initial_metadata=selected()
  initial_credentials=(config/('projects/'+project_id+'.env')).read_text()
+ denied_profile=json.loads((checkout/'scripts/codex-seccomp.json').read_text())
+ denied_profile['syscalls']=[rule for rule in denied_profile['syscalls'] if not (rule.get('names')==['clone'] and any(arg.get('value') in (268435456,536870912) for arg in rule.get('args',[])))]
+ (root/'namespace-denied.json').write_text(json.dumps(denied_profile))
+ build(v1);fail('sandbox-namespace')
+ calls_before=len((root/'docker-calls.jsonl').read_text().splitlines())
+ refusal=launch('update','--development-runner','--agent','codex',expected=1)
+ assert 'sandbox_namespace_denied' in refusal
+ assert inspect(name,'{{.Id}}')==initial_id and inspect(name,'{{.State.Running}}')=='true'
+ assert selected()==initial_metadata and preserved()==preservation and mounts(name)==physical_mounts
+ assert (config/('projects/'+project_id+'.env')).read_text()==initial_credentials
+ assert not (config/('runners/'+project_id+'.transition')).exists()
+ refusal_calls=[json.loads(line) for line in (root/'docker-calls.jsonl').read_text().splitlines()[calls_before:]]
+ assert not any(call[0] in ('stop','rename') or '--detach' in call for call in refusal_calls)
+ assert state()['agent']['draining'] is False
+ print('PASS real native namespace refusal preserves usable source, user work and credentials before drain',flush=True)
  legacy_identity();launch('update','--development-runner','--migrate-project-identity')
  assert inspect(name,'{{.Id}}')==initial_id;assert selected()==initial_metadata
  assert (config/('projects/'+project_id+'.env')).read_text()==initial_credentials

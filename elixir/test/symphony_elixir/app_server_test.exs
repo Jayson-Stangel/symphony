@@ -1848,7 +1848,7 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Do not inherit tracker auth", issue)
-      assert File.read!(trace_file) =~ "PROFILE_LOADED:1\n"
+      assert File.read!(trace_file) =~ "PROFILE_LOADED:\n"
       assert File.read!(trace_file) =~ "CANONICAL_SECRET:\n"
       assert File.read!(trace_file) =~ "CUSTOM_SECRET:\n"
       refute File.read!(trace_file) =~ "secret-that-must-not-reach-child"

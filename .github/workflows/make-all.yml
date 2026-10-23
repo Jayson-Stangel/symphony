@@ -55,6 +55,10 @@ jobs:
           cache: true
           working_directory: elixir
 
+      - name: Codex protected-command failure regressions
+        if: needs.changes.outputs.application != 'false'
+        run: python3 runner/test_codex_readiness.py
+
       - name: Cache deps and build
         if: needs.changes.outputs.application != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -56,7 +56,15 @@ for selection in current previous; do
   if docker image inspect "$digest" >/dev/null 2>&1; then docker image rm "$digest"; fi
   if docker image inspect "$digest" >/dev/null 2>&1; then echo 'Selected image still cached; refusing false pull proof' >&2; exit 1; fi
   docker pull "$digest"
-  bash "$root/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
+  # Qualify the exact source contract; historical proof is not current readiness.
+  if [ "$selection" = previous ]; then
+    git -C "$source" diff --quiet "$revision" -- scripts/release scripts/symphony || { echo 'historical qualification sources changed' >&2; exit 1; }
+    bash "$source/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
+    printf '%s\n' historical-source-contract-only > "$destination/$provider-$architecture.qualification-scope.txt"
+  else
+    bash "$root/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
+    printf '%s\n' current-source-contract > "$destination/$provider-$architecture.qualification-scope.txt"
+  fi
   # New reference environments qualify their own committed Node/npm contract.
   # Historical build sources and retained components keep their original proof.
   if git -C "$source" cat-file -e "$revision:runner/node-smoke.sh" 2>/dev/null; then

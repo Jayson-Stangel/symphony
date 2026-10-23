@@ -61,6 +61,39 @@ esac
             self.assertEqual([path.name for path in output.glob("*.json")], ["codex-x86_64.json"])
 
 
+class CandidateQualificationRouteTest(unittest.TestCase):
+    def test_historical_contract_is_distinct_and_current_failure_cannot_seal(self):
+        controller = (ROOT / 'scripts/release/build-candidate-runners.sh').read_text()
+        block = controller[controller.index('  # Qualify the exact source contract'):controller.index('  # New reference environments')]
+        with tempfile.TemporaryDirectory(prefix='candidate-proof-route-') as directory:
+            root = Path(directory); source = root / 'previous'; current = root / 'controller'
+            for tree in (source, current): (tree / 'scripts/release').mkdir(parents=True)
+            previous = source / 'scripts/release/runner-smoke.sh'
+            previous.write_text('#!/bin/sh\nbash "$(dirname "$0")/runner-startup.sh"\n')
+            (source / 'scripts/release/runner-startup.sh').write_text('#!/bin/sh\nprintf historical > "$RECEIPT"\n')
+            (current / 'scripts/release/runner-smoke.sh').write_text('#!/bin/sh\nexit 23\n')
+            for args in [('init', '-q'), ('add', 'scripts'), ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'original contract')]:
+                subprocess.run(['git', '-C', str(source), *args], check=True, capture_output=True)
+            revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+            output = root / 'output'; output.mkdir()
+            receipt = root / 'receipt'; scope = output / 'codex-x86_64.qualification-scope.txt'
+            env = dict(os.environ, root=str(current), source=str(source), destination=str(output), revision=revision,
+                       provider='codex', architecture='x86_64', digest='example@sha256:' + 'a' * 64, RECEIPT=str(receipt))
+            result = subprocess.run(['bash', '-euc', block], env=dict(env, selection='previous'), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(receipt.read_text(), 'historical')
+            self.assertEqual(scope.read_text().strip(), 'historical-source-contract-only')
+            scope.unlink(); receipt.unlink()
+            result = subprocess.run(['bash', '-euc', block], env=dict(env, selection='current'), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertFalse(scope.exists()); self.assertFalse(receipt.exists())
+            previous.write_text('#!/bin/sh\nexit 99\n')
+            result = subprocess.run(['bash', '-euc', block], env=dict(env, selection='previous'), capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('historical qualification sources changed', result.stderr)
+            self.assertFalse(scope.exists())
+
+
 class CandidateNodeContractTest(unittest.TestCase):
     def test_only_the_exact_built_source_node_contract_runs_before_qualification(self):
         controller = (ROOT / 'scripts/release/build-candidate-runners.sh').read_text()

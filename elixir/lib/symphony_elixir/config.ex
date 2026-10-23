@@ -159,10 +159,10 @@ defmodule SymphonyElixir.Config do
   end
 
   @doc false
-  @spec local_workspace_root() :: Path.t()
-  def local_workspace_root do
+  @spec local_workspace_root(Schema.t()) :: Path.t()
+  def local_workspace_root(settings \\ settings!()) do
     workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
-    Path.expand(settings!().workspace.root, workflow_dir)
+    Path.expand(settings.workspace.root, workflow_dir)
   end
 
   @spec validate!() :: :ok | {:error, term()}
@@ -174,17 +174,24 @@ defmodule SymphonyElixir.Config do
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
     with {:ok, settings} <- settings() do
-      with {:ok, turn_sandbox_policy} <-
-             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
-        {:ok,
-         %{
-           model: settings.codex.model,
-           reasoning_effort: settings.codex.reasoning_effort,
-           approval_policy: settings.codex.approval_policy,
-           thread_sandbox: settings.codex.thread_sandbox,
-           turn_sandbox_policy: turn_sandbox_policy
-         }}
-      end
+      resolve_codex_runtime_settings(settings, workspace, opts)
+    end
+  end
+
+  @doc false
+  @spec resolve_codex_runtime_settings(Schema.t(), Path.t() | nil, keyword()) ::
+          {:ok, codex_runtime_settings()} | {:error, term()}
+  def resolve_codex_runtime_settings(settings, workspace, opts) do
+    with {:ok, turn_sandbox_policy} <-
+           Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+      {:ok,
+       %{
+         model: settings.codex.model,
+         reasoning_effort: settings.codex.reasoning_effort,
+         approval_policy: settings.codex.approval_policy,
+         thread_sandbox: settings.codex.thread_sandbox,
+         turn_sandbox_policy: turn_sandbox_policy
+       }}
     end
   end
 

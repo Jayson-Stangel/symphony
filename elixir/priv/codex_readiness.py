@@ -1,0 +1,156 @@
+"""Credential-free effect checks through the public, installed Codex sandbox CLI.
+
+Input is a resolved Symphony policy, never shell text to execute. Output is a
+fixed diagnostic code; native output is deliberately not forwarded.
+"""
+import json
+import os
+import re
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+
+class Refusal(Exception):
+    pass
+
+
+def interrupted(_signum, _frame):
+    raise Refusal("sandbox_interrupted")
+
+
+def contains(root, path):
+    return path == root or root in path.parents
+
+
+def diagnostic(data):
+    if b"namespace" in data or b"unshare" in data:
+        return "sandbox_namespace_denied"
+    if b"proc" in data and (b"mount" in data or b"Operation not permitted" in data):
+        return "sandbox_proc_setup_failed"
+    return "sandbox_helper_failed"
+
+
+def check(value):
+    # Shell wrappers, flags and remote workers require a separate, faithful
+    # adapter. Never test a different executable and advertise the wrapper ready.
+    command = re.fullmatch(r"([A-Za-z0-9_./+-]+) (?:(?:--config|-c) shell_environment_policy\.inherit=all )?app-server", value["command"])
+    if command is None or value["remote"]:
+        raise Refusal("sandbox_unsupported_command")
+    if "/" in command[1] and not Path(command[1]).is_absolute():
+        raise Refusal("sandbox_unsupported_command")
+    if any(os.environ.get(k) for k in ("NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES")):
+        raise Refusal("sandbox_unqualified_config")
+    executable = shutil.which(command[1])
+    if not executable:
+        raise Refusal("sandbox_helper_missing")
+    policy = {"writableRoots": [], "readOnlyAccess": {"type": "fullAccess"},
+              "networkAccess": False, "excludeTmpdirEnvVar": False, "excludeSlashTmp": False,
+              **value["policy"]}
+    fields = {"type", "writableRoots", "readOnlyAccess", "networkAccess",
+              "excludeTmpdirEnvVar", "excludeSlashTmp"}
+    if (set(policy) != fields or policy["type"] != "workspaceWrite"
+            or policy["readOnlyAccess"] != {"type": "fullAccess"}
+            or any(type(policy[k]) is not bool for k in
+                   ("networkAccess", "excludeTmpdirEnvVar", "excludeSlashTmp"))
+            or not isinstance(policy["writableRoots"], list)
+            or any(not isinstance(p, str) or not Path(p).is_absolute() for p in policy["writableRoots"])):
+        raise Refusal("sandbox_unsupported_policy")
+    roots = [Path(p).resolve() for p in policy["writableRoots"]]
+    workspace = Path(value["workspace"]).resolve()
+    # Do not inherit model credentials, hooks or unknown native policy. Config
+    # equivalence must be established before accepting this deliberately narrow
+    # supported interface. auth.json is neither opened nor copied.
+    for parent in [workspace, *workspace.parents]:
+        if (parent / ".codex/config.toml").exists():
+            raise Refusal("sandbox_unqualified_config")
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    if any(p.exists() for p in (codex_home / "config.toml", Path("/etc/codex/config.toml"),
+                               Path("/etc/codex/requirements.toml"))):
+        raise Refusal("sandbox_unqualified_config")
+    if not policy["excludeSlashTmp"]:
+        roots.append(Path("/tmp").resolve())
+    if not policy["excludeTmpdirEnvVar"] and os.environ.get("TMPDIR"):
+        roots.append(Path(os.environ["TMPDIR"]).resolve())
+    # The negative target is writable by the ordinary runtime user and outside
+    # every policy root. /tmp is normally allowed and is never assumed denied.
+    outside_parent = next((p for p in (Path("/var/tmp"), Path("/var/lib/symphony"), Path.home())
+                           if p.is_dir() and os.access(p, os.W_OK)
+                           and not any(contains(r, p.resolve()) for r in roots)), None)
+    if outside_parent is None:
+        raise Refusal("sandbox_no_denial_target")
+    with tempfile.TemporaryDirectory(prefix=".symphony-sandbox-", dir=workspace) as allowed, \
+            tempfile.TemporaryDirectory(prefix=".symphony-sandbox-", dir=outside_parent) as denied:
+        allowed = Path(allowed)
+        denied = Path(denied)
+        protected = allowed / ".git"
+        protected.mkdir()
+        # Positive controls distinguish Codex enforcement from ordinary DAC or
+        # read-only mounts. Every path is owned disposable data.
+        for directory in (allowed, denied, protected):
+            control = directory / "control"
+            control.write_text("control")
+            control.unlink()
+        home = denied / "home"
+        home.mkdir()
+        env = {k: v for k, v in os.environ.items() if k in ("PATH", "TMPDIR", "LANG", "LC_ALL")}
+        env.update(HOME=str(home), CODEX_HOME=str(home))
+        args = [executable, "sandbox", "-c", 'sandbox_mode="workspace-write"']
+        for key, name in (("networkAccess", "network_access"), ("excludeSlashTmp", "exclude_slash_tmp"),
+                          ("excludeTmpdirEnvVar", "exclude_tmpdir_env_var")):
+            args += ["-c", "sandbox_workspace_write." + name + "=" + str(policy[key]).lower()]
+        args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(policy["writableRoots"])]
+        payload = """import errno,pathlib,sys
+a,d,g=map(pathlib.Path,sys.argv[1:])
+(a/'allowed').write_text('sandbox-ready')
+for p in (d/'outside',g/'protected'):
+    try:p.write_text('escaped')
+    except OSError as error:
+        if error.errno not in (errno.EACCES,errno.EPERM,errno.EROFS):raise
+    else:sys.exit(71)
+(a/'complete').write_text('sandbox-ready')
+"""
+        args += ["--", sys.executable, "-c", payload, str(allowed), str(denied), str(protected)]
+        with tempfile.TemporaryFile() as output:
+            child = subprocess.Popen(args, cwd=allowed, env=env, stdout=output, stderr=output, start_new_session=True)
+            try:
+                status = child.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                raise Refusal("sandbox_timeout")
+            finally:
+                # Kill descendants even if the immediate helper exited first.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+            output.seek(0)
+            data = output.read(65536)
+        if (denied / "outside").exists() or (protected / "protected").exists():
+            raise Refusal("sandbox_policy_enforcement_failed")
+        if status != 0:
+            raise Refusal(diagnostic(data) if status > 0 else "sandbox_helper_terminated")
+        if any(not (allowed / p).is_file() or (allowed / p).read_text() != "sandbox-ready"
+               for p in ("allowed", "complete")):
+            raise Refusal("sandbox_required_effect_missing")
+    return {"ready": True, "code": "sandbox_ready", "protocol": 1}
+
+
+def main():
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    try:
+        result = check(json.loads(sys.argv[1]))
+    except Refusal as error:
+        result = {"ready": False, "code": str(error), "protocol": 1}
+    except Exception:
+        result = {"ready": False, "code": "sandbox_check_failed", "protocol": 1}
+    print(json.dumps(result))
+    return 0 if result["ready"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

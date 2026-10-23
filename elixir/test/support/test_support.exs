@@ -1,4 +1,5 @@
 defmodule SymphonyElixir.TestSupport do
+  alias SymphonyElixir.Codex.SandboxReadiness
   @workflow_prompt "You are an agent for this repository."
 
   defmacro __using__(_opts) do
@@ -33,14 +34,21 @@ defmodule SymphonyElixir.TestSupport do
 
         File.mkdir_p!(workflow_root)
         previous_state_root = Application.fetch_env(:symphony_elixir, :agent_state_root)
+        previous_sandbox_receipt = Application.fetch_env(:symphony_elixir, :codex_sandbox_receipt)
         Application.put_env(:symphony_elixir, :agent_state_root, Path.join(workflow_root, "agent-state"))
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+        SymphonyElixir.TestSupport.record_sandbox_fixture()
         stop_default_http_server()
 
         on_exit(fn ->
+          case previous_sandbox_receipt do
+            {:ok, value} -> Application.put_env(:symphony_elixir, :codex_sandbox_receipt, value)
+            :error -> Application.delete_env(:symphony_elixir, :codex_sandbox_receipt)
+          end
+
           case previous_state_root do
             {:ok, value} -> Application.put_env(:symphony_elixir, :agent_state_root, value)
             :error -> Application.delete_env(:symphony_elixir, :agent_state_root)
@@ -82,7 +90,17 @@ defmodule SymphonyElixir.TestSupport do
       end
     end
 
+    record_sandbox_fixture()
+
     :ok
+  end
+
+  # Protocol/lifecycle fixtures do not qualify a native sandbox. Real effect
+  # checks have their own credential-free integration path.
+  def record_sandbox_fixture do
+    Application.put_env(:symphony_elixir, :codex_sandbox_receipt, SandboxReadiness.fingerprint())
+  rescue
+    _ -> Application.delete_env(:symphony_elixir, :codex_sandbox_receipt)
   end
 
   def restore_env(key, nil), do: System.delete_env(key)

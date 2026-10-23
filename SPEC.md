@@ -670,9 +670,12 @@ not require recognizing or validating extension fields unless that extension is 
 ### Container Execution Bindings
 
 When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
-server bind address and Codex container permission bindings. Requested nonempty
+server bind address and noninteractive Codex approval binding. It preserves the
+configured Codex filesystem/network policy instead of disabling the native sandbox.
+Codex readiness MUST verify protected command effects before accepting work and
+before draining a usable runner for a candidate transition. Failed or indeterminate
+checks MUST refuse readiness without downgrading isolation. Requested nonempty
 SSH hosts MUST be rejected before normalization removes unsupported values.
-Native execution behavior is unchanged.
 
 The finalized settings carry an internal requested/effective execution projection,
 updated atomically with the existing last-known-good workflow settings and exposed
