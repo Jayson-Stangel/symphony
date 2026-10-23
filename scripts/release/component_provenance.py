@@ -101,7 +101,7 @@ def recovery_eligibility(job, raw_log):
     require(build["number"] < native["number"], "native qualification did not follow its actual build")
     cleanup = successful(CLEANUP_STEP)
     failed = failures[0]
-    uploads = [step for step in steps if step.get("name", "").startswith("Run actions/upload-artifact@") and
+    uploads = [step for step in steps if (step.get("name", "").startswith("Run actions/upload-artifact@") or step.get("name") == "Retain runner payload") and
                native["number"] < step.get("number", 0) < failed["number"] and
                step.get("status") == "completed" and step.get("conclusion") == "success"]
     require(len(uploads) == 1 and cleanup["number"] > failed["number"], "native payload upload or cleanup ordering differs")
@@ -306,7 +306,7 @@ def seal(args):
     run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
     job_inventory = api(f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
     require(job_inventory.get("total_count", 0) <= 100, "incomplete sealing job inventory")
-    allowed_jobs = (f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}")
+    allowed_jobs = artifacts.runner_job_names(provider, architecture)
     jobs = [job for job in job_inventory.get("jobs", []) if job.get("name") in allowed_jobs]
     require(len(jobs) == 1 and args.job_name in allowed_jobs, "native sealing job is missing or ambiguous")
     native_label = "ubuntu-24.04-arm" if architecture == "arm64" else "ubuntu-24.04"

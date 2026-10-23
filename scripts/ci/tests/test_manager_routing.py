@@ -14,13 +14,13 @@ class OrdinaryManagerRouting(unittest.TestCase):
     def setUpClass(cls):
         cls.packages = (ROOT / '.github/workflows/package-checks.yml').read_text()
         cls.integration = (ROOT / '.github/workflows/runner-integration.yml').read_text()
-        block = cls.packages.split('      - name: Require complete ordinary manager and process fixture evidence\n', 1)[1]
+        block = cls.packages.split('      - name: Verify the exact-source qualification receipt\n', 1)[1]
         cls.guard = textwrap.dedent(block.split('        run: |\n', 1)[1])
 
     def gate(self, **changes):
         with tempfile.TemporaryDirectory() as folder:
-            env = dict(os.environ, RESULT='success', CODE='true', PORTABLE='success', NATIVE='success',
-                       PACKAGE='success', AGGREGATE='success', GITHUB_SHA='a' * 40, QUALIFIED_REVISION='a' * 40,
+            env = dict(os.environ, RESULT='success', PORTABLE_REQUIRED='true', MACOS='true', LINUX='true',
+                       FIXTURES='true', AGGREGATE='success', GITHUB_SHA='a' * 40, QUALIFIED_REVISION='a' * 40,
                        GITHUB_STEP_SUMMARY=str(Path(folder) / 'summary'))
             env.update(changes)
             return subprocess.run(['bash', '-e', '-c', self.guard], env=env, capture_output=True).returncode
@@ -28,38 +28,39 @@ class OrdinaryManagerRouting(unittest.TestCase):
     def test_ordinary_events_have_one_native_helper_and_process_fixture_owner(self):
         events = self.integration.split('permissions:', 1)[0]
         self.assertIn('  workflow_dispatch:', events)
-        self.assertNotIn('  pull_request:', events)
-        self.assertNotIn('  push:', events)
+        self.assertIn('  pull_request:', events)
+        self.assertIn('  push:', events)
         self.assertIn('  pull_request:', self.packages)
         self.assertIn('    branches: [dev, main]', self.packages)
-        self.assertIn('uses: ./.github/workflows/release-native.yml', self.packages)
+        self.assertNotIn('uses: ./.github/workflows/release-native.yml', self.packages)
         self.assertIn('  native-host-package:', self.packages)
-        listener = self.packages.split('  listener-and-cleanup:\n', 1)[1]
-        self.assertIn('needs: [changes, qualification, native, native-host-package, macos-package]', listener)
-        self.assertNotIn('build-host-helper', listener)
-        self.assertNotIn('build-linux-host-helper', listener)
-        self.assertNotIn('component-plan', listener)
-        self.assertNotIn('runner-release', listener)
+        self.assertIn('Run native process and updater fixtures in the helper allocation', self.packages)
+        listener = self.packages.split('  package-qualification:\n', 1)[1]
+        self.assertIn('needs: [changes, qualification, native-host-package]', listener)
+        for forbidden in ('build-host-helper', 'build-linux-host-helper', 'component-plan', 'runner-release'):
+            self.assertNotIn(forbidden, listener)
         self.assertIn('fixture proof', listener)
 
-    def test_required_contexts_retain_names_and_exact_successful_source(self):
-        self.assertIn('  macos-package:', self.packages)
-        self.assertIn('  listener-and-cleanup:', self.packages)
+    def test_consolidated_context_requires_exact_successful_source(self):
+        self.assertIn('  package-qualification:', self.packages)
+        self.assertNotIn('  listener-and-cleanup:', self.packages)
         self.assertEqual(self.gate(), 0)
-        for field in ('RESULT', 'PORTABLE', 'NATIVE', 'PACKAGE', 'AGGREGATE'):
+        for field in ('RESULT',):
             for outcome in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.gate(**{field: outcome}), 0, (field, outcome))
         for source in ('', 'b' * 40):
             self.assertNotEqual(self.gate(QUALIFIED_REVISION=source), 0)
 
-    def test_docs_require_explicit_omission_after_successful_classification(self):
-        omitted = dict(CODE='false', NATIVE='skipped', PACKAGE='skipped', QUALIFIED_REVISION='')
+    def test_docs_and_partial_qualification_never_emit_full_source_evidence(self):
+        omitted = dict(PORTABLE_REQUIRED='false', MACOS='false', LINUX='false', FIXTURES='false', QUALIFIED_REVISION='')
         self.assertEqual(self.gate(**omitted), 0)
-        for field in ('RESULT', 'PORTABLE', 'AGGREGATE'):
+        self.assertEqual(self.gate(**dict(omitted, LINUX='true')), 0)
+        for field in ('RESULT',):
             self.assertNotEqual(self.gate(**dict(omitted, **{field: 'failure'})), 0)
-        for field in ('NATIVE', 'PACKAGE'):
-            self.assertNotEqual(self.gate(**dict(omitted, **{field: 'success'})), 0)
         self.assertNotEqual(self.gate(**dict(omitted, QUALIFIED_REVISION='a' * 40)), 0)
+        for field in ('PORTABLE_REQUIRED', 'MACOS', 'LINUX', 'FIXTURES'):
+            for bad in ('', 'invalid'):
+                self.assertNotEqual(self.gate(**{field: bad}), 0)
 
     def test_manual_composition_keeps_actual_artifact_and_lifecycle_guards(self):
         for command in ('test "$PLAN" = success', 'test "$INPUTS" = success', 'test "$PACKAGE" = success',

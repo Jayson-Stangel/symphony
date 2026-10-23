@@ -93,7 +93,8 @@ func validateManifestObject(_ manifest: [String: Any]) throws -> [String: Any] {
                       proof["source_revision"] as? String == runnerRevision,
                       proof["input_identity"] as? String == inputs,
                       proof["image"] as? String == image,
-                      ["runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)"].contains(proof["job_name"] as? String ?? ""),
+                      ["runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)",
+                       "Build runner (\(provider), \(arch))", "Qualify runner components / Build runner (\(provider), \(arch))"].contains(proof["job_name"] as? String ?? ""),
                       proof["artifact_name"] as? String == "runner-candidate-\(provider)-\(arch)",
                       let artifactDigest = proof["artifact_digest"] as? String, matches(artifactDigest, "^sha256:[a-f0-9]{64}$"),
                       let archive = proof["archive_filename"] as? String,
@@ -106,7 +107,9 @@ func validateManifestObject(_ manifest: [String: Any]) throws -> [String: Any] {
                           let recordAttempt = integer(origin["run_attempt"]), recordAttempt > 0,
                           let recordController = origin["controller_revision"] as? String, matches(recordController, "^[a-f0-9]{40}$"),
                           ["recover-\(provider)-\(arch)", "native-record-recovery / recover-\(provider)-\(arch)",
-                           "runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)"].contains(origin["job_name"] as? String ?? "") else { fail("invalid separate native record origin") }
+                           "runner-\(provider)-\(arch)", "runners / runner-\(provider)-\(arch)",
+                           "Recover native records (\(provider), \(arch))", "Build runner (\(provider), \(arch))",
+                           "Qualify runner components / Build runner (\(provider), \(arch))"].contains(origin["job_name"] as? String ?? "") else { fail("invalid separate native record origin") }
                 }
                 if let raw = proof["payload_origin"] {
                     let origin = object(raw)

@@ -23,7 +23,7 @@ MAX_PAYLOAD=4*1024**3
 
 
 def job(jobs,name):
-    values=[item for item in jobs if item['name'] in (name,'runners / '+name)]
+    values=[item for item in jobs if item['name'] in artifacts.candidate_job_names(name)]
     artifacts.require(len(values)==1 and values[0].get('status')=='completed' and values[0].get('conclusion')=='success',
                       'historical subject stage missing, ambiguous or unsuccessful: '+name)
     return values[0]
@@ -57,7 +57,9 @@ def select(run_id,root,fetch=proof.api):
     metadata=job(jobs,'candidate-metadata');packaged=job(jobs,'packaged-candidate-metadata')
     lifecycle=job(jobs,'ubuntu-package-lifecycle')
     for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
-        found=[item for item in jobs if re.fullmatch(r'(?:runners / )?packaged-candidate \('+platform+r', '+runner+r'\)',item['name'])]
+        names=(f'packaged-candidate ({platform}, {runner})', f'runners / packaged-candidate ({platform}, {runner})',
+               f'Build candidate package ({platform})', f'Qualify runner components / Build candidate package ({platform})')
+        found=[item for item in jobs if item['name'] in names]
         artifacts.require(len(found)==1 and found[0]['status']=='completed' and found[0]['conclusion']=='success' and
                           runner in found[0].get('labels',[]),'historical actual native manager package missing')
     listing=fetch(f'actions/runs/{run_id}/artifacts?per_page=100')
@@ -103,7 +105,9 @@ def select(run_id,root,fetch=proof.api):
             key=record['provider']+'-'+record['architecture'];origins[key]=origin
             native[key]=proof.selected_job(origin['run_id'],origin['run_attempt'],origin['job_name'],record['architecture'],fetch)
         for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
-            names=('package-inputs / native-host-package ('+runner+')','runners / package-inputs / native-host-package ('+runner+')')
+            names=('package-inputs / native-host-package ('+runner+')','runners / package-inputs / native-host-package ('+runner+')',
+                   f'Qualify package inputs / Native helpers and fixtures ({platform})',
+                   f'Qualify runner components / Qualify package inputs / Native helpers and fixtures ({platform})')
             found=[item for item in jobs if item['name'] in names]
             artifacts.require(len(found)==1 and found[0].get('status')=='completed' and found[0].get('conclusion')=='success' and
                               runner in found[0].get('labels',[]),'schema2 prior manager native helper qualification missing')

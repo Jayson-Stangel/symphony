@@ -1,4 +1,4 @@
-name: Native current-manager helpers
+name: Current manager helpers
 on:
   workflow_call:
     inputs:
@@ -13,11 +13,12 @@ permissions:
   contents: read
 jobs:
   host-policy:
+    name: Select native hosts
     uses: ./.github/workflows/host-policy.yml
   helper:
+    name: Build manager helper (${{ matrix.platform }})
     if: ${{ always() && !cancelled() && needs.host-policy.result == 'success' }}
     needs: host-policy
-    name: native-host-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
@@ -28,7 +29,8 @@ jobs:
         env:
           PORTABLE_REVISION: ${{ inputs.portable_revision }}
         run: test "$PORTABLE_REVISION" = "$GITHUB_SHA"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Build actual native macOS ARM64 helper
@@ -83,13 +85,15 @@ jobs:
           retention-days: 30
 
   qualification:
+    name: Bind qualified manager helpers
     if: ${{ always() && !cancelled() && needs.helper.result == 'success' }}
     needs: helper
     runs-on: ubuntu-24.04
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
     steps:
-      - id: qualified
+      - name: Emit exact-source qualification receipt
+        id: qualified
         env:
           PORTABLE_REVISION: ${{ inputs.portable_revision }}
         run: |

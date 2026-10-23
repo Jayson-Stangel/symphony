@@ -12,7 +12,40 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 # Only suites proved independent of native process/platform behavior go here.
 # New suites conservatively run on each native qualification host.
-PORTABLE = {'test_artifacts.py'}
+PORTABLE = {
+    'test_artifacts.py',
+    'test_candidate_build.py',
+    'test_candidate_cache.py',
+    'test_component_discovery.py',
+    'test_component_events.py',
+    'test_component_join.py',
+    'test_component_provenance.py',
+    'test_component_publication.py',
+    'test_component_restore.py',
+    'test_component_selection.py',
+    'test_distribution.py',
+    'test_generic_exact_reuse.py',
+    'test_graph_publication.py',
+    'test_host_targets.py',
+    'test_image_export.py',
+    'test_manager_composition.py',
+    'test_manager_envelope.py',
+    'test_manager_protocol.py',
+    'test_manager_selected_environment.py',
+    'test_native_recovery.py',
+    'test_package_lifecycle.py',
+    'test_previous_package_subject.py',
+    'test_prior_source.py',
+    'test_qualified_graph.py',
+    'test_recovery_archive.py',
+    'test_registry_closure.py',
+    'test_registry_ownership.py',
+    'test_retained_compatibility.py',
+    'test_reuse_payload.py',
+    'test_runner_cache.py',
+    'test_runner_inputs.py',
+    'test_runner_reuse.py',
+}
 
 
 def run(kind, directory):

@@ -29,8 +29,8 @@ docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 90 /bin/sh
   git -C "$workspace" init -q
   git -C "$workspace" -c user.name=Release -c user.email=release@localhost commit --allow-empty -qm smoke
   test -n "$(git -C "$workspace" rev-parse HEAD)"
-  node /opt/symphony/browser/smoke.cjs
 '
+bash "$(dirname "$0")/../../runner/browser/smoke-image.sh" "$image" "$provider" "$revision"
 case "$provider" in
   codex)
     docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 codex --version

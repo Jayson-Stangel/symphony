@@ -1,4 +1,4 @@
-name: component-plan
+name: Component planning
 
 on:
   workflow_call:
@@ -27,6 +27,7 @@ permissions:
 
 jobs:
   plan:
+    name: Plan selected components
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -37,7 +38,8 @@ jobs:
       artifact_name: component-plan-${{ github.run_id }}-${{ github.run_attempt }}
       manager_revision: ${{ steps.plan.outputs.manager_revision }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Resolve exact inputs against available original native evidence

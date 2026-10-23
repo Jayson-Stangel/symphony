@@ -1,5 +1,8 @@
-name: runner-integration
+name: Runner integration
 on:
+  pull_request:
+  push:
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       distribution_alias:
@@ -18,27 +21,92 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   changes:
+    name: Classify changes
     uses: ./.github/workflows/change-classification.yml
-  portable:
+  chromium:
+    name: Browser qualification
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          BROWSER: ${{ needs.changes.outputs.browser }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in
+            false) test "$BROWSER" = false ;;
+            true) case "$BROWSER" in true|false) ;; *) exit 1 ;; esac ;;
+            *) exit 1 ;;
+          esac
+      - name: Check out source
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Share build layers across final provider images
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
+        id: builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build final Codex image
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
+        uses: ./.github/actions/build-runner
+        with:
+          builder: ${{ steps.builder.outputs.name }}
+          target: codex
+          tags: symphony-browser-codex
+          revision: ${{ github.sha }}
+      - name: Build final Claude image
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
+        uses: ./.github/actions/build-runner
+        with:
+          builder: ${{ steps.builder.outputs.name }}
+          target: claude
+          tags: symphony-browser-claude
+          revision: ${{ github.sha }}
+      - name: Verify both final images as their actual agent users
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          bash runner/node-smoke.sh symphony-browser-codex symphony-browser-claude
+          bash runner/browser/smoke-image.sh symphony-browser-codex codex "$REVISION"
+          bash runner/browser/smoke-image.sh symphony-browser-claude claude "$REVISION"
+      - name: Browser inputs unchanged
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'false'
+        run: echo "The complete event diff changes no browser-consumed or browser-validation inputs. Browser work intentionally omitted; no new image qualification or provenance reuse is claimed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Documentation-only qualification decision
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Use actual selected images during explicit integration
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "Browser qualification of selected immutable images runs in installed manager integration; no separate reference image build." >> "$GITHUB_STEP_SUMMARY"
+  portable:
+    name: Portable preflight
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/release-preflight.yml
   helpers:
+    name: Qualify manager helpers
+    if: github.event_name == 'workflow_dispatch'
     needs: portable
     uses: ./.github/workflows/native-manager-helpers.yml
     with:
       portable_revision: ${{ needs.portable.outputs.qualified_revision }}
   reference-node-smoke:
+    name: Reference Node images
     needs: [changes, portable]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && needs.portable.result == 'success' && inputs.reference_node_smoke }}
+    if: ${{ github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && needs.portable.result == 'success' && inputs.reference_node_smoke }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build live E2E and Claude qualification images in their harness contexts
         run: |
           docker build -t symphony-live-node-smoke elixir/test/support/live_e2e_docker
@@ -49,14 +117,16 @@ jobs:
           docker run --rm --network none --entrypoint codex symphony-live-node-smoke --version
           docker run --rm --network none symphony-qualification-node-smoke inspect
   plan:
+    name: Plan components
     needs: [changes, portable]
-    if: needs.changes.outputs.code == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/component-plan.yml
     with:
       baseline_run: ${{ inputs.baseline_run }}
   runners:
+    name: Qualify runner components
     needs: [plan, portable]
-    if: needs.plan.outputs.has_builds == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_builds == 'true'
     uses: ./.github/workflows/runner-release.yml
     with:
       preflight_revision: ${{ needs.portable.outputs.qualified_revision }}
@@ -64,14 +134,16 @@ jobs:
       component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
+      retain_diagnostic: true
       publish: false
     permissions:
       contents: read
       actions: read
       packages: write
   manager-inputs:
+    name: Bind selected component inputs
     needs: [changes, plan, runners]
-    if: ${{ always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require the complete selected component result
@@ -84,15 +156,18 @@ jobs:
             false) test "$RUNNERS" = skipped ;;
             *) exit 1 ;;
           esac
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.plan.outputs.artifact_name }}
           path: plan
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.plan.outputs.has_builds == 'true'
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_builds == 'true'
         with:
           name: runner-candidate-metadata
           path: built
@@ -111,21 +186,24 @@ jobs:
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Retain artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: manager-inputs/*
           if-no-files-found: error
   manager-package:
-    if: ${{ always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success' }}
+    name: Build current manager packages
+    if: ${{ github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success' }}
     needs: [manager-inputs, helpers]
     uses: ./.github/workflows/current-manager-package.yml
     with:
       metadata_artifact: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
       helper_revision: ${{ needs.helpers.outputs.qualified_revision }}
   listener-and-cleanup:
+    name: Installed manager integration
     needs: [changes, portable, helpers, reference-node-smoke, plan, runners, manager-inputs, manager-package]
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -160,28 +238,31 @@ jobs:
               case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac ;;
             *) exit 1 ;;
           esac
-      - name: Checkout actual current manager
-        if: needs.changes.outputs.code == 'true'
+      - name: Check out actual current manager
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.changes.outputs.code == 'true'
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         with:
           name: ${{ needs.plan.outputs.artifact_name }}
           path: plan
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.changes.outputs.code == 'true'
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         with:
           name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: bound
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.changes.outputs.code == 'true'
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         with:
           name: ${{ needs.manager-package.outputs.package_artifact }}
           path: packages
       - name: Retrieve actual original runners without rebuild, export or upload
-        if: needs.changes.outputs.code == 'true'
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
@@ -196,26 +277,26 @@ jobs:
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
             --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners" "${args[@]}"
       - name: Execute the installed current manager with original immutable runners
-        if: needs.changes.outputs.code == 'true'
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
       - name: Prove anonymous closure refusal with a separate tiny owned synthetic registry
         if: github.event_name == 'workflow_dispatch' && inputs.distribution_alias && needs.changes.outputs.code == 'true'
         run: python3 scripts/release/probe-registry-closure.py --output evidence
       - name: Retain small current-manager and distribution cleanup receipts
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ordinary-current-manager-summary-${{ github.sha }}
+          name: selected-current-manager-summary-${{ github.sha }}
           path: |
             evidence/result.json
             evidence/registry-closure-evidence.json
             evidence/registry-closure-state.txt
           if-no-files-found: warn
       - name: Retain actual current-manager and owned cleanup evidence
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ordinary-current-manager-${{ github.sha }}
+          name: selected-current-manager-${{ github.sha }}
           path: evidence/*
           if-no-files-found: warn
       - name: Documentation-only qualification decision

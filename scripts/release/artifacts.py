@@ -17,6 +17,30 @@ REVISION = re.compile(r"[0-9a-f]{40}\Z")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?\Z")
 
 
+
+def runner_job_names(provider, architecture):
+    """Finite historical/current displays; the stored original name stays exact."""
+    leaf = f"Build runner ({provider}, {architecture})"
+    return (f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}",
+            leaf, "Qualify runner components / " + leaf)
+
+
+def recovery_job_names(provider, architecture):
+    return (f"recover-{provider}-{architecture}", f"native-record-recovery / recover-{provider}-{architecture}",
+            f"Recover native records ({provider}, {architecture})")
+
+
+def candidate_job_names(identifier):
+    displays = {"candidate-metadata": "Assemble candidate metadata",
+                "packaged-candidate-metadata": "Assemble candidate packages",
+                "ubuntu-package-lifecycle": "Installed package lifecycle"}
+    if identifier.startswith('runner-'):
+        _, provider, architecture = identifier.split('-', 2)
+        return runner_job_names(provider, architecture)
+    display = displays[identifier]
+    return (identifier, 'runners / ' + identifier, display, 'Qualify runner components / ' + display)
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -149,7 +173,7 @@ def validate_component(runner, provider, architecture):
     require(REVISION.fullmatch(proof.get("controller_revision", "")), "missing qualification controller revision")
     for key in ("source_revision", "input_identity", "image"):
         require(proof.get(key) == runner.get(key), "native qualification identity differs: " + key)
-    require(proof.get("job_name") in (f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}"), "native qualification target differs")
+    require(proof.get("job_name") in runner_job_names(provider, architecture), "native qualification target differs")
     require(proof.get("artifact_name") == f"runner-candidate-{provider}-{architecture}", "native artifact target differs")
     require(re.fullmatch(r"sha256:[a-f0-9]{64}", proof.get("artifact_digest", "")), "missing immutable artifact digest")
     require(proof.get("archive_filename") in (f"{provider}-{architecture}.docker.tar.gz",
@@ -164,8 +188,7 @@ def validate_component(runner, provider, architecture):
         require(isinstance(origin, dict) and set(origin) == {"run_id", "run_attempt", "controller_revision", "job_name"}, "invalid small-record origin")
         require(all(type(origin.get(key)) is int and origin[key] > 0 for key in ("run_id", "run_attempt")), "invalid small-record run identity")
         require(REVISION.fullmatch(origin.get("controller_revision", "")), "invalid small-record controller")
-        require(origin.get("job_name") in (f"recover-{provider}-{architecture}", f"native-record-recovery / recover-{provider}-{architecture}",
-                                          f"runner-{provider}-{architecture}", f"runners / runner-{provider}-{architecture}"), "unknown small-record native job")
+        require(origin.get("job_name") in recovery_job_names(provider, architecture) + runner_job_names(provider, architecture), "unknown small-record native job")
     if "payload_origin" in proof:
         origin = proof["payload_origin"]
         require(isinstance(origin, dict) and set(origin) == {"run_id", "controller_revision"} and
