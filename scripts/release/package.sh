@@ -42,7 +42,8 @@ from pathlib import Path
 from manager_envelope import decode,validate_core
 from finite_transition import evaluate
 core=validate_core(decode((Path(sys.argv[1]).parent/'manager-core.json').read_bytes()))
-assert evaluate(sys.argv[2],core['original_components'])==core['compatibility']['input_transition']
+if core['compatibility']['selection_mode']=='finite-input-transition-v1':
+    assert evaluate(sys.argv[2],core['original_components'])==core['compatibility']['input_transition']
 PYMEASURE
   cp "$(dirname "$manifest")/manager-core.json" "$bundle/manager-core.json"
 else

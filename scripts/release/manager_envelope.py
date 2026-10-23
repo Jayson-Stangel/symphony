@@ -27,11 +27,15 @@ def validate_core(core):
     require(re.fullmatch('[a-f0-9]{40}',manager) and re.fullmatch('[a-f0-9]{40}',legacy),'invalid manager/legacy identity')
     require(re.fullmatch('[0-9]+\.[0-9]+\.[0-9]+',core['base_version']) and len(core['base_version'])<=32,'invalid bounded base manager version')
     require(core['channel'] in ('candidate','stable') and core['supported_hosts']==HOSTS,'unsupported manager channel or host policy')
-    compat=core['compatibility'];keys(compat,{'runner_protocol','selection_mode','input_transition'},'invalid manager compatibility contract')
+    compat=core['compatibility']
+    require(isinstance(compat,dict),'invalid manager compatibility contract')
+    protocol_only=compat.get('selection_mode')=='runner-protocol-v1'
+    keys(compat,{'runner_protocol','selection_mode'} if protocol_only else {'runner_protocol','selection_mode','input_transition'},'invalid manager compatibility contract')
     require(type(compat['runner_protocol']) is int and compat['runner_protocol']==1 and
-            compat['selection_mode']=='finite-input-transition-v1','unsupported manager/component compatibility')
-    validate_evidence(compat['input_transition'],manager)
-    require(legacy==compat['input_transition']['source_revision'],'legacy source differs from exact transition source authority')
+            compat['selection_mode'] in ('finite-input-transition-v1','runner-protocol-v1'),'unsupported manager/component compatibility')
+    if not protocol_only:
+        validate_evidence(compat['input_transition'],manager)
+        require(legacy==compat['input_transition']['source_revision'],'legacy source differs from exact transition source authority')
     for field in ('original_components','distribution','verified_origins'):
         keys(core[field],artifacts.PROVIDERS,'both core providers required')
         for provider in artifacts.PROVIDERS:keys(core[field][provider],artifacts.ARCHITECTURES,'both core architectures required')
@@ -41,8 +45,9 @@ def validate_core(core):
             require('provider' not in record and 'architecture' not in record,'core must retain manifest-style original records')
             artifacts.validate_component(record,provider,architecture)
             require(record['source_revision']==legacy,'legacy envelope requires genuinely common original source')
-            require(record['input_identity']==compat['input_transition']['source_input_identities'][provider][architecture],
-                    'original component input differs from transition')
+            if not protocol_only:
+                require(record['input_identity']==compat['input_transition']['source_input_identities'][provider][architecture],
+                        'original component input differs from transition')
             image=core['distribution'][provider][architecture]
             require(isinstance(image,str) and artifacts.DIGEST_IMAGE.fullmatch(image) and
                     image.split('@',1)[1]==record['image'].split('@',1)[1],'distribution changes original OCI identity')
@@ -73,16 +78,21 @@ def artifact_version(core):
     return core['base_version']+'-manager.'+core['manager_source_revision']+'.manifest.'+hashlib.sha256(canonical(core)).hexdigest()
 
 
-def make_core(root,records,origins,transition,distribution=None,channel='candidate'):
+def make_core(root,records,origins,transition=None,distribution=None,channel='candidate'):
     import subprocess
     manager=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
-    require(evaluate(root,records)==transition,'core transition was not measured from actual manager checkout')
+    if transition is not None:
+        require(evaluate(root,records)==transition,'core transition was not measured from actual manager checkout')
+    sources={record['source_revision'] for group in records.values() for record in group.values()}
+    require(len(sources)==1,'stock-compatible envelope needs one actual original runtime source')
+    compatibility={'runner_protocol':1,'selection_mode':'runner-protocol-v1'} if transition is None else {
+        'runner_protocol':1,'selection_mode':'finite-input-transition-v1','input_transition':transition}
     components={p:{a:{k:v for k,v in records[p][a].items() if k not in ('provider','architecture')}
                    for a in artifacts.ARCHITECTURES} for p in artifacts.PROVIDERS}
     core={'schema_version':1,'manager_source_revision':manager,'base_version':manager_version.read(root),
-          'channel':channel,'legacy_source_revision':transition['source_revision'],'original_components':copy.deepcopy(components),
+          'channel':channel,'legacy_source_revision':next(iter(sources)),'original_components':copy.deepcopy(components),
           'verified_origins':copy.deepcopy(origins),'distribution':copy.deepcopy(distribution or {p:{a:r['image'] for a,r in group.items()} for p,group in components.items()}),
-          'supported_hosts':copy.deepcopy(HOSTS),'compatibility':{'runner_protocol':1,'selection_mode':'finite-input-transition-v1','input_transition':transition}}
+          'supported_hosts':copy.deepcopy(HOSTS),'compatibility':compatibility}
     return validate_core(core)
 
 
@@ -125,7 +135,10 @@ def validate_release(path):
                 'compatibility':{'runner_protocol':1},'supported_hosts':core['supported_hosts'],'host_architectures':['arm64','x86_64'],
                 'bundle':manifest['bundle'],'bundles':manifest['bundles'],'manager_envelope':descriptor}
     from finite_transition import component_evidence
-    normalized['component_selections']={p:{a:component_evidence(core['manager_source_revision'],p,a) for a in group} for p,group in core['original_components'].items()}
+    if core['compatibility']['selection_mode']=='runner-protocol-v1':
+        normalized['compatibility']['selection_mode']='runner-protocol-v1'
+    else:
+        normalized['component_selections']={p:{a:component_evidence(core['manager_source_revision'],p,a) for a in group} for p,group in core['original_components'].items()}
     if 'package_platform' in manifest:normalized['package_platform']=manifest['package_platform']
     return normalized
 
@@ -154,6 +167,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',default='.')
     parser.add_argument('--plan')
+    parser.add_argument('--reuse-release',help='reuse an existing validated manager envelope and original runtime evidence; no image operations')
     parser.add_argument('--validate')
     parser.add_argument('--output')
     parser.add_argument('--field')
@@ -164,6 +178,14 @@ def main():
             if args.field:
                 for part in args.field.split('.'):value=value[part]
             print(value if isinstance(value,str) else json.dumps(value,sort_keys=True))
+        elif args.reuse_release:
+            require(args.output and not args.plan,'reuse-release requires output and cannot select a build plan')
+            require(not Path(args.output).exists(),'refusing existing manager output; preserve the previous descriptor')
+            previous=Path(args.reuse_release)
+            validate_release(previous)
+            retained=validate_core(decode((previous.parent/CORE).read_bytes()))
+            write_release(make_core(args.root,retained['original_components'],retained['verified_origins'],
+                                    distribution=retained['distribution']),args.output)
         else:
             require(args.plan and args.output,'plan and output required')
             from component_join import join

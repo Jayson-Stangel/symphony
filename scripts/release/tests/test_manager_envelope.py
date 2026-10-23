@@ -20,15 +20,24 @@ FIXTURE=Path(__file__).with_name('fixtures')/'manager-original-68.json'
 class EnvelopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # The finite exemption describes this immutable historical physical
+        # target. New manager/test changes must not silently widen its authority.
+        cls.finite_temp=tempfile.TemporaryDirectory(prefix='finite-manager-contract-')
+        cls.addClassCleanup(cls.finite_temp.cleanup)
+        cls.finite_root=Path(cls.finite_temp.name)/'checkout'
+        subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(cls.finite_root)],check=True)
+        subprocess.run(['git','-C',str(cls.finite_root),'checkout','--quiet','--detach','88f366b'],check=True)
         cls.fixture=json.loads(FIXTURE.read_text());cls.records={}
         for r in cls.fixture['records']:cls.records.setdefault(r['provider'],{})[r['architecture']]=r
         cls.origins={p:{a:cls.fixture['verified_origins'][p+'-'+a] for a in g} for p,g in cls.records.items()}
     def verify(self,r):return self.origins[r['provider']][r['architecture']]
-    def core(self,root=ROOT):return make_core(root,self.records,self.origins,evaluate(root,self.records))
+    def core(self,root=None):
+        root=root or self.finite_root
+        return make_core(root,self.records,self.origins,evaluate(root,self.records))
     def test_actual_originals_zero_build_join_keeps_two_real_input_identities(self):
         calls=[]
         def verified(r):calls.append((r['provider'],r['architecture']));return self.verify(r)
-        p=compatible_plan(ROOT,{},verify=verified,candidates=self.fixture['records'])
+        p=compatible_plan(self.finite_root,{},verify=verified,candidates=self.fixture['records'])
         self.assertFalse(p['has_builds']);self.assertEqual(p['build_matrix']['include'],[])
         self.assertEqual(set(calls),{(p,a) for p,g in self.records.items() for a in g})
         for group in p['components'].values():
@@ -38,7 +47,7 @@ class EnvelopeTests(unittest.TestCase):
         with self.assertRaises(ValueError):join(broken,'/does-not-exist',p['manager_source_revision'],verified)
     def test_normal_plan_manager_only_and_committed_claude_only_selectivity(self):
         from reuse_payload import selected
-        p=plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        p=plan(self.finite_root,{},verify=self.verify,candidates=self.fixture['records'])
         self.assertFalse(p['has_builds'])
         for provider in ('codex','claude'):
             for arch in ('arm64','x86_64'):
@@ -46,7 +55,7 @@ class EnvelopeTests(unittest.TestCase):
                 self.assertEqual(entry['selection_mode'],'finite-component-v1')
         with tempfile.TemporaryDirectory() as t:
             repo=Path(t)/'repo'
-            subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
+            subprocess.run(['git','clone','--shared','--quiet',str(self.finite_root),str(repo)],check=True)
             path=repo/'runner/claude/entrypoint.sh'
             first,body=path.read_bytes().split(b'\n',1)
             path.write_bytes(first+b'\nprintf "bounded-claude-input-probe\\n" >&2\n'+body)
@@ -65,10 +74,10 @@ class EnvelopeTests(unittest.TestCase):
     def test_ordinary_schema2_assembly_binds_finite_receipts_offline(self):
         import runpy,artifacts
         prepare=runpy.run_path(str(ROOT/'scripts/release/prepare-manager-inputs.py'))['prepare']
-        p=plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        p=plan(self.finite_root,{},verify=self.verify,candidates=self.fixture['records'])
         with tempfile.TemporaryDirectory() as t:
             output=Path(t)/'metadata'
-            records=prepare(ROOT,p,None,output,None,self.verify)
+            records=prepare(self.finite_root,p,None,output,None,self.verify)
             manifest=json.loads((output/'release.json').read_text())
             self.assertEqual(manifest['schema_version'],2)
             artifacts.validate(manifest,require_bundle=False)
@@ -85,10 +94,10 @@ class EnvelopeTests(unittest.TestCase):
         import contextlib,io
         from unittest.mock import patch
         import reuse_payload
-        p=compatible_plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        p=compatible_plan(self.finite_root,{},verify=self.verify,candidates=self.fixture['records'])
         with tempfile.TemporaryDirectory() as t:
             path=Path(t)/'plan.json';path.write_text(json.dumps(p))
-            argv=['reuse_payload.py','--plan',str(path),'--root',str(ROOT),'--provider','codex','--architecture','arm64','--destination',str(Path(t)/'payload')]
+            argv=['reuse_payload.py','--plan',str(path),'--root',str(self.finite_root),'--provider','codex','--architecture','arm64','--destination',str(Path(t)/'payload')]
             with patch.object(sys,'argv',argv),patch.object(reuse_payload,'origin_verifier',return_value=self.verify),                 patch.object(reuse_payload,'retrieve',return_value=Path(t)/'original.tar.gz') as fetch,contextlib.redirect_stdout(io.StringIO()):
                 reuse_payload.main()
                 self.assertEqual(fetch.call_args.args[0],self.records['codex']['arm64'])
@@ -101,7 +110,7 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_missing_original_origin_refuses_without_build_fallback(self):
         def missing(r):raise ValueError('expired original')
-        with self.assertRaisesRegex(ValueError,'without image builds'):compatible_plan(ROOT,{},verify=missing,candidates=self.fixture['records'])
+        with self.assertRaisesRegex(ValueError,'without image builds'):compatible_plan(self.finite_root,{},verify=missing,candidates=self.fixture['records'])
     def test_roundtrip_preserves_originals_and_same_digest_distribution(self):
         core=self.core();original=copy.deepcopy(core['original_components'])
         for p,g in core['distribution'].items():
@@ -136,7 +145,7 @@ class EnvelopeTests(unittest.TestCase):
     def test_actual_joined_envelope_members_bind_originals_and_manager(self):
         import io,zipfile
         from component_selection import records_from_join
-        plan=compatible_plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        plan=compatible_plan(self.finite_root,{},verify=self.verify,candidates=self.fixture['records'])
         with tempfile.TemporaryDirectory() as t:
             path=write_release(self.core(),t)
             def bundle(include_core=True):
@@ -175,7 +184,7 @@ class EnvelopeTests(unittest.TestCase):
     def test_committed_runtime_dependency_and_operational_inputs_refuse(self):
         with tempfile.TemporaryDirectory() as t:
             repo=Path(t)/'repo'
-            subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
+            subprocess.run(['git','clone','--shared','--quiet',str(self.finite_root),str(repo)],check=True)
             for name in ('elixir/lib/symphony_elixir.ex','elixir/mix.lock','elixir/WORKFLOW.md','.codex/skills/commit/SKILL.md'):
                 path=repo/name
                 self.assertTrue(path.is_file(),name)
@@ -193,7 +202,7 @@ class EnvelopeTests(unittest.TestCase):
     def test_real_physical_runtime_unknown_mode_and_doc_changes_refuse(self):
         with tempfile.TemporaryDirectory() as t:
             repo=Path(t)/'repo'
-            subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
+            subprocess.run(['git','clone','--shared','--quiet',str(self.finite_root),str(repo)],check=True)
             # Every probe mutates a real consumed working-tree input. Git provenance
             # and physical hashing must refuse, rather than trusting policy paths.
             probes=[('runner/Dockerfile',b'\n# different recipe\n'),('elixir/mix.exs',b'\n# dependency input\n'),
