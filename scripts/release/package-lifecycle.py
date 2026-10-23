@@ -95,6 +95,24 @@ def package_selections(packages, current_only, revision, manager_update_only=Fal
     return selected
 
 
+
+def lifecycle_project_agents(initial, current, manager_only=False):
+    if manager_only:
+        return ('codex', 'claude')
+    def digest(manifest, provider):
+        image = manifest['runners'][provider]['x86_64']['image']
+        match = re.fullmatch(r'.+@(sha256:[a-f0-9]{64})', image)
+        assert match, 'image-changing lifecycle requires original immutable references'
+        return match[1]
+    changed = [provider for provider in ('codex', 'claude') if digest(initial, provider) != digest(current, provider)]
+    assert changed, 'unchanged images require explicit manager-only update mode'
+    primary = changed[0]
+    # Preserve the established two-Codex-project route when both change. A
+    # selective release instead retains the other provider as the isolation case.
+    secondary = 'codex' if len(changed) == 2 or primary == 'claude' else 'claude'
+    return (primary, secondary)
+
+
 def verify_unchanged_manager_components(previous, current):
     assert previous.get('original_components', previous['runners']) == current.get('original_components', current['runners']), 'manager-only update requires the exact unchanged original component records'
 
@@ -281,6 +299,9 @@ def main():
             verify_unchanged_manager_components(previous, current)
         assert current["source_revision"] == result["package_source_revision"], "candidate must match exact selected package source"
         assert result["diagnostic_artifact_run"] or result["package_source_revision"] == result["source_revision"], "acceptance candidate must match exact workflow head"
+        project_agents = lifecycle_project_agents(initial, current, current_only or manager_update_only)
+        primary_agent = project_agents[0]
+        result['project_agents'] = list(project_agents)
         source_archives = []
         for folder, manifest in selections:
             bundle = manifest["bundles"]["linux_x86_64"]
@@ -432,7 +453,7 @@ fi
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
-            selected_agent = "claude" if (current_only or manager_update_only) and number == 1 else "codex"
+            selected_agent = project_agents[number]
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
             assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
@@ -454,10 +475,13 @@ fi
             return {volume: docker("run", "--rm", "--network", "none", "--read-only", "--entrypoint", "sh", "--volume", volume + ":/proof:ro", utility_image,
                                    "-ceu", "sha256sum /proof/package-proof-canary") for volume in auth_volumes}
         auth_before = auth_canaries()
-        docker("exec", name, "sh", "-ceu", "mkdir /workspaces/proof; git -C /workspaces/proof init -q; git -C /workspaces/proof config user.name Fixture; git -C /workspaces/proof config user.email fixture@example.invalid; printf committed > /workspaces/proof/edited; git -C /workspaces/proof add edited; git -C /workspaces/proof commit -qm fixture; printf dirty >> /workspaces/proof/edited; printf untracked > /workspaces/proof/untracked; printf state-canary > /var/lib/symphony/proof-state")
+        for selected_name in names:
+            docker("exec", selected_name, "sh", "-ceu", "mkdir /workspaces/proof; git -C /workspaces/proof init -q; git -C /workspaces/proof config user.name Fixture; git -C /workspaces/proof config user.email fixture@example.invalid; printf committed > /workspaces/proof/edited; git -C /workspaces/proof add edited; git -C /workspaces/proof commit -qm fixture; printf dirty >> /workspaces/proof/edited; printf untracked > /workspaces/proof/untracked; printf state-canary > /var/lib/symphony/proof-state")
         before = preserved(name)
+        second_before = preserved(names[1]); second_mount_before = mount_snapshot(names[1])
+        second_id = inspect(names[1], "{{.Id}}")
         mount_before = mount_snapshot(name)
-        assert {m["Destination"] for m in mount_before} >= {"/workspaces", "/var/lib/symphony", "/etc/symphony/WORKFLOW.md", "/root/.codex"}
+        assert {m["Destination"] for m in mount_before} >= {"/workspaces", "/var/lib/symphony", "/etc/symphony/WORKFLOW.md", "/home/claude" if primary_agent == "claude" else "/root/.codex"}
         assert all(m["Type"] == "volume" for m in mount_before if m["Destination"] in ("/workspaces", "/var/lib/symphony"))
         canaries = [root / "config/projects" / (i + ".env") for i in identifiers]
         canaries += [r / "WORKFLOW.md" for r in repositories]
@@ -467,13 +491,15 @@ fi
         def unchanged():
             assert preserved(name) == before
             assert mount_snapshot(name) == mount_before
+            assert inspect(names[1], "{{.Id}}") == second_id
+            assert preserved(names[1]) == second_before and mount_snapshot(names[1]) == second_mount_before
             assert auth_canaries() == auth_before
             assert {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries} == hashes
         metadata = [root / "config/runners" / (i + ".env") for i in identifiers]
         second_metadata = metadata[1].read_bytes(); second_image = inspect(names[1], "{{.Image}}")
         client_run([str(command), "runner", "stop"], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false"
-        client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port); unchanged()
+        client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port); unchanged()
         record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
         if legacy_chain:
             bridge_manifest = root/'old-release.json'
@@ -486,7 +512,7 @@ fi
             assert [path.read_bytes() for path in metadata] == original_metadata
             unchanged()
             client_run([str(command), 'runner', 'stop'], cwd=repo)
-            client_run([str(command), 'run', '--port', str(port)], cwd=repo); state(port); unchanged()
+            client_run([str(command), 'run', '--agent', primary_agent, '--port', str(port)], cwd=repo); state(port); unchanged()
             assert inspect(name, '{{.Image}}') == original_ids[name][1]
             assert inspect(names[1], '{{.Id}}') == original_ids[names[1]][0] and metadata[1].read_bytes() == second_metadata
             record('actual old schema1 manager to strict schema1 bridge retains both original unlabeled provider images and persistent project canaries')
@@ -571,7 +597,7 @@ fi
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
             retained()
-            for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, ('codex', 'claude')):
+            for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
                 client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
                 client_run([str(command), 'run', '--agent', selected_agent, '--port', str(selected_port)], cwd=selected_repo)
@@ -596,33 +622,32 @@ fi
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         unchanged()
-        client_run([str(command), "run", "--port", str(port)], cwd=repo); state(port)
+        client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
         record("two real package revisions: manager-only activation and updater-controlled rollback retain stopped runner until explicit run, preserving both selected images")
         # Remove only the unselected new candidate image from this disposable
         # daemon/registry and prove a real immutable-digest pull failure. Restore
         # from the same checksummed archive before positive transition proof.
-        image = current["runners"]["codex"]["x86_64"]["image"]
-        remove_local_image(run, "localhost:5000/symphony-codex:candidate")
+        image = current["runners"][primary_agent]["x86_64"]["image"]
+        remove_local_image(run, f"localhost:5000/symphony-{primary_agent}:candidate")
         remove_local_image(run, image)
         digest = image.split("@", 1)[1]
-        request = urllib.request.Request("http://127.0.0.1:5000/v2/symphony-codex/manifests/" + digest, method="DELETE")
+        request = urllib.request.Request(f"http://127.0.0.1:5000/v2/symphony-{primary_agent}/manifests/" + digest, method="DELETE")
         with urllib.request.urlopen(request, timeout=5) as response: assert response.status == 202
-        failed = client_run([str(command), "update", *update_args, "--agent", "codex"], cwd=repo, expected=1)
-        assert "cannot pull released codex image" in failed.stdout
+        failed = client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=1)
+        assert f"cannot pull released {primary_agent} image" in failed.stdout
         assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
         unchanged()
-        with (images / "codex-x86_64.docker.tar.gz").open("rb") as source:
-            run(["docker", "load"], stdin=source)
-        docker("push", "localhost:5000/symphony-codex:candidate")
-        assert docker("image", "inspect", "--format", "{{index .RepoDigests 0}}", "localhost:5000/symphony-codex:candidate") == image
+        load_original_archive(run, images, primary_agent)
+        docker("push", f"localhost:5000/symphony-{primary_agent}:candidate")
+        assert image in json.loads(docker("image", "inspect", f"localhost:5000/symphony-{primary_agent}:candidate"))[0].get("RepoDigests", [])
         record("actual missing image/digest pull refuses before journal or manager activation; checksummed image restored for retry")
         (root / "fault").write_text("create")
-        client_run([str(command), "update", *update_args, "--agent", "codex"], cwd=repo, expected=97)
+        client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=97)
         assert (root / "config/runners" / (identifiers[0] + ".transition")).is_dir()
-        client_run([str(command), "update", "--agent", "codex"], cwd=repo)
+        client_run([str(command), "update", "--agent", primary_agent], cwd=repo)
         state(port); unchanged()
-        assert inspect(name, "{{.Image}}") == inspect(current["runners"]["codex"]["x86_64"]["image"], "{{.Id}}")
+        assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         record("real selected-runner update after post-create failure, pinned retry and unchanged second-project selected image")
         # Explicit --agent transitions preserve the updater's existing policy:
@@ -632,10 +657,10 @@ fi
         client_run([str(command), "runner", "stop"], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false"
         (root / "fault").write_text("create")
-        client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", "codex"], cwd=repo, expected=97)
+        client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", primary_agent], cwd=repo, expected=97)
         client_run([str(command), "update", "--rollback-runner"], cwd=repo)
         state(port); unchanged()
-        assert inspect(name, "{{.Image}}") == inspect(current["runners"]["codex"]["x86_64"]["image"], "{{.Id}}")
+        assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
         assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
         record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
