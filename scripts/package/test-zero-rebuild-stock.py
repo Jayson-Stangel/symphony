@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -188,7 +189,11 @@ class EnvelopeHandoff(NativeCase):
 
     def test_actual_stock_upgrade_retry_and_rollback_preserve_identity_and_data(self):
         self.ok(self.update())
-        self.assertEqual(self.identity()["source_revision"], self.manager)
+        observed = self.identity()
+        self.assertEqual(observed["source_revision"], self.manager)
+        self.assertEqual(observed["version"], self.target["version"])
+        self.assertEqual(observed["base_version"], self.envelope["base_version"])
+        self.assertEqual(observed["storage_revision"], self.target["source_revision"])
         self.assertNotEqual(self.manager, self.target["source_revision"])
         active = self.links()["app/current"]
         self.assertTrue(active.endswith(self.target["version"] + "-" + self.target["source_revision"]))
@@ -234,6 +239,48 @@ class EnvelopeHandoff(NativeCase):
         core.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
         # Recompute transport/inventory checksums deliberately: the independent
         # core D commitment, rather than incidental archive corruption, must fail.
+        outer, archive = self.repack(lambda value: None)
+        self.assertNotEqual(self.update(outer, archive).returncode, 0)
+        self.assertEqual(self.links(), before)
+        self.assertEqual(self.identity()["source_revision"], STOCK_REVISION)
+        self.preserved()
+
+    def test_core_wire_limits_refuse_even_with_recomputed_binding(self):
+        mutations = {
+            "ascii-del": lambda core: core["original_components"]["codex"]["arm64"]["tool_versions"].update(git="\x7f"),
+            "negative": lambda core: core["verified_origins"]["codex"]["arm64"].update(run_id=-1),
+            "overflow": lambda core: core["verified_origins"]["codex"]["arm64"].update(run_id=9007199254740992),
+            "oversize": lambda core: core["original_components"]["codex"]["arm64"]["tool_versions"].update(git="x" * (1024 * 1024)),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                folder = self.root / ("wire-" + name); folder.mkdir()
+                core = json.loads((self.candidate / "manager-core.json").read_text())
+                mutation(core)
+                raw = (json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+                (folder / "manager-core.json").write_bytes(raw)
+                value = json.loads((self.candidate / "release.json").read_text())
+                old = value["version"]
+                sha = hashlib.sha256(raw).hexdigest()
+                value["manager_envelope"]["core_sha256"] = sha
+                value["version"] = old.replace(self.envelope["core_sha256"], sha)
+                for bundle in [value["bundle"], *value.get("bundles", {}).values()]:
+                    bundle["filename"] = bundle["filename"].replace(old, value["version"])
+                for provider, group in value["runners"].items():
+                    for architecture, runner in group.items():
+                        runner["tool_versions"] = core["original_components"][provider][architecture]["tool_versions"]
+                manifest = folder / "release.json"; manifest.write_text(json.dumps(value))
+                self.assertNotEqual(run(self.helper, "validate-release", manifest).returncode, 0)
+
+    def test_different_compiled_manager_refuses_bound_b_before_activation(self):
+        # A real source-C helper is supplied by the controller; never synthesize
+        # its revision or compile it implicitly inside this adversarial suite.
+        other = Path(os.environ["SYMPHONY_ENVELOPE_OTHER_HELPER"])
+        other_revision = self.ok(run(other, "build-revision"))
+        self.assertNotEqual(other_revision, self.manager)
+        self.assertEqual(self.ok(run("lipo", "-archs", other)), "arm64")
+        before = self.links()
+        shutil.copyfile(other, self.candidate / "libexec/symphony-host")
         outer, archive = self.repack(lambda value: None)
         self.assertNotEqual(self.update(outer, archive).returncode, 0)
         self.assertEqual(self.links(), before)
