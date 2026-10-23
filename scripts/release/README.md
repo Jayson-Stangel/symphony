@@ -678,3 +678,21 @@ content read tests. No production registry writes are implied by those tests.
 The manager-envelope stable tag/channel planning contract remains separately
 unsupported and fails closed; this raw transfer path does not resolve that
 release-policy gap or qualify a native Linux lifecycle by itself.
+
+### Manager packaging with an unchanged selected runtime
+
+The `runner-protocol-v1` manager-envelope mode binds the new host manager source
+and native helper while preserving the selected original runtime records,
+qualification receipts, input identities and immutable digests. It asserts
+integration protocol compatibility, not equality with the current Docker recipe.
+The installed manager still validates the actual selected image's protocol,
+provider, platform and runtime layout before activation. The existing finite
+historical transition remains separately measured and unchanged.
+
+Use `manager_envelope.py --root CHECKOUT --reuse-release PREVIOUS/release.json
+--output NEW_METADATA` with a previously validated envelope and its bound core.
+Then use the ordinary native `build-manager-package.sh` and checksum validation.
+This path performs no image build, retrieval, export, upload or requalification.
+An explicitly requested optional reference-image build still computes its actual
+Docker input closure and must qualify changed images normally. It cannot use
+protocol compatibility to claim current source was baked into an old image.
