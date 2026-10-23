@@ -17,6 +17,7 @@ selected_environment_image() {
   environment_selection_read "$file" || return
   provider=$(package_helper get "$file" provider) || return
   [ "$provider" = "$agent" ] || die "selected team environment uses $provider; request that provider or select a compatible $agent environment"
+  selected_environment_validate_record "$(container_runtime)" "$file" || return
   package_helper get "$file" image_id
 }
 
@@ -26,17 +27,26 @@ environment_use_project() {
   if [ -n "$image" ]; then export SYMPHONY_RUNNER_IMAGE=$image; fi
 }
 
+selected_environment_validate_record() {
+  local runtime=$1 file=$2 image provider revision platform
+  environment_selection_read "$file" || return
+  image=$(package_helper get "$file" image_id) || return
+  provider=$(package_helper get "$file" provider) || return
+  package_selected_image_compatible "$runtime" "$image" "$provider" || return
+  revision=$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image") || return
+  platform=$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image") || return
+  [ "$revision" = "$(package_helper get "$file" runtime_revision)" ] || die 'selected environment runtime revision differs from its immutable image; select the verified image again'
+  [ "$platform" = "$(package_helper get "$file" platform)" ] || die 'selected environment platform differs from its immutable image; select the verified image again'
+}
+
 selected_environment_validate_all() {
-  local runtime=$1 file image provider
+  local runtime=$1 file
   [ ! -e "$runner_home/environments" ] && [ ! -L "$runner_home/environments" ] && return 0
   package_helper owned-directory "$runner_home" || return
   package_helper owned-directory "$runner_home/environments" || return
   for file in "$runner_home/environments"/*.json; do
     [ -e "$file" ] || [ -L "$file" ] || continue
-    environment_selection_read "$file" || return
-    image=$(package_helper get "$file" image_id) || return
-    provider=$(package_helper get "$file" provider) || return
-    package_selected_image_compatible "$runtime" "$image" "$provider" || return
+    selected_environment_validate_record "$runtime" "$file" || return
   done
 }
 
@@ -70,6 +80,8 @@ environment_select() {
         test -r /opt/symphony/claude/auth.mjs
         test -x /usr/bin/tini
         /usr/local/bin/node --version >/dev/null
+        cd /opt/symphony/claude
+        /usr/local/bin/node --input-type=module -e "await import(\"@anthropic-ai/claude-agent-sdk\"); const r = await import(\"./runtime.mjs\"); const fs = await import(\"node:fs\"); fs.accessSync(r.nativeExecutable(), fs.constants.X_OK)"
       fi
     ' environment-probe "$agent" || die 'team environment lacks required Symphony runtime/provider files; extend the maintained template without replacing its runtime layout'
   directory="$runner_home/environments"
@@ -96,7 +108,7 @@ environment_show() {
   environment_selection_read "$file" || return
   provider=$(package_helper get "$file" provider); image=$(package_helper get "$file" image_id)
   runtime=$(container_runtime)
-  package_selected_image_compatible "$runtime" "$image" "$provider" || return
+  selected_environment_validate_record "$runtime" "$file" || return
   if "$json"; then cat "$file"
   else
     printf 'Environment: team-owned\nReference: %s\nProvider: %s\nImage: %s\nEmbedded runtime: %s\nManager: %s\n' \
