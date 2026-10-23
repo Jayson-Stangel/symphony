@@ -56,7 +56,10 @@ class GenericExactReuse(unittest.TestCase):
                 proof.update(source_revision=source,input_identity=q,image=record['image'],controller_revision=source,
                              run_id=1,run_attempt=1,artifact_id=1,artifact_digest='sha256:'+digest('artifact'),archive_sha256=digest('archive'))
                 artifacts.validate_component(record,p,a);records.append(record)
-            (root/'scripts/release/manager-version').write_text('0.0.5\n')
+            version_file=root/'scripts/release/manager-version'
+            major,minor,patch=map(int,version_file.read_text().strip().split('-',1)[0].split('.'))
+            manager_version=f'{major}.{minor}.{patch+1}'
+            version_file.write_text(manager_version+'\n')
             manager=commit(root,'Release actual manager-only version D')
             self.assertNotEqual(source,manager)
             for p,g in inputs.items():
@@ -77,7 +80,7 @@ class GenericExactReuse(unittest.TestCase):
                 path=metadata/(record['provider']+'-'+record['architecture']+'.json');path.write_text(json.dumps(record));files.append(str(path))
             from types import SimpleNamespace
             manifest_path=metadata/'release.json'
-            artifacts.assemble(SimpleNamespace(records=files,schema_version=2,version='0.0.5',revision=manager,channel='candidate',bundle=None,platform_bundles=True,output=str(manifest_path)),verifier=verifier)
+            artifacts.assemble(SimpleNamespace(records=files,schema_version=2,version=manager_version,revision=manager,channel='candidate',bundle=None,platform_bundles=True,output=str(manifest_path)),verifier=verifier)
             manifest=json.loads(manifest_path.read_text());self.assertNotIn('component_selections',manifest)
             validate_checkout(root,manifest)
             cli=subprocess.run([sys.executable,str(ROOT/'scripts/release/manager_inputs.py'),str(manifest_path),'--root',str(root)],capture_output=True,text=True)

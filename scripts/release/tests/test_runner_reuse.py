@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import manager_version
@@ -106,10 +107,49 @@ class ManagerVersionTest(unittest.TestCase):
             for invalid_policy in ('2','2.0\n','true\n','3\n',' 1\n'):
                 policy.write_text(invalid_policy)
                 with self.assertRaises(ValueError):manager_version.schema(folder)
-            for invalid in ("1.2.4", "1.2.4\nextra\n", "1.2\n", " 1.2.4\n"):
+            for invalid in ("1.2.4", "1.2.4\nextra\n", "1.2\n", " 1.2.4\n", "01.2.4\n", "1.2.4-a..b\n", "1.2.4-01\n", "1.2.4-.\n"):
                 path.write_text(invalid)
                 with self.assertRaises(ValueError):
                     manager_version.read(folder)
+
+    def test_tag_preflight_refuses_completed_or_unavailable_release_before_fanout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / 'scripts/release'; directory.mkdir(parents=True)
+            (directory / 'manager-version').write_text('0.0.5\n')
+            (directory / 'release-schema').write_text('2\n')
+            calls = []
+            def response(code, value):
+                def run(args, **kwargs):
+                    calls.append(args)
+                    self.assertEqual(kwargs['timeout'], 30)
+                    return subprocess.CompletedProcess(args, code, json.dumps(value), 'SENSITIVE ERROR MUST NOT ESCAPE')
+                return run
+            for code, value in ((1, {'status': '404'}), (0, {'tag_name': 'v0.0.5', 'draft': True})):
+                self.assertEqual(manager_version.validate_release_target(folder, 'v0.0.5', response(code, value)), 'v0.0.5')
+            for code, value in ((0, {'tag_name': 'v0.0.5', 'draft': False}),
+                                (0, {'tag_name': 'v0.0.4', 'draft': True}), (0, {'draft': True}),
+                                (0, {'tag_name': 'v0.0.5', 'draft': 'true'}), (0, []),
+                                (1, {'status': '403'}), (1, {'status': '500'}), (1, {})):
+                with self.subTest(code=code, value=value), self.assertRaises(ValueError) as error:
+                    manager_version.validate_release_target(folder, 'v0.0.5', response(code, value))
+                self.assertNotIn('SENSITIVE', str(error.exception))
+            calls.clear()
+            with patch.dict(os.environ, GITHUB_REPOSITORY='foreign/fork'), self.assertRaisesRegex(ValueError, 'supports only'):
+                manager_version.validate_release_target(folder, 'v0.0.5', response(1, {'status': '404'}))
+            self.assertEqual(calls, [])
+            for tag in ('v0.0.4', 'v0.0.5-rc', 'v0.0.5/foreign', 'v0.0.5\n'):
+                with self.assertRaises(ValueError):
+                    manager_version.validate_release_target(folder, tag, response(1, {'status': '404'}))
+            self.assertEqual(calls, [], 'invalid tags must refuse before even a service lookup')
+            for stdout in ('not json', ''):
+                with self.assertRaisesRegex(ValueError, 'service unavailable'):
+                    manager_version.validate_release_target(folder, 'v0.0.5',
+                        lambda *a, **kw: subprocess.CompletedProcess(a, 1, stdout, 'private service error'))
+            for exception in (OSError('private service error'), subprocess.TimeoutExpired('gh', 30)):
+                def unavailable(*args, **kwargs):
+                    raise exception
+                with self.assertRaisesRegex(ValueError, 'service unavailable'):
+                    manager_version.validate_release_target(folder, 'v0.0.5', unavailable)
 
 
 if __name__ == "__main__":

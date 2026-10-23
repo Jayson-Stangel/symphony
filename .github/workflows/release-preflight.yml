@@ -26,12 +26,16 @@ jobs:
       - name: Portable policy and package input preflight
         run: python3 scripts/ci/release_tests.py portable
       - name: Validate selected release version before native or image work
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
           test -n "$version"
           python3 scripts/release/manager_version.py
           python3 scripts/release/manager_version.py --schema
-          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            python3 scripts/release/manager_version.py --validate-release-target "$GITHUB_REF_NAME"
+          fi
       - name: Emit exact-source qualification receipt
         id: qualified
         run: |
