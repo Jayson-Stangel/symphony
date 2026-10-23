@@ -55,7 +55,8 @@ class PresentationOnly(unittest.TestCase):
                 git('add','--all');git('commit','-qm','fixture')
                 return git('rev-parse','HEAD')
             git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
-            base=commit({'.github/workflows/package-checks.yml':WORKFLOW})
+            base=commit({'.github/workflows/package-checks.yml':WORKFLOW, 'runner/Dockerfile':
+                'FROM example/base@sha256:'+'a'*64+' AS browser-tools\nCOPY runner/browser/package.json /opt/browser/\n'})
             named=commit({'.github/workflows/package-checks.yml':WORKFLOW.replace('Old','New')})
             original=os.getcwd();os.chdir(folder)
             try:
@@ -71,9 +72,21 @@ class PresentationOnly(unittest.TestCase):
                 self.assertEqual(result.returncode,0,result.stderr)
                 outputs=dict(line.split('=',1) for line in output.read_text().splitlines())
                 for key in ('code','browser','native',*classifier.COMPONENTS):self.assertEqual(outputs[key],'false',key)
+                self.assertEqual(outputs['policy'],'true')
                 self.assertIn('no relevant changes',summary.read_text())
                 self.assertIn('Verified presentation-only files',summary.read_text())
                 for generated in (event_file,output,summary):generated.unlink()
+                prose=commit({'README.md':'human prose'})
+                event_file.write_text(json.dumps(dict(before=named,after=prose)))
+                output.write_text('')
+                result=subprocess.run(['python3',str(ROOT/'scripts/ci/classify_changes.py')],
+                    env=dict(os.environ,GITHUB_EVENT_NAME='push',GITHUB_EVENT_PATH=str(event_file),
+                             GITHUB_OUTPUT=str(output)),capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                outputs=dict(line.split('=',1) for line in output.read_text().splitlines())
+                self.assertEqual(outputs['policy'],'false')
+                self.assertEqual(outputs['code'],'false')
+                event_file.unlink();output.unlink()
                 mixed=commit({'scripts/package/linux/Package.resolved':'SDK change','elixir/lib/app.ex':'source change'})
                 event=dict(before=base,after=mixed)
                 route,triggers,active,presentation,fallback=classifier.event_routing(classifier.changed_paths(event,'push'),event,'push')

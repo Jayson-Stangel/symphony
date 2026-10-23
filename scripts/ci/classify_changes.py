@@ -354,10 +354,12 @@ def main():
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write(f'code={value}\n')
+            f.write('policy=' + str(not docs or browser).lower() + '\n')
             f.write('browser=' + str(browser).lower() + '\n')
             for key, required in routing.items():
                 f.write(key + '=' + str(required).lower() + '\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
+    summary += 'CI policy/graph validation required: **' + str(not docs or browser).lower() + '**.\n\n'
     summary += 'Browser qualification required: **' + str(browser).lower() + '**. ' + (
         'Browser inputs, validation controls or full-event policy require qualification.\n\n'
         if browser else 'No browser build/qualification inputs changed.\n\n')

@@ -5,6 +5,9 @@ on:
       code:
         description: Whether behavioral qualification is required
         value: ${{ jobs.classify.outputs.code }}
+      policy:
+        description: Whether behavioral or presentation changes need CI policy and graph validation
+        value: ${{ jobs.classify.outputs.policy }}
       browser:
         description: Whether actual browser inputs or validation controls require shared qualification
         value: ${{ jobs.classify.outputs.browser }}
@@ -37,6 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      policy: ${{ steps.changes.outputs.policy }}
       browser: ${{ steps.changes.outputs.browser }}
       application: ${{ steps.changes.outputs.application }}
       portable: ${{ steps.changes.outputs.portable }}

@@ -25,16 +25,22 @@ jobs:
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.application }}
+          POLICY: ${{ needs.changes.outputs.policy }}
         run: |
           test "$RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          case "$POLICY" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CODE" = true ]; then test "$POLICY" = true; fi
       - name: Check out source
+        if: needs.changes.outputs.policy == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Workflow and metadata regressions
+        if: needs.changes.outputs.policy == 'true'
         run: python3 -m unittest discover -s scripts/ci/tests -v
 
       - name: Validate all workflow and composite action definitions
+        if: needs.changes.outputs.policy == 'true'
         run: |
           curl -fsSL --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
@@ -67,3 +73,6 @@ jobs:
       - name: Application qualification omission
         if: needs.changes.outputs.application == 'false'
         run: echo "No application inputs changed; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Documentation policy omission
+        if: needs.changes.outputs.policy == 'false'
+        run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

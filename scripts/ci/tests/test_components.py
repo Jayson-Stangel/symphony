@@ -135,14 +135,14 @@ class Consumers(unittest.TestCase):
 
     def test_all_exports_and_cheap_exceptions(self):
         text = workflow('change-classification')
-        for key in (*classifier.COMPONENTS, 'native', 'native_platform'):
+        for key in (*classifier.COMPONENTS, 'native', 'native_platform', 'policy'):
             self.assertIn('value: ${{ jobs.classify.outputs.' + key + ' }}', text)
             self.assertIn(key + ': ${{ steps.changes.outputs.' + key + ' }}', text)
         text = workflow('make-all')
-        self.assertIn('Workflow and metadata regressions\n        run:', text)
+        self.assertIn("Workflow and metadata regressions\n        if: needs.changes.outputs.policy == 'true'\n        run:", text)
         self.assertIn('"$RUNNER_TEMP/actionlint"', text)
-        # Setup, cache and suite remain conditional; cheap checkout/policy/lint are explicit exceptions.
-        for step in text.split('      - name: Set up mise tools', 1)[1].split('      - ')[:-1]:
+        # Application setup follows its component; policy and workflow checks omit pure prose.
+        for step in text.split('      - name: Set up mise tools', 1)[1].split('      - name: Application qualification omission', 1)[0].split('      - '):
             self.assertIn("if: needs.changes.outputs.application != 'false'", step)
 
     def test_native_allocations_follow_transitive_inputs(self):

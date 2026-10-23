@@ -381,7 +381,7 @@ or failed native matrices fail the required aggregate.
 | --- | --- |
 | `change-classification / classify`; each caller's `changes` | Always: full PR merge-base/head or exact push before/after paths, both sides of renames and deletions; dependency-free Python and Git. |
 | `pr-description-lint / validate-pr-description` | Every applicable PR metadata event; PR template, body and validator. Explicit cheap exception. |
-| `make-all / make-all` | Always validates routing/metadata regressions and all workflow definitions with checksum-pinned actionlint. Elixir/mise/dependencies/Node setup and `make all` only for application inputs. |
+| `make-all / make-all` | Validates routing/metadata regressions and checksum-pinned actionlint for behavioral or verified presentation edits; pure prose omits those suites. Elixir/mise/dependencies/Node setup and `make all` only for application inputs. |
 | `package-checks / portable` | Selected portable policy/controller tests, shell/package input checks and release version/schema validation; ordinary events execute this once, before native allocation. A caller may supply only successful exact-source preflight evidence. |
 | `package-checks / qualification` | Always verifies local/caller preflight source or explicit omission; prior-source verification when explicitly requested. Cheap status/source gate. |
 | `package-checks / host-policy` | Only if native work is selected; calls `host-policy / select` with `all`, `macos` or `linux_x86_64`. The retained target policy stays authoritative. |
@@ -456,8 +456,10 @@ Those cases conservatively follow their ordinary dependency routes. Comments
 and equivalent YAML formatting can also prove unchanged structure.
 
 Proven presentation-only paths do not select expensive runtime consumers, even
-when mixed with changes to another component. The always-present policy suite,
-actionlint, metadata validator and gate/protection contract tests still execute.
+when mixed with changes to another component. The `policy` decision keeps CI regression, actionlint and gate/protection-contract
+validation active for these naming changes. Pure prose emits `policy=false` and
+omits those suites and setup, retaining classification/metadata checks and the
+always-present status wrappers.
 The required-context ruleset is migrated explicitly when names change; the
 classifier cannot infer live protection changes or authorize them. Shared
 classifier/comparison/controller edits still select their full audited consumers.
@@ -558,4 +560,4 @@ and production, multiple documentation commits, merge pushes, mixed changes,
 renames/deletions, stale bases and missing history. It also executes the required
 wrapper guard from an empty workspace and checks failure/cancellation propagation.
 These are isolated event-replay results, not claims that GitHub-hosted jobs ran.
-Pure documentation changes run the cheap policy suite and workflow lint, but omit application setup/build/tests.
+Pure documentation changes run lightweight classification and PR metadata validation; CI regression suites, workflow lint and application setup/build/tests are intentionally omitted.
