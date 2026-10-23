@@ -289,7 +289,7 @@ func validateVerifiedOrigins(_ origins: [String: Any], originals: [String: Any])
                   integer(origin["record_run_attempt"]) == integer(recordOrigin["run_attempt"]),
                   origin["record_controller_revision"] as? String == recordOrigin["controller_revision"] as? String,
                   origin["record_job_name"] as? String == recordOrigin["job_name"] as? String,
-                  origin["record_filename"] as? String == (proof["record_filename"] as? String ?? "\(provider)-\(arch).json"),
+                  origin["record_filename"] as? String == (proof["record_filename"] as? String ?? (proof["archive_filename"] as? String ?? "").replacingOccurrences(of: ".docker.tar.gz", with: ".json")),
                   let recordArtifact = integer(origin["record_artifact_id"]), recordArtifact > 0,
                   let digest = origin["record_artifact_digest"] as? String, matches(digest, "^sha256:[a-f0-9]{64}$"),
                   origin["native_qualification_scope"] as? String == (proof["native_step_recovery"] == nil ? "successful-native-job" : "successful-native-step-before-seal-failure"),
