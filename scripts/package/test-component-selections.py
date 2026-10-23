@@ -29,7 +29,7 @@ def main():
                 'supported_hosts': core['supported_hosts'], 'compatibility': {'runner_protocol': 1},
                 'runners': core['original_components'], 'distribution': core['distribution'],
                 'component_selections': selections,
-                'bundle': {'filename': 'symphony-' + core['base_version'] + '-macos.tar.gz'}}
+                'bundle': {'filename': 'symphony-' + core['base_version'] + '-macos.tar.gz', 'architectures': ['arm64']}}
     checked = 0
     with tempfile.TemporaryDirectory(prefix='native-component-selection-') as directory:
         path = Path(directory) / 'release.json'
