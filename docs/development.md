@@ -388,8 +388,8 @@ Claude transport/runtime/tests, runner entrypoints, launchers and packaged
 behavioral skill/WORKFLOW inputs. `elixir/mix.exs` also affects portable release
 version checks. Helper/package closure: native Swift source and platform locks,
 build/package controllers, installed shell/environment scripts, packaged skills
-and `elixir/WORKFLOW.md`, manager envelope/version/schema/contracts and their
-transitive metadata/input validators and fixtures. Shared Swift/package inputs
+and `elixir/WORKFLOW.md`, packaged team Dockerfile templates, manager envelope/version/schema/contracts and their
+transitive metadata/input validators (including conditional imports at file granularity) and fixtures. A regression derives the packer's Python import closure from the actual sources, so these shared validators cannot silently become portable-only. Shared Swift/package inputs
 select both hosts; Linux SDK/controller inputs select Linux only. Build identity
 changes alone are not treated as changes to every consumer's behavior.
 

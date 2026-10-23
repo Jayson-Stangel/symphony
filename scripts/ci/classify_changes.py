@@ -89,16 +89,31 @@ PACKAGES = {'portable', 'package_macos', 'package_linux'}
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
 PORTABLE_RELEASE = {
-    'benchmark-transfer.py', 'build-candidate-runners.sh', 'build-runner-cached.sh',
-    'export-image.py', 'package-lifecycle.py', 'prepare-candidate-source.sh',
-    'record.py', 'runner-cache-policy.sh', 'runner-cache-probe.py', 'runner-smoke.sh',
-    'runner-startup.sh', 'test_registry.py', 'component_discovery.py', 'component_join.py',
-    'component_publication.py', 'component_restore.py', 'component_selection.py',
-    'graph_publication.py', 'manager_inputs.py',
-    'previous-package-subject.py', 'probe-registry-closure.py', 'qualified_graph.py',
-    'recover_native_record.py', 'registry_closure.py', 'reuse_payload.py',
-    'runner_reuse.py', 'prepare-manager-inputs.py', 'verify-prior-source.py',
-    'build-manager-package.sh', 'finalize-manager-packages.py',
+    'benchmark-transfer.py',
+    'build-candidate-runners.sh',
+    'build-manager-package.sh',
+    'build-runner-cached.sh',
+    'component_discovery.py',
+    'component_publication.py',
+    'component_restore.py',
+    'export-image.py',
+    'finalize-manager-packages.py',
+    'graph_publication.py',
+    'package-lifecycle.py',
+    'prepare-candidate-source.sh',
+    'prepare-manager-inputs.py',
+    'previous-package-subject.py',
+    'probe-registry-closure.py',
+    'record.py',
+    'recover_native_record.py',
+    'registry_closure.py',
+    'runner-cache-policy.sh',
+    'runner-cache-probe.py',
+    'runner-smoke.sh',
+    'runner-startup.sh',
+    'runner_reuse.py',
+    'test_registry.py',
+    'verify-prior-source.py',
 }
 
 
@@ -160,8 +175,9 @@ def consumers(path):
         if relative in {
             'artifacts.py', 'build-host-helper.sh', 'package.sh', 'component_provenance.py',
             'finite_transition.py', 'host-targets.json', 'manager-transition-policy.json',
-            'manager_contract.py', 'manager_envelope.py', 'manager_version.py',
+            'manager_contract.py', 'manager_envelope.py', 'manager_inputs.py', 'manager_version.py',
             'manager-version', 'release-schema', 'runner_inputs.py', 'select-hosts.py',
+            'component_join.py', 'component_selection.py', 'qualified_graph.py', 'reuse_payload.py',
         }:
             return PACKAGES
         return ALL
@@ -169,6 +185,8 @@ def consumers(path):
         if path.split('/')[2] in ('build-runner', 'configure-runner-cache', 'runner-cache-runtime'):
             return {'portable'}
         return ALL
+    if path.startswith('runner/templates/'):
+        return PACKAGES | {'application'}
     if path.startswith('runner/claude/qualification/'):
         return {'portable'}  # explicit manual reference_node_smoke consumes the image
     if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):

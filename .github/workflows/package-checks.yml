@@ -50,9 +50,18 @@ jobs:
           LOCAL_RESULT: ${{ needs.portable.result }}
           LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
           CALLER_REVISION: ${{ inputs.portable_revision }}
+          MACOS: ${{ needs.changes.outputs.package_macos }}
+          LINUX: ${{ needs.changes.outputs.package_linux }}
+          FIXTURES: ${{ needs.changes.outputs.fixtures }}
         run: |
           test "$CLASSIFICATION" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          for flag in "$MACOS" "$LINUX" "$FIXTURES"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
+          if [ "$MACOS" = true ] || [ "$LINUX" = true ] || [ "$FIXTURES" = true ]; then
+            test "$CODE" = true
+          fi
           if [ "$CODE" = false ]; then
             test "$LOCAL_RESULT" = skipped
             test -z "$CALLER_REVISION"
@@ -219,6 +228,7 @@ jobs:
             if [ "$macos" = true ]; then expected_platform=macos; else expected_platform=linux_x86_64; fi
           fi
           test "$NATIVE_REQUIRED" = "$expected_native"
+          if [ "$NATIVE_REQUIRED" = true ]; then test "$PORTABLE_REQUIRED" = true; fi
           test "$PLATFORM" = "$expected_platform"
           if [ "$CODE" = false ]; then
             test "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = false/false/false/false

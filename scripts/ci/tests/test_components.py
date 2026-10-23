@@ -1,4 +1,5 @@
 """Replay real events and execute the actual consumer/allocation/receipt guards."""
+import ast
 import itertools
 import json
 import os
@@ -57,6 +58,8 @@ class Consumers(unittest.TestCase):
             'docs/development.md': set(),
             'elixir/lib/symphony_elixir/orchestrator.ex': {'application'},
             'elixir/mix.lock': {'application'},
+            'scripts/release/manager_inputs.py': {'portable', 'package_macos', 'package_linux'},
+            'runner/templates/team-codex.Dockerfile': {'portable', 'package_macos', 'package_linux', 'application'},
             'runner/browser/package-lock.json': {'portable'},
             'scripts/package/linux/Package.resolved': {'portable', 'package_linux'},
             'scripts/package/host.swift': {'portable', 'package_macos', 'package_linux'},
@@ -168,7 +171,8 @@ class Consumers(unittest.TestCase):
             for classification, portable, native in itertools.product(statuses, repeat=3):
                 values = dict(os.environ, **dict(env, RESULT=classification, PORTABLE=portable, PACKAGE=native))
                 actual = subprocess.run(['bash', '-e', '-c', command], env=values, capture_output=True)
-                expected = classification == portable == 'success' and native == env['PACKAGE']
+                expected = (classification == portable == 'success' and native == env['PACKAGE']
+                            and (flags[0] == 'true' or env['NATIVE_REQUIRED'] == 'false'))
                 self.assertEqual(actual.returncode == 0, expected, (flags, classification, portable, native))
         for key in ('CODE', 'PORTABLE_REQUIRED', 'MACOS', 'LINUX', 'FIXTURES', 'NATIVE_REQUIRED', 'PLATFORM'):
             for bad in ('', 'garbage', 'TRUE'):
@@ -184,11 +188,43 @@ class Consumers(unittest.TestCase):
         for result, code, local, caller in itertools.product(('success', 'failure', 'cancelled', 'skipped', ''),
                 ('true', 'false', '', 'invalid'), ('success', 'failure', 'cancelled', 'skipped', ''), ('', 'a'*40, 'b'*40)):
             env = dict(os.environ, CLASSIFICATION=result, CODE=code, LOCAL_RESULT=local, LOCAL_REVISION='a'*40,
-                       CALLER_REVISION=caller, GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
+                       CALLER_REVISION=caller, GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull,
+                       MACOS='false', LINUX='false', FIXTURES='false')
             actual = subprocess.run(['bash', '-e', '-c', guard], env=env, capture_output=True)
             expected = result == 'success' and ((code == 'false' and local == 'skipped' and not caller) or
                         (code == 'true' and ((caller == 'a'*40 and local == 'skipped') or (not caller and local == 'success'))))
             self.assertEqual(actual.returncode == 0, expected, (result, code, local, caller))
+
+    def test_package_python_dependencies_select_both_native_consumers(self):
+        # Read the actual packer and Python import graph, rather than copying its
+        # dependency list into a test. New local imports cannot become portable-only.
+        source = (ROOT / 'scripts/release/package.sh').read_text()
+        pending = list(re.findall(r'\$root/(scripts/release/[a-z_-]+\.py)', source))
+        self.assertIn('scripts/release/manager_inputs.py', pending)
+        visited = set()
+        while pending:
+            path = pending.pop()
+            if path in visited:
+                continue
+            visited.add(path)
+            self.assertTrue({'portable', 'package_macos', 'package_linux'} <= classifier.consumers(path), path)
+            tree = ast.parse((ROOT / path).read_text())
+            for node in ast.walk(tree):
+                imports = [item.name for item in node.names] if isinstance(node, ast.Import) else ([node.module] if isinstance(node, ast.ImportFrom) else [])
+                for name in imports:
+                    dependency = ROOT / 'scripts/release' / ((name or '').split('.')[0] + '.py')
+                    if dependency.is_file():
+                        pending.append(str(dependency.relative_to(ROOT)))
+
+    def test_native_work_cannot_bypass_portable_preflight(self):
+        guard = scripts(job(workflow('package-checks'), 'qualification'))[0]
+        for key in ('MACOS', 'LINUX', 'FIXTURES'):
+            for bad in ('true', '', 'invalid'):
+                env = dict(os.environ, CLASSIFICATION='success', CODE='false', LOCAL_RESULT='skipped',
+                           LOCAL_REVISION='', CALLER_REVISION='', MACOS='false', LINUX='false',
+                           FIXTURES='false', GITHUB_STEP_SUMMARY=os.devnull)
+                env[key] = bad
+                self.assertNotEqual(subprocess.run(['bash', '-e', '-c', guard], env=env, capture_output=True).returncode, 0)
 
     def test_manual_and_release_requests_remain_complete(self):
         self.assertNotIn('outputs.application', workflow('runner-release'))
