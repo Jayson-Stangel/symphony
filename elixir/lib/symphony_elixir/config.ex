@@ -159,10 +159,10 @@ defmodule SymphonyElixir.Config do
   end
 
   @doc false
-  @spec local_workspace_root() :: Path.t()
-  def local_workspace_root do
+  @spec local_workspace_root(Schema.t()) :: Path.t()
+  def local_workspace_root(settings \\ settings!()) do
     workflow_dir = Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
-    Path.expand(settings!().workspace.root, workflow_dir)
+    Path.expand(settings.workspace.root, workflow_dir)
   end
 
   @spec validate!() :: :ok | {:error, term()}

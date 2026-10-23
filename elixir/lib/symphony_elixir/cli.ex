@@ -31,7 +31,7 @@ defmodule SymphonyElixir.CLI do
       [_, workflow] = args
       SymphonyElixir.Workflow.set_workflow_file_path(Path.expand(workflow))
 
-      case SandboxReadiness.check() do
+      case SandboxReadiness.check(credential_free: true) do
         :ok ->
           IO.puts("Codex sandbox protected-command checks passed.")
 

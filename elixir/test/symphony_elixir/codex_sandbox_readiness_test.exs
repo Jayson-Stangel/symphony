@@ -3,6 +3,43 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
 
   alias SymphonyElixir.Codex.SandboxReadiness
 
+  test "disposable diagnostics qualify real sandbox settings without tracker credentials" do
+    previous = System.get_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_API_KEY")
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous) end)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "$LINEAR_API_KEY", codex_command: "credential-free-codex app-server")
+    assert {:error, :missing_linear_api_token} = Config.validate!()
+
+    assert :ok =
+             SandboxReadiness.check(
+               credential_free: true,
+               execute: fn _, args, _ ->
+                 input = args |> List.last() |> Jason.decode!()
+                 assert input["policy"]["type"] == "workspaceWrite"
+                 {:ok, root} = SymphonyElixir.PathSafety.canonicalize(input["workspace"])
+                 assert input["policy"]["writableRoots"] == [root]
+                 assert input["command"] == "credential-free-codex app-server"
+                 {~s({"ready":true,"protocol":1}), 0}
+               end
+             )
+
+    assert {:error, :missing_linear_api_token} = Config.validate!()
+    refute SandboxReadiness.qualified?()
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "$LINEAR_API_KEY", codex_thread_sandbox: "danger-full-access")
+    assert {:error, "sandbox_unsupported_policy"} = SandboxReadiness.check(credential_free: true)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "$LINEAR_API_KEY")
+
+    assert {:error, "sandbox_check_failed"} =
+             SandboxReadiness.check(
+               credential_free: true,
+               execute: fn _, _, _ ->
+                 write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "$LINEAR_API_KEY", codex_command: "changed-during-probe app-server")
+                 {~s({"ready":true,"protocol":1}), 0}
+               end
+             )
+  end
+
   test "unqualified application startup is blocked and checks pin a process-local input receipt" do
     Application.delete_env(:symphony_elixir, :codex_sandbox_receipt)
     refute SandboxReadiness.qualified?()

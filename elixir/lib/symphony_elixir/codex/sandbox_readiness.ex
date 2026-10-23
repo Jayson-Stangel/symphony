@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
   @moduledoc "Credential-free startup qualification of the effective Codex sandbox."
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config.Schema, Workflow}
 
   @external_resource Path.expand("../../../priv/codex_readiness.py", __DIR__)
   @probe File.read!(@external_resource)
@@ -12,18 +13,21 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
     Application.delete_env(:symphony_elixir, @receipt_key)
     execute = Keyword.get(opts, :execute, &System.cmd/3)
 
-    with before <- fingerprint(),
-         {:ok, settings} <- Config.settings(),
+    load_settings = if Keyword.get(opts, :credential_free, false), do: &probe_settings/0, else: &Config.settings/0
+
+    with {:ok, settings} <- load_settings.(),
+         before <- fingerprint(settings),
          :ok <- if(settings.codex.thread_sandbox == "workspace-write", do: :ok, else: {:error, "sandbox_unsupported_policy"}),
-         root <- Config.local_workspace_root(),
+         root <- Config.local_workspace_root(settings),
          :ok <- File.mkdir_p(root),
-         {:ok, runtime} <- Config.codex_runtime_settings(root),
+         {:ok, runtime} <- Config.resolve_codex_runtime_settings(settings, root, []),
          {:ok, python} <- dependency(opts, :python_path, "python3"),
          {:ok, timeout} <- dependency(opts, :timeout_path, "timeout"),
          input <- Jason.encode!(%{command: settings.codex.command, workspace: root, policy: runtime.turn_sandbox_policy, remote: settings.worker.ssh_hosts != []}),
          {data, 0} <- execute.(timeout, ["--kill-after=2", "20", python, "-c", @probe, input], stderr_to_stdout: true),
          {:ok, %{"ready" => true, "protocol" => 1}} <- Jason.decode(data),
-         true <- before == fingerprint() do
+         {:ok, current} <- load_settings.(),
+         true <- before == fingerprint(current) do
       Application.put_env(:symphony_elixir, @receipt_key, before)
       :ok
     else
@@ -44,6 +48,13 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
     end
   rescue
     _ -> {:error, "sandbox_check_failed"}
+  end
+
+  # Disposable diagnostics receive the workflow but deliberately receive no
+  # tracker credentials. Parse the real sandbox inputs without authenticating
+  # the unrelated tracker; listener startup still uses validated store settings.
+  defp probe_settings do
+    with {:ok, workflow} <- Workflow.load(), do: Schema.parse(workflow.config)
   end
 
   defp dependency(opts, key, command) do
