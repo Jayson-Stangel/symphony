@@ -484,7 +484,7 @@ runner_env_file() { echo "$runner_home/project.env"; }
 runner_project_lock() { :; }; runner_require_identity() { :; }
 runner_status() { if [ -f "$2/current" ]; then echo true; else echo missing; fi; }
 runner_owned() { :; }; runner_is_legacy() { return 1; }
-runner_update_port() { echo 4010; }; package_image() { echo candidate; }
+runner_update_port() { echo 4010; }; package_transition_image() { echo candidate; }
 runner_build_image() { :; }; runner_doctor() { :; }; runner_pause() { :; }
 runner_prepare_storage() { :; }; runner_start() { printf new >"$fixture/current"; }
 runner_resume_when_ready() { :; }; runner_record_observed_metadata() { :; }
@@ -492,6 +492,7 @@ package_write_transition() { :; }; package_remove_transition_fields() { :; }
 package_finish_transition() { die 'injected manager activation failure'; }
 fixture_runtime() {
   case "$1" in
+    info) printf '%s\n' 'name=seccomp,profile=builtin' ;;
     image) echo new ;;
     inspect)
       case "${!#}" in
