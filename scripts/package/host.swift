@@ -551,7 +551,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -638,6 +638,11 @@ do {
         let value = Data(args[1].utf8); let header = Data("blob \(value.count)\0".utf8)
         print(Insecure.SHA1.hash(data: header + value).map { String(format: "%02x", $0) }.joined())
     case "owned-file": _ = checkedInfo(args[1])
+    case "selection-storage-directory":
+        // Existing runner roots may be 0755 from older launchers. Their private
+        // child selection directory and records retain stricter 0700/0600 modes.
+        let info = checkedInfo(args[1], directory: true)
+        guard info.st_mode & 0o022 == 0 else { fail("selected environment storage is writable by other users") }
     case "owned-directory":
         let info = checkedInfo(args[1], directory: true)
         guard info.st_mode & 0o777 == 0o700 else { fail("unsafe owned directory") }
