@@ -57,6 +57,11 @@ for selection in current previous; do
   if docker image inspect "$digest" >/dev/null 2>&1; then echo 'Selected image still cached; refusing false pull proof' >&2; exit 1; fi
   docker pull "$digest"
   bash "$root/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
+  # New reference environments qualify their own committed Node/npm contract.
+  # Historical build sources and retained components keep their original proof.
+  if git -C "$source" cat-file -e "$revision:runner/node-smoke.sh" 2>/dev/null; then
+    git -C "$source" show "$revision:runner/node-smoke.sh" | bash -s -- "$digest"
+  fi
   python3 "$root/scripts/release/record.py" --image "$digest" --provider "$provider" --architecture "$architecture" \
     --revision "$revision" --registry-state "$registry_state" ${record_flags[@]+"${record_flags[@]}"} --output "$destination/$provider-$architecture.json"
   docker tag "$digest" "$image"

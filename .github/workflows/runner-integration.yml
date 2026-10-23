@@ -6,6 +6,10 @@ on:
         description: Isolated same-content distribution alias proof using original OCI digests
         type: boolean
         default: false
+      reference_node_smoke:
+        description: Also build and qualify the two current-source Node reference harnesses
+        type: boolean
+        default: false
       baseline_run:
         description: Optional explicit authorized original-record run for pre-merge diagnostics
         type: string
@@ -28,6 +32,22 @@ jobs:
     uses: ./.github/workflows/native-manager-helpers.yml
     with:
       portable_revision: ${{ needs.portable.outputs.qualified_revision }}
+  reference-node-smoke:
+    needs: [changes, portable]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && needs.portable.result == 'success' && inputs.reference_node_smoke }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build live E2E and Claude qualification images in their harness contexts
+        run: |
+          docker build -t symphony-live-node-smoke elixir/test/support/live_e2e_docker
+          docker build -f runner/claude/qualification/Dockerfile -t symphony-qualification-node-smoke runner/claude
+      - name: Verify reference image Node/npm and native CLI startup
+        run: |
+          bash runner/node-smoke.sh symphony-live-node-smoke symphony-qualification-node-smoke
+          docker run --rm --network none --entrypoint codex symphony-live-node-smoke --version
+          docker run --rm --network none symphony-qualification-node-smoke inspect
   plan:
     needs: [changes, portable]
     if: needs.changes.outputs.code == 'true'
@@ -104,7 +124,7 @@ jobs:
       metadata_artifact: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
       helper_revision: ${{ needs.helpers.outputs.qualified_revision }}
   listener-and-cleanup:
-    needs: [changes, portable, helpers, plan, runners, manager-inputs, manager-package]
+    needs: [changes, portable, helpers, reference-node-smoke, plan, runners, manager-inputs, manager-package]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -115,6 +135,8 @@ jobs:
           CODE: ${{ needs.changes.outputs.code }}
           PORTABLE: ${{ needs.portable.result }}
           HELPERS: ${{ needs.helpers.result }}
+          REFERENCE_NODE_REQUEST: ${{ inputs.reference_node_smoke }}
+          REFERENCE_NODE: ${{ needs.reference-node-smoke.result }}
           PLAN: ${{ needs.plan.result }}
           HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
           RUNNERS: ${{ needs.runners.result }}
@@ -123,10 +145,15 @@ jobs:
         run: |
           test "$RESULT" = success
           case "$CODE" in
-            false) test "$PORTABLE" = skipped; test "$HELPERS" = skipped; test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
+            false) test "$REFERENCE_NODE" = skipped; test "$PORTABLE" = skipped; test "$HELPERS" = skipped; test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
             true)
               test "$PORTABLE" = success
               test "$HELPERS" = success
+              case "$REFERENCE_NODE_REQUEST" in
+                true) test "$REFERENCE_NODE" = success ;;
+                false) test "$REFERENCE_NODE" = skipped ;;
+                *) exit 1 ;;
+              esac
               test "$PLAN" = success
               test "$INPUTS" = success
               test "$PACKAGE" = success

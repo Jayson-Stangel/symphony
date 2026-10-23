@@ -34,13 +34,14 @@ class BrowserRouting(unittest.TestCase):
             base = commit('runner/Dockerfile', RECIPE)
             manager = commit('elixir/test/fixture.exs', 'manager test change')
             labels = commit('runner/Dockerfile', RECIPE + 'ARG SYMPHONY_INPUT_IDENTITY=unknown\nLABEL com.symphony.inputs.sha256=$SYMPHONY_INPUT_IDENTITY\n')
+            node_control = commit('runner/node-smoke.sh', 'actual Node/npm validation control')
             browser_base = commit('runner/Dockerfile', RECIPE.replace('a' * 64, 'b' * 64))
             browser_npm = commit('runner/browser/package-lock.json', 'actual dependency')
             browser_smoke = commit('runner/browser/smoke.cjs', 'actual test')
             original = os.getcwd(); os.chdir(folder)
             try:
                 for before, after, expected in ((base, manager, False), (manager, labels, False),
-                                                (labels, browser_base, True), (browser_base, browser_npm, True),
+                                                (labels, node_control, True), (node_control, browser_base, True), (browser_base, browser_npm, True),
                                                 (browser_npm, browser_smoke, True)):
                     event = dict(before=before, after=after)
                     paths = CLASSIFY.changed_paths(event, 'push')
@@ -103,7 +104,8 @@ class BrowserRouting(unittest.TestCase):
         for paths, event, name in (([], {}, 'push'), (['elixir/test/fixture.exs'], {}, 'push'),
                                     (['../runner/browser/package.json'], {}, 'push'),
                                     (['.dockerignore'], {}, 'push'), (['.github/actions/build-runner/action.yml'], {}, 'push'),
-                                    (['scripts/ci/classify_changes.py'], {}, 'push')):
+                                    (['scripts/ci/classify_changes.py'], {}, 'push'),
+                                    (['runner/node-smoke.sh'], {}, 'push')):
             self.assertTrue(CLASSIFY.browser_required(paths, event, name))
 
     def test_guard_refuses_missing_or_failed_decisions_and_retains_both_users(self):

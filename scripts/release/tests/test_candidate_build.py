@@ -61,6 +61,41 @@ esac
             self.assertEqual([path.name for path in output.glob("*.json")], ["codex-x86_64.json"])
 
 
+class CandidateNodeContractTest(unittest.TestCase):
+    def test_only_the_exact_built_source_node_contract_runs_before_qualification(self):
+        controller = (ROOT / 'scripts/release/build-candidate-runners.sh').read_text()
+        block = controller[controller.index('  # New reference environments'):controller.index('  python3 "$root/scripts/release/record.py"')]
+        with tempfile.TemporaryDirectory(prefix='candidate-node-contract-') as directory:
+            root = Path(directory); source = root / 'source'; source.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(source), *args], stderr=subprocess.PIPE).decode().strip()
+            def commit(message):
+                git('add', '--all'); git('commit', '-qm', message)
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            (source / 'README').write_text('historical source without a Node contract')
+            historical = commit('historical source')
+            (source / 'runner').mkdir()
+            script = source / 'runner/node-smoke.sh'
+            script.write_text('#!/bin/sh\nprintf "%s\\n" "$1" > "$NODE_RECEIPT"\nexit "${NODE_FAILURE:-0}"\n')
+            current = commit('source-owned Node contract')
+            # A modified manager/worktree script must never replace the built source's blob.
+            script.write_text('#!/bin/sh\nexit 99\n')
+            digest = 'localhost:5000/codex@sha256:' + 'a' * 64
+            for revision, status, invoked in ((historical, 0, False), (current, 0, True), (current, 37, True)):
+                receipt = root / 'node-receipt'; sealed = root / 'sealed'
+                for path in (receipt, sealed):
+                    if path.exists(): path.unlink()
+                result = subprocess.run(['bash', '-e', '-u', '-o', 'pipefail', '-c', block + '\nprintf sealed > "$SEAL_RECEIPT"'],
+                                        env=dict(os.environ, source=str(source), revision=revision, digest=digest,
+                                                 NODE_RECEIPT=str(receipt), SEAL_RECEIPT=str(sealed), NODE_FAILURE=str(status)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(receipt.exists(), invoked)
+                self.assertEqual(sealed.exists(), status == 0)
+                if invoked: self.assertEqual(receipt.read_text().strip(), digest)
+
+
 class CleanUbuntuDriverTest(unittest.TestCase):
     @staticmethod
     def actual_workflow_script():

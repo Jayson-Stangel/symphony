@@ -119,13 +119,19 @@ class ComponentEvents(unittest.TestCase):
         body = section.split('        run: |\n', 1)[1].split('      - ', 1)[0]
         script = '\n'.join(line[10:] for line in body.splitlines())
         good = dict(RESULT='success', CODE='true', PORTABLE='success', HELPERS='success', PLAN='success', HAS_BUILDS='false',
-                    RUNNERS='skipped', INPUTS='success', PACKAGE='success')
+                    RUNNERS='skipped', INPUTS='success', PACKAGE='success', REFERENCE_NODE_REQUEST='false', REFERENCE_NODE='skipped')
         with tempfile.TemporaryDirectory() as directory:
             def accepted(values):
                 return subprocess.run(['bash', '-e', '-c', script], cwd=directory,
                                       env=dict(os.environ, **values)).returncode == 0
             self.assertTrue(accepted(good))
             self.assertTrue(accepted(dict(good, HAS_BUILDS='true', RUNNERS='success')))
+            requested = dict(good, REFERENCE_NODE_REQUEST='true', REFERENCE_NODE='success')
+            self.assertTrue(accepted(requested))
+            for state in ('failure', 'cancelled', 'skipped', ''):
+                self.assertFalse(accepted(dict(requested, REFERENCE_NODE=state)))
+            self.assertFalse(accepted(dict(good, REFERENCE_NODE='success')))
+            self.assertFalse(accepted(dict(good, REFERENCE_NODE_REQUEST='')))
             for key in ('RESULT', 'PORTABLE', 'HELPERS', 'PLAN', 'INPUTS', 'PACKAGE'):
                 for state in ('failure', 'cancelled', 'skipped', ''):
                     self.assertFalse(accepted(dict(good, **{key: state})), (key, state))
@@ -133,7 +139,7 @@ class ComponentEvents(unittest.TestCase):
                 self.assertFalse(accepted(dict(good, RUNNERS=state)))
             self.assertFalse(accepted(dict(good, HAS_BUILDS='')))
             docs = dict(RESULT='success', CODE='false', PORTABLE='skipped', HELPERS='skipped', PLAN='skipped', RUNNERS='skipped',
-                        INPUTS='skipped', PACKAGE='skipped', HAS_BUILDS='')
+                        INPUTS='skipped', PACKAGE='skipped', HAS_BUILDS='', REFERENCE_NODE_REQUEST='false', REFERENCE_NODE='skipped')
             self.assertTrue(accepted(docs))
             self.assertFalse(accepted(dict(docs, PACKAGE='failure')))
 

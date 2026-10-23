@@ -739,6 +739,12 @@ docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
 bash runner/claude/smoke.sh symphony-claude-smoke
 ```
 
+The shared browser layer, both runner targets, live E2E workers, and Claude
+qualification image use Node 24.22.1 with bundled npm 11.19.1. Their Dockerfiles
+pin the same multi-platform Node image digest. When updating that pin, update
+`runner/node-smoke.sh` too; CI checks the actual Node/npm resolution inside each
+built image, alongside Chromium checks for root and UID 11001.
+
 The smoke uses a disposable nonroot container, empty memory tracker and disabled
 network. It checks HTTP state with the expected missing-auth gate, Linux owned
 subprocess cleanup, and TERM shutdown without a forced kill. The current CLI

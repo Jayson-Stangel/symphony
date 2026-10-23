@@ -1,4 +1,7 @@
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS claude-deps
+# Keep this multi-platform Node pin aligned with the live E2E and qualification images.
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS node-runtime
+
+FROM node-runtime AS claude-deps
 WORKDIR /opt/symphony/claude
 COPY runner/claude/package.json runner/claude/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
@@ -7,7 +10,7 @@ COPY runner/claude/*.mjs ./
 FROM elixir:1.19@sha256:db1cbca0b49e26e65dd804c75f27ec5f01835f1d29f8b8e4cc8a51f01f986f9f AS browser-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git nodejs npm python3 ripgrep \
+    ca-certificates curl git python3 ripgrep \
   && install -d -m 755 /etc/apt/keyrings \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -17,6 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && gh --version \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Node and its matching npm together, without distro Node/npm or Yarn.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Keep browser binaries shared across the root Codex and non-root Claude users.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/symphony/ms-playwright
@@ -50,7 +59,6 @@ ENTRYPOINT ["/usr/local/bin/symphony-runner"]
 
 FROM common AS claude
 LABEL com.symphony.agent=claude com.symphony.protocol=1
-COPY --from=claude-deps /usr/local/bin/node /usr/local/bin/node
 COPY --from=claude-deps /opt/symphony/claude /opt/symphony/claude
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
   && rm -rf /var/lib/apt/lists/* \

@@ -46,7 +46,7 @@ def browser_required(paths, event=None, name=None):
     if not paths:
         return True
     exact = {
-        '.dockerignore', 'runner/Dockerfile.dockerignore',
+        '.dockerignore', 'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh',
         '.github/workflows/browser-smoke.yml', '.github/workflows/change-classification.yml',
         'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
     }
