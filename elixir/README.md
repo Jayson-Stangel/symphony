@@ -33,11 +33,15 @@ The reference Codex image uses its version-matched bundled Bubblewrap helper.
 Codex launches share a checked-in Docker seccomp profile and `no-new-privileges`.
 The profile extends the pinned Docker default only for user/PID namespace
 creation and the mount operations required inside those namespaces; it retains
-Docker's capabilities, masked paths and AppArmor settings. No `SYS_ADMIN`,
+Docker's capabilities and masked paths, with AppArmor enforcement enabled. No `SYS_ADMIN`,
 privileged mode, legacy sandbox or unconfined setting is used. See
 [`docs/codex-docker-sandbox.md`](../docs/codex-docker-sandbox.md) for provenance,
 permission details and qualification limits. Packaged releases carry the same
 profile and verify its identity before launch.
+
+On AppArmor-enabled Docker hosts, an administrator must add the reviewed versioned
+Codex profile before worker startup. See [the Docker sandbox contract](../docs/codex-docker-sandbox.md#apparmor-hosts)
+for the exact policy, supported paths, qualification, and rollback constraints.
 
 Real protected execution is part of `scripts/release/runner-smoke.sh`.
 Python failure-injection regressions run with

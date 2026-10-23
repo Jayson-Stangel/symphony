@@ -34,6 +34,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
     esac
     case "$1" in
+      info)
+        [ "${FIXTURE_INFO_FAIL:-false}" != true ] || exit 1
+        [ "${FIXTURE_SECURITY_EMPTY:-false}" != true ] || exit 0
+        printf '%s\\n' "${FIXTURE_SECURITY_OPTIONS-name=seccomp,profile=builtin}" ;;
       inspect)
         [ -f "$state" ] || { printf '\\n'; exit 1; }
         case "$*" in
@@ -1149,6 +1153,78 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     assert first == second
     assert first == third
+  end
+
+  test "selected daemon AppArmor policy is shared by preflight and listener and binds reuse", ctx do
+    apparmor = [{"FIXTURE_SECURITY_OPTIONS", "name=apparmor,profile=default\nname=seccomp,profile=builtin"}]
+    assert {_, 0} = launch_args(ctx, ["run"])
+    original = File.read!(ctx.state <> ".codex-runtime")
+    assert original == "9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b"
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["run"], apparmor)
+    assert message =~ "runtime profile differs"
+    refute File.read!(ctx.log) =~ "stop\t"
+    ready_curl!(ctx)
+    fault = Path.join(ctx.root, "create-fault")
+    File.write!(fault, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_FAIL_CREATE_FILE", fault} | apparmor])
+    recipe = File.read!(ctx.state <> ".codex-runtime")
+    assert recipe =~ original <> ":apparmor:symphony-codex-candidate-b6261d4c613296dd:"
+    calls = File.read!(ctx.log) |> String.split("\n")
+
+    for call <- Enum.filter(calls, &(String.contains?(&1, "--check-codex-sandbox") or String.contains?(&1, "--detach"))) do
+      assert call =~ "--security-opt\tapparmor=symphony-codex-candidate-b6261d4c613296dd"
+    end
+
+    assert {_, 0} = launch_args(ctx, ["update", "--rollback-runner"], apparmor)
+    assert File.read!(ctx.state <> ".codex-runtime") == original
+  end
+
+  test "unavailable or malformed daemon security cannot reuse an empty recipe label", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".codex-runtime", "")
+
+    for env <- [[{"FIXTURE_INFO_FAIL", "true"}], [{"FIXTURE_SECURITY_EMPTY", "true"}], [{"FIXTURE_SECURITY_OPTIONS", "invalid"}]] do
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["run"], env)
+      assert message =~ "security options", inspect({env, message})
+      refute File.read!(ctx.log) =~ "--detach"
+      refute File.read!(ctx.log) =~ "stop\t"
+      assert File.read!(ctx.state) |> String.trim() == "true"
+    end
+  end
+
+  test "AppArmor profile integrity refuses modified missing and symlinked inputs", ctx do
+    home = Path.join(ctx.root, "profile-home")
+    File.mkdir_p!(Path.join(home, "scripts"))
+    source = Path.join(Path.dirname(@launcher), "codex-apparmor.profile")
+    profile = Path.join(home, "scripts/codex-apparmor.profile")
+    File.cp!(Path.join(Path.dirname(@launcher), "codex-seccomp.json"), Path.join(home, "scripts/codex-seccomp.json"))
+    File.cp!(source, profile)
+
+    script = ~S"""
+    source "$1" --help >/dev/null
+    symphony_home=$2
+    runner_codex_run "$SYMPHONY_CONTAINER_RUNTIME" --rm fixture-image
+    """
+
+    env = [{"FIXTURE_SECURITY_OPTIONS", "name=apparmor"} | ctx.env]
+    assert {_, 0} = System.cmd("bash", ["-euc", script, "profile", @launcher, home], env: env, stderr_to_stdout: true)
+
+    for kind <- [:modified, :symlink, :missing] do
+      File.rm!(profile)
+
+      case kind do
+        :modified -> File.write!(profile, "modified")
+        :symlink -> File.ln_s!(source, profile)
+        :missing -> :ok
+      end
+
+      File.write!(ctx.log, "")
+      assert {message, 1} = System.cmd("bash", ["-euc", script, "profile", @launcher, home], env: env, stderr_to_stdout: true)
+      assert message =~ "Codex runtime profile"
+      refute File.read!(ctx.log) =~ "run\t"
+    end
   end
 
   test "invalid provider flags fail before any container or credential operation", ctx do

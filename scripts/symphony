@@ -915,23 +915,55 @@ runner_report() {
   fi
 }
 
-codex_runtime_profile_id() { printf '%s' '9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b'; }
+codex_seccomp_id() { printf '%s' '9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b'; }
+codex_apparmor_id() { printf '%s' '2eddb013e3503591aaac8e583e6dca093290287713c8aa0869b2d4458fa594aa'; }
 
-# One launch adapter is shared by Codex listeners and credential-free probes.
-# Runtime security inputs belong here rather than in a diagnostic-only path.
-runner_codex_run() {
-  local runtime=$1; shift
-  local profile="$symphony_home/scripts/codex-seccomp.json" digest
+# Query the selected daemon, which may be remote. Never infer its LSM from uname.
+codex_apparmor_profile() {
+  local runtime=$1 options option found=false
+  options=$("$runtime" info --format '{{range .SecurityOptions}}{{println .}}{{end}}') || die 'cannot inspect Docker security options for Codex'
+  [ -n "$options" ] || die 'Docker security options are empty; Codex launch refused'
+  while IFS= read -r option; do
+    [[ "$option" =~ ^name=[a-z0-9_-]+(,[a-z0-9_.=/:-]+)*$ ]] || die 'invalid Docker security options; Codex launch refused'
+    case "$option" in name=apparmor|name=apparmor,*) found=true ;; esac
+  done <<< "$options"
+  if "$found"; then printf '%s' 'symphony-codex-candidate-b6261d4c613296dd'; else printf none; fi
+}
+
+codex_runtime_profile_id() {
+  local apparmor
+  apparmor=$(codex_apparmor_profile "$1") || return
+  printf '%s' "$(codex_seccomp_id)"
+  # Preserve the existing LinuxKit identity when its security inputs are unchanged.
+  if [ "$apparmor" != none ]; then printf ':apparmor:%s:%s' "$apparmor" "$(codex_apparmor_id)"; fi
+}
+
+codex_verify_profile() {
+  local profile=$1 expected=$2 digest
   [ -f "$profile" ] && [ ! -L "$profile" ] || die 'Codex runtime profile is missing or unsafe'
   if "$packaged_install"; then digest=$(package_helper sha256 "$profile")
   elif command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$profile"); digest=${digest%% *}
   else digest=$(shasum -a 256 "$profile"); digest=${digest%% *}; fi
-  [ "$digest" = "$(codex_runtime_profile_id)" ] || die 'Codex runtime profile integrity check failed'
-  "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
+  [ "$digest" = "$expected" ] || die 'Codex runtime profile integrity check failed'
+}
+
+# Shared by listeners, doctor, candidate preflight and image qualification.
+# Loading host AppArmor policy is an explicit administrator action, never ours.
+runner_codex_run() {
+  local runtime=$1; shift
+  local profile="$symphony_home/scripts/codex-seccomp.json" apparmor
+  codex_verify_profile "$profile" "$(codex_seccomp_id)"
+  apparmor=$(codex_apparmor_profile "$runtime") || return
+  if [ "$apparmor" != none ]; then
+    codex_verify_profile "$symphony_home/scripts/codex-apparmor.profile" "$(codex_apparmor_id)"
+    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges --security-opt "apparmor=$apparmor" "$@"
+  else
+    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
+  fi
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume
+  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
   validate_agent "$agent"
   if "$packaged_install" && [ "$authority" != update ]; then package_use_project_image "$root" "$agent"; fi
   runner_project_lock "$root"
@@ -939,6 +971,7 @@ runner_start() {
   case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
+  if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return; fi
   env_file="$runner_home/$id.env"; image=$(runner_image "$agent"); workflow="$root/WORKFLOW.md"
   storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
@@ -973,7 +1006,7 @@ runner_start() {
       existing_image=$("$runtime" inspect --format '{{.Image}}' "$name")
       [ -n "$image_id" ] && [ "$image_id" = "$existing_image" ] || die 'listener image differs; transition through symphony update --agent'
       if [ "$agent" = codex ]; then
-        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
+        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
       fi
       if [ "$agent" = claude ]; then
         profile=$(claude_native_profile)
@@ -1030,7 +1063,7 @@ runner_start() {
   runner_codex_run "$runtime" --detach --restart unless-stopped --name "$name" \
     --label com.symphony.mode=listener \
     --label "com.symphony.storage=$storage_id" \
-    --label "com.symphony.codex.runtime=$(codex_runtime_profile_id)" \
+    --label "com.symphony.codex.runtime=$expected_runtime" \
     --label com.symphony.agent=codex --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
     --publish "127.0.0.1:$port:4010" \
     --env-file "$project_env" \
@@ -1501,9 +1534,10 @@ PYIDENTITY
 )
 
 runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 state old_agent
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 state old_agent expected_runtime=none
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
+  if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return; fi
   mkdir -p "$runner_home"
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
   runner_project_lock "$root"
@@ -1560,7 +1594,7 @@ runner_transition() (
     if [ "$(runner_status "$root")" = true ] &&
        ! runner_is_legacy "$runtime" "$name" &&
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] &&
-       { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ]; }; then
+       { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
@@ -1584,7 +1618,7 @@ runner_transition() (
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
     [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
     if [ "$agent" = codex ]; then
-      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ] || die 'candidate Codex runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Codex runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
     fi
     if [ "$(runner_status "$root")" = false ]; then
       # The retained container already has the chosen immutable image, mounts and
