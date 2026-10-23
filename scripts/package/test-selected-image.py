@@ -56,6 +56,18 @@ class SelectedImage(unittest.TestCase):
             changed = receipt('claude'); changed[0]['Config'][key] = value
             self.check(changed, False, 'claude')
 
+    def test_existing_runner_storage_modes_preserve_ownership_without_chmod(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)/'runners'; root.mkdir()
+            for mode, accepted in ((0o700, True), (0o755, True), (0o775, False), (0o777, False)):
+                root.chmod(mode)
+                result = subprocess.run([HELPER, 'selection-storage-directory', str(root)], capture_output=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual(root.stat().st_mode & 0o777, mode)
+            root.chmod(0o700)
+            link = Path(folder)/'alias'; link.symlink_to(root)
+            self.assertNotEqual(subprocess.run([HELPER, 'selection-storage-directory', str(link)], capture_output=True).returncode, 0)
+
     def test_selected_record_is_private_owned_regular_and_strict(self):
         record = dict(schema_version=1, provider='codex', image_id=IMAGE, reference='team/runner:local',
                       runtime_revision='b'*40, platform='linux/arm64', protocol=1)
