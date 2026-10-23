@@ -29,6 +29,21 @@ FIXTURE = load('origin_fixture', Path(__file__).with_name('test_component_proven
 
 
 class ManagerComposition(unittest.TestCase):
+    def test_image_changing_lifecycle_selects_real_changed_provider(self):
+        initial = {'runners': {provider: {'x86_64': {'image': 'localhost:5000/symphony-'+provider+'@sha256:'+digit*64}}
+                               for provider, digit in (('codex', 'a'), ('claude', 'b'))}}
+        for changed, expected in ((('claude',), ('claude', 'codex')), (('codex',), ('codex', 'claude')),
+                                  (('codex', 'claude'), ('codex', 'codex'))):
+            current = copy.deepcopy(initial)
+            for provider in changed:
+                current['runners'][provider]['x86_64']['image'] = 'localhost:5000/symphony-'+provider+'@sha256:'+'c'*64
+            # A publication alias does not make unchanged Codex content change.
+            current['runners']['codex']['x86_64']['image'] = current['runners']['codex']['x86_64']['image'].replace('localhost:5000/', 'ghcr.io/proof/')
+            self.assertEqual(LIFECYCLE.lifecycle_project_agents(initial, current), expected)
+        with self.assertRaisesRegex(AssertionError, 'explicit manager-only'):
+            LIFECYCLE.lifecycle_project_agents(initial, copy.deepcopy(initial))
+        self.assertEqual(LIFECYCLE.lifecycle_project_agents(initial, initial, True), ('codex', 'claude'))
+
     def test_published_bridge_compares_complete_original_components(self):
         record = {'image': 'localhost:5000/symphony-codex@sha256:'+'a'*64,
                   'qualification': {'original_native_run': 123}, 'source_revision': 'b'*40}
