@@ -16,6 +16,7 @@ import re
 import shutil
 import shlex
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -84,6 +85,19 @@ def workspace_canary_command(workspaces="/workspaces", state="/state"):
     return ("sha256sum " + " ".join(quote(path) for path in (proof / "edited", proof / "untracked", Path(state) / "proof-state"))
         + "; git -c " + quote("safe.directory=" + str(proof)) + " -C " + quote(proof) + " rev-parse HEAD"
         + "; GIT_OPTIONAL_LOCKS=0 git -c " + quote("safe.directory=" + str(proof)) + " -C " + quote(proof) + " status --porcelain")
+
+
+def transition_lock_snapshot(runner_home, expected_names):
+    """Permanent lock inodes are product state; journals are forbidden here."""
+    paths = list(Path(runner_home).glob("*.transition*"))
+    assert {path.name for path in paths} == set(expected_names), "unexpected transition journal or missing lock"
+    result = {}
+    for path in paths:
+        info = path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1, "unsafe transition lock"
+        assert path.read_bytes() == b"", "unexpected transition lock content"
+        result[path.name] = (info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode), info.st_size, path.read_bytes())
+    return result
 
 
 def seed_project_transport(config_home, identifier):
@@ -325,6 +339,8 @@ def main():
         result["transport_auth"] = "owned project env noncredential placeholder; empty Memory tracker, zero issues; no host credentials"
         metadata = {p: p.read_bytes() for p in (root / "config/runners").glob("*.env")}
         assert len(metadata) == 2
+        lock_names = [path.stem + ".transition.lock" for path in metadata]
+        permanent_locks = transition_lock_snapshot(root / "config/runners", lock_names)
         auth_volumes = sorted(name for name in volumes if name.endswith("-auth"))
         for volume in auth_volumes:
             d("run", "--rm", "--label", LABEL + "=" + token, "--network", "none", "--read-only", "--entrypoint", "sh",
@@ -350,7 +366,7 @@ def main():
             assert {p: stock.digest(p) for p in canaries} == canaries
             assert {p: p.read_bytes() for p in metadata} == metadata
             assert auth_snapshot() == auth_before
-            assert not list((root / "config/runners").glob("*.transition*"))
+            assert transition_lock_snapshot(root / "config/runners", lock_names) == permanent_locks
         check("both real provider listeners, owned persistent volumes and dirty Git/state canaries ready")
         selection = ("--candidate-manifest", args.after_manifest.resolve(), "--candidate-bundle", args.after_bundle.resolve())
         product("update", *selection, cwd=projects[0][0]); assert identity() == after[3]; unchanged()

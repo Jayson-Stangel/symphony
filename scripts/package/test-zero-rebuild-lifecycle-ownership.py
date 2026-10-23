@@ -44,6 +44,26 @@ class OwnershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
 
 
+class TransitionLockTests(unittest.TestCase):
+    def test_permanent_lock_inodes_retained_and_journals_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); lock = root / "owned.transition.lock"; lock.touch()
+            baseline = lifecycle.transition_lock_snapshot(root, [lock.name])
+            self.assertEqual(lifecycle.transition_lock_snapshot(root, [lock.name]), baseline)
+            for name in ("owned.transition", "owned.transition.complete", "foreign.transition.lock"):
+                journal = root / name; journal.mkdir()
+                with self.assertRaises(AssertionError): lifecycle.transition_lock_snapshot(root, [lock.name])
+                journal.rmdir()
+            lock.write_text("unexpected")
+            with self.assertRaises(AssertionError): lifecycle.transition_lock_snapshot(root, [lock.name])
+            lock.rename(root / "held-original"); foreign = root / "foreign"; foreign.touch(); lock.symlink_to(foreign)
+            with self.assertRaises(AssertionError): lifecycle.transition_lock_snapshot(root, [lock.name])
+            lock.unlink(); lock.touch()
+            # A replacement inode is observable rather than accepted as an
+            # unchanged permanent exclusion resource.
+            self.assertNotEqual(lifecycle.transition_lock_snapshot(root, [lock.name]), baseline)
+
+
 class WorkspaceCanaryTests(unittest.TestCase):
     def test_exact_snapshot_shell_reads_nested_proof_and_detects_changes(self):
         with tempfile.TemporaryDirectory(prefix="canary paths ") as temp:
