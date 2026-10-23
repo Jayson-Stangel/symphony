@@ -46,9 +46,25 @@ jobs:
           target: codex
           tags: symphony-codex-smoke
           revision: ${{ github.sha }}
+      - name: Verify final runner Node/npm and Codex startup
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          bash runner/node-smoke.sh symphony-codex-smoke symphony-claude-smoke
+          docker run --rm --network none --entrypoint codex symphony-codex-smoke --version
       - name: Verify isolated updater, rollback and project identity lifecycle
         if: needs.changes.outputs.code != 'false'
         run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
+      - name: Build live E2E and Claude qualification images in their harness contexts
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          docker build -t symphony-live-node-smoke elixir/test/support/live_e2e_docker
+          docker build -f runner/claude/qualification/Dockerfile -t symphony-qualification-node-smoke runner/claude
+      - name: Verify reference image Node/npm and native CLI startup
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          bash runner/node-smoke.sh symphony-live-node-smoke symphony-qualification-node-smoke
+          docker run --rm --network none --entrypoint codex symphony-live-node-smoke --version
+          docker run --rm --network none symphony-qualification-node-smoke inspect
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

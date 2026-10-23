@@ -8,7 +8,7 @@ launcher, Codex, or any stable service.
 
 ## Runtime under test
 
-- Node 24.18.0, with the base image digest pinned in `Dockerfile`.
+- Node 24.22.1, with the base image digest pinned in `Dockerfile`.
 - SDK and CLI pins come from the production `../package.json` and `../package-lock.json`.
   The lab imports the same runtime pin owner; it has no separate dependency manifest.
 - Native Linux ARM64/X64 executable explicitly resolved from the pinned CLI package;

@@ -32,6 +32,7 @@ jobs:
       - name: Verify CLI and browser for both agent users
         if: needs.changes.outputs.code != 'false'
         run: |
+          bash runner/node-smoke.sh symphony-browser-test
           docker run --rm --entrypoint playwright symphony-browser-test --version
           docker run --rm --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
           docker run --rm --user 11001:11001 --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
