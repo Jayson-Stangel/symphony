@@ -4,8 +4,8 @@ import json
 import re
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlencode
-from urllib.request import Request,urlopen
+from urllib.parse import urlencode,urlsplit
+from urllib.request import Request,build_opener,HTTPRedirectHandler
 
 from artifacts import DIGEST_IMAGE,require
 MAX_DOCUMENT=4*1024*1024
@@ -15,10 +15,42 @@ ACCEPT=', '.join(('application/vnd.oci.image.index.v1+json','application/vnd.oci
                  'application/vnd.docker.distribution.manifest.list.v2+json','application/vnd.docker.distribution.manifest.v2+json'))
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):return None
+
+
+def open_anonymous(url,headers,method,opener=None):
+    """Only anonymous GHCR blob storage may redirect, without any auth header."""
+    opener=opener or build_opener(NoRedirect()).open
+    original=urlsplit(url); current=url
+    selected=dict(headers or {})
+    blob=(original.scheme=='https' and original.netloc=='ghcr.io' and
+          re.fullmatch(r'/v2/[a-z0-9._/-]+/blobs/sha256:[a-f0-9]{64}',original.path) is not None and not original.query)
+    for attempt in range(3):
+        try:return opener(Request(current,headers=selected,method=method),timeout=60)
+        except HTTPError as error:
+            if error.code not in (301,302,303,307,308):
+                if current!=url:raise ValueError('anonymous registry storage request failed') from None
+                raise
+            location=error.headers.get('Location','')
+            error.close()
+            require(blob and attempt<2 and method in ('GET','HEAD') and type(location) is str and len(location)<=16384,
+                    'anonymous registry redirect refused')
+            target=urlsplit(location)
+            require(target.scheme=='https' and target.netloc=='pkg-containers.githubusercontent.com' and
+                    not target.username and not target.password and not target.fragment and
+                    target.path.startswith('/') and '/..' not in target.path and '%' not in target.path,
+                    'anonymous registry storage destination refused')
+            # Never forward even an anonymous pull Bearer token to the CDN.
+            selected={key:value for key,value in selected.items() if key.lower()=='range'}
+            current=location
+    raise ValueError('anonymous registry redirect bound exceeded')
+
+
 def request(url,headers=None,method='GET',blob_digest=None,blob_size=None,range_size=None):
     deadline=time.monotonic()+900
     if range_size is not None:headers=dict(headers or {},Range='bytes=0-0')
-    with urlopen(Request(url,headers=headers or {},method=method),timeout=60) as response:
+    with open_anonymous(url,headers or {},method) as response:
         if range_size is not None:
             require(response.status==206 and response.headers.get('Content-Range')=='bytes 0-0/'+str(range_size),
                     'registry did not prove bounded anonymous blob read')

@@ -72,7 +72,7 @@ def docker(*args, timeout=600):
     return subprocess.check_output(['docker',*args],text=True,stderr=subprocess.PIPE,timeout=timeout).strip()
 
 
-def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None):
+def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None, transfer=None, extract=None):
     """Protected job only: transfer only missing newly built images; never retag reused images."""
     stable=prepared['manifest'];artifacts.validate(stable,require_bundle=False)
     artifacts.require(prepared['manager_source_revision']==stable['source_revision'],'publication manager identity differs')
@@ -102,29 +102,27 @@ def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=d
                 artifacts.require(origins[key]==selected[key].get('origin'),'original payload origin changed before publication')
             available[key]=probe(selected_image(stable,provider,architecture))
             artifacts.require(available[key] or key in selected,'existing distribution digest unavailable before publication')
-    for key,item in selected.items():
-        if available[key]:continue
-        record=item['record'];provider,architecture=key
-        image=item['image']
-        with tempfile.TemporaryDirectory(prefix='component-publication-') as folder:
-            archive=fetch(record,item['origin'],Path(folder)/'payload',verify=verify)
-            invoke('load','--input',str(archive),timeout=1200)
-            original=record['archive_tag']
-            observed=json.loads(invoke('image','inspect',original))[0]
-            labels=observed.get('Config',{}).get('Labels',{})
-            artifacts.require(observed.get('Id')==record['image_config'] and
-                              observed.get('Os')+'/'+observed.get('Architecture')==record['platform'] and
-                              labels.get('org.opencontainers.image.revision')==record['source_revision'] and
-                              labels.get('com.symphony.inputs.sha256')==record['input_identity'] and
-                              labels.get('com.symphony.agent')==provider and labels.get('com.symphony.protocol')=='1',
-                              'loaded original publication config/source/input/platform differs')
-            repository=image.split('@',1)[0]
-            tag=f'{repository}:source-{record["source_revision"]}-{architecture}'
-            invoke('tag',original,tag)
-            invoke('push',tag)
-            artifacts.require(image in json.loads(invoke('image','inspect',tag))[0].get('RepoDigests',[]),
-                              'publication transfer changed original OCI digest')
-            checked=qualify(image) if qualify is not None else registry_available(image,full=True)
+    # Keep all payloads alive and fully validate ALL graphs before the first
+    # authorization request or raw blob write. No Docker conversion is allowed.
+    if extract is None:
+        from qualified_graph import extract_archive
+        extract=extract_archive
+    if transfer is None:
+        from graph_publication import publish_selected
+        transfer=publish_selected
+    with tempfile.TemporaryDirectory(prefix='component-publication-') as folder:
+        folder=Path(folder).resolve()
+        pending=[]
+        for index,(key,item) in enumerate(selected.items()):
+            if available[key]:continue
+            record=item['record']
+            archive=fetch(record,item['origin'],Path(folder)/('payload-'+str(index)),verify=verify)
+            directory=Path(folder)/('graph-'+str(index))
+            extract(archive,[record],directory)
+            pending.append({'record':record,'directory':directory,'image':item['image']})
+        if pending:transfer(pending)
+        for item in pending:
+            checked=qualify(item['image']) if qualify is not None else registry_available(item['image'],full=True)
             artifacts.require(checked,'new original digest blob closure is not anonymously available')
     return stable
 
@@ -148,12 +146,9 @@ def main():
         artifacts.require(prepared['manifest']['schema_version']==manager_version.schema(args.root),'publication format differs from committed release schema policy')
         artifacts.require(prepared['manager_source_revision']==revision and os.environ.get('GITHUB_REF_NAME')=='v'+prepared['manifest']['version'],
                           'publication tag/source differs')
-        # Credentials reach only the registry client, never Docker build args or images.
-        login=subprocess.run(['docker','login','ghcr.io','--username',os.environ['GITHUB_ACTOR'],'--password-stdin'],
-                             input=os.environ['GH_TOKEN'],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)
-        artifacts.require(login.returncode==0,'protected registry login failed')
-        try:result=publish(prepared,verify)
-        finally:docker('logout','ghcr.io',timeout=120)
+        # The raw graph client reads credentials only after complete payload
+        # preflight. No docker login, load, retag, or push can transform identity.
+        result=publish(prepared,verify)
     else:
         artifacts.require(args.plan is not None and args.metadata is not None,'publication planning inputs missing')
         metadata=json.loads(args.metadata.read_text())

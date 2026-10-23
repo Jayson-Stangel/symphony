@@ -82,7 +82,7 @@ def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=d
     require(not destination.exists(), 'refusing to overwrite an existing payload destination')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.reuse-', dir=destination.parent) as temporary:
-        staging = Path(temporary)
+        staging = Path(temporary).resolve()
         payload = staging / 'artifact.zip'
         fetch(origin['artifact_id'], payload)
         require('sha256:' + checksum(payload) == origin['artifact_digest'], 'downloaded artifact checksum differs')

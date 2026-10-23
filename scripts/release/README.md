@@ -653,3 +653,28 @@ loader creates only a local previous-role alias. This stricter prior-manager
 eligibility is distinct from component reuse after a downstream manager failure:
 successful component artifacts can resume, while an unsuccessful manager cannot
 be used as a qualified installed update subject.
+
+Exact graph publication
+-----------------------
+
+The protected component publisher preflights every selected origin, destination,
+archive checksum, and complete original graph before requesting credentials or
+writing a blob. It copies compressed blobs and the raw manifest to the fixed
+GHCR repository, preserving the original digest. It never loads, retags, saves,
+or pushes a Docker representation. Already available reused components perform
+no transfer or credentialed push-authorization request. Anonymous availability
+verification may still obtain a public pull token from the fixed GHCR endpoint.
+
+GitHub credentials reach only the fixed GHCR token endpoint. Repository-scoped
+Bearer tokens remain on GHCR; authenticated requests never follow redirects.
+New transfers retain full anonymous manifest/config/layer checksum verification.
+Anonymous blob reads may follow at most two HTTPS redirects to the exact public
+GHCR storage host, without forwarding Authorization. Redirected range reads must
+still prove the original size and byte range. Signed query strings and tokens
+are not diagnostic output.
+
+The graph client has synthetic credential, isolated HTTP, and existing-public-
+content read tests. No production registry writes are implied by those tests.
+The manager-envelope stable tag/channel planning contract remains separately
+unsupported and fails closed; this raw transfer path does not resolve that
+release-policy gap or qualify a native Linux lifecycle by itself.

@@ -66,24 +66,32 @@ class PublicationTest(unittest.TestCase):
             raise HTTPError(args[0],503,'unavailable',{},io.BytesIO(b'uncertain'))
         with self.assertRaises(HTTPError):publication.manifest_available(image,daemon)
 
-    def test_payload_transfer_cannot_change_config_or_original_digest(self):
+    def test_payloads_all_extract_before_raw_transfer_and_no_docker_conversion(self):
         plan,metadata=self.fixture()
-        record=metadata['runners']['codex']['arm64']
-        record.update(source_revision='a'*40,image='ghcr.io/original/codex@sha256:'+'7'*64,
-                      archive_tag='localhost:5000/symphony-codex:candidate')
-        record['qualification'].update(source_revision=record['source_revision'],image=record['image'])
-        plan['components']['codex']['arm64']['action']='build'
-        prepared=self.prepare(plan,metadata,lambda image:not image.endswith('7'*64))
-        calls=[]
-        def invoke(*args,**kwargs):
-            calls.append(args)
-            if args[:2]==('image','inspect'):
-                return json.dumps([{'Id':'sha256:'+'0'*64}])
-            return ''
-        with self.assertRaisesRegex(ValueError,'loaded original'):
-            publication.publish(prepared,lambda record:{'exact':'origin'},fetch=lambda *args,**kwargs:Path('/opaque-original'),
-                                probe=lambda image:not image.endswith('7'*64),invoke=invoke)
-        self.assertFalse(any(args[0]=='push' for args in calls))
+        for provider,group in metadata['runners'].items():
+            for architecture,record in group.items():
+                record['source_revision']='a'*40;record['qualification']['source_revision']='a'*40
+                plan['components'][provider][architecture]['action']='build'
+        prepared=self.prepare(plan,metadata,lambda image:False)
+        events=[]
+        def fetch(record,origin,destination,**kwargs):events.append(('fetch',record['image']));return Path('/verified-transport')
+        def extract(archive,records,destination):events.append(('extract',records[0]['image']))
+        def transfer(items):
+            self.assertEqual(len([e for e in events if e[0]=='extract']),4)
+            self.assertEqual([x['record'] for x in items],[x['record'] for x in prepared['transfers']])
+            events.append(('raw-transfer',len(items)))
+        def forbidden(*args,**kwargs):self.fail('Docker conversion invoked')
+        publication.publish(prepared,lambda record:{'exact':'origin'},fetch=fetch,extract=extract,transfer=transfer,
+                            probe=lambda image:False,invoke=forbidden,qualify=lambda image:True)
+        self.assertEqual(events[-1],('raw-transfer',4))
+        events.clear()
+        def bad_last(archive,records,destination):
+            events.append(('extract',records[0]['image']))
+            if len([e for e in events if e[0]=='extract'])==4:raise ValueError('last graph corrupted')
+        with self.assertRaisesRegex(ValueError,'last graph corrupted'):
+            publication.publish(prepared,lambda record:{'exact':'origin'},fetch=fetch,extract=bad_last,transfer=forbidden,
+                                probe=lambda image:False,invoke=forbidden)
+        self.assertFalse(any(e[0]=='raw-transfer' for e in events))
 
     def test_schema1_bridge_remains_publishable_with_strict_same_source_originals(self):
         plan,metadata=self.fixture();metadata['schema_version']=1;metadata.pop('compatibility')
