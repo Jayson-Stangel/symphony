@@ -82,7 +82,7 @@ def cleanup(state, docker):
         require(receipt.returncode == 0, "image ownership inspection uncertain")
         require(json.loads(receipt.stdout)[0]["Id"] == identifier, "foreign replacement tag preserved: " + tag)
         docker("image", "rm", tag)
-    for identifier in state.get("planned_configs", []):
+    for identifier in state.get("owned_configs", []):
         receipt = docker("image", "inspect", identifier, expected=None)
         if absent(receipt):continue
         require(receipt.returncode == 0, "config ownership inspection uncertain")
@@ -92,6 +92,9 @@ def cleanup(state, docker):
         require(not value.get("RepoTags") and all(ref in allowed for ref in value.get("RepoDigests", [])),
                 "new foreign image references preserved; cleanup refused")
         docker("image", "rm", identifier)
+    for reference in [*allowed, *state.get("owned_configs", [])]:
+        require(absent(docker("image", "inspect", reference, expected=None)),
+                "owned reference remains or final absence uncertain: " + reference)
     state["cleanup"] = "removed-owned-references"
 
 
@@ -157,7 +160,7 @@ def main():
                 require(absent(docker("image", "inspect", reference, expected=None)), "preexisting distribution alias preserved")
         state = {"archives": archives, "inventory": inventories, "preexisting_references": [],
                  "planned_configs": sorted({item["config"] for item in inventory}),
-                 "owned_tags": {tag:item["config"] for item in inventory for tag in item["tags"]},
+                 "owned_tags": {}, "owned_configs": [],
                  "distribution": {}, "cleanup": "pending", "restored": False,
                  "scope": "original archive restore only; extra transported configs not qualified"}
         args.state.write_text(json.dumps(state, indent=2) + "\n")
@@ -168,6 +171,15 @@ def main():
                 for reference in references:
                     require(absent(docker("image", "inspect", reference, expected=None)), "preexisting distribution alias preserved")
             for provider, filename in archives.items():
+                # A previous provider load may take minutes. Recheck this
+                # provider immediately before granting any acquisition intent.
+                preflight(inventories[provider], docker)
+                for reference in aliases[provider]:
+                    require(absent(docker("image", "inspect", reference, expected=None)), "preexisting distribution alias preserved")
+                for item in inventories[provider]:
+                    state["owned_configs"] = sorted(set(state["owned_configs"]) | {item["config"]})
+                    state["owned_tags"].update({tag:item["config"] for tag in item["tags"]})
+                args.state.write_text(json.dumps(state, indent=2) + "\n")
                 with Path(filename).open("rb") as stream:docker("load", stdin=stream)
                 for item in inventories[provider]:
                     for tag in item["tags"]:

@@ -70,7 +70,7 @@ class RestoreTests(unittest.TestCase):
             calls.append(values)
             return subprocess.CompletedProcess([], 0, '[{"Id":"foreign"}]', "")
         with self.assertRaisesRegex(ValueError, "foreign replacement"):
-            restore.cleanup({"owned_tags":{"owned:tag":"expected"},"planned_configs":[]}, docker)
+            restore.cleanup({"owned_tags":{"owned:tag":"expected"},"owned_configs":[]}, docker)
         self.assertEqual(calls, [("image", "inspect", "owned:tag")])
 
     def test_cleanup_refuses_new_foreign_reference_to_owned_config(self):
@@ -79,8 +79,27 @@ class RestoreTests(unittest.TestCase):
             calls.append(values)
             return subprocess.CompletedProcess([], 0, json.dumps([{"Id":"expected","RepoTags":["user:new"],"RepoDigests":[]}]), "")
         with self.assertRaisesRegex(ValueError, "foreign image references"):
-            restore.cleanup({"owned_tags":{},"planned_configs":["expected"]}, docker)
+            restore.cleanup({"owned_tags":{},"owned_configs":["expected"]}, docker)
         self.assertEqual(calls, [("image", "inspect", "expected")])
+
+    def test_cleanup_requires_positive_final_absence_after_successful_rm(self):
+        calls = []
+        def docker(*values, **kwargs):
+            calls.append(values)
+            if values[:2] == ('image','rm'):return subprocess.CompletedProcess([],0,'removed','')
+            return subprocess.CompletedProcess([],0,'[{"Id":"expected"}]','')
+        state = {"owned_tags":{"owned:tag":"expected"},"owned_configs":[]}
+        with self.assertRaisesRegex(ValueError, 'final absence uncertain'):
+            restore.cleanup(state,docker)
+        self.assertNotEqual(state.get('cleanup'), 'removed-owned-references')
+        self.assertEqual(calls[-1], ('image','inspect','owned:tag'))
+
+    def test_cleanup_only_granted_acquisitions_not_unattempted_planned_configs(self):
+        def docker(*values, **kwargs):
+            self.fail('unattempted plan grants no cleanup authority')
+        state = {'owned_tags':{},'owned_configs':[], 'planned_configs':['foreign-now']}
+        restore.cleanup(state,docker)
+        self.assertEqual(state['cleanup'],'removed-owned-references')
 
 
 if __name__ == "__main__":unittest.main()

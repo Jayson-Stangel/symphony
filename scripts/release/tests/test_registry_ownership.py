@@ -22,7 +22,7 @@ class RegistryOwnershipTest(unittest.TestCase):
         value = {'Name': '/unique-owned-name', 'Id': 'exact-container-id', 'Config': {'Labels': {registry.LABEL: 'token'}}}
         with patch.object(registry, 'docker', side_effect=[json.dumps([value]), '', '']) as run:
             registry.cleanup(self.path)
-        self.assertEqual(run.call_args_list[1].args, ('rm', '--force', 'exact-container-id'))
+        self.assertEqual(run.call_args_list[1].args, ('rm', '--force', '--volumes', 'exact-container-id'))
         self.assertEqual(json.loads(self.path.read_text())['cleanup'], 'removed-owned-container')
 
     def test_foreign_name_label_or_id_is_never_removed(self):
@@ -77,3 +77,32 @@ class RegistryOwnershipTest(unittest.TestCase):
                     registry.start(self.path, value)
                 run.assert_not_called()
                 self.assertEqual(self.path.read_bytes(), original)
+
+    def test_cleanup_removes_and_confirms_only_associated_anonymous_volume(self):
+        volume = 'a' * 64
+        value = {'Name':'/unique-owned-name','Id':'exact-container-id',
+                 'Config':{'Labels':{registry.LABEL:'token'}}, 'HostConfig':{},
+                 'Mounts':[{'Type':'volume','Name':volume,'Destination':'/var/lib/registry'},
+                           {'Type':'volume','Name':'foreign-named-data','Destination':'/foreign'}]}
+        missing = subprocess.CalledProcessError(1, ['docker','volume','inspect',volume])
+        with patch.object(registry,'docker',side_effect=[json.dumps([value]),'', '', missing, '']) as run:
+            registry.cleanup(self.path)
+        self.assertEqual(run.call_args_list[1].args, ('rm','--force','--volumes','exact-container-id'))
+        self.assertEqual(run.call_args_list[3].args, ('volume','inspect',volume))
+        self.assertEqual(json.loads(self.path.read_text())['owned_anonymous_volumes'], [volume])
+        self.assertFalse(any('foreign-named-data' in call.args for call in run.call_args_list))
+
+    def test_explicit_named_hex_volume_is_not_claimed_as_anonymous(self):
+        volume = 'b' * 64
+        value = {'HostConfig':{'Mounts':[{'Source':volume,'Target':'/data'}]},
+                 'Mounts':[{'Type':'volume','Name':volume,'Destination':'/data'}]}
+        self.assertEqual(registry.anonymous_volumes(value), [])
+
+    def test_anonymous_volume_remaining_or_daemon_uncertain_fails_cleanup(self):
+        value = {'Name':'/unique-owned-name','Id':'exact-container-id','Config':{'Labels':{registry.LABEL:'token'}},
+                 'Mounts':[{'Type':'volume','Name':'a'*64,'Destination':'/data'}]}
+        error = subprocess.CalledProcessError(1, ['docker'])
+        for tail in ([json.dumps([{'Name':'a'*64}])], [error,error]):
+            with patch.object(registry,'docker',side_effect=[json.dumps([value]),'', '', *tail]):
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    registry.cleanup(self.path)
