@@ -19,6 +19,11 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
     revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     artifacts.require(plan.get('planning_complete') is True and plan.get('manager_source_revision') == revision,
                       'ordinary-event plan belongs to another manager source')
+    if plan.get('release_mode')=='manager-envelope-v1' and built is not None:
+        artifacts.require(built.get('manager_envelope',{}).get('manager_source_revision')==revision, 'envelope manager differs')
+        # Core records are selected from the exact source-bound plan below,
+        # never from the stripped stock projection.
+        built=None
     if built is not None:
         artifacts.validate(built, require_bundle=False)
         artifacts.require(built['schema_version'] == 2 and built['source_revision'] == revision,
@@ -34,7 +39,7 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
             else:
                 record = dict(built['runners'][provider][architecture], provider=provider, architecture=architecture)
             snapshot = identity(root, provider, architecture)
-            artifacts.require(snapshot['input_identity'] == decision['input_identity'] == record['input_identity'],
+            artifacts.require(snapshot['input_identity'] == decision['input_identity'] and record['input_identity']==decision.get('selected_input_identity',decision['input_identity']),
                               'actual component input closure differs from current source')
             origin = verify(record)
             if decision['action'] == 'reuse':
@@ -58,10 +63,19 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
             path = Path(directory) / f"{record['provider']}-{record['architecture']}.json"
             path.write_text(json.dumps(record))
             files.append(str(path))
-        artifacts.assemble(SimpleNamespace(records=files, schema_version=2, platform_bundles=True,
+        if plan.get('release_mode')=='manager-envelope-v1':
+            from manager_envelope import make_core,write_release
+            grouped={};origins={}
+            for record in records:
+                p,a=record['provider'],record['architecture'];grouped.setdefault(p,{})[a]=record
+                origins.setdefault(p,{})[a]=verify(record)
+            write_release(make_core(root,grouped,origins,plan['input_transition']),output)
+        else:
+            artifacts.assemble(SimpleNamespace(records=files, schema_version=2, platform_bundles=True,
                            version=manager_version.read(root), revision=revision, channel='candidate',
                            bundle=None, output=str(output / 'release.json')), verifier=verify)
     if distribution_alias:
+        artifacts.require(plan.get('release_mode')!='manager-envelope-v1','envelope aliases must be selected before core binding')
         path = output / 'release.json'
         manifest = json.loads(path.read_text())
         manifest['distribution'] = {provider: {architecture:

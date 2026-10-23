@@ -11,7 +11,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from component_join import join
 from finite_transition import evaluate
 from manager_contract import canonical,decode
-from manager_envelope import make_core,validate_core,validate_release,write_release
+from manager_envelope import make_core,validate_core,validate_release,write_release,load_release
 from runner_reuse import compatible_plan
 
 ROOT=Path(__file__).resolve().parents[3]
@@ -51,6 +51,12 @@ class EnvelopeTests(unittest.TestCase):
             outer=json.loads(path.read_text());outer['version']=outer['version'].replace('.manifest.','.manifest.0')
             path.write_text(json.dumps(outer))
             with self.assertRaises(ValueError):validate_release(path)
+    def test_stripped_envelope_cannot_become_legacy_identity(self):
+        with tempfile.TemporaryDirectory() as t:
+            path=write_release(self.core(),t);value=json.loads(path.read_text())
+            del value['manager_envelope'];path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError,'requires its envelope'):load_release(path)
+
     def test_record_origin_every_crossview_refuses(self):
         core=self.core()
         for key,value in [('record_run_id',1),('record_run_attempt',99),('record_controller_revision','0'*40),
@@ -64,6 +70,24 @@ class EnvelopeTests(unittest.TestCase):
         for raw in (b'{"x":1,"x":1}\n',b'{"x":1.0}\n',b'{"x":null}\n',b'{"x":"\\u007f"}\n',b'{"x":"\\u00e9"}\n'):
             with self.subTest(raw=raw),self.assertRaises(ValueError):decode(raw)
         self.assertEqual(decode(canonical({'x':True,'a':[1,'line\n']})),{'x':True,'a':[1,'line\n']})
+    def test_committed_runtime_dependency_and_operational_inputs_refuse(self):
+        with tempfile.TemporaryDirectory() as t:
+            repo=Path(t)/'repo'
+            subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
+            for name in ('elixir/lib/symphony_elixir.ex','elixir/mix.lock','elixir/WORKFLOW.md','.codex/skills/commit/SKILL.md'):
+                path=repo/name
+                self.assertTrue(path.is_file(),name)
+                before=path.read_bytes()
+                path.write_bytes(before+b'\n# committed effective input mutation\n')
+                subprocess.run(['git','-C',str(repo),'add',name],check=True)
+                subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                                'commit','--quiet','-m','Change actual consumed input'],check=True)
+                with self.subTest(path=name),self.assertRaisesRegex(ValueError,'runtime, recipe, options, mode or unknown input differs'):
+                    evaluate(repo,self.records)
+                path.write_bytes(before)
+                subprocess.run(['git','-C',str(repo),'add',name],check=True)
+                subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','Restore fixture input'],check=True)
+
     def test_real_physical_runtime_unknown_mode_and_doc_changes_refuse(self):
         with tempfile.TemporaryDirectory() as t:
             repo=Path(t)/'repo'

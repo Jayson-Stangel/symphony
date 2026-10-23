@@ -27,7 +27,7 @@ jobs:
           test -n "$version"
           manager_version=$(python3 scripts/release/manager_version.py)
           python3 scripts/release/manager_version.py --schema
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$manager_version"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
       - id: qualified
         run: |
           echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
