@@ -16,19 +16,28 @@ import artifacts
 import component_provenance as proof
 
 JOIN_STEP='Join exact planned native components without exporting reused payloads'
+MAX_JOIN_BYTES=4*1024*1024
 
 
 def records_from_join(data):
-    artifacts.require(len(data)<=proof.MAX_RECORD_BYTES,'joined artifact exceeds limit')
+    artifacts.require(len(data)<=MAX_JOIN_BYTES,'joined artifact exceeds limit')
     expected={'release.json','component-plan.json'}|{p+'-'+a+'.json' for p in artifacts.PROVIDERS for a in artifacts.ARCHITECTURES}
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         entries=archive.infolist()
+        if 'manager-core.json' in archive.namelist():expected.add('manager-core.json')
         artifacts.require(len(entries)==len(expected) and set(archive.namelist())==expected and
-                          sum(item.file_size for item in entries)<=proof.MAX_RECORD_BYTES and
+                          sum(item.file_size for item in entries)<=MAX_JOIN_BYTES and
                           all(not item.is_dir() and stat.S_IFMT(item.external_attr>>16) in (0,stat.S_IFREG) for item in entries),
                           'joined artifact members are incomplete, duplicated, unsafe or oversized')
         values={name:archive.read(name) for name in expected}
-    manifest=json.loads(values['release.json']);artifacts.validate(manifest,require_bundle=False)
+    raw_manifest=json.loads(values['release.json']);manifest=raw_manifest
+    if 'manager_envelope' in raw_manifest:
+        from manager_envelope import normalize_document
+        artifacts.require('manager-core.json' in values,'joined envelope core missing')
+        manifest=normalize_document(raw_manifest,values['manager-core.json'])
+    else:
+        artifacts.require('manager-core.json' not in values,'unexpected joined core')
+        artifacts.validate(manifest,require_bundle=False)
     plan=json.loads(values['component-plan.json'])
     artifacts.require(plan.get('planning_complete') is True and plan.get('manager_source_revision')==manifest['source_revision'],
                       'joined plan source differs from manifest')
@@ -41,14 +50,20 @@ def records_from_join(data):
                               {k:v for k,v in record.items() if k not in ('provider','architecture')}==originals[provider][arch],
                               'joined original record differs from manifest')
             decision=plan['components'][provider][arch]
-            artifacts.require(decision['input_identity']==record['input_identity'],'joined plan input differs')
+            artifacts.require(decision.get('selected_input_identity',decision['input_identity'])==record['input_identity'],'joined plan input differs')
+            if decision.get('selection_mode')=='finite-input-transition-v1':
+                from finite_transition import validate_evidence
+                transition=validate_evidence(decision['input_transition'],manifest['source_revision'])
+                artifacts.require(decision['input_identity']==decision.get('desired_input_identity')==transition['manager_input_identities'][provider][arch] and
+                                  record['input_identity']==transition['source_input_identities'][provider][arch],
+                                  'joined finite selected/desired identities differ')
             if decision['action']=='reuse':
                 artifacts.require(decision['record']==record,'joined reused record differs from exact plan selection')
             else:
                 artifacts.require(decision['action']=='build' and record['source_revision']==manifest['source_revision'],
                                   'joined build does not belong to actual anchor source')
             records.append(record)
-    return {'manifest':manifest,'plan':plan,'records':records,
+    return {'manifest':manifest,'raw_manifest':raw_manifest,'plan':plan,'records':records,
             'member_sha256':{name:hashlib.sha256(raw).hexdigest() for name,raw in values.items()}}
 
 
@@ -71,7 +86,7 @@ def joined(run_id,fetch=proof.api,verify=None,now=None):
     found=[item for item in inventory.get('artifacts',[]) if item.get('name')=='runner-candidate-metadata']
     artifacts.require(len(found)==1,'joined artifact missing or ambiguous')
     artifact=found[0]
-    artifacts.require(type(artifact.get('size_in_bytes')) is int and artifact['size_in_bytes']<=proof.MAX_RECORD_BYTES,
+    artifacts.require(type(artifact.get('size_in_bytes')) is int and artifact['size_in_bytes']<=MAX_JOIN_BYTES,
                       'joined artifact unbounded')
     proof.available(artifact,'runner-candidate-metadata',artifact.get('digest'),run_id,source,now or datetime.now(timezone.utc))
     artifacts.require(proof.instant(jobs[0]['started_at'])<=proof.instant(artifact['created_at'])<=proof.instant(jobs[0]['completed_at']),

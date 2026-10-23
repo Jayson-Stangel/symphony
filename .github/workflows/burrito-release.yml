@@ -115,11 +115,7 @@ jobs:
       - name: Verify release tag matches project version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          manager_version="$(python3 ../scripts/release/manager_version.py)"
-          test "$GITHUB_REF_NAME" = "v$manager_version" || {
-            echo 'Release tag differs from the independent manager release version.' >&2
-            exit 1
-          }
+          python3 ../scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"
 
       - name: Build Burrito executable
         run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite
