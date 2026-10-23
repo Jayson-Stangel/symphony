@@ -551,7 +551,14 @@ do {
         else if errno != ENOENT { fail("cannot inspect activation path") }
         guard rename(args[1], args[2]) == 0 else { fail("cannot activate release link") }
     case "validate-runtime-image":
-        let data = FileHandle.standardInput.readDataToEndOfFile()
+        var data = Data()
+        let limit = 1024 * 1024
+        while data.count <= limit {
+            let chunk = FileHandle.standardInput.readData(ofLength: min(65536, limit + 1 - data.count))
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        guard data.count <= limit else { fail("runtime image receipt exceeds bounded input") }
         try validateRuntimeImage(validateRelease(args[1]), provider: args[2], arch: args[3], reference: args[4], data: data)
     case "validate-manifest": _ = try validateManifest(args[1])
     case "validate-release": _ = try validateRelease(args[1])

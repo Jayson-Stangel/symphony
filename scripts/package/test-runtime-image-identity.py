@@ -57,6 +57,21 @@ def main():
                 if provider == 'codex' and arch == 'arm64':
                     saved = (manifest, record, reference)
         manifest, record, reference = saved
+        # A writer that never closes must be rejected after the bounded prefix,
+        # rather than buffered until EOF. Both subprocesses belong to this test.
+        producer = subprocess.Popen(['/usr/bin/python3', '-c',
+            "import os\ntry:\n while True: os.write(1,b' '*65536)\nexcept BrokenPipeError: pass"], stdout=subprocess.PIPE)
+        bounded = subprocess.Popen([str(args.helper), 'validate-runtime-image', str(args.manifest),
+            'codex', 'arm64', reference], stdin=producer.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        producer.stdout.close()
+        try:
+            _, error = bounded.communicate(timeout=10)
+            assert bounded.returncode != 0 and b'bounded input' in error, error
+            producer.wait(timeout=10)
+            count += 1
+        finally:
+            for process in (bounded, producer):
+                if process.poll() is None: process.kill(); process.wait()
         # Execute the exact production function, with only the container runtime
         # stubbed. Its final full JSON receipt is processed by the real helper.
         source = (Path(__file__).resolve().parent.parent / 'symphony-package.sh').read_text()
