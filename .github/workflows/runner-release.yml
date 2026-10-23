@@ -164,12 +164,11 @@ jobs:
             test -n "$PREVIOUS_ARTIFACT_RUN"
             test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
           fi
-          if [ "$MANAGER_ONLY_UPDATE" = true ]; then test "$MANIFEST_SCHEMA" = 2; test -n "$PREVIOUS_ARTIFACT_RUN"; fi
+          if [ "$MANAGER_ONLY_UPDATE" = true ]; then test -n "$PREVIOUS_ARTIFACT_RUN"; fi
           args=()
-          if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--same-source-bridge); fi
+          if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--compatible-originals); fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ -n "$SELECTED_PLAN_ARTIFACT" ]; then
-            test "$MANIFEST_SCHEMA" = 2
             cp selected-plan/component-plan.json component-plan.json
           else
             python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
@@ -204,7 +203,7 @@ jobs:
       - name: Read preflight-validated release version
         run: |
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$(python3 scripts/release/manager_version.py)"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Capture committed effective build inputs
         env:
@@ -662,18 +661,10 @@ jobs:
           name: packaged-candidate
           path: packages
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: inputs.manifest_schema == '1'
-        with:
-          pattern: runner-candidate-*-x86_64
-          path: runners
-          merge-multiple: true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: inputs.manifest_schema == '2'
         with:
           name: runner-component-plan
           path: plan
-      - name: Retrieve exact selected schema2 current payloads without export or upload
-        if: inputs.manifest_schema == '2'
+      - name: Retrieve exact selected original current payloads without export or upload
         env:
           GH_TOKEN: ${{ github.token }}
           BASELINE_RUN: ${{ inputs.baseline_run }}

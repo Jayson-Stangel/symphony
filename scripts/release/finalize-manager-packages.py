@@ -11,7 +11,12 @@ from reuse_payload import checksum
 def finalize(internal, packages, revision):
     value = json.loads(internal.read_text())
     artifacts.validate(value, require_bundle=False)
-    artifacts.require(value['source_revision'] == revision, 'native manager source differs')
+    from manager_envelope import load_release,CORE
+    semantic=load_release(internal)
+    artifacts.require(semantic['source_revision'] == revision, 'native manager source differs')
+    if 'manager_envelope' in value:
+        import shutil
+        shutil.copyfile(internal.parent/CORE,packages/CORE)
     for platform in ('macos', 'linux_x86_64'):
         entry = value['bundles'][platform]
         archive = packages / entry['filename']

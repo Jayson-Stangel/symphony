@@ -80,15 +80,16 @@ def cleanup_container(name, controller_ids, storages, evidence):
 
 
 def package_selections(packages, current_only, revision, manager_update_only=False):
-    current = json.loads((packages / "release.json").read_text())
+    from manager_envelope import load_release
+    current = load_release(packages / "release.json")
     if current_only:
         assert current["source_revision"] == revision, "current-manager integration requires this exact manager source"
         return [(packages, current)]
-    previous = json.loads((packages / "previous/release.json").read_text())
+    previous = load_release(packages / "previous/release.json")
     assert current["source_revision"] != previous["source_revision"], "two distinct actual source revisions required"
     selected = [(packages / "previous", previous), (packages, current)]
     if manager_update_only and (packages / 'legacy/release.json').exists():
-        legacy = json.loads((packages / 'legacy/release.json').read_text())
+        legacy = load_release(packages / 'legacy/release.json')
         assert legacy['schema_version'] == previous['schema_version'] == 1 and current['schema_version'] == 2, 'legacy chain requires actual schema1 old/bridge and schema2 current packages'
         assert len({legacy['source_revision'], previous['source_revision'], current['source_revision']}) == 3, 'three distinct actual manager sources required'
         selected.insert(0, (packages / 'legacy', legacy))

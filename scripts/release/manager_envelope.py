@@ -126,3 +126,48 @@ def validate_release(path):
                 'bundle':manifest['bundle'],'bundles':manifest['bundles'],'manager_envelope':descriptor}
     if 'package_platform' in manifest:normalized['package_platform']=manifest['package_platform']
     return normalized
+
+
+def load_release(path):
+    """Read actual manager/component semantics, preserving raw descriptor on disk."""
+    import json
+    path=Path(path);value=json.loads(path.read_text())
+    if 'manager_envelope' in value:return validate_release(path)
+    require('-manager.' not in value.get('version',''),'bound manager version requires its envelope')
+    return value
+
+
+def main():
+    import argparse,json
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root',default='.')
+    parser.add_argument('--plan')
+    parser.add_argument('--validate')
+    parser.add_argument('--output')
+    parser.add_argument('--field')
+    args=parser.parse_args()
+    try:
+        if args.validate:
+            value=load_release(args.validate)
+            if args.field:
+                for part in args.field.split('.'):value=value[part]
+            print(value if isinstance(value,str) else json.dumps(value,sort_keys=True))
+        else:
+            require(args.plan and args.output,'plan and output required')
+            from component_join import join
+            from component_provenance import selection_verifier
+            import subprocess,os
+            p=json.loads(Path(args.plan).read_text());revision=subprocess.check_output(['git','-C',args.root,'rev-parse','HEAD'],text=True).strip()
+            # The production CLI obtains live origin verification. It has no
+            # caller-supplied receipt acceptance switch.
+            baseline=p.get('manual_baseline_run')
+            require(baseline is None,'plan cannot grant manual baseline authority')
+            verify=selection_verifier(None)
+            selected=join(p,'/no-build-records',revision,verify);records={};origins={}
+            for record in selected:
+                provider,arch=record['provider'],record['architecture']
+                records.setdefault(provider,{})[arch]=record;origins.setdefault(provider,{})[arch]=verify(record)
+            write_release(make_core(args.root,records,origins,p['input_transition']),args.output)
+    except (ValueError,KeyError,TypeError,OSError) as error:parser.exit(1,'manager envelope refused: '+str(error)+'\n')
+
+if __name__=='__main__':main()
