@@ -150,7 +150,7 @@ jobs:
         with:
           name: ${{ inputs.component_plan_artifact }}
           path: selected-plan
-      - name: Plan
+      - name: Resolve the selected component plan
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}

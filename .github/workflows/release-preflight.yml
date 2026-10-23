@@ -32,7 +32,7 @@ jobs:
           python3 scripts/release/manager_version.py
           python3 scripts/release/manager_version.py --schema
           if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
-      - name: Qualified
+      - name: Emit exact-source qualification receipt
         id: qualified
         run: |
           echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

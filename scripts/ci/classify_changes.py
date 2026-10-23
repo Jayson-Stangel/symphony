@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 
 
@@ -43,10 +44,21 @@ def browser_recipe(contents):
     for provider in ('codex', 'claude'):
         if provider in stages:
             visit(provider)
+    def metadata_label(item):
+        if item[0] != 'LABEL':
+            return False
+        fields = shlex.split(item[1])
+        expected = {'org.opencontainers.image.version': 'SYMPHONY_VERSION',
+                    'org.opencontainers.image.revision': 'SYMPHONY_REVISION',
+                    'com.symphony.inputs.sha256': 'SYMPHONY_INPUT_IDENTITY',
+                    'com.symphony.architecture': 'TARGETARCH'}
+        return bool(fields) and all('=' in field and field.split('=', 1)[0] in expected and
+            field.split('=', 1)[1] in ('$' + expected[field.split('=', 1)[0]],
+                                     '${' + expected[field.split('=', 1)[0]] + '}') for field in fields)
     for name in selected - browser_stages:
         stage = stages[name]
         instructions = [item for item in stage['instructions']
-                        if not (item[0] == 'LABEL' and any(key in item[1] for key in inputs.METADATA_ARGS))
+                        if not metadata_label(item)
                         and not (item[0] == 'ARG' and
                             item[1].split('=', 1)[0] in inputs.METADATA_ARGS)]
         graph[name] = dict(stage, instructions=instructions, sources=[])

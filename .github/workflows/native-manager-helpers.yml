@@ -92,7 +92,7 @@ jobs:
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
     steps:
-      - name: Qualified
+      - name: Emit exact-source qualification receipt
         id: qualified
         env:
           PORTABLE_REVISION: ${{ inputs.portable_revision }}

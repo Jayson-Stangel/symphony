@@ -104,7 +104,8 @@ class BrowserRouting(unittest.TestCase):
     def test_final_runtime_recipe_changes_require_browser_execution(self):
         base, _ = CLASSIFY.browser_recipe(RECIPE.encode())
         for instruction in ('USER 11001:11001', 'ENV PATH=/broken', 'RUN rm -rf /opt/browser',
-                            'LABEL com.symphony.agent=claude'):
+                            'LABEL com.symphony.agent=claude',
+                            'LABEL org.opencontainers.image.revision=$SYMPHONY_REVISION com.symphony.agent=claude'):
             changed, _ = CLASSIFY.browser_recipe((RECIPE + instruction + '\n').encode())
             self.assertNotEqual(base, changed, instruction)
         metadata, _ = CLASSIFY.browser_recipe((RECIPE + 'ARG SYMPHONY_REVISION=unknown\nLABEL org.opencontainers.image.revision=$SYMPHONY_REVISION\n').encode())

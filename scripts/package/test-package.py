@@ -128,6 +128,17 @@ class PackageTest(unittest.TestCase):
             for arch,runner in group.items()} for provider,group in value['runners'].items()}
         self.file.write_text(json.dumps(value))
         self.assertOK(self.helper('validate-manifest', self.file))
+        # Display migration must agree between Python and the compiled helper.
+        sys.path.insert(0, str(ROOT / 'scripts/release'))
+        import artifacts
+        for index in range(4):
+            named = copy.deepcopy(value)
+            for provider, group in named['runners'].items():
+                for arch, runner in group.items():
+                    runner['qualification']['job_name'] = artifacts.runner_job_names(provider, arch)[index]
+            artifacts.validate(named, require_bundle=False)
+            self.file.write_text(json.dumps(named))
+            self.assertOK(self.helper('validate-manifest', self.file))
         changes = [lambda m: m['distribution']['codex'].update(arm64='ghcr.io/changed@sha256:'+'f'*64),
                    lambda m: m['distribution']['codex'].pop('arm64'),
                    lambda m: m['runners']['codex']['arm64'].pop('image_config'),
@@ -137,6 +148,7 @@ class PackageTest(unittest.TestCase):
                    lambda m: m['runners']['codex']['arm64'].update(protocol=1.0),
                    lambda m: m['runners']['codex']['arm64']['qualification'].update(run_id=True),
                    lambda m: m['runners']['codex']['arm64']['qualification'].update(repository='foreign/repo'),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(job_name='Build runner (claude, arm64)'),
                    lambda m: m['runners']['codex']['arm64']['qualification'].update(source_revision='0' * 40),
                    lambda m: m['runners']['codex']['arm64']['dependencies'].update(os_packages={})]
         for change in changes:
@@ -188,6 +200,10 @@ class PackageTest(unittest.TestCase):
                          'failure_reason':'bare-upload-artifact-sha256','log_sha256':'e'*64})
         artifacts.validate(value, require_bundle=False)
         self.file.write_text(json.dumps(value)); self.assertOK(self.helper('validate-manifest',self.file))
+        for name in artifacts.recovery_job_names('codex', 'arm64'):
+            proof['record_origin']['job_name'] = name
+            artifacts.validate(value, require_bundle=False)
+            self.file.write_text(json.dumps(value)); self.assertOK(self.helper('validate-manifest',self.file))
         for field, invalid_value in (('job_id',True),('qualification_step_number',1.0),('original_job_conclusion','success'),('failure_reason','runtime-failure')):
             changed = copy.deepcopy(value)
             changed['runners']['codex']['arm64']['qualification']['native_step_recovery'][field] = invalid_value
