@@ -9,6 +9,29 @@ Prerequisites: Docker running, Git, Bash, curl and Python 3. Native Claude login
 is interactive. The container builds its own pinned runtime; host Symphony setup
 and global command/skill installation are unnecessary.
 
+## Disposable CI Codex host preparation
+
+Native image and installed-package CI consumers explicitly run
+`scripts/ci/prepare-codex-apparmor.sh prepare` before protected Codex qualification,
+then run its cleanup with `always()`. This administrator operation is limited to
+GitHub-hosted Linux with a verified local selected Docker daemon. It checks the
+shipped profile checksum/name, kernel/LSM and per-thread AppArmor interface before
+loading a new profile in enforce mode. It installs the parser only after those
+checks, and refuses a preexisting named policy of unknown provenance. Cleanup
+removes only the invocation-owned profile; prepare/cleanup logs are retained even
+when qualification fails. Explicit Bash pipefail preserves failures through log
+capture.
+
+An advertised AppArmor capability, a loaded policy name and successful runtime
+application are distinct evidence. Protected qualification records the immutable
+image ID and security policy identities and verifies the applied profile inside
+the actual container before executing the existing workspace/process/network
+effect checks. This is credential-free proof on native Linux x86-64 and ARM64
+container runners, separate from supported Linux x86-64/macOS ARM64 manager hosts.
+No-AppArmor Docker hosts retain the shipped selection behavior. Product launchers
+do not install host policy; this CI preparation does not change a stable host or
+qualify authenticated inference.
+
 ## Create the workspace
 
 Choose a new directory; do not overwrite an existing checkout. Replace the remote

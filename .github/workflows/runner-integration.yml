@@ -276,6 +276,11 @@ jobs:
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
             --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners" "${args[@]}"
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Execute the installed current manager with original immutable runners
         if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
@@ -302,3 +307,15 @@ jobs:
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-current-manager-integration
+          path: ${{ runner.temp }}/codex-apparmor-*.log
+          if-no-files-found: error
+          retention-days: 30
