@@ -1098,15 +1098,16 @@ runner_owned() {
     ''|'<no value>')
       [ "$("$runtime" inspect --format '{{join .Config.Entrypoint " "}}' "$name")" = /usr/local/bin/symphony-runner ] || die 'unknown legacy entrypoint; updater refused'
       mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
-      printf '%s\n' "$mounts" | grep -Fxq -- "$codex_auth_volume /root/.codex" || die 'legacy Codex login mount differs; updater refused'
+      printf '%s\n' "$mounts" | grep -Fx -- "$codex_auth_volume /root/.codex" >/dev/null || die 'legacy Codex login mount differs; updater refused'
       runner_workflow_mount_owned "$root" "$runtime" "$name" || die 'legacy workflow mount differs; updater refused'
       runner_update_port "$root" "$runtime" "$name" "$metadata" >/dev/null
       ;;
     *) validate_agent "$agent" ;;
   esac
+  # Consume the whole list: grep -q can SIGPIPE printf and fail pipefail after a match.
   mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
-  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-workspaces /workspaces" || die 'workspace mount identity differs; updater refused'
-  printf '%s\n' "$mounts" | grep -Fxq -- "$storage-state /var/lib/symphony" || die 'state mount identity differs; updater refused'
+  printf '%s\n' "$mounts" | grep -Fx -- "$storage-workspaces /workspaces" >/dev/null || die 'workspace mount identity differs; updater refused'
+  printf '%s\n' "$mounts" | grep -Fx -- "$storage-state /var/lib/symphony" >/dev/null || die 'state mount identity differs; updater refused'
 }
 
 runner_is_legacy() {

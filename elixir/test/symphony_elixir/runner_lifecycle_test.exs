@@ -55,6 +55,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
               *'{{json .Mounts}}'*) printf '[{"Type":"bind","Source":"%s/WORKFLOW.md","Destination":"/etc/symphony/WORKFLOW.md","RW":false}]\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *Source*) printf '%s/WORKFLOW.md /etc/symphony/WORKFLOW.md false\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n%s /root/.codex\\n' "$storage" "$storage" "symphony${SYMPHONY_RUNNER_NAMESPACE:+-$SYMPHONY_RUNNER_NAMESPACE}-codex-auth" ;;
+            esac
+            case "$*" in
+              *'{{range .Mounts}}'*) if [ -n "${FIXTURE_MOUNT_PADDING_FILE:-}" ]; then cat "$FIXTURE_MOUNT_PADDING_FILE"; fi ;;
             esac ;;
         esac ;;
       image)
@@ -1350,6 +1353,18 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   defp launch(ctx, command), do: launch_args(ctx, ["runner", command])
+
+  test "mount ownership reads the complete inspect output under pipefail", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".agent", "<no value>")
+    padding = Path.join(ctx.root, "additional-mounts")
+    File.write!(padding, String.duplicate("unrelated-volume /unrelated-mount\n", 32_768))
+
+    script = ~S|source "$1" --help >/dev/null; repo=$(git -C "$2" rev-parse --show-toplevel); runner_owned "$repo" "$SYMPHONY_CONTAINER_RUNTIME" "$(runner_id "$repo")"|
+    env = [{"FIXTURE_MOUNT_PADDING_FILE", padding} | ctx.env]
+    assert {_, 0} = System.cmd("bash", ["-euc", script, "ownership", @launcher, ctx.repo], env: env, stderr_to_stdout: true)
+    assert File.read!(ctx.state) |> String.trim() == "true"
+  end
 
   test "candidate tag changes after qualification cannot select a different image", ctx do
     ready_curl!(ctx)
