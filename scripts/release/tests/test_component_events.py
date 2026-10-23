@@ -50,21 +50,30 @@ class ComponentEvents(unittest.TestCase):
                     self.assertIsNotNone(block)
                     self.assertRegex(block.group(),r'uses: actions/checkout@[^\n]+\n        with:\n          fetch-depth: 0')
 
-    def test_browser_wrapper_requires_complete_plan_except_explicit_docs(self):
+    def test_browser_wrapper_requires_explicit_classification_for_qualification_or_omission(self):
         workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
         block = workflow.split('        run: |\n', 1)[1].split('      - ', 1)[0]
         guard = '\n'.join(line[10:] for line in block.splitlines())
+        # Browser routing no longer depends on a reference-component plan. Both
+        # docs omission and unchanged-browser omission need an explicit decision.
+        self.assertNotIn('needs.plan', workflow)
         with tempfile.TemporaryDirectory() as directory:
-            for code, plan, browser, success in (
-                ('false', 'skipped', '', True), ('true', 'success', 'reuse', True),
-                ('true', 'success', 'build', True), ('false', 'success', 'reuse', False),
-                ('true', 'failure', 'reuse', False), ('true', 'cancelled', 'reuse', False),
-                ('true', 'skipped', 'reuse', False), ('true', 'success', '', False),
-                ('true', 'success', 'unknown', False), ('', 'skipped', '', False),
+            for code, browser, valid in (
+                ('false', 'false', True), ('true', 'false', True), ('true', 'true', True),
+                ('false', 'true', False), ('false', '', False), ('false', None, False),
+                ('true', '', False), ('true', None, False), ('true', 'reuse', False),
+                ('true', 'build', False), ('true', 'unknown', False), ('', 'false', False),
             ):
-                result = subprocess.run(['bash', '-e', '-c', guard], cwd=directory,
-                                        env=dict(os.environ, RESULT='success', CODE=code, PLAN=plan, BROWSER=browser))
-                self.assertEqual(result.returncode == 0, success, (code, plan, browser))
+                for classification in ('success', 'failure', 'cancelled', 'skipped', ''):
+                    with self.subTest(code=code, browser=browser, classification=classification):
+                        env = dict(os.environ, RESULT=classification, CODE=code)
+                        if browser is None:
+                            env.pop('BROWSER', None)
+                        else:
+                            env['BROWSER'] = browser
+                        result = subprocess.run(['bash', '-e', '-c', guard], cwd=directory,
+                                                env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode == 0, valid and classification == 'success')
 
     def test_manual_baseline_is_rejected_before_discovery_on_ordinary_events(self):
         workflow = (ROOT / '.github/workflows/component-plan.yml').read_text()

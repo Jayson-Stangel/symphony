@@ -9,13 +9,25 @@ import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from component_join import join
-from finite_transition import evaluate
+from finite_transition import evaluate,SOURCE
 from manager_contract import canonical,decode
 from manager_envelope import make_core,validate_core,validate_release,write_release,load_release
 from runner_reuse import compatible_plan,plan
 
 ROOT=Path(__file__).resolve().parents[3]
 FIXTURE=Path(__file__).with_name('fixtures')/'manager-original-68.json'
+REVIEWED_TARGET='88f366b069c296fe081d103ee5adfc1854effead'
+
+class NativeHistoryContract(unittest.TestCase):
+    def test_native_checkout_retains_physical_compatibility_authorities(self):
+        workflow=(ROOT/'.github/workflows/release-native.yml').read_text()
+        checkout=workflow.split('uses: actions/checkout@',1)[1].split('      - name:',1)[0]
+        self.assertIn('fetch-depth: 0',checkout,'native compatibility tests require the retained Git source trees')
+        for revision in (SOURCE,REVIEWED_TARGET):
+            with self.subTest(revision=revision):
+                result=subprocess.run(['git','-C',str(ROOT),'merge-base','--is-ancestor',revision,'HEAD'],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,'retained compatibility source must be an ancestor available in the checkout: '+revision)
+
 
 class EnvelopeTests(unittest.TestCase):
     @classmethod
@@ -26,7 +38,7 @@ class EnvelopeTests(unittest.TestCase):
         cls.addClassCleanup(cls.finite_temp.cleanup)
         cls.finite_root=Path(cls.finite_temp.name)/'checkout'
         subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(cls.finite_root)],check=True)
-        subprocess.run(['git','-C',str(cls.finite_root),'checkout','--quiet','--detach','88f366b'],check=True)
+        subprocess.run(['git','-C',str(cls.finite_root),'checkout','--quiet','--detach',REVIEWED_TARGET],check=True)
         cls.fixture=json.loads(FIXTURE.read_text());cls.records={}
         for r in cls.fixture['records']:cls.records.setdefault(r['provider'],{})[r['architecture']]=r
         cls.origins={p:{a:cls.fixture['verified_origins'][p+'-'+a] for a in g} for p,g in cls.records.items()}

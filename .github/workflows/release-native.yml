@@ -16,6 +16,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Native compatibility fixtures verify retained source trees in Git.
+          fetch-depth: 0
       - name: Install native socket inspection utility
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lsof
