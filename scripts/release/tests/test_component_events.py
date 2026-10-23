@@ -20,7 +20,15 @@ class ComponentEvents(unittest.TestCase):
             (root/'elixir/mix.exs').write_text('    version: "0.0.4",\n')
             (root/'scripts/release/manager-version').write_text('0.0.5\n')
             (root/'scripts/release/manager_version.py').write_text((ROOT/'scripts/release/manager_version.py').read_text())
-            for policy,tag,expected in (('1\n','v0.0.5',True),('2\n','v0.0.5',True),('2\n','v0.0.4',False),('3\n','v0.0.5',False)):
+            subprocess.run(['git','init','--quiet',str(root)],check=True)
+            subprocess.run(['git','-C',str(root),'add','.'],check=True)
+            subprocess.run(['git','-C',str(root),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','Freeze actual manager source'],check=True)
+            revision=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+            bound='v0.0.5-manager.'+revision+'.manifest.'+'d'*64
+            for policy,tag,expected in (('1\n',bound,True),('1\n','v0.0.5',False),
+                                        ('1\n',bound.replace(revision,'e'*40),False),
+                                        ('1\n',bound[:-1],False),('2\n','v0.0.5',True),
+                                        ('2\n','v0.0.4',False),('3\n','v0.0.5',False)):
                 (root/'scripts/release/release-schema').write_text(policy)
                 result=subprocess.run(['bash','-e','-c',script],cwd=root,capture_output=True,
                     env=dict(os.environ,GITHUB_REF_TYPE='tag',GITHUB_REF_NAME=tag))
