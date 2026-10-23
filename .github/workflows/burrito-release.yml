@@ -1,4 +1,4 @@
-name: burrito-release
+name: Engine release
 
 on:
   # Manual feature-ref runs build and qualify candidates without production publication.
@@ -45,17 +45,21 @@ concurrency:
 
 jobs:
   qualification:
+    name: Validate preflight inputs
     if: ${{ !inputs.controller_only }}
     uses: ./.github/workflows/release-preflight.yml
   host-policy:
+    name: Select native hosts
     uses: ./.github/workflows/host-policy.yml
 
   engine-fixtures:
+    name: Qualify native engine fixtures
     needs: qualification
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
     uses: ./.github/workflows/release-native.yml
 
   runners:
+    name: Qualify runner components
     needs: qualification
     if: ${{ !inputs.controller_only && !inputs.engine_only }}
     uses: ./.github/workflows/runner-release.yml
@@ -74,9 +78,9 @@ jobs:
       packages: write
 
   build:
+    name: Build engine (${{ matrix.target }})
     needs: [qualification, host-policy]
     if: ${{ !inputs.controller_only }}
-    name: build-${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -86,7 +90,7 @@ jobs:
         working-directory: elixir
 
     steps:
-      - name: Checkout
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up mise tools
@@ -150,7 +154,7 @@ jobs:
           if-no-files-found: error
 
   smoke:
-    name: smoke-${{ matrix.target }}
+    name: Verify engine (${{ matrix.target }})
     needs: [build, host-policy]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -191,6 +195,7 @@ jobs:
           if-no-files-found: warn
 
   controller-diagnostics:
+    name: Diagnose release controller
     if: inputs.controller_only
     runs-on: macos-14
     timeout-minutes: 10
@@ -204,6 +209,7 @@ jobs:
           python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
   release:
+    name: Publish approved engine release
     if: ${{ !inputs.engine_only && !inputs.controller_only && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
     needs: [build, smoke, runners]
     environment: production-release
@@ -212,7 +218,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download linux_x86_64
@@ -227,7 +233,7 @@ jobs:
           name: macos_arm64
           path: dist/macos_arm64
 
-      - name: Download packaged-release
+      - name: Retrieve approved release packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-release

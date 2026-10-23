@@ -1,4 +1,4 @@
-name: pr-description-lint
+name: PR description
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize, ready_for_review]
@@ -6,9 +6,11 @@ permissions:
   contents: read
 jobs:
   validate-pr-description:
+    name: PR description
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Validate PR description without a toolchain or dependencies

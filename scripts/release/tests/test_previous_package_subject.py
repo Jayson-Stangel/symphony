@@ -86,6 +86,20 @@ class PreviousSubjectTest(unittest.TestCase):
         if path.startswith('actions/artifacts/') and binary:return self.payloads[int(path.split('/')[2])]
         raise AssertionError(path)
     def download(self,artifact,path):path.write_bytes(self.payloads[artifact['id']])
+    def test_current_display_names_select_the_same_actual_historical_jobs(self):
+        for item in self.jobs:
+            old=item['name']
+            if old.startswith('packaged-candidate ('):
+                item['name']='Build candidate package ('+old.split('(',1)[1].split(',',1)[0]+')'
+            else:
+                item['name']=subject.artifacts.candidate_job_names(old)[-1]
+        selected=subject.select(123,self.source,self.api)
+        self.assertEqual(len(selected['native_jobs']),4)
+        duplicate=copy.deepcopy(self.jobs[0]);duplicate['name']=subject.artifacts.runner_job_names('codex','arm64')[0]
+        self.jobs.append(duplicate)
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            subject.select(123,self.source,self.api)
+
     def test_actual_current_role_opaque_payloads_preserve_originals_without_reexport(self):
         selected=subject.select(123,self.source,self.api)
         subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',self.download)

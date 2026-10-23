@@ -53,6 +53,12 @@ class JoinedSelectionTest(unittest.TestCase):
         with zipfile.ZipFile(output,'w') as archive:
             for name,value in self.values.items():archive.writestr(name,json.dumps(value))
         self.zip=output.getvalue();self.artifact.update(size_in_bytes=len(self.zip),digest='sha256:'+hashlib.sha256(self.zip).hexdigest())
+    def test_current_join_display_preserves_the_same_exact_original_binding(self):
+        for name in selection.artifacts.candidate_job_names('candidate-metadata'):
+            self.job['name'] = name
+            self.calls.clear()
+            selection.joined(789, fetch=self.fetch, verify=self.verify)
+
     def fetch(self,path,binary=False):
         if path=='actions/runs/789':return copy.deepcopy(self.run)
         if path=='actions/runs/123':return dict(self.run,id=123,head_sha='a'*40)

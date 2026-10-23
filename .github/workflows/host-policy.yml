@@ -1,4 +1,4 @@
-name: Supported native host policy
+name: Native host policy
 on:
   workflow_call:
     inputs:
@@ -14,13 +14,15 @@ permissions:
   contents: read
 jobs:
   select:
+    name: Select supported native hosts
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.policy.outputs.matrix }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - id: policy
-        name: Select supported native host targets
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select supported native host targets
+        id: policy
         env:
           HOST_PLATFORM: ${{ inputs.platform }}
         run: python3 scripts/release/select-hosts.py --platform "$HOST_PLATFORM" >> "$GITHUB_OUTPUT"

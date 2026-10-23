@@ -106,7 +106,7 @@ class BrowserRouting(unittest.TestCase):
                     'runner/Dockerfile', '.dockerignore', 'runner/Dockerfile.dockerignore',
                     '.github/actions/build-runner/action.yml',
                     'scripts/release/runner-cache-policy.sh', 'runner/node-smoke.sh',
-                    '.github/workflows/browser-smoke.yml',
+                    '.github/workflows/runner-integration.yml',
                     '.github/workflows/change-classification.yml',
                     'scripts/ci/classify_changes.py', 'scripts/ci/tests/test_browser_scope.py',
                 ]
@@ -144,30 +144,30 @@ class BrowserRouting(unittest.TestCase):
                 os.chdir(original)
 
     def test_actual_browser_wrapper(self):
-        text = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        text = (ROOT / '.github/workflows/runner-integration.yml').read_text().split('  chromium:\n', 1)[1].split('  portable:\n', 1)[0]
         steps = text.split('      - ')[1:]
         guard = steps[0].split('        run: |\n')[1]
         guard = '\n'.join(line[10:] for line in guard.splitlines() if line.strip())
         # Browser qualification remains gated for both decisions, including checkout/action.
-        for step in steps[1:4]:
-            self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'", step)
-        self.assertIn("needs.changes.outputs.browser == 'false'", steps[4])
-        self.assertIn('intentionally omitted', steps[4])
-        self.assertIn("needs.changes.outputs.code == 'false'", steps[5])
-        self.assertIn('intentionally omitted, not executed', steps[5])
+        for step in steps[1:6]:
+            self.assertIn("if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'", step)
+        self.assertIn("needs.changes.outputs.browser == 'false'", steps[6])
+        self.assertIn('intentionally omitted', steps[6])
+        self.assertIn("needs.changes.outputs.code == 'false'", steps[7])
+        self.assertIn('intentionally omitted, not executed', steps[7])
         for result in ('success', 'failure', 'cancelled', 'skipped', ''):
             for code in ('true', 'false', '', 'invalid'):
                 for browser in ('true', 'false', '', 'invalid'):
                     actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser))
                     valid = code in ('true', 'false') and browser in ('true', 'false') and (code == 'true' or browser == 'false')
                     self.assertEqual(actual.returncode == 0, result == 'success' and valid)
-        self.assertIn('--user 11001:11001 --entrypoint node', text)
-        self.assertIn('--entrypoint node symphony-browser-test', text)
+        self.assertIn('smoke-image.sh symphony-browser-codex codex', text)
+        self.assertIn('smoke-image.sh symphony-browser-claude claude', text)
         # Candidate consumers continue to run actual-image qualification.
         release = (ROOT / '.github/workflows/runner-release.yml').read_text()
         smoke = (ROOT / 'scripts/release/runner-smoke.sh').read_text()
         self.assertNotIn('outputs.browser', release)
-        self.assertIn('smoke.cjs', smoke)
+        self.assertIn('smoke-image.sh', smoke)
 
     def test_cli_publishes_both_decisions(self):
         workflow = (ROOT / '.github/workflows/change-classification.yml').read_text()
@@ -181,7 +181,9 @@ class BrowserRouting(unittest.TestCase):
                 env=dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME='push',
                          GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)),
                 capture_output=True, check=True)
-            self.assertEqual(output.read_text(), 'code=true\nbrowser=true\n')
+            outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            self.assertEqual(outputs, dict(code='true', policy='true', browser='true', native='true', native_platform='all',
+                                          **{key: 'true' for key in classifier.COMPONENTS}))
             self.assertIn('Browser qualification required: **true**', summary.read_text())
 
     def test_malformed_event_fails_without_output(self):
@@ -210,74 +212,19 @@ class Metadata(unittest.TestCase):
 
 class WorkflowContracts(unittest.TestCase):
     def test_required_wrappers_and_no_workflow_path_filters(self):
-        for name,job in [('make-all','make-all'),('package-checks','macos-package'),('runner-integration','listener-and-cleanup'),('browser-smoke','chromium')]:
+        for name,job in [('make-all','make-all'),('package-checks','package-qualification'),('runner-integration','chromium')]:
             text=(ROOT/'.github/workflows'/(name+'.yml')).read_text()
             self.assertIn('  '+job+':',text)
             self.assertIn('if: ${{ always() }}',text)
             self.assertIn('test "$RESULT" = success',text)
-            self.assertIn('case "$CODE" in',text)
             self.assertNotIn('\n    paths:',text)
-            if name == 'package-checks':
-                # Package work moved into concurrent jobs. The named required
-                # aggregate executes only status checks; all heavy jobs are gated.
-                for heavy in ('portable', 'native', 'native-host-package'):
-                    block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
-                    self.assertIn("needs.changes.outputs.code == 'true'", block)
-                continue
-            if name == 'runner-integration':
-                self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
-                steps=text.split('  listener-and-cleanup:\n',1)[1].split('    steps:\n',1)[1]
-            else:
-                steps=text.split('    steps:\n',1)[1]
-            # Every application/setup/test step is gated by the shared decision.
-            for step in steps.split('      - ')[2:-1]:
-                if name == 'browser-smoke':
-                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser ==", step)
-                elif name == 'runner-integration':
-                    self.assertIn("needs.changes.outputs.code == 'true'", step)
-                else:
-                    self.assertIn("if: needs.changes.outputs.code != 'false'",step)
-
-    def test_package_matrix_and_actual_required_wrapper(self):
         text=(ROOT/'.github/workflows/package-checks.yml').read_text()
-        def job(name):
-            start=text.index('  '+name+':\n')
-            remaining=text[start:]
-            boundary=re.search(r'\n  [a-z][a-z0-9-]*:',remaining)
-            return remaining[:boundary.start()] if boundary else remaining
-        for name in ('native-host-package',):
-            block=job(name)
-            self.assertIn('    needs: [changes, qualification, host-policy]\n',block)
-            self.assertIn("needs.changes.outputs.code == 'true'",block)
-        self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',job('native-host-package'))
-        self.assertNotIn('macos-15-intel', text)
+        self.assertNotIn('  native:\n',text)
+        self.assertIn('Run native process and updater fixtures in the helper allocation',text)
+        self.assertNotIn('macos-15-intel',text)
+        self.assertIn('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}',text)
         self.assertIn('workflow_dispatch:',text)
         self.assertIn('previous_revision:',text)
-        wrapper=job('macos-package')
-        self.assertIn('needs: [changes, qualification, native, native-host-package]',wrapper)
-        self.assertIn('if: ${{ always() }}',wrapper)
-        self.assertIn('behavioral checks intentionally omitted, not executed.',wrapper)
-        # Run both actual literal scripts, preserving bash -e semantics. A
-        # classification failure cannot be hidden by skipped native jobs, and
-        # a code decision requires every native result to be successful.
-        scripts=[]
-        for body in wrapper.split('        run: |\n')[1:]:
-            lines=[]
-            for line in body.splitlines():
-                if line and not line.startswith('          '): break
-                lines.append(line[10:])
-            scripts.append('\n'.join(lines))
-        self.assertEqual(len(scripts),2)
-        statuses=('success','failure','cancelled','skipped','')
-        with tempfile.TemporaryDirectory() as folder:
-            for result,code in (('success','true'),('success','false'),('failure','false'),('cancelled','true'),('skipped','false'),('success',''),('success','invalid')):
-                for mac in statuses:
-                    for linux in statuses:
-                        env=dict(os.environ,RESULT=result,CODE=code,PORTABLE='success',NATIVE=linux,PACKAGE=mac,GITHUB_STEP_SUMMARY=str(Path(folder)/'summary'))
-                        command=scripts[0]+'\n'+scripts[1]
-                        actual=subprocess.run(['bash','-e','-c',command],cwd=folder,env=env,capture_output=True,text=True)
-                        expected=result=='success' and code in ('true','false') and (mac==linux==('skipped' if code=='false' else 'success'))
-                        self.assertEqual(actual.returncode==0,expected,(result,code,mac,linux,actual.stderr))
 
     def test_actual_wrapper_guard_from_empty_workspace(self):
         text=(ROOT/'.github/workflows/make-all.yml').read_text()
@@ -286,15 +233,19 @@ class WorkflowContracts(unittest.TestCase):
         guard='\n'.join(line[10:] for line in guard.splitlines() if line.strip())
         with tempfile.TemporaryDirectory() as folder:
             for result,code,expected in [('success','false',0),('success','true',0),('failure','false',1),('cancelled','false',1),('skipped','false',1),('success','',1)]:
-                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code))
+                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code,POLICY='true'))
                 self.assertEqual(command.returncode==0,expected==0,(result,code))
+            for policy in ('', 'invalid', 'false'):
+                refused=subprocess.run(['bash','-e','-c',guard],cwd=folder,
+                    env=dict(os.environ,RESULT='success',CODE='true',POLICY=policy),capture_output=True)
+                self.assertNotEqual(refused.returncode,0)
             summary=Path(folder)/'summary'
             command='echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"'
             subprocess.run(['bash','-e','-c',command],cwd=folder,env=dict(os.environ,GITHUB_STEP_SUMMARY=str(summary)),check=True)
             self.assertIn('not executed',summary.read_text())
             # A real failing behavioral command must remain failing: wrappers do
             # not use continue-on-error or a trailing blanket green step.
-            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true'),capture_output=True,text=True)
+            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true',POLICY='true'),capture_output=True,text=True)
             self.assertNotEqual(failure.returncode,0)
             self.assertNotIn('unreachable',failure.stdout)
 

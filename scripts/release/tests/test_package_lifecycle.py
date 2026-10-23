@@ -18,6 +18,30 @@ spec.loader.exec_module(lifecycle)
 
 
 class LifecycleControllerTest(unittest.TestCase):
+    def test_browser_qualification_reuses_actual_image_only_after_success(self):
+        completed = set()
+        calls = []
+        def run(args):
+            calls.append(args)
+        image = 'sha256:' + 'a' * 64
+        lifecycle.qualify_browser(run, image, 'codex', completed)
+        lifecycle.qualify_browser(run, image, 'codex', completed)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-2:], [image, 'codex'])
+        self.assertTrue(calls[0][1].endswith('/runner/browser/smoke-image.sh'))
+        lifecycle.qualify_browser(run, image, 'claude', completed)
+        self.assertEqual(len(calls), 2)
+        other = 'sha256:' + 'b' * 64
+        def fail(args):
+            raise AssertionError('actual image failed browser smoke')
+        for _ in range(2):
+            with self.assertRaisesRegex(AssertionError, 'actual image failed'):
+                lifecycle.qualify_browser(fail, other, 'claude', completed)
+        self.assertNotIn(('claude', other), completed)
+        for invalid in ('', 'tag:latest', 'sha256:abc'):
+            with self.assertRaises(AssertionError):
+                lifecycle.qualify_browser(run, invalid, 'codex', completed)
+
     def test_detached_id_uses_stdout_while_pull_progress_is_stderr(self):
         identifier = "a" * 64
         def run(args, **kwargs):

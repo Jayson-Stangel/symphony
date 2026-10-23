@@ -71,7 +71,8 @@ class BrowserRouting(unittest.TestCase):
                                                  GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(Path(folder) / 'summary')),
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.read_text(), 'code=true\nbrowser=true\n')
+                outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual((outputs['code'], outputs['browser']), ('true', 'true'))
             finally:
                 os.chdir(original)
 
@@ -100,6 +101,54 @@ class BrowserRouting(unittest.TestCase):
             finally:
                 os.chdir(original)
 
+    def test_final_runtime_recipe_changes_require_browser_execution(self):
+        base, _ = CLASSIFY.browser_recipe(RECIPE.encode())
+        for instruction in ('USER 11001:11001', 'ENV PATH=/broken', 'RUN rm -rf /opt/browser',
+                            'LABEL com.symphony.agent=claude',
+                            'LABEL org.opencontainers.image.revision=$SYMPHONY_REVISION com.symphony.agent=claude'):
+            changed, _ = CLASSIFY.browser_recipe((RECIPE + instruction + '\n').encode())
+            self.assertNotEqual(base, changed, instruction)
+        metadata, _ = CLASSIFY.browser_recipe((RECIPE + 'ARG SYMPHONY_REVISION=unknown\nLABEL org.opencontainers.image.revision=$SYMPHONY_REVISION\n').encode())
+        self.assertEqual(base, metadata)
+
+    def test_metadata_cannot_hide_a_runtime_dependency(self):
+        for instruction in ('RUN env', 'ENV CAPTURED=$SYMPHONY_REVISION', 'COPY runner/browser/smoke.cjs /captured'):
+            recipe = RECIPE + 'ARG SYMPHONY_REVISION=unknown\n' + instruction + '\n'
+            with self.assertRaisesRegex(ValueError, 'metadata'):
+                CLASSIFY.browser_recipe(recipe.encode())
+
+    def test_nonconsuming_controls_do_not_build_browsers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], stderr=subprocess.PIPE).decode().strip()
+            def commit(path, content):
+                target = Path(folder) / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+                git('add', '--all'); git('commit', '-qm', 'fixture')
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            previous = commit('runner/Dockerfile', RECIPE)
+            original = os.getcwd(); os.chdir(folder)
+            try:
+                for path, expected in (
+                    ('.github/actions/configure-runner-cache/action.yml', False),
+                    ('.github/actions/runner-cache-runtime/runtime.js', False),
+                    ('scripts/release/runner-cache-probe.py', False),
+                    ('scripts/release/build-runner-cached.sh', False),
+                    ('scripts/ci/check_pr_body.py', False),
+                    ('scripts/release/runner-cache-policy.sh', True),
+                    ('.github/actions/build-runner/action.yml', True),
+                    ('.github/actions/unknown/action.yml', True),
+                ):
+                    head = commit(path, 'changed control')
+                    event = dict(before=previous, after=head)
+                    paths = CLASSIFY.changed_paths(event, 'push')
+                    self.assertEqual(CLASSIFY.browser_required(paths, event, 'push'), expected, path)
+                    previous = head
+            finally:
+                os.chdir(original)
+
     def test_missing_history_unknown_metadata_and_build_controls_require_qualification(self):
         for paths, event, name in (([], {}, 'push'), (['elixir/test/fixture.exs'], {}, 'push'),
                                     (['../runner/browser/package.json'], {}, 'push'),
@@ -109,7 +158,7 @@ class BrowserRouting(unittest.TestCase):
             self.assertTrue(CLASSIFY.browser_required(paths, event, name))
 
     def test_guard_refuses_missing_or_failed_decisions_and_retains_both_users(self):
-        workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        workflow = (ROOT / '.github/workflows/runner-integration.yml').read_text().split('  chromium:\n', 1)[1].split('  portable:\n', 1)[0]
         self.assertNotIn('component-plan', workflow)
         self.assertNotIn('needs.plan', workflow)
         block = workflow.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
@@ -119,7 +168,8 @@ class BrowserRouting(unittest.TestCase):
             for result in ('success', 'failure', 'cancelled', 'skipped', ''):
                 actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser), capture_output=True)
                 self.assertEqual(actual.returncode == 0, expected and result == 'success')
-        for command in ('--entrypoint playwright symphony-browser-test --version',
-                        '--entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs',
-                        '--user 11001:11001 --entrypoint node', '--user 11001:11001 --workdir /tmp --entrypoint playwright symphony-browser-test screenshot'):
-            self.assertIn(command, workflow)
+        for provider in ('codex', 'claude'):
+            self.assertIn('target: ' + provider, workflow)
+            self.assertIn('smoke-image.sh symphony-browser-' + provider + ' ' + provider, workflow)
+        self.assertIn('builder: ${{ steps.builder.outputs.name }}', workflow)
+        self.assertFalse((ROOT / '.github/workflows/browser-smoke.yml').exists())

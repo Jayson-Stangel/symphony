@@ -168,6 +168,13 @@ class NativeSealTest(unittest.TestCase):
             self.assertEqual(sealed['qualification']['job_name'], 'runners / runner-codex-arm64')
             self.assertEqual(sealed['qualification']['record_filename'], 'previous/codex-arm64.json')
             self.assertEqual(sealed['qualification']['archive_sha256'], hashlib.sha256((root/'payload').read_bytes()).hexdigest())
+            for name in artifacts.runner_job_names('codex', 'arm64'):
+                inventory['jobs'][0]['name'] = name
+                with patch.dict(os.environ, env), patch.object(provenance, 'api', return_value=inventory):
+                    provenance.seal(args)
+                current = json.loads((root/'record.json').read_text())
+                self.assertEqual(current['qualification']['job_name'], name)
+                artifacts.validate_component(current, 'codex', 'arm64')
             inventory['jobs'].append(copy.deepcopy(inventory['jobs'][0]))
             with patch.dict(os.environ, env), patch.object(provenance, 'api', return_value=inventory), self.assertRaises(ValueError):
                 provenance.seal(args)

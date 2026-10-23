@@ -211,6 +211,7 @@ else: raise SystemExit('unexpected Docker command')
                                   'conclusion': conclusion, 'labels': labels}]}
                 env = dict(os.environ, PATH=str(fake)+os.pathsep+os.environ['PATH'],
                            RUN_ID='123', GITHUB_REPOSITORY=repo, GITHUB_ENV=str(root/'environment'),
+                           PYTHONPATH=str(ROOT/'scripts/release'),
                            PROVIDER='codex', ARCHITECTURE='x86_64', TEST_RUN=json.dumps(run), TEST_JOBS=json.dumps(jobs))
                 result = subprocess.run([sys.executable, '-c', script], cwd=root, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
