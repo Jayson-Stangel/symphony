@@ -101,6 +101,38 @@ class BrowserRouting(unittest.TestCase):
             finally:
                 os.chdir(original)
 
+    def test_nonconsuming_controls_do_not_build_browsers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], stderr=subprocess.PIPE).decode().strip()
+            def commit(path, content):
+                target = Path(folder) / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+                git('add', '--all'); git('commit', '-qm', 'fixture')
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            previous = commit('runner/Dockerfile', RECIPE)
+            original = os.getcwd(); os.chdir(folder)
+            try:
+                for path, expected in (
+                    ('.github/actions/configure-runner-cache/action.yml', False),
+                    ('.github/actions/runner-cache-runtime/runtime.js', False),
+                    ('scripts/release/runner-cache-probe.py', False),
+                    ('scripts/release/build-runner-cached.sh', False),
+                    ('scripts/ci/check_pr_body.py', False),
+                    ('scripts/release/runner-cache-policy.sh', True),
+                    ('.github/actions/build-runner/action.yml', True),
+                    ('.github/actions/unknown/action.yml', True),
+                ):
+                    head = commit(path, 'changed control')
+                    event = dict(before=previous, after=head)
+                    paths = CLASSIFY.changed_paths(event, 'push')
+                    self.assertEqual(CLASSIFY.browser_required(paths, event, 'push'), expected, path)
+                    previous = head
+            finally:
+                os.chdir(original)
+
     def test_missing_history_unknown_metadata_and_build_controls_require_qualification(self):
         for paths, event, name in (([], {}, 'push'), (['elixir/test/fixture.exs'], {}, 'push'),
                                     (['../runner/browser/package.json'], {}, 'push'),

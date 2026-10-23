@@ -49,11 +49,17 @@ def browser_required(paths, event=None, name=None):
         '.dockerignore', 'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh',
         '.github/workflows/browser-smoke.yml', '.github/workflows/change-classification.yml',
         'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
+        'scripts/release/runner-cache-policy.sh',
     }
-    prefixes = ('scripts/ci/', '.github/actions/', 'scripts/release/runner-cache-', 'scripts/release/build-runner-')
+    prefixes = ('scripts/ci/', '.github/actions/build-runner/')
+    nonbrowser_actions = ('.github/actions/configure-runner-cache/',
+                          '.github/actions/runner-cache-runtime/')
     try:
         if any(PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts or
-               path in exact or path.startswith(prefixes) for path in paths):
+               path in exact or
+               (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
+               (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))
+               for path in paths):
             return True
         base, head = changed_revisions(event, name)
         old, pattern_expression = browser_recipe(git('show', base + ':runner/Dockerfile'))

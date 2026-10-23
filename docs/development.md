@@ -426,7 +426,7 @@ to both helper consumers even when their own unit suite is portable.
 | `runner-release / cache-probe`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
 | `runner-release / retained-transfer-timing`, `transfer-benchmark`, `transfer-replay`; `transfer-timing / retained-payload-timing` | Only selected immutable run/provider/architecture diagnostics; download/measure/verify original payloads, with explicit replay and native producer guards. |
 | Local action `build-runner` | Browser/candidate/probe consumer only: target, Docker recipe/COPY/ignore closure, scoped cache policy, native buildx and load, then caller-owned actual runtime qualification. |
-| Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests, and browser build controls route browser qualification. |
+| Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests. These candidate-only cache controls and probe controllers do not allocate an ordinary browser build; `build-runner` and its actual cache policy still do. |
 
 The previous two ordinary Mac allocations (native fixtures and helper/package)
 now become one. Portable suites no longer repeat on each native host. Combining
@@ -443,6 +443,13 @@ run-specific groups and do not cancel another operator-requested composition.
 Queue, execution and wall-clock timings are separate measurements: eliminating
 an allocation reduces exposure to shared-runner queues, not a queue-time SLA.
 No extra manual hosted or paid diagnostic is implied by this policy.
+
+The reference run `39993349119` contains a cancelled first attempt and a successful
+retry. Its 24m42s created-to-completion total spans both attempts. The successful
+Mac helper retry queued for 6m17s and executed for 68s; the Mac fixture executed
+for 1m56s. The roughly 23-minute ready-to-final-helper-start interval includes
+cancellation/retry, so it must not be reported as one runner queue measurement.
+Compare future attempts' queue, execution and total durations separately.
 
 Human-facing prose is explicitly allowlisted in `scripts/ci/classify_changes.py`.
 Packaged agent skills and runtime `WORKFLOW.md` templates remain code inputs.
