@@ -81,10 +81,10 @@ def main():
     containers, volumes, planned_containers = {}, set(), set()
     completed = False
 
-    def run(arguments, expected=0, cwd=None, timeout=120, product=False):
+    def run(arguments, expected=0, cwd=None, timeout=120, product=False, input_text=None):
         selected_env = dict(env, **product_env) if product else env
         receipt = subprocess.run([str(v) for v in arguments], cwd=cwd, env=selected_env,
-            text=True, capture_output=True, timeout=timeout)
+            text=True, capture_output=True, timeout=timeout, input=input_text)
         log.write("$ " + " ".join(map(str, arguments)) + "\n" + receipt.stdout + receipt.stderr + "\n"); log.flush()
         if expected is not None:
             assert receipt.returncode == expected, (arguments, receipt.returncode, receipt.stdout, receipt.stderr)
@@ -170,7 +170,12 @@ def main():
             assert image.startswith("localhost:%s/" % registry["host_port"])
             config = json.loads(d("image", "inspect", image).stdout)[0]
             labels = config["Config"]["Labels"]
-            assert config["Architecture"] == "arm64" and config["Id"] == original["image_config"]
+            assert config["Architecture"] == "arm64"
+            # Product validator distinguishes original config identity from a
+            # manifest-store runtime Id. It still refuses transport888: only
+            # the original qualified OCI digest may take the manifest branch.
+            run([before[2] / "libexec/symphony-host", "validate-runtime-image", before[2] / "release.json",
+                 provider, "arm64", image], input_text=json.dumps([config]))
             assert labels["org.opencontainers.image.revision"] == original["source_revision"]
             assert labels["com.symphony.inputs.sha256"] == original["input_identity"]
             assert labels["com.symphony.agent"] == provider and labels["com.symphony.protocol"] == str(original["protocol"]) == "1"
