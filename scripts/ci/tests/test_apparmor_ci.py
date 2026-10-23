@@ -4,8 +4,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 PROFILE = 'symphony-codex-candidate-b6261d4c613296dd'
@@ -72,11 +74,22 @@ class AppArmorPreparationTest(unittest.TestCase):
             path = binary / name
             path.write_text(FAKE)
             path.chmod(0o755)
-        self.env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ['PATH'],
-                        FIXTURE=str(self.root), OPTIONS='{}', RUNNER_TEMP=str(self.root),
-                        GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted')
+        # Do not inherit host directories: removing a fake parser must not
+        # expose a real privileged parser installed on the qualification host.
+        for name in ('bash', 'dirname', 'grep', 'rm', 'sha256sum', 'shasum'):
+            executable = shutil.which(name)
+            if executable:
+                (binary / name).symlink_to(executable)
+        (binary / 'python3').symlink_to(sys.executable)
+        self.env = self.fixture_environment(binary)
+
+    def fixture_environment(self, binary):
+        environment = dict(os.environ, PATH=str(binary),
+                           FIXTURE=str(self.root), OPTIONS='{}', RUNNER_TEMP=str(self.root),
+                           GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted')
         for name in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'SYMPHONY_HOME'):
-            self.env.pop(name, None)
+            environment.pop(name, None)
+        return environment
 
     def run_helper(self, mode='prepare', **options):
         self.env['OPTIONS'] = json.dumps(options)
@@ -187,6 +200,23 @@ class AppArmorPreparationTest(unittest.TestCase):
         install = next(i for i, call in enumerate(calls) if call[0] == 'apt-get')
         self.assertLess(next(i for i, call in enumerate(calls) if call[0] == 'stat'), install)
         self.assertLess(next(i for i, call in enumerate(calls) if call[:2] == ['docker', 'info']), install)
+
+    def test_ambient_host_parser_cannot_escape_the_fixture(self):
+        external = self.root / 'external-host-tools'
+        external.mkdir()
+        sentinel = self.root / 'external-parser-was-run'
+        parser = external / 'apparmor_parser'
+        parser.write_text('#!/bin/sh\nprintf unsafe > "' + str(sentinel) + '"\nexit 91\n')
+        parser.chmod(0o755)
+        (self.root / 'bin/apparmor_parser').unlink()
+        with patch.dict(os.environ, PATH=str(external) + os.pathsep + os.environ['PATH']):
+            self.assertEqual(shutil.which('apparmor_parser'), str(parser))
+            self.env = self.fixture_environment(self.root / 'bin')
+        self.assertIsNone(shutil.which('apparmor_parser', path=self.env['PATH']))
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call[0] == 'apt-get' for call in self.calls()))
+        self.assertFalse(sentinel.exists())
 
     def test_failed_parser_install_refuses_qualification(self):
         (self.root / 'bin/apparmor_parser').unlink()
