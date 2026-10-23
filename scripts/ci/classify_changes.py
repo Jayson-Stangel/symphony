@@ -44,6 +44,7 @@ def browser_recipe(contents):
     for provider in ('codex', 'claude'):
         if provider in stages:
             visit(provider)
+    inputs.validate_metadata_scope(stages, selected)
     def metadata_label(item):
         if item[0] != 'LABEL':
             return False

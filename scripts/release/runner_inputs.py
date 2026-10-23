@@ -142,6 +142,27 @@ def stage_graph(contents):
     return stages
 
 
+def validate_metadata_scope(stages, selected):
+    """Metadata is safe to omit only after runtime instructions have finished."""
+    metadata_scoped = set()
+    for name, stage in stages.items():
+        if name not in selected:
+            continue
+        scoped = stage["base"] in metadata_scoped
+        for operation, body in stage["instructions"]:
+            key = body.partition("=")[0] if operation == "ARG" else None
+            if operation == "ARG" and key in METADATA_ARGS:
+                scoped = True
+            elif scoped:
+                require(operation == "LABEL" or (operation == "ARG" and key == "TARGETARCH"),
+                        "metadata build arguments can reach runtime instructions; reuse refused")
+            if operation not in ("ARG", "LABEL"):
+                require(not any(re.search(r"\$\{?" + re.escape(key) + r"(?:\}|\b)", body) for key in METADATA_ARGS),
+                        "metadata variable affects runtime instructions; reuse refused")
+        if scoped:
+            metadata_scoped.add(name)
+
+
 def identity(root, provider, architecture, build_args=None):
     root = Path(root).resolve()
     require(provider in ("codex", "claude", "browser-tools") and architecture in PLATFORMS, "unsupported native runner target")
@@ -166,23 +187,7 @@ def identity(root, provider, architecture, build_args=None):
     visit(provider)
     recipe = {name: {"base": stage["base"], "instructions": stage["instructions"]}
               for name, stage in stages.items() if name in selected}
-    metadata_scoped = set()
-    for name, stage in stages.items():
-        if name not in selected:
-            continue
-        scoped = stage["base"] in metadata_scoped
-        for operation, body in stage["instructions"]:
-            key = body.partition("=")[0] if operation == "ARG" else None
-            if operation == "ARG" and key in METADATA_ARGS:
-                scoped = True
-            elif scoped:
-                require(operation == "LABEL" or (operation == "ARG" and key == "TARGETARCH"),
-                        "metadata build arguments can reach runtime instructions; reuse refused")
-            if operation not in ("ARG", "LABEL"):
-                require(not any(re.search(r"\$\{?" + re.escape(key) + r"(?:\}|\b)", body) for key in METADATA_ARGS),
-                        "metadata variable affects runtime instructions; reuse refused")
-        if scoped:
-            metadata_scoped.add(name)
+    validate_metadata_scope(stages, selected)
     declared = {}
     for name in selected:
         for operation, body in stages[name]["instructions"]:

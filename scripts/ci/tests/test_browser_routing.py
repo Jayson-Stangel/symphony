@@ -111,6 +111,12 @@ class BrowserRouting(unittest.TestCase):
         metadata, _ = CLASSIFY.browser_recipe((RECIPE + 'ARG SYMPHONY_REVISION=unknown\nLABEL org.opencontainers.image.revision=$SYMPHONY_REVISION\n').encode())
         self.assertEqual(base, metadata)
 
+    def test_metadata_cannot_hide_a_runtime_dependency(self):
+        for instruction in ('RUN env', 'ENV CAPTURED=$SYMPHONY_REVISION', 'COPY runner/browser/smoke.cjs /captured'):
+            recipe = RECIPE + 'ARG SYMPHONY_REVISION=unknown\n' + instruction + '\n'
+            with self.assertRaisesRegex(ValueError, 'metadata'):
+                CLASSIFY.browser_recipe(recipe.encode())
+
     def test_nonconsuming_controls_do_not_build_browsers(self):
         with tempfile.TemporaryDirectory() as folder:
             def git(*args):
