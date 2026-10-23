@@ -4,7 +4,7 @@ environment_selection_file() { printf '%s/environments/%s.json\n' "$runner_home"
 
 environment_selection_read() {
   local file=$1
-  package_helper owned-directory "$runner_home" || return
+  package_helper selection-storage-directory "$runner_home" || return
   package_helper owned-directory "$runner_home/environments" || return
   package_helper validate-environment-selection "$file"
 }
@@ -42,7 +42,7 @@ selected_environment_validate_record() {
 selected_environment_validate_all() {
   local runtime=$1 file
   [ ! -e "$runner_home/environments" ] && [ ! -L "$runner_home/environments" ] && return 0
-  package_helper owned-directory "$runner_home" || return
+  package_helper selection-storage-directory "$runner_home" || return
   package_helper owned-directory "$runner_home/environments" || return
   for file in "$runner_home/environments"/*.json; do
     [ -e "$file" ] || [ -L "$file" ] || continue
@@ -60,7 +60,7 @@ environment_select() {
   # Create private derived storage before the legacy lock path mkdir-p can use
   # the caller's ordinary umask. Existing paths are verified, never chmodded.
   if [ ! -e "$runner_home" ] && [ ! -L "$runner_home" ]; then (umask 077; mkdir -p "$runner_home") || return; fi
-  package_helper owned-directory "$runner_home" || return
+  package_helper selection-storage-directory "$runner_home" || return
   runner_project_lock "$root"
   runtime=$(container_runtime)
   "$runtime" image inspect "$reference" >/dev/null 2>&1 || die "team environment is unavailable locally: $reference; build or obtain it with your team tools, then select it again"
@@ -89,7 +89,7 @@ environment_select() {
       fi
     ' environment-probe "$agent" || die 'team environment lacks required Symphony runtime/provider files; extend the maintained template without replacing its runtime layout'
   directory="$runner_home/environments"
-  package_helper owned-directory "$runner_home" || return
+  package_helper selection-storage-directory "$runner_home" || return
   if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then (umask 077; mkdir "$directory") || return; fi
   package_helper owned-directory "$directory" || return
   file=$(environment_selection_file "$root") || return

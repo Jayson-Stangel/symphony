@@ -25,10 +25,11 @@ class EnvironmentSelectionTest(unittest.TestCase):
 import json,os,sys
 from pathlib import Path
 cmd=sys.argv[1]
-if cmd in ("owned-directory","validate-environment-selection"):
+if cmd in ("owned-directory","selection-storage-directory","validate-environment-selection"):
  p=Path(sys.argv[2]); assert not p.is_symlink()
- assert (p.is_dir() if cmd=="owned-directory" else p.is_file())
+ assert (p.is_dir() if cmd in ("owned-directory","selection-storage-directory") else p.is_file())
  if cmd=="owned-directory": assert p.stat().st_mode & 0o777 == 0o700
+ if cmd=="selection-storage-directory": assert p.stat().st_mode & 0o022 == 0
  if cmd=="validate-environment-selection":
   v=json.loads(p.read_text()); assert v["schema_version"]==1
 elif cmd=="get":
@@ -116,6 +117,18 @@ package_selected_image_compatible() {{ [ -z "${{INCOMPATIBLE:-}}" ] || die incom
             result = self.select(**changes)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.selection.read_bytes(), original)
+
+    def test_existing_owned_runner_root_755_is_preserved_and_775_refuses(self):
+        self.runners.chmod(0o755)
+        result = self.select()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.runners.stat().st_mode & 0o777, 0o755)
+        before = self.selection.read_bytes()
+        self.runners.chmod(0o775)
+        result = self.select()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.selection.read_bytes(), before)
+        self.assertEqual(self.runners.stat().st_mode & 0o777, 0o775)
 
     def test_wrong_provider_refuses_without_substitution(self):
         self.assertEqual(self.select().returncode, 0)
