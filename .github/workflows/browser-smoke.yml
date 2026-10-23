@@ -16,27 +16,27 @@ jobs:
       - name: Require a complete classification decision
         env:
           RESULT: ${{ needs.changes.result }}
-          CODE: ${{ needs.changes.outputs.code }}
+          BROWSER: ${{ needs.changes.outputs.browser }}
         run: |
           test "$RESULT" = success
-          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          case "$BROWSER" in true|false) ;; *) exit 1 ;; esac
       - name: Checkout
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.browser != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build shared browser layer
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.browser != 'false'
         uses: ./.github/actions/build-runner
         with:
           target: browser-tools
           tags: symphony-browser-test
       - name: Verify CLI and browser for both agent users
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.browser != 'false'
         run: |
           bash runner/node-smoke.sh symphony-browser-test
           docker run --rm --entrypoint playwright symphony-browser-test --version
           docker run --rm --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
           docker run --rm --user 11001:11001 --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
           docker run --rm --user 11001:11001 --workdir /tmp --entrypoint playwright symphony-browser-test screenshot --browser chromium about:blank /tmp/browser-smoke.png
-      - name: Documentation-only qualification decision
-        if: needs.changes.outputs.code == 'false'
-        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Browser qualification omission
+        if: needs.changes.outputs.browser == 'false'
+        run: echo "No browser build/qualification inputs changed; browser qualification intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

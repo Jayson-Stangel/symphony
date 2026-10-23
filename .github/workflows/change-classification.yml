@@ -5,6 +5,9 @@ on:
       code:
         description: Whether behavioral qualification is required
         value: ${{ jobs.classify.outputs.code }}
+      browser:
+        description: Whether shared browser qualification is required
+        value: ${{ jobs.classify.outputs.browser }}
 permissions:
   contents: read
 jobs:
@@ -12,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      browser: ${{ steps.changes.outputs.browser }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
