@@ -29,6 +29,24 @@ FIXTURE = load('origin_fixture', Path(__file__).with_name('test_component_proven
 
 
 class ManagerComposition(unittest.TestCase):
+    def test_published_bridge_compares_complete_original_components(self):
+        record = {'image': 'localhost:5000/symphony-codex@sha256:'+'a'*64,
+                  'qualification': {'original_native_run': 123}, 'source_revision': 'b'*40}
+        original = {'codex': {'x86_64': record}}
+        public = copy.deepcopy(original)
+        public['codex']['x86_64']['image'] = 'ghcr.io/jayson-stangel/symphony-codex@sha256:'+'a'*64
+        del public['codex']['x86_64']['qualification']
+        bridge = {'runners': public, 'original_components': original}
+        current = {'runners': copy.deepcopy(original)}
+        LIFECYCLE.verify_unchanged_manager_components(bridge, current)
+        self.assertEqual(bridge['runners'], public)
+        changed = copy.deepcopy(current)
+        changed['runners']['codex']['x86_64']['qualification']['original_native_run'] = 124
+        with self.assertRaisesRegex(AssertionError, 'exact unchanged original'):
+            LIFECYCLE.verify_unchanged_manager_components(bridge, changed)
+        with self.assertRaisesRegex(AssertionError, 'exact unchanged original'):
+            LIFECYCLE.verify_unchanged_manager_components({'runners': public}, current)
+
     def test_shared_assembly_checks_actual_helper_source_cpu_and_unsupported_hosts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

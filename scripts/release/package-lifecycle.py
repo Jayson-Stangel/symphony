@@ -95,6 +95,10 @@ def package_selections(packages, current_only, revision, manager_update_only=Fal
     return selected
 
 
+def verify_unchanged_manager_components(previous, current):
+    assert previous.get('original_components', previous['runners']) == current.get('original_components', current['runners']), 'manager-only update requires the exact unchanged original component records'
+
+
 def verify_loaded_component(config, record, provider, independent):
     labels = config.get("Config", {}).get("Labels") or {}
     assert (config.get("Architecture") == "amd64" and record.get("platform") == "linux/amd64" and
@@ -274,7 +278,7 @@ def main():
         if legacy_chain:
             result['mode'] = 'legacy-bridge-manager-only-update'
         if manager_update_only:
-            assert previous['runners'] == current['runners'], 'manager-only update requires the exact unchanged original component records'
+            verify_unchanged_manager_components(previous, current)
         assert current["source_revision"] == result["package_source_revision"], "candidate must match exact selected package source"
         assert result["diagnostic_artifact_run"] or result["package_source_revision"] == result["source_revision"], "acceptance candidate must match exact workflow head"
         source_archives = []
