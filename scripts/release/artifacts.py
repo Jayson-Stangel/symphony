@@ -54,6 +54,9 @@ def validate(value, require_bundle=True):
             require(isinstance(tools, dict), "tool versions must be an object")
             for tool in (provider, "git", "node", "playwright"):
                 require(isinstance(tools.get(tool), str) and bool(tools[tool].strip()), f"missing {tool} version")
+    if schema==2:
+        from finite_transition import validate_manifest_selections
+        validate_manifest_selections(value)
     if "original_components" in value:
         originals=value["original_components"]
         require(schema == 1 and isinstance(originals,dict) and set(originals)==set(PROVIDERS), "invalid bridge original components")
@@ -201,6 +204,7 @@ def assemble(args, verifier=None):
     }
     if result["schema_version"] == 2:
         result["compatibility"] = {"runner_protocol": 1}
+        if getattr(args,'component_selections',None) is not None:result['component_selections']=args.component_selections
 
     if getattr(args, "platform_bundles", False) or getattr(args, "linux_bundle", None):
         result["bundles"] = {"macos": result["bundle"],

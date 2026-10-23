@@ -41,6 +41,10 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
             snapshot = identity(root, provider, architecture)
             artifacts.require(snapshot['input_identity'] == decision['input_identity'] and record['input_identity']==decision.get('selected_input_identity',decision['input_identity']),
                               'actual component input closure differs from current source')
+            if decision.get('selection_mode')=='finite-component-v1':
+                from finite_transition import evaluate_component
+                artifacts.require(evaluate_component(root,record,provider,architecture)==decision['input_transition'],
+                                  'actual manager input differs from finite component selection')
             origin = verify(record)
             if decision['action'] == 'reuse':
                 artifacts.require(record == decision['record'], 'selected original component changed after planning')
@@ -73,6 +77,7 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
         else:
             artifacts.assemble(SimpleNamespace(records=files, schema_version=2, platform_bundles=True,
                            version=manager_version.read(root), revision=revision, channel='candidate',
+                           component_selections=__import__('finite_transition').selections_from_plan(plan),
                            bundle=None, output=str(output / 'release.json')), verifier=verify)
     if distribution_alias:
         artifacts.require(plan.get('release_mode')!='manager-envelope-v1','envelope aliases must be selected before core binding')

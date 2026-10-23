@@ -48,7 +48,12 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                 matches = record.get("input_identity") == current["input_identity"]
                 matches_browser = (architecture in browser and
                                    record.get("browser_input_identity") == browser[architecture]["input_identity"])
-                if not matches and not matches_browser:
+                finite=None
+                if not matches and not same_source_bridge:
+                    from finite_transition import evaluate_component
+                    try:finite=evaluate_component(root,record,provider,architecture)
+                    except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):pass
+                if not matches and not matches_browser and finite is None:
                     continue
                 try:
                     receipt = origin(record)
@@ -58,11 +63,15 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                     continue
                 if matches_browser and provider not in browser_evidence[architecture]:
                     browser_evidence[architecture][provider] = {"record": record, "origin": receipt}
-                if matches and not same_source_bridge and decision["action"] == "build":
+                if (matches or finite is not None) and not same_source_bridge and decision["action"] == "build":
                     original = {key: value for key, value in record.items() if key not in ("provider", "architecture")}
                     decision.update(action="reuse", reason="unchanged declared inputs; original qualified resolution retained",
                                     source_revision=record["source_revision"], runner=original, record=record,
                                     origin=receipt, verified_origin=receipt)
+                    if finite is not None:
+                        decision.update(reason='exact finite compatible-original component selection',
+                            selected_input_identity=record['input_identity'],desired_input_identity=current['input_identity'],
+                            selection_mode='finite-component-v1',input_transition=finite)
             # A genuinely distinct prior qualified image enables real image-changing updater tests.
             for prior in compatible:
                 if decision["action"] != "reuse" or prior.get("image") == decision["record"]["image"]:
@@ -78,6 +87,8 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                      "input_identity": current["input_identity"], "source_revision": decision["source_revision"]}
             if decision["action"] == "reuse":
                 entry.update(record=decision["record"], origin=decision["origin"])
+                for key in ('selection_mode','selected_input_identity','desired_input_identity','input_transition'):
+                    if key in decision:entry[key]=decision[key]
                 if "prior_record" in decision:
                     entry.update(prior_record=decision["prior_record"], prior_origin=decision["prior_origin"])
                 reuses.append(entry)
@@ -131,7 +142,8 @@ def compatible_plan(root,baseline,verify=verify_origin,candidates=None):
                 runner={k:v for k,v in record.items() if k not in ('provider','architecture')})
             reuses.append({'provider':provider,'architecture':architecture,'source_revision':record['source_revision'],
                 'input_identity':decision['input_identity'],'selected_input_identity':record['input_identity'],
-                'desired_input_identity':decision['input_identity'],'record':record,'origin':origin})
+                'desired_input_identity':decision['input_identity'],'selection_mode':'finite-input-transition-v1',
+                'input_transition':transition,'record':record,'origin':origin})
     result.update(has_builds=False,all_reuse_verified=True,build_matrix={'include':[]},reuse_matrix={'include':reuses},
                   release_mode='manager-envelope-v1',input_transition=transition)
     return result

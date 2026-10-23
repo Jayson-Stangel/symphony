@@ -116,7 +116,23 @@ def selected(plan, provider, architecture, revision):
             'reuse plan is incomplete or bound to another manager revision')
     entry = plan['components'][provider][architecture]
     require(entry.get('action') == 'reuse', 'component requires a verified-input rebuild')
-    require(entry['record']['input_identity'] == entry['input_identity'], 'component closure differs from plan')
+    mode=entry.get('selection_mode')
+    if mode=='finite-input-transition-v1':
+        from finite_transition import validate_evidence
+        evidence=validate_evidence(entry['input_transition'],revision)
+        old=evidence['source_input_identities'][provider][architecture]
+        desired=evidence['manager_input_identities'][provider][architecture]
+    elif mode=='finite-component-v1':
+        from finite_transition import validate_component_evidence
+        evidence=validate_component_evidence(entry['input_transition'],revision,provider,architecture)
+        old=evidence['selected_input_identity'];desired=evidence['desired_input_identity']
+    else:
+        require(mode is None,'unknown component selection authority')
+        old=desired=entry['input_identity']
+    if mode is not None:require(entry['record']['source_revision']==evidence['source_revision'],'selected original source differs from finite authority')
+    require(entry['record']['input_identity']==entry.get('selected_input_identity',old)==old and
+            entry['input_identity']==entry.get('desired_input_identity',desired)==desired,
+            'component selected/desired closure differs from plan')
     return entry
 
 
@@ -137,6 +153,11 @@ def main():
         from runner_inputs import identity
         require(identity(args.root, args.provider, args.architecture)['input_identity'] == entry['input_identity'],
                 'effective inputs changed after planning')
+        if entry.get('selection_mode') in ('finite-component-v1','finite-input-transition-v1'):
+            from finite_transition import evaluate_component
+            measured=evaluate_component(args.root,entry['record'],args.provider,args.architecture)
+            require(measured['selected_input_identity']==entry['selected_input_identity'] and
+                    measured['desired_input_identity']==entry['desired_input_identity'], 'actual finite input transition changed')
         record_key, origin_key = ('prior_record', 'prior_origin') if args.prior else ('record', 'origin')
         require(record_key in entry and origin_key in entry, 'distinct original prior qualification is unavailable')
         if args.prior:

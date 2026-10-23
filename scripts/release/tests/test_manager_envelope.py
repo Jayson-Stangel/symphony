@@ -12,7 +12,7 @@ from component_join import join
 from finite_transition import evaluate
 from manager_contract import canonical,decode
 from manager_envelope import make_core,validate_core,validate_release,write_release,load_release
-from runner_reuse import compatible_plan
+from runner_reuse import compatible_plan,plan
 
 ROOT=Path(__file__).resolve().parents[3]
 FIXTURE=Path(__file__).with_name('fixtures')/'manager-original-68.json'
@@ -36,6 +36,68 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(len(join(p,'/does-not-exist',p['manager_source_revision'],verified)),4)
         broken=copy.deepcopy(p);broken['components']['codex']['arm64']['selected_input_identity']='0'*64
         with self.assertRaises(ValueError):join(broken,'/does-not-exist',p['manager_source_revision'],verified)
+    def test_normal_plan_manager_only_and_committed_claude_only_selectivity(self):
+        from reuse_payload import selected
+        p=plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        self.assertFalse(p['has_builds'])
+        for provider in ('codex','claude'):
+            for arch in ('arm64','x86_64'):
+                entry=selected(p,provider,arch,p['manager_source_revision'])
+                self.assertEqual(entry['selection_mode'],'finite-component-v1')
+        with tempfile.TemporaryDirectory() as t:
+            repo=Path(t)/'repo'
+            subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
+            path=repo/'runner/claude/entrypoint.sh'
+            path.write_bytes(path.read_bytes()+b'\nprintf "bounded-claude-input-probe\\n" >&2\n')
+            subprocess.run(['git','-C',str(repo),'add','runner/claude/entrypoint.sh'],check=True)
+            subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','Change actual Claude runtime input'],check=True)
+            mixed=plan(repo,{},verify=self.verify,candidates=self.fixture['records'])
+            self.assertEqual({(e['provider'],e['architecture']) for e in mixed['build_matrix']['include']},
+                             {('claude','arm64'),('claude','x86_64')})
+            self.assertEqual({(e['provider'],e['architecture']) for e in mixed['reuse_matrix']['include']},
+                             {('codex','arm64'),('codex','x86_64')})
+            for a in ('arm64','x86_64'):
+                entry=selected(mixed,'codex',a,mixed['manager_source_revision'])
+                self.assertEqual(entry['record'],self.records['codex'][a])
+            with self.assertRaises(ValueError):compatible_plan(repo,{},verify=self.verify,candidates=self.fixture['records'])
+
+    def test_ordinary_schema2_assembly_binds_finite_receipts_offline(self):
+        import runpy,artifacts
+        prepare=runpy.run_path(str(ROOT/'scripts/release/prepare-manager-inputs.py'))['prepare']
+        p=plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        with tempfile.TemporaryDirectory() as t:
+            output=Path(t)/'metadata'
+            records=prepare(ROOT,p,None,output,None,self.verify)
+            manifest=json.loads((output/'release.json').read_text())
+            self.assertEqual(manifest['schema_version'],2)
+            artifacts.validate(manifest,require_bundle=False)
+            self.assertEqual(records,[self.records[p][a] for p in ('codex','claude') for a in ('arm64','x86_64')])
+            for mutation in ('missing','wrong-provider','wrong-desired','unknown-architecture'):
+                broken=copy.deepcopy(manifest)
+                if mutation=='missing':del broken['component_selections']
+                elif mutation=='wrong-provider':broken['component_selections']['codex']['arm64']['provider']='claude'
+                elif mutation=='wrong-desired':broken['component_selections']['codex']['arm64']['desired_input_identity']='0'*64
+                else:broken['component_selections']['codex']['intel']={}
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):artifacts.validate(broken,require_bundle=False)
+
+    def test_payload_cli_finite_plan_checks_actual_checkout_before_retrieval(self):
+        import contextlib,io
+        from unittest.mock import patch
+        import reuse_payload
+        p=compatible_plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        with tempfile.TemporaryDirectory() as t:
+            path=Path(t)/'plan.json';path.write_text(json.dumps(p))
+            argv=['reuse_payload.py','--plan',str(path),'--root',str(ROOT),'--provider','codex','--architecture','arm64','--destination',str(Path(t)/'payload')]
+            with patch.object(sys,'argv',argv),patch.object(reuse_payload,'origin_verifier',return_value=self.verify),                 patch.object(reuse_payload,'retrieve',return_value=Path(t)/'original.tar.gz') as fetch,contextlib.redirect_stdout(io.StringIO()):
+                reuse_payload.main()
+                self.assertEqual(fetch.call_args.args[0],self.records['codex']['arm64'])
+                self.assertEqual(fetch.call_args.args[1],self.origins['codex']['arm64'])
+            p['components']['codex']['arm64']['selected_input_identity']='0'*64
+            path.write_text(json.dumps(p))
+            with patch.object(sys,'argv',argv),patch.object(reuse_payload,'origin_verifier',return_value=self.verify),                 patch.object(reuse_payload,'retrieve') as fetch,contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                reuse_payload.main()
+            fetch.assert_not_called()
+
     def test_missing_original_origin_refuses_without_build_fallback(self):
         def missing(r):raise ValueError('expired original')
         with self.assertRaisesRegex(ValueError,'without image builds'):compatible_plan(ROOT,{},verify=missing,candidates=self.fixture['records'])

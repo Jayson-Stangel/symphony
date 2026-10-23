@@ -28,9 +28,15 @@ def join(plan, records, revision, verify):
             if decision.get('selection_mode')=='finite-input-transition-v1':
                 from finite_transition import validate_evidence
                 evidence=validate_evidence(decision['input_transition'],revision)
-                artifacts.require(selected_input==evidence['source_input_identities'][provider][architecture] and
+                artifacts.require(record['source_revision']==evidence['source_revision'] and selected_input==evidence['source_input_identities'][provider][architecture] and
                                   decision['input_identity']==decision.get('desired_input_identity')==evidence['manager_input_identities'][provider][architecture],
                                   'selected original and desired manager input identities differ from finite transition')
+            if decision.get('selection_mode')=='finite-component-v1':
+                from finite_transition import validate_component_evidence
+                evidence=validate_component_evidence(decision['input_transition'],revision,provider,architecture)
+                artifacts.require(record['source_revision']==evidence['source_revision'] and selected_input==evidence['selected_input_identity'] and
+                                  decision['input_identity']==decision.get('desired_input_identity')==evidence['desired_input_identity'],
+                                  'finite component selected/desired identities differ')
             artifacts.require(record.get('provider') == provider and record.get('architecture') == architecture and
                               record.get('input_identity') == selected_input, 'actual native record differs from plan')
             origin=verify(record)
@@ -61,6 +67,12 @@ def main():
             return selected_verifier(record)
         plan = json.loads(Path(args.plan).read_text())
         selected = join(plan, args.records, revision, verify)
+        from finite_transition import evaluate_component
+        for record in selected:
+            decision=plan['components'][record['provider']][record['architecture']]
+            if decision.get('selection_mode')=='finite-component-v1':
+                artifacts.require(evaluate_component('.',record,record['provider'],record['architecture'])==decision['input_transition'],
+                                  'actual source differs from finite component plan')
         output = Path(args.output)
         output.mkdir(parents=True, exist_ok=True)
         files = []
@@ -79,6 +91,7 @@ def main():
         else:
             artifacts.assemble(SimpleNamespace(records=files, schema_version=args.schema,
                                version=manager_version.read(), revision=revision, channel='candidate',
+                               component_selections=__import__('finite_transition').selections_from_plan(plan),
                                bundle=None, platform_bundles=True, output=str(output / 'release.json')), verifier=verify)
         (output/'component-plan.json').write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
     except (ValueError, KeyError, TypeError, OSError) as error:
