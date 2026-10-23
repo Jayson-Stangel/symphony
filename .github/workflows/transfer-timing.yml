@@ -1,0 +1,95 @@
+name: Retained transfer timing
+
+on:
+  workflow_call:
+    inputs:
+      source_run:
+        type: string
+        required: true
+      provider:
+        type: string
+        default: claude
+      architecture:
+        type: string
+        default: x86_64
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing same-repository legacy combined image/records artifact run ID (no rebuild or export)
+        type: string
+        required: true
+      provider:
+        type: choice
+        options: [claude, codex]
+        default: claude
+      architecture:
+        type: choice
+        options: [x86_64, arm64]
+        default: x86_64
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  retained-payload-timing:
+    name: Measure retained payload transfer
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify immutable source and native producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run }}
+          PROVIDER: ${{ inputs.provider }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re, subprocess
+          from pathlib import Path
+          assert os.environ['PROVIDER'] in ('codex', 'claude'), 'unsupported provider'
+          assert os.environ['ARCHITECTURE'] in ('arm64', 'x86_64'), 'unsupported native architecture'
+          run_id, repo = os.environ['RUN_ID'], os.environ['GITHUB_REPOSITORY']
+          assert re.fullmatch('[0-9]+', run_id), 'invalid immutable run ID'
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}']))
+          assert run['head_repository']['full_name'] == repo, 'foreign source run'
+          assert re.fullmatch('[0-9a-f]{40}', run['head_sha']), 'invalid source revision'
+          jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
+          import sys
+          sys.path.insert(0, 'scripts/release')
+          from artifacts import runner_job_names
+          names = runner_job_names(os.environ['PROVIDER'], os.environ['ARCHITECTURE'])
+          producer = [job for job in jobs if job['name'] in names]
+          assert len(producer) == 1 and producer[0]['status'] == 'completed' and producer[0]['conclusion'] == 'success', 'native producer did not complete successfully'
+          runner = 'ubuntu-24.04-arm' if os.environ['ARCHITECTURE'] == 'arm64' else 'ubuntu-24.04'
+          assert runner in producer[0]['labels'], 'producer did not run on the selected native host'
+          Path('timing-evidence').mkdir()
+          Path('timing-evidence/source-run.txt').write_text(json.dumps(run, indent=2))
+          Path('timing-evidence/native-producer.txt').write_text(json.dumps(producer[0], indent=2))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
+          PYTHON
+      - name: Download only selected retained original gzip payload
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          name: runner-candidate-${{ inputs.provider }}-${{ inputs.architecture }}
+          path: original
+      - name: Measure actual retained checksum and archive identity verification
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+        run: |
+          python3 scripts/release/benchmark-transfer.py timing --input original --output timing-evidence \
+            --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
+      - name: Retain small timing and provenance receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: retained-timing-${{ inputs.provider }}-${{ inputs.architecture }}
+          path: timing-evidence/*
+          if-no-files-found: error
+          retention-days: 30

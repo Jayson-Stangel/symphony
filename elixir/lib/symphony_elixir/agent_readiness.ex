@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.AgentReadiness do
   @moduledoc "Model-free native-runtime readiness."
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Codex.SandboxReadiness, Config}
 
   @codes ~w(auth_required unqualified_auth unknown_auth_status
             native_identity_mismatch
@@ -15,7 +15,13 @@ defmodule SymphonyElixir.AgentReadiness do
   @spec check(keyword()) :: map()
   def check(opts \\ []) do
     if Config.coding_agent() == :codex do
-      %{ready: true, provider: "codex", profile: SymphonyElixir.AgentPause.codex_profile()}
+      readiness = %{
+        ready: SandboxReadiness.qualified?(),
+        provider: "codex",
+        profile: SymphonyElixir.AgentPause.codex_profile()
+      }
+
+      if readiness.ready, do: readiness, else: Map.put(readiness, :code, "sandbox_inputs_changed")
     else
       do_check(opts)
     end

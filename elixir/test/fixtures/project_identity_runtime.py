@@ -17,7 +17,9 @@ def save(name, data):
 def option(flag):
     return args[args.index(flag) + 1]
 cmd = args[0]
-if cmd == 'inspect':
+if cmd == 'info':
+    print('name=seccomp,profile=builtin')
+elif cmd == 'inspect':
     hide = root / 'hide-inspect-once'
     if '--format' not in args and hide.exists() and hide.read_text() == args[-1]:
         hide.unlink(); sys.exit(1)

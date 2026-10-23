@@ -1,0 +1,98 @@
+name: Current manager packages
+on:
+  workflow_call:
+    inputs:
+      metadata_artifact:
+        description: This run's complete current-source internal manifest artifact
+        type: string
+        required: true
+      helper_revision:
+        description: Successful exact-source native helper qualification
+        type: string
+        required: true
+    outputs:
+      package_artifact:
+        value: ${{ jobs.metadata.outputs.package_artifact }}
+permissions:
+  contents: read
+jobs:
+  host-policy:
+    name: Select native hosts
+    uses: ./.github/workflows/host-policy.yml
+  package:
+    name: Build manager package (${{ matrix.platform }})
+    if: ${{ always() && !cancelled() && needs.host-policy.result == 'success' }}
+    needs: host-policy
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Require the current source's qualified native helpers
+        env:
+          HELPER_REVISION: ${{ inputs.helper_revision }}
+        run: test "$HELPER_REVISION" = "$GITHUB_SHA"
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.metadata_artifact }}
+          path: manager-inputs
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: current-manager-helper-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qualified-helper
+      - name: Verify the original exact-source helper checksum
+        working-directory: qualified-helper
+        run: |
+          shasum -a 256 -c symphony-host.sha256
+          chmod 755 symphony-host
+      - name: Build the actual current manager using shared native package assembly
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          python3 scripts/release/artifacts.py validate manager-inputs/release.json --internal
+          bash scripts/release/build-manager-package.sh "$PWD/manager-inputs/release.json" "$PWD/packages" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$PWD/qualified-helper/symphony-host"
+          mv packages/package-source.txt "packages/package-source-$PLATFORM.txt"
+      - name: Retain this source's actual native manager archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: current-manager-native-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            packages/*.tar.gz
+            packages/package-source-*.txt
+          if-no-files-found: error
+  metadata:
+    name: Assemble manager package metadata
+    if: ${{ always() && !cancelled() && needs.package.result == 'success' }}
+    needs: package
+    runs-on: ubuntu-24.04
+    outputs:
+      package_artifact: current-manager-package-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.metadata_artifact }}
+          path: manager-inputs
+      - name: Retrieve artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: current-manager-native-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages
+          merge-multiple: true
+      - name: Bind both actual native archives to the current manager
+        run: python3 scripts/release/finalize-manager-packages.py manager-inputs/release.json packages
+      - name: Retain artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: current-manager-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/*
+          if-no-files-found: error

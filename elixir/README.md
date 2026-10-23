@@ -1,5 +1,53 @@
 # Symphony Elixir
 
+Codex listener startup performs a bounded, credential-free protected-command
+check before starting the application. `symphony runner doctor` and candidate
+update preflight use the same check in disposable storage, before draining an
+existing runner. The check writes an owned workspace canary and requires denial
+outside the effective writable roots and inside the canary workspace's `.git`.
+A version, app-server handshake, direct Git command or zero exit alone cannot pass.
+
+The first adapter supports direct `codex app-server` commands (including the
+generated `--config shell_environment_policy.inherit=all` option), local workers,
+`workspace-write` threads, and `workspaceWrite` turns with full read access.
+Unknown policy fields, other shell wrappers, remote workers, injected native
+runtime options, or native `config.toml`/managed requirements fail closed because
+their equivalence has not been qualified. Credentials are neither copied nor
+mounted into diagnostic containers. Claude retains its native readiness check.
+
+The image's model-free diagnostic is
+`/opt/symphony/elixir/bin/symphony --check-codex-sandbox /path/to/WORKFLOW.md`.
+It exits without starting a listener or making a model request. Startup receipts
+are process-local; a restart rechecks current host compatibility. Changes to
+command, executable metadata, workspace, sandbox policy, worker hosts or relevant
+environment invalidate admission and require restart. An already-started session
+keeps the settings snapshot that was qualified when it started.
+
+Direct native escript startup additionally requires `python3` and GNU `timeout`
+on `PATH` (on macOS, `timeout` is supplied by coreutils). Missing dependencies
+produce `sandbox_check_dependency_missing_python3` or
+`sandbox_check_dependency_missing_timeout`. Installed container operation uses
+the tools packaged in its image and adds no host Python dependency.
+
+The reference Codex image uses its version-matched bundled Bubblewrap helper.
+Codex launches share a checked-in Docker seccomp profile and `no-new-privileges`.
+The profile extends the pinned Docker default only for user/PID namespace
+creation and the mount operations required inside those namespaces; it retains
+Docker's capabilities and masked paths, with AppArmor enforcement enabled. No `SYS_ADMIN`,
+privileged mode, legacy sandbox or unconfined setting is used. See
+[`docs/codex-docker-sandbox.md`](../docs/codex-docker-sandbox.md) for provenance,
+permission details and qualification limits. Packaged releases carry the same
+profile and verify its identity before launch.
+
+On AppArmor-enabled Docker hosts, an administrator must add the reviewed versioned
+Codex profile before worker startup. See [the Docker sandbox contract](../docs/codex-docker-sandbox.md#apparmor-hosts)
+for the exact policy, supported paths, qualification, and rollback constraints.
+
+Real protected execution is part of `scripts/release/runner-smoke.sh`.
+Python failure-injection regressions run with
+`python3 runner/test_codex_readiness.py` from the repository root and remain
+separate from native helper qualification.
+
 This directory contains Symphony's Elixir/OTP orchestration service. It polls the
 configured tracker, manages per-issue workspaces, and runs Codex or Claude workers
 according to the repository's workflow. The service contract is documented in
@@ -199,15 +247,14 @@ Symphony ships self-contained executables built with
 [Burrito](https://github.com/burrito-elixir/burrito). They embed Erlang/OTP, Elixir, and Symphony,
 but still expect `codex`, `git`, and the selected tracker credentials on the target machine.
 
-Supported release targets:
+Supported native release targets:
 
-- `macos_arm64`
-- `macos_x86_64`
-- `linux_arm64`
-- `linux_x86_64`
+- `macos_arm64` (Apple Silicon macOS)
+- `linux_x86_64` (Linux AMD64)
 
-`v*` tags qualify all four targets and the matching prebuilt runners before approved
-publication. A manual workflow run builds candidate artifacts without creating a release.
+`v*` tags qualify both native targets and the four prebuilt runner images
+(Codex and Claude on Linux ARM64 and AMD64) before approved publication. A manual
+workflow run builds candidate artifacts without creating a release.
 See the [release artifact contract](../scripts/release/README.md) for registry setup,
 production environment approval and the source-independent manager bundle contract.
 
@@ -476,7 +523,7 @@ server host, SSH host count and categorical Codex approval/sandbox settings.
 Arbitrary policy-map contents and tracker credentials are excluded; custom values
 are represented as `custom`, and an implicit turn sandbox as `default`.
 Container settings retain `/workspaces`, `0.0.0.0` and the existing Codex
-container sandbox/approval bindings. Requested nonempty `worker.ssh_hosts` is
+approval binding; Codex filesystem and network policies are preserved. Requested nonempty `worker.ssh_hosts` is
 unsupported inside a container and is rejected before transformation for either
 provider. Native Codex SSH support is unchanged; native Claude SSH remains
 unsupported. A rejected reload retains the previous effective settings and their
@@ -739,6 +786,12 @@ image and entrypoint. To repeat it locally with Docker:
 docker build --target claude -f runner/Dockerfile -t symphony-claude-smoke .
 bash runner/claude/smoke.sh symphony-claude-smoke
 ```
+
+The shared browser layer, both runner targets, live E2E workers, and Claude
+qualification image use Node 24.22.1 with bundled npm 11.19.1. Their Dockerfiles
+pin the same multi-platform Node image digest. When updating that pin, update
+`runner/node-smoke.sh` too; CI checks the actual Node/npm resolution inside each
+built image, alongside Chromium checks for root and UID 11001.
 
 The smoke uses a disposable nonroot container, empty memory tracker and disabled
 network. It checks HTTP state with the expected missing-auth gate, Linux owned

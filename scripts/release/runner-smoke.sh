@@ -29,10 +29,15 @@ docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 90 /bin/sh
   git -C "$workspace" init -q
   git -C "$workspace" -c user.name=Release -c user.email=release@localhost commit --allow-empty -qm smoke
   test -n "$(git -C "$workspace" rev-parse HEAD)"
-  node /opt/symphony/browser/smoke.cjs
 '
+bash "$(dirname "$0")/../../runner/browser/smoke-image.sh" "$image" "$provider" "$revision"
 case "$provider" in
-  codex) docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 codex --version ;;
+  codex)
+    docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 codex --version
+    # A handshake/version is not protected-command execution. Qualify the same
+    # model-free effect check used by doctor and the listener's startup gate.
+    bash "$(dirname "$0")/../../runner/codex-sandbox-smoke.sh" "$image"
+    ;;
   claude) docker run --rm --network none --entrypoint /usr/bin/timeout "$image" 30 /usr/local/bin/node --input-type=module -e "import {nativeExecutable} from '/opt/symphony/claude/runtime.mjs'; import {execFileSync} from 'node:child_process'; process.stdout.write(execFileSync(nativeExecutable(), ['--version'], {encoding:'utf8', timeout:15000}));" ;;
 esac
 

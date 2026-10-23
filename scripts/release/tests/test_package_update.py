@@ -15,15 +15,40 @@ import unittest
 REPOSITORY = Path(__file__).resolve().parents[3]
 UPDATER = REPOSITORY / "scripts/symphony-package-update.sh"
 HELPER = r'''#!/usr/bin/env python3
-import fcntl, hashlib, json, os, pathlib, stat, sys
+import fcntl, hashlib, json, os, pathlib, re, stat, sys
+BUILD_REVISION = "__FIXTURE_BUILD_REVISION__"
+def manifest(path):
+    value=json.loads(pathlib.Path(path).read_text())
+    assert value['schema_version']==1 and 'manager_envelope' not in value, 'portable fixture covers legacy schema1 only'
+    revision=value['source_revision'];version=value['version']
+    assert re.fullmatch('[a-f0-9]{40}',revision) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?',version)
+    assert value['channel'] in ('candidate','stable') and value['host_architectures']==['arm64','x86_64']
+    assert set(value['runners'])=={'codex','claude'}
+    for provider,group in value['runners'].items():
+        assert set(group)=={'arm64','x86_64'}
+        for arch,record in group.items():
+            assert record['source_revision']==revision
+            assert record['platform']==('linux/arm64' if arch=='arm64' else 'linux/amd64')
+            assert re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}',record['image'])
+            assert all(isinstance(record['tool_versions'].get(tool),str) and record['tool_versions'][tool].strip() for tool in (provider,'node','git','playwright'))
+    assert value['bundle']['filename']=='symphony-'+version+'-macos.tar.gz'
+    if 'sha256' in value['bundle']:assert re.fullmatch('[a-f0-9]{64}',value['bundle']['sha256'])
+    return value
 op, *args = sys.argv[1:]
 if op == 'get':
     value = json.loads(pathlib.Path(args[0]).read_text())
     for key in args[1].split('.'): value = value[key]
     print(json.dumps(value) if isinstance(value, (bool, dict, list)) else value)
-elif op == 'validate-manifest':
-    value = json.loads(pathlib.Path(args[0]).read_text())
-    assert value['schema_version'] == 1 and len(value['source_revision']) == 40
+elif op == 'sha256':
+    print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest())
+elif op in ('validate-manifest','validate-release','manager-revision'):
+    value=manifest(args[0])
+    if op=='validate-release' and os.environ.get('FIXTURE_FAIL_VALIDATE_RELEASE')==value['source_revision']:
+        sys.exit('injected selected release validation failure')
+    if op=='manager-revision':print(value['source_revision'])
+elif op == 'build-revision':print(BUILD_REVISION)
+elif op == 'owned-file':
+    value=os.lstat(args[0]);assert stat.S_ISREG(value.st_mode) and value.st_uid==os.geteuid() and value.st_nlink==1
 elif op == 'verify-files':
     root = pathlib.Path(args[0])
     for line in (root/'files.sha256').read_text().splitlines():
@@ -67,7 +92,14 @@ runner_namespace=${SYMPHONY_RUNNER_NAMESPACE:-}
 bin_dir=$package_app_home/bin
 skills_dir=$package_app_home/skills
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
-source_revision() { package_helper get "$symphony_home/release.json" source_revision; }
+# This launcher fixture isolates atomic update state; retained image checks
+# execute from actual production functions in test_retained_compatibility.py.
+package_check_retained_images() { :; }
+package_platform=macos
+package_bundle_field() { printf 'bundle.%s\n' "$1"; }
+package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
+source_revision() { package_helper manager-revision "$symphony_home/release.json"; }
+# ACTUAL_HOME_SOURCE_VALIDATOR
 resolve_runner_home() { mkdir -p "$runner_home"; }
 validate_agent() { case "$1" in codex|claude) ;; *) die 'bad fixture agent' ;; esac; }
 repo_root() { pwd; }
@@ -75,12 +107,16 @@ project_id() { basename "$1"; }
 # Installer boundary is a fixture here; native installer has its own tests.
 package_stage_bundle() {
   local from=$1 version revision destination
+  package_helper validate-release "$from/release.json"
   package_helper verify-files "$from"
+  package_verify_home_source "$from"
   version=$(package_helper get "$from/release.json" version)
   revision=$(package_helper get "$from/release.json" source_revision)
   destination="$package_app_home/releases/$version-$revision"
   if [ ! -d "$destination" ]; then cp -R "$from" "$destination"; fi
+  package_helper validate-release "$destination/release.json"
   package_helper verify-files "$destination"
+  package_verify_home_source "$destination"
   printf '%s\n' "$destination"
 }
 . "$symphony_home/scripts/symphony-package-update.sh"
@@ -121,6 +157,13 @@ case "${1:-}" in
   version) source_revision ;;
 esac
 '''
+
+
+# Exercise the actual production helper identity boundary within the portable
+# updater fixture; native/core validation has separate source-bound tests.
+_package_source = (REPOSITORY / "scripts/symphony-package.sh").read_text()
+_home_validator = _package_source[_package_source.index('package_verify_home_source() {'):_package_source.index('\npackage_stage_bundle() {')]
+LAUNCHER = LAUNCHER.replace('# ACTUAL_HOME_SOURCE_VALIDATOR', _home_validator)
 
 
 def manifest(version, revision):
@@ -164,13 +207,13 @@ class PackageUpdateTest(unittest.TestCase):
         (directory / "scripts/symphony").write_text(LAUNCHER)
         (directory / "scripts/symphony").chmod(0o755)
         shutil.copyfile(UPDATER, directory / "scripts/symphony-package-update.sh")
-        (directory / "libexec/symphony-host").write_text(HELPER)
+        (directory / "libexec/symphony-host").write_text(HELPER.replace("__FIXTURE_BUILD_REVISION__", revision))
         (directory / "libexec/symphony-host").chmod(0o755)
         value = manifest(version, revision)
         value["channel"] = channel
         (directory / "release.json").write_text(json.dumps(value))
         (directory / "files.sha256").write_text("".join(
-            hashlib.sha256(path.read_bytes()).hexdigest() + "  " + str(path.relative_to(directory)) + "\n"
+            hashlib.sha256(path.read_bytes()).hexdigest() + "  ./" + str(path.relative_to(directory)) + "\n"
             for path in sorted(directory.rglob("*")) if path.is_file()))
         archive = self.root / value["bundle"]["filename"]
         with tarfile.open(archive, "w:gz") as tar:
@@ -190,6 +233,52 @@ class PackageUpdateTest(unittest.TestCase):
 
     def current(self):
         return (self.app / "current").resolve()
+
+    def reseal_second(self, inventory_change=lambda value: value):
+        external, archive, directory = self.second
+        inventory = directory / "files.sha256"
+        lines = [hashlib.sha256(path.read_bytes()).hexdigest() + "  ./" + path.relative_to(directory).as_posix() + "\n"
+                 for path in sorted(directory.rglob("*")) if path.is_file() and path != inventory]
+        inventory.write_text(inventory_change("".join(lines)))
+        with tarfile.open(archive, "w:gz") as tar:
+            for path in sorted(directory.iterdir()): tar.add(path, arcname=path.name)
+        value = json.loads(external.read_text())
+        value["bundle"]["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        external.write_text(json.dumps(value))
+
+    def test_selected_release_validation_failure_refuses_before_staging(self):
+        canary = self.projects[1] / "unchanged-canary"; canary.write_text("preserve")
+        result = self.candidate(env={"FIXTURE_FAIL_VALIDATE_RELEASE": "b" * 40})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("injected selected release validation failure", result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        self.assertFalse((self.app / "releases" / self.second[2].name).exists())
+        self.assertEqual(canary.read_text(), "preserve")
+
+    def test_resealed_foreign_compiled_helper_refuses_before_staging(self):
+        # Keep manifest and inventory self-consistent while substituting a
+        # genuinely different fixture helper source, rather than changing JSON.
+        shutil.copyfile(self.first[2] / "libexec/symphony-host", self.second[2] / "libexec/symphony-host")
+        self.reseal_second()
+        result = self.candidate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("selected home helper differs from actual manager source revision", result.stdout)
+        self.assertEqual(self.current(), self.initial)
+        self.assertFalse((self.app / "releases" / self.second[2].name).exists())
+
+    def test_exact_helper_inventory_binding_required_before_staging(self):
+        for duplicate in (False, True):
+            with self.subTest(duplicate=duplicate):
+                def alter(value):
+                    lines = value.splitlines(keepends=True)
+                    helper = next(line for line in lines if line.endswith("  ./libexec/symphony-host\n"))
+                    return value + helper if duplicate else "".join(line for line in lines if line != helper)
+                self.reseal_second(alter)
+                result = self.candidate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("bundle inventory must bind its exact host helper", result.stdout)
+                self.assertEqual(self.current(), self.initial)
+                self.assertFalse((self.app / "releases" / self.second[2].name).exists())
 
     def test_manager_update_and_completed_release_rollback(self):
         result = self.candidate()
@@ -395,7 +484,7 @@ runner_env_file() { echo "$runner_home/project.env"; }
 runner_project_lock() { :; }; runner_require_identity() { :; }
 runner_status() { if [ -f "$2/current" ]; then echo true; else echo missing; fi; }
 runner_owned() { :; }; runner_is_legacy() { return 1; }
-runner_update_port() { echo 4010; }; package_image() { echo candidate; }
+runner_update_port() { echo 4010; }; package_transition_image() { echo candidate; }
 runner_build_image() { :; }; runner_doctor() { :; }; runner_pause() { :; }
 runner_prepare_storage() { :; }; runner_start() { printf new >"$fixture/current"; }
 runner_resume_when_ready() { :; }; runner_record_observed_metadata() { :; }
@@ -403,6 +492,7 @@ package_write_transition() { :; }; package_remove_transition_fields() { :; }
 package_finish_transition() { die 'injected manager activation failure'; }
 fixture_runtime() {
   case "$1" in
+    info) printf '%s\n' 'name=seccomp,profile=builtin' ;;
     image) echo new ;;
     inspect)
       case "${!#}" in

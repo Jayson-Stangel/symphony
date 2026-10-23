@@ -1,0 +1,60 @@
+name: Change classification
+on:
+  workflow_call:
+    outputs:
+      code:
+        description: Whether behavioral qualification is required
+        value: ${{ jobs.classify.outputs.code }}
+      policy:
+        description: Whether behavioral or presentation changes need CI policy and graph validation
+        value: ${{ jobs.classify.outputs.policy }}
+      browser:
+        description: Whether actual browser inputs or validation controls require shared qualification
+        value: ${{ jobs.classify.outputs.browser }}
+      application:
+        description: Ordinary consumer decision for application
+        value: ${{ jobs.classify.outputs.application }}
+      portable:
+        description: Ordinary consumer decision for portable
+        value: ${{ jobs.classify.outputs.portable }}
+      package_macos:
+        description: Ordinary consumer decision for package_macos
+        value: ${{ jobs.classify.outputs.package_macos }}
+      package_linux:
+        description: Ordinary consumer decision for package_linux
+        value: ${{ jobs.classify.outputs.package_linux }}
+      fixtures:
+        description: Ordinary consumer decision for fixtures
+        value: ${{ jobs.classify.outputs.fixtures }}
+      native:
+        description: Ordinary consumer decision for native
+        value: ${{ jobs.classify.outputs.native }}
+      native_platform:
+        description: Ordinary consumer decision for native_platform
+        value: ${{ jobs.classify.outputs.native_platform }}
+permissions:
+  contents: read
+jobs:
+  classify:
+    name: Classify event inputs
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+      policy: ${{ steps.changes.outputs.policy }}
+      browser: ${{ steps.changes.outputs.browser }}
+      application: ${{ steps.changes.outputs.application }}
+      portable: ${{ steps.changes.outputs.portable }}
+      package_macos: ${{ steps.changes.outputs.package_macos }}
+      package_linux: ${{ steps.changes.outputs.package_linux }}
+      fixtures: ${{ steps.changes.outputs.fixtures }}
+      native: ${{ steps.changes.outputs.native }}
+      native_platform: ${{ steps.changes.outputs.native_platform }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify the complete event diff
+        id: changes
+        run: python3 scripts/ci/classify_changes.py

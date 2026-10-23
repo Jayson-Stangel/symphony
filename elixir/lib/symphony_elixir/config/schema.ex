@@ -624,9 +624,7 @@ defmodule SymphonyElixir.Config.Schema do
         server: %{settings.server | host: "0.0.0.0"},
         codex: %{
           settings.codex
-          | approval_policy: "never",
-            thread_sandbox: "danger-full-access",
-            turn_sandbox_policy: %{"type" => "dangerFullAccess"}
+          | approval_policy: "never"
         }
     }
   end

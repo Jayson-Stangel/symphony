@@ -1,18 +1,287 @@
 name: Package checks
 on:
+  workflow_call:
+    inputs:
+      previous_revision:
+        description: Explicit prior source-build target; empty when qualified artifacts are selected
+        type: string
+        default: ''
+      retain_diagnostic:
+        description: Keep this caller-owned diagnostic qualification across new runs
+        type: boolean
+        default: false
+      portable_revision:
+        description: Successful exact-source output from caller-owned portable preflight
+        type: string
+        default: ''
+    outputs:
+      qualified_revision:
+        description: Exact source that passed portable, native and package-input checks
+        value: ${{ jobs.package-qualification.outputs.qualified_revision }}
+  workflow_dispatch:
+    inputs:
+      previous_revision:
+        description: Optional full prior source SHA for nonpublishing two-source helper build diagnosis
+        type: string
+        required: false
   pull_request:
   push:
-    branches: [dev]
+    branches: [dev, main]
+concurrency:
+  group: package-checks-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
-  macos-package:
-    runs-on: macos-14
+  changes:
+    name: Classify changes
+    uses: ./.github/workflows/change-classification.yml
+  portable:
+    name: Portable preflight
+    needs: changes
+    if: needs.changes.outputs.portable == 'true' && inputs.portable_revision == ''
+    uses: ./.github/workflows/release-preflight.yml
+  qualification:
+    name: Validate preflight inputs
+    needs: [changes, portable]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Build both supported host architectures
-        run: bash scripts/release/build-host-helper.sh /tmp/symphony-host
-      - name: Source-independent installation and host-helper regressions
+      - name: Require successful exact-head portable preflight
         env:
-          SYMPHONY_TEST_HOST_HELPER: /tmp/symphony-host
-        run: python3 scripts/package/test-package.py -v
-      - name: Release selection and interrupted packaged update regressions
-        run: python3 -m unittest discover -s scripts/release/tests -v
+          CLASSIFICATION: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.portable }}
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.portable_revision }}
+          MACOS: ${{ needs.changes.outputs.package_macos }}
+          LINUX: ${{ needs.changes.outputs.package_linux }}
+          FIXTURES: ${{ needs.changes.outputs.fixtures }}
+        run: |
+          test "$CLASSIFICATION" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          for flag in "$MACOS" "$LINUX" "$FIXTURES"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
+          if [ "$MACOS" = true ] || [ "$LINUX" = true ] || [ "$FIXTURES" = true ]; then
+            test "$CODE" = true
+          fi
+          if [ "$CODE" = false ]; then
+            test "$LOCAL_RESULT" = skipped
+            test -z "$CALLER_REVISION"
+            echo "Portable qualification intentionally omitted, not executed; no affected inputs." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.previous_revision != ''
+        with:
+          fetch-depth: 0
+      - name: Verify explicitly selected prior source before native work
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
+  host-policy:
+    name: Select native hosts
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    uses: ./.github/workflows/host-policy.yml
+    with:
+      platform: ${{ needs.changes.outputs.native_platform }}
+  native-host-package:
+    name: Native helpers and fixtures (${{ matrix.platform }})
+    needs: [changes, qualification, host-policy]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Build actual native macOS ARM64 helper
+        if: matrix.platform == 'macos' && needs.changes.outputs.package_macos == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/host-helper"
+          bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/host-helper/symphony-host" --native
+          (cd "$RUNNER_TEMP/host-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
+      - name: Build actual static Linux x86-64 helper
+        if: matrix.platform == 'linux_x86_64' && needs.changes.outputs.package_linux == 'true'
+        run: bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/host-helper"
+      - name: Native source-independent shared helper contracts
+        if: ((matrix.platform == 'macos' && needs.changes.outputs.package_macos == 'true') || (matrix.platform == 'linux_x86_64' && needs.changes.outputs.package_linux == 'true'))
+        env:
+          SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/host-helper/symphony-host
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          test "$("$SYMPHONY_TEST_HOST_HELPER" build-revision)" = "$GITHUB_SHA"
+          test "$("$SYMPHONY_TEST_HOST_HELPER" host-platform)" = "$PLATFORM"
+          python3 scripts/package/test-package.py -v
+          python3 scripts/package/test-selected-image.py -v
+          python3 scripts/package/test-environment.py -v
+          python3 scripts/package/test-manager-protocol.py -v
+      - name: Execute artifact in clean Ubuntu 26.04 without build tools
+        if: matrix.platform == 'linux_x86_64' && needs.changes.outputs.package_linux == 'true'
+        env:
+          HELPER: ${{ runner.temp }}/host-helper/symphony-host
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$HELPER:/symphony-host:ro" -e EXPECTED_REVISION="$GITHUB_SHA" ubuntu:26.04 bash -euc '
+            uname -sm
+            cat /etc/os-release
+            for tool in swift swiftc python3 node git mise elixir erl; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                printf "unexpected helper runtime dependency present: %s\n" "$tool" >&2
+                exit 1
+              fi
+            done
+            test "$(/symphony-host build-revision)" = "$EXPECTED_REVISION"
+            test "$(/symphony-host hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+            mkdir -m700 /contract
+            /symphony-host owned-directory /contract
+            exec 8>>/contract/lock
+            /symphony-host lock /contract/lock 8 acquire
+            /symphony-host lock /contract/lock 8 inherited
+          ' | tee "$RUNNER_TEMP/host-helper/ubuntu26.log"
+      - name: Prepare the real selected prior source
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$RUNNER_TEMP/prior-helper-source"
+      - name: Build prior helper early on its actual supported native host
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/prior-helper"
+          source="$RUNNER_TEMP/prior-helper-source"
+          helper="$RUNNER_TEMP/prior-helper/symphony-host"
+          if [ "$PLATFORM" = macos ]; then
+            bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
+            (cd "$RUNNER_TEMP/prior-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
+            test "$(lipo -archs "$helper")" = arm64
+          else
+            bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
+          fi
+          test "$("$helper" build-revision)" = "$PREVIOUS_REVISION"
+          test "$("$helper" host-platform)" = "$PLATFORM"
+          test "$("$helper" hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+          if [ "$PLATFORM" = linux_x86_64 ]; then
+            SYMPHONY_TEST_HOST_HELPER="$helper" python3 "$source/scripts/package/test-package.py" -v
+          fi
+      - name: Retain artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.previous_revision != ''
+        with:
+          name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prior-helper/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain actual exact-source platform helper and qualification
+        if: ((matrix.platform == 'macos' && needs.changes.outputs.package_macos == 'true') || (matrix.platform == 'linux_x86_64' && needs.changes.outputs.package_linux == 'true'))
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-host-helper-${{ matrix.platform }}-${{ github.sha }}
+          path: ${{ runner.temp }}/host-helper/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install native socket inspection utility
+        if: matrix.platform == 'linux_x86_64' && needs.changes.outputs.fixtures == 'true'
+        run: sudo apt-get update && sudo apt-get install -y lsof
+      - name: Run native process and updater fixtures in the helper allocation
+        if: needs.changes.outputs.fixtures == 'true'
+        run: |
+          uname -sm
+          python3 scripts/ci/release_tests.py native
+
+  package-qualification:
+    name: Package qualification
+    needs: [changes, qualification, native-host-package]
+    if: ${{ always() }}
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          PORTABLE_REQUIRED: ${{ needs.changes.outputs.portable }}
+          MACOS: ${{ needs.changes.outputs.package_macos }}
+          LINUX: ${{ needs.changes.outputs.package_linux }}
+          FIXTURES: ${{ needs.changes.outputs.fixtures }}
+          NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
+          PLATFORM: ${{ needs.changes.outputs.native_platform }}
+        run: |
+          test "$RESULT" = success
+          for flag in "$CODE" "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES" "$NATIVE_REQUIRED"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
+          expected_native=false; expected_platform=all
+          macos=false; linux=false
+          if [ "$MACOS" = true ] || [ "$FIXTURES" = true ]; then macos=true; fi
+          if [ "$LINUX" = true ] || [ "$FIXTURES" = true ]; then linux=true; fi
+          if [ "$macos" = true ] || [ "$linux" = true ]; then expected_native=true; fi
+          if [ "$macos" != "$linux" ]; then
+            if [ "$macos" = true ]; then expected_platform=macos; else expected_platform=linux_x86_64; fi
+          fi
+          test "$NATIVE_REQUIRED" = "$expected_native"
+          if [ "$NATIVE_REQUIRED" = true ]; then test "$PORTABLE_REQUIRED" = true; fi
+          test "$PLATFORM" = "$expected_platform"
+          if [ "$CODE" = false ]; then
+            test "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = false/false/false/false
+          fi
+      - name: Require every requested native and package-input qualification
+        env:
+          PORTABLE: ${{ needs.qualification.result }}
+          NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
+          PACKAGE: ${{ needs.native-host-package.result }}
+          MACOS: ${{ needs.changes.outputs.package_macos }}
+          LINUX: ${{ needs.changes.outputs.package_linux }}
+          FIXTURES: ${{ needs.changes.outputs.fixtures }}
+        run: |
+          test "$PORTABLE" = success
+          case "$NATIVE_REQUIRED" in
+            false)
+              test "$PACKAGE" = skipped
+              echo 'No native inputs changed; behavioral checks intentionally omitted, not executed.' >> "$GITHUB_STEP_SUMMARY" ;;
+            true)
+              test "$PACKAGE" = success
+              echo "Native qualification passed at $GITHUB_SHA. Selected helpers: macOS=$MACOS, Linux=$LINUX; selected process/updater fixtures=$FIXTURES. Unselected consumers intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY" ;;
+            *) exit 1 ;;
+          esac
+      - name: Bind complete successful qualification to the exact source
+        id: qualified
+        if: needs.changes.outputs.portable == 'true' && needs.changes.outputs.package_macos == 'true' && needs.changes.outputs.package_linux == 'true' && needs.changes.outputs.fixtures == 'true'
+
+        run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the exact-source qualification receipt
+        env:
+          RESULT: ${{ needs.changes.result }}
+          PORTABLE_REQUIRED: ${{ needs.changes.outputs.portable }}
+          MACOS: ${{ needs.changes.outputs.package_macos }}
+          LINUX: ${{ needs.changes.outputs.package_linux }}
+          FIXTURES: ${{ needs.changes.outputs.fixtures }}
+          QUALIFIED_REVISION: ${{ steps.qualified.outputs.revision }}
+        run: |
+          test "$RESULT" = success
+          for flag in "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
+          if [ "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = true/true/true/true ]; then
+            test "$QUALIFIED_REVISION" = "$GITHUB_SHA"
+          else
+            test -z "$QUALIFIED_REVISION"
+          fi
+          echo "Selected current-source checks passed: helper/package macOS=$MACOS, Linux=$LINUX; process/updater fixtures=$FIXTURES. Unselected checks intentionally omitted, not executed. This is fixture proof; selected-environment image qualification and installed composition are separate explicit integration." >> "$GITHUB_STEP_SUMMARY"

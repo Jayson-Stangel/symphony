@@ -1,0 +1,103 @@
+name: Build native runner with bounded layer cache
+description: Load a locally testable image; layer reuse never replaces runtime qualification.
+inputs:
+  builder:
+    description: Optional caller-owned Buildx builder for shared provider layers
+    default: ''
+  target:
+    description: Dockerfile target
+    required: true
+  tags:
+    description: Local image tags
+    required: true
+  version:
+    description: Actual source version
+    default: development
+  revision:
+    description: Actual source revision
+    default: unknown
+  input-identity:
+    description: Exact declared component input identity, recorded on the finished image
+    default: unknown
+  no-cache:
+    description: Diagnostic cold build; still exports its successful layers
+    default: 'false'
+  evidence-name:
+    description: Optional diagnostic phase name for retained build measurements
+    default: ''
+  cache-variant:
+    description: Optional separate diagnostic cache snapshot
+    default: ''
+  export-cache:
+    description: Export successful layers; false keeps diagnostic recipe changes read-only
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Select isolated cache namespace and native platform
+      id: cache
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        TARGET: ${{ inputs.target }}
+        CACHE_VARIANT: ${{ inputs.cache-variant }}
+        CACHE_EXPORT: ${{ inputs.export-cache }}
+      run: bash scripts/release/runner-cache-policy.sh
+    - name: Set up native image builder
+      if: inputs.builder == ''
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - name: Start build measurement
+      id: started
+      shell: bash
+      run: echo "seconds=$(date +%s)" >> "$GITHUB_OUTPUT"
+    - name: Build and load actual native image
+      id: build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        context: .
+        file: runner/Dockerfile
+        target: ${{ inputs.target }}
+        platforms: linux/${{ steps.cache.outputs.arch }}
+        tags: ${{ inputs.tags }}
+        load: true
+        no-cache: ${{ inputs.no-cache == 'true' }}
+        build-args: |
+          SYMPHONY_VERSION=${{ inputs.version }}
+          SYMPHONY_REVISION=${{ inputs.revision }}
+          SYMPHONY_INPUT_IDENTITY=${{ inputs.input-identity }}
+        cache-from: |
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-codex
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-claude
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-browser-tools
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-codex
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-claude
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-browser-tools
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-codex
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-claude
+          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-browser-tools
+        cache-to: ${{ inputs.export-cache == 'true' && format('type=gha,scope=runner-v1-{0}-{1}-{2},mode=max', steps.cache.outputs.arch, steps.cache.outputs.namespace, inputs.target) || '' }}
+    - name: Retain build measurement
+      if: inputs.evidence-name != ''
+      shell: bash
+      env:
+        PHASE: ${{ inputs.evidence-name }}
+        STARTED: ${{ steps.started.outputs.seconds }}
+        BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+        IMAGE_ID: ${{ steps.build.outputs.imageid }}
+        SOURCE_REVISION: ${{ inputs.revision }}
+        COLD: ${{ inputs.no-cache }}
+      run: |
+        python3 - <<'PYCODE'
+        import json, os, pathlib, time
+        phase = os.environ['PHASE']
+        assert phase in ('cold', 'warm', 'changed')
+        root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'runner-cache-measurements'
+        root.mkdir(exist_ok=True)
+        (root / (phase + '-build.json')).write_text(json.dumps({
+            'phase': phase, 'elapsed_seconds': time.time() - int(os.environ['STARTED']),
+            'no_cache': os.environ['COLD'] == 'true', 'source_revision': os.environ['SOURCE_REVISION'],
+            'image_id': os.environ['IMAGE_ID'], 'metadata': json.loads(os.environ['BUILD_METADATA'])}, indent=2))
+        PYCODE

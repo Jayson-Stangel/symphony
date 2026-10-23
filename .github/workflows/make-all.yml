@@ -1,31 +1,67 @@
-name: make-all
+name: Application checks
 
 on:
   pull_request:
   push:
     branches:
       - main
+      - dev
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  changes:
+    name: Classify changes
+    uses: ./.github/workflows/change-classification.yml
   make-all:
+    name: Application checks
+    needs: changes
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Require a complete classification decision
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.application }}
+          POLICY: ${{ needs.changes.outputs.policy }}
+        run: |
+          test "$RESULT" = success
+          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          case "$POLICY" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CODE" = true ]; then test "$POLICY" = true; fi
+      - name: Check out source
+        if: needs.changes.outputs.policy == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Workflow and metadata regressions
+        if: needs.changes.outputs.policy == 'true'
+        run: python3 -m unittest discover -s scripts/ci/tests -v
+
+      - name: Validate all workflow and composite action definitions
+        if: needs.changes.outputs.policy == 'true'
+        run: |
+          curl -fsSL --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
 
       - name: Set up mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        if: needs.changes.outputs.application != 'false'
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
           working_directory: elixir
 
+      - name: Codex protected-command failure regressions
+        if: needs.changes.outputs.application != 'false'
+        run: python3 runner/test_codex_readiness.py
+
       - name: Cache deps and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: needs.changes.outputs.application != 'false'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             elixir/deps
@@ -35,4 +71,12 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify make all
+        if: needs.changes.outputs.application != 'false'
+        working-directory: elixir
         run: make all
+      - name: Application qualification omission
+        if: needs.changes.outputs.application == 'false'
+        run: echo "No application inputs changed; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Documentation policy omission
+        if: needs.changes.outputs.policy == 'false'
+        run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

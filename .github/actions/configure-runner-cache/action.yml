@@ -1,0 +1,9 @@
+name: Configure native candidate layer cache
+description: Configure the official native builder and scoped Actions cache runtime for the current/prior controller.
+runs:
+  using: composite
+  steps:
+    - name: Supply scoped cache runtime
+      uses: ./.github/actions/runner-cache-runtime
+    - name: Set up native image builder
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

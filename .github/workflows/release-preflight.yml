@@ -1,0 +1,39 @@
+name: Release preflight
+on:
+  workflow_call:
+    outputs:
+      release_schema:
+        description: Committed manager release format policy validated with this source
+        value: ${{ jobs.portable.outputs.release_schema }}
+      qualified_revision:
+        description: Exact source that passed inexpensive portable checks
+        value: ${{ jobs.portable.outputs.qualified_revision }}
+permissions:
+  contents: read
+jobs:
+  portable:
+    name: Portable preflight
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
+      release_schema: ${{ steps.qualified.outputs.schema }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Portable policy and package input preflight
+        run: python3 scripts/ci/release_tests.py portable
+      - name: Validate selected release version before native or image work
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          test -n "$version"
+          python3 scripts/release/manager_version.py
+          python3 scripts/release/manager_version.py --schema
+          if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
+      - name: Emit exact-source qualification receipt
+        id: qualified
+        run: |
+          echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "schema=$(python3 scripts/release/manager_version.py --schema)" >> "$GITHUB_OUTPUT"
