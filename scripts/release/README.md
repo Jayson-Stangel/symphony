@@ -569,3 +569,20 @@ negative protocol fixtures; they never become native image qualifications or
 reusable records. Reuse availability reads each config and a bounded byte range
 from each layer as well as HEAD metadata, so descriptor caches cannot alone prove
 that the stored blob is readable. New publication transfers checksum every byte.
+
+`package-lifecycle.py --manager-only-update` requires two distinct actual manager
+packages with exactly unchanged original runner records. It proves installed
+manager activation, release rollback, checksum refusal and retry, then restarts
+the retained projects while checking both projects and their persistent canaries.
+When `packages/legacy/release.json` is supplied, it requires three distinct real
+sources: the historical schema1 manager in `packages/legacy`, the strict schema1
+bridge in `packages/previous`, and the schema2 manager at the package root. It
+installs and initializes both providers under the historical manager, retains
+those actual unlabeled images through both manager updates, and exercises the
+bridge's durable compatibility basis across the later rollback/retry/restart.
+`images/legacy` contains the verified original historical archive/checksum pairs;
+the root contains unchanged bridge runner payloads. The consumer loads the old
+archive first and creates only a local `:previous` role alias before loading the
+current root tags. Original records, archive tags, source labels and OCI digests
+remain unchanged. Without the legacy input, the result explicitly limits its
+claim to the two actual managers; it does not invent a historical migration.
