@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location("lifecycle", Path(__file__).with_name("test-zero-rebuild-lifecycle.py"))
@@ -41,6 +42,40 @@ class OwnershipTests(unittest.TestCase):
         lifecycle.require_local_daemon('unix:///Users/jayson/.docker/run/docker.sock')
         for value in ('tcp://127.0.0.1:2375','ssh://example','unix:///tmp/other.sock','default'):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
+
+
+class ProjectTransportTests(unittest.TestCase):
+    def test_placeholder_passes_actual_product_loader_without_host_tokens(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp); (config / "projects").mkdir()
+            path = config / "projects/owned.env"
+            path.write_text("# initialized fixture\nLINEAR_API_KEY=\nGH_TOKEN=\n")
+            source = (Path(__file__).parents[1] / "symphony").read_text()
+            loader = next(line.strip() for line in source.splitlines() if line.strip().startswith("git_token=$(unset GH_TOKEN GITHUB_TOKEN;"))
+            guard = next(line.strip() for line in source.splitlines() if "[ -n \"$git_token\" ] || die 'missing GITHUB_TOKEN" in line)
+            command = 'die() { echo "$*" >&2; exit 1; }; project_env=$1; ' + loader + '; ' + guard + '; printf "%s" "$git_token"'
+            def invoke():
+                return subprocess.run(["/bin/bash", "-euc", command, "fixture", str(path)],
+                    env={"GH_TOKEN":"host-must-not-be-used", "GITHUB_TOKEN":"host-must-not-be-used"}, text=True, capture_output=True)
+            self.assertNotEqual(invoke().returncode, 0)
+            lifecycle.seed_project_transport(config, "owned")
+            result = invoke(); self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "credential-free-local-memory-placeholder")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(ValueError): lifecycle.seed_project_transport(config, "owned")
+
+    def test_foreign_nonempty_symlink_and_malformed_project_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp); (config / "projects").mkdir()
+            path = config / "projects/owned.env"
+            for content in ("LINEAR_API_KEY=foreign\nGH_TOKEN=\n", "LINEAR_API_KEY=\nGH_TOKEN=foreign\n", "OTHER=\n"):
+                path.write_text(content)
+                with self.assertRaises(ValueError): lifecycle.seed_project_transport(config, "owned")
+                self.assertEqual(path.read_text(), content)
+            path.unlink(); foreign = config / "foreign"; foreign.write_text("LINEAR_API_KEY=\nGH_TOKEN=\n"); path.symlink_to(foreign)
+            with self.assertRaises(ValueError): lifecycle.seed_project_transport(config, "owned")
+            self.assertEqual(foreign.read_text(), "LINEAR_API_KEY=\nGH_TOKEN=\n")
+            with self.assertRaises(ValueError): lifecycle.seed_project_transport(config, "../foreign")
 
 
 class AuthFixtureTests(unittest.TestCase):

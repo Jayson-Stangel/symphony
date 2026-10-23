@@ -59,6 +59,20 @@ def cleanup_owned_volume(docker, name, token, storage=None):
     assert volume_absent(docker("volume", "inspect", name, expected=None)), "owned volume absence uncertain"
 
 
+def seed_project_transport(config_home, identifier):
+    """Seed only a fresh product-init file; this value is not a credential."""
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", identifier): raise ValueError("invalid owned project id")
+    path = Path(config_home) / "projects" / (identifier + ".env")
+    if path.is_symlink() or not path.is_file(): raise ValueError("expected owned initialized project env")
+    text = path.read_text()
+    assignments = [line for line in text.splitlines() if line and not line.startswith("#")]
+    if assignments != ["LINEAR_API_KEY=", "GH_TOKEN="]:
+        raise ValueError("preserve nonempty or unexpected project credentials")
+    path.write_text(text.replace("GH_TOKEN=\n", "GH_TOKEN=credential-free-local-memory-placeholder\n"))
+    path.chmod(0o600)
+    return path
+
+
 def auth_fixture(arguments, policy, cwd):
     """Exact product auth argv only; no account code or provider requests run."""
     scoped = policy["projects"].get(str(Path(cwd).resolve()))
@@ -260,6 +274,7 @@ def main():
             identifier = run(["/bin/bash", "-euc", 'source "$1" --help >/dev/null; project_id "$2"', "fixture", command, repo], product=True).stdout.strip()
             name = run(["/bin/bash", "-euc", 'source "$1" --help >/dev/null; runner_storage_id "$2"', "fixture", command, repo], product=True).stdout.strip()
             assert name == prefix + "-" + identifier
+            seed_project_transport(root / "config", identifier)
             policy["projects"][str(repo.resolve())] = {"storage": name, "profile": hashlib.sha256((token + name).encode()).hexdigest()}
             policy_path.write_text(json.dumps(policy))
             absent("container", name)
@@ -278,6 +293,9 @@ def main():
             d("exec", name, "sh", "-ceu", "mkdir /workspaces/proof; git -C /workspaces/proof init -q; git -C /workspaces/proof config user.name Fixture; git -C /workspaces/proof config user.email fixture@example.invalid; printf committed > /workspaces/proof/edited; git -C /workspaces/proof add edited; git -C /workspaces/proof commit -qm fixture; printf dirty >> /workspaces/proof/edited; printf untracked > /workspaces/proof/untracked; printf state-canary > /var/lib/symphony/proof-state")
             projects.append((repo, name, port, provider))
         canaries = {p: stock.digest(p) for repo, _, _, _ in projects for p in (repo / "tracked", repo / "untracked", repo / "WORKFLOW.md")}
+        canaries.update({p: stock.digest(p) for p in (root / "config/projects").glob("*.env")})
+        assert len(list((root / "config/projects").glob("*.env"))) == 2
+        result["transport_auth"] = "owned project env noncredential placeholder; empty Memory tracker, zero issues; no host credentials"
         metadata = {p: p.read_bytes() for p in (root / "config/runners").glob("*.env")}
         assert len(metadata) == 2
         auth_volumes = sorted(name for name in volumes if name.endswith("-auth"))
