@@ -21,6 +21,9 @@ def run(kind, directory):
     if not modules:
         raise ValueError('no release qualification suites selected')
     suite = unittest.TestSuite()
+    # unittest discovery normally provides its start directory. Preserve that
+    # sibling-fixture import contract for the explicitly partitioned loader.
+    sys.path.insert(0,str(directory))
     for module in modules:
         spec = importlib.util.spec_from_file_location(module.stem + '_' + str(id(module)), module)
         loaded = importlib.util.module_from_spec(spec)

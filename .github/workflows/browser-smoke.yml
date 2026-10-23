@@ -5,6 +5,9 @@ on:
   push:
     branches: [dev, main]
 
+permissions:
+  contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -12,8 +15,12 @@ concurrency:
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  chromium:
+  plan:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/component-plan.yml
+  chromium:
+    needs: [changes, plan]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -21,25 +28,34 @@ jobs:
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          PLAN: ${{ needs.plan.result }}
+          BROWSER: ${{ needs.plan.outputs.browser_x86_64 }}
         run: |
           test "$RESULT" = success
-          case "$CODE" in true|false) ;; *) exit 1 ;; esac
+          case "$CODE" in
+            false) test "$PLAN" = skipped ;;
+            true) test "$PLAN" = success; case "$BROWSER" in build|reuse) ;; *) exit 1 ;; esac ;;
+            *) exit 1 ;;
+          esac
       - name: Checkout
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 == 'build'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build shared browser layer
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 == 'build'
         uses: ./.github/actions/build-runner
         with:
           target: browser-tools
           tags: symphony-browser-test
       - name: Verify CLI and browser for both agent users
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 == 'build'
         run: |
           docker run --rm --entrypoint playwright symphony-browser-test --version
           docker run --rm --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
           docker run --rm --user 11001:11001 --entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs
           docker run --rm --user 11001:11001 --workdir /tmp --entrypoint playwright symphony-browser-test screenshot --browser chromium about:blank /tmp/browser-smoke.png
+      - name: Retain original browser qualification
+        if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 == 'reuse'
+        run: echo "Browser inputs unchanged; original verified native qualification retained in the component plan. No browser build or repeated image qualification executed." >> "$GITHUB_STEP_SUMMARY"
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

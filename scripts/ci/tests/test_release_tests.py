@@ -81,8 +81,10 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
         name = 'Require all requested candidate work without accepting omitted failures'
-        good = dict(PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40)
+        good = dict(HAS_BUILDS='true', PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40)
         self.assertEqual(self.guard('runner-release.yml', name, good), 0)
+        self.assertEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false', RUNNERS='skipped')), 0)
+        self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false')), 0)
         self.assertEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='skipped')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='success')), 0)
         for key in good:
@@ -120,14 +122,18 @@ class ReusedPreflightSchedulingTest(unittest.TestCase):
         import re
         expected = {
             'runner-release.yml': {
-                'package-inputs': ['qualification'], 'candidate': ['qualification'],
-                'publish': ['candidate', 'candidate-qualification'],
+                'package-inputs': ['qualification'], 'component-plan': ['qualification'], 'candidate': ['qualification','component-plan'],
+                'publication-preflight':['component-plan','candidate-metadata','candidate-qualification'],
+                'publish': ['publication-preflight'],
                 'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publish'],
                 'packaged-release': ['packaged-release-platform'],
                 'packaged-candidate': ['candidate-metadata', 'package-inputs'],
                 'packaged-candidate-metadata': ['packaged-candidate'],
                 'ubuntu-package-lifecycle': ['packaged-candidate-metadata'],
                 'lifecycle-diagnostic': ['qualification'], 'cache-probe': ['qualification']},
+            'runner-integration.yml': {'manager-package': ['manager-inputs','helpers']},
+            'current-manager-package.yml': {'package':['host-policy'],'metadata':['package']},
+            'native-manager-helpers.yml': {'helper':['host-policy'],'qualification':['helper']},
             'package-checks.yml': {
                 'native': ['changes', 'qualification'],
                 'native-host-package': ['changes', 'qualification', 'host-policy']}}
@@ -166,7 +172,7 @@ class PriorHelperSchedulingTest(unittest.TestCase):
         packages = (root / '.github/workflows/package-checks.yml').read_text()
         call = packages.split('  workflow_call:', 1)[1].split('    outputs:', 1)[0]
         self.assertIn('      previous_revision:', call)
-        self.assertIn('previous_revision: ${{ inputs.previous_revision }}', runner.split('  qualification:',1)[0])
+        self.assertIn('previous_revision: ${{ inputs.previous_revision }}', runner.split('  package-inputs:',1)[1])
         qualification = runner.split('  qualification:',1)[1].split('  candidate:',1)[0]
         self.assertIn('verify-prior-source.py "$PREVIOUS_REVISION"', qualification)
         early = packages.split('      - name: Build prior helper early',1)[1].split('      - name: Retain actual exact-source',1)[0]
@@ -199,3 +205,15 @@ class NativeHelperInvocationTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ComponentsOnlyManualTest(unittest.TestCase):
+    def test_explicit_false_cannot_be_overridden_by_manual_caller_event(self):
+        text=(Path(__file__).resolve().parents[3]/'.github/workflows/runner-release.yml').read_text()
+        dispatch=text.split('  workflow_dispatch:',1)[1].split('permissions:',1)[0]
+        self.assertIn('      compose_packages:',dispatch)
+        self.assertNotIn("inputs.compose_packages || github.event_name",text)
+        import re
+        for name in ('package-inputs','packaged-candidate','candidate-qualification'):
+            block=re.search(r'^  '+name+r':\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
+            self.assertIn('inputs.compose_packages',re.search(r'^    if: (.*)$',block,re.M).group(1))

@@ -110,7 +110,7 @@ else: raise SystemExit('unexpected Docker command')
                 with self.subTest(arguments=name):
                     output = root / (name + '.tar.gz')
                     result = subprocess.run([sys.executable, str(ROOT / 'scripts/release/export-image.py'),
-                        *arguments, '--output', str(output), '--checksum-output', str(root / (name + '.sha256'))],
+                        *arguments, '--legacy-docker-save-diagnostic', '--output', str(output), '--checksum-output', str(root / (name + '.sha256'))],
                         env=env, text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(json.loads((root / 'save-arguments.json').read_text()), list(images))

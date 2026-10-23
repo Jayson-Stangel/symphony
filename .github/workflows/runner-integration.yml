@@ -1,54 +1,199 @@
 name: runner-integration
-
 on:
   pull_request:
   push:
     branches: [dev, main]
   workflow_dispatch:
-
+    inputs:
+      distribution_alias:
+        description: Isolated same-content distribution alias proof using original OCI digests
+        type: boolean
+        default: false
+      baseline_run:
+        description: Optional explicit authorized original-record run for pre-merge diagnostics
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
   changes:
     uses: ./.github/workflows/change-classification.yml
-  listener-and-cleanup:
+  portable:
     needs: changes
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/release-preflight.yml
+  helpers:
+    needs: portable
+    uses: ./.github/workflows/native-manager-helpers.yml
+    with:
+      portable_revision: ${{ needs.portable.outputs.qualified_revision }}
+  plan:
+    needs: [changes, portable]
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/component-plan.yml
+    with:
+      baseline_run: ${{ inputs.baseline_run }}
+  runners:
+    needs: [plan, portable]
+    if: needs.plan.outputs.has_builds == 'true'
+    uses: ./.github/workflows/runner-release.yml
+    with:
+      preflight_revision: ${{ needs.portable.outputs.qualified_revision }}
+      manifest_schema: '2'
+      component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
+      baseline_run: ${{ inputs.baseline_run }}
+      compose_packages: false
+      publish: false
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+  manager-inputs:
+    needs: [changes, plan, runners]
+    if: ${{ always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped') }}
+    runs-on: ubuntu-24.04
     steps:
-      - name: Require a complete classification decision
+      - name: Require the complete selected component result
+        env:
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          RUNNERS: ${{ needs.runners.result }}
+        run: |
+          case "$HAS_BUILDS" in
+            true) test "$RUNNERS" = success ;;
+            false) test "$RUNNERS" = skipped ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.plan.outputs.has_builds == 'true'
+        with:
+          name: runner-candidate-metadata
+          path: built
+      - name: Bind current manager to actual selected original components
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          DISTRIBUTION_ALIAS: ${{ inputs.distribution_alias }}
+        run: |
+          args=()
+          if [ "$DISTRIBUTION_ALIAS" = true ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            args+=(--distribution-alias)
+          fi
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: manager-inputs/*
+          if-no-files-found: error
+  manager-package:
+    if: ${{ always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success' }}
+    needs: [manager-inputs, helpers]
+    uses: ./.github/workflows/current-manager-package.yml
+    with:
+      metadata_artifact: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      helper_revision: ${{ needs.helpers.outputs.qualified_revision }}
+  listener-and-cleanup:
+    needs: [changes, portable, helpers, plan, runners, manager-inputs, manager-package]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require complete current-manager and component decisions
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          PORTABLE: ${{ needs.portable.result }}
+          HELPERS: ${{ needs.helpers.result }}
+          PLAN: ${{ needs.plan.result }}
+          HAS_BUILDS: ${{ needs.plan.outputs.has_builds }}
+          RUNNERS: ${{ needs.runners.result }}
+          INPUTS: ${{ needs.manager-inputs.result }}
+          PACKAGE: ${{ needs.manager-package.result }}
         run: |
           test "$RESULT" = success
-          case "$CODE" in true|false) ;; *) exit 1 ;; esac
-      - name: Checkout
-        if: needs.changes.outputs.code != 'false'
+          case "$CODE" in
+            false) test "$PORTABLE" = skipped; test "$HELPERS" = skipped; test "$PLAN" = skipped; test "$RUNNERS" = skipped; test "$INPUTS" = skipped; test "$PACKAGE" = skipped ;;
+            true)
+              test "$PORTABLE" = success
+              test "$HELPERS" = success
+              test "$PLAN" = success
+              test "$INPUTS" = success
+              test "$PACKAGE" = success
+              case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac ;;
+            *) exit 1 ;;
+          esac
+      - name: Checkout actual current manager
+        if: needs.changes.outputs.code == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Build production Claude image
-        if: needs.changes.outputs.code != 'false'
-        uses: ./.github/actions/build-runner
         with:
-          target: claude
-          tags: symphony-claude-smoke
-          revision: ${{ github.sha }}
-      - name: Verify credential-free listener and owned subprocess cleanup
-        if: needs.changes.outputs.code != 'false'
-        run: bash runner/claude/smoke.sh symphony-claude-smoke
-      - name: Build production Codex image using shared layers
-        if: needs.changes.outputs.code != 'false'
-        uses: ./.github/actions/build-runner
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
         with:
-          target: codex
-          tags: symphony-codex-smoke
-          revision: ${{ github.sha }}
-      - name: Verify isolated updater, rollback and project identity lifecycle
-        if: needs.changes.outputs.code != 'false'
-        run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
+        with:
+          name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bound
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.changes.outputs.code == 'true'
+        with:
+          name: ${{ needs.manager-package.outputs.package_artifact }}
+          path: packages
+      - name: Retrieve actual original runners without rebuild, export or upload
+        if: needs.changes.outputs.code == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          DISTRIBUTION_ALIAS: ${{ inputs.distribution_alias }}
+        run: |
+          args=()
+          if [ "$DISTRIBUTION_ALIAS" = true ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            args+=(--distribution-alias)
+          fi
+          if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
+          python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --built-metadata bound/release.json \
+            --output "$RUNNER_TEMP/verified-manager-inputs" --payloads "$RUNNER_TEMP/original-runners" "${args[@]}"
+      - name: Execute the installed current manager with original immutable runners
+        if: needs.changes.outputs.code == 'true'
+        run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
+      - name: Prove anonymous closure refusal with a separate tiny owned synthetic registry
+        if: github.event_name == 'workflow_dispatch' && inputs.distribution_alias && needs.changes.outputs.code == 'true'
+        run: python3 scripts/release/probe-registry-closure.py --output evidence
+      - name: Retain small current-manager and distribution cleanup receipts
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ordinary-current-manager-summary-${{ github.sha }}
+          path: |
+            evidence/result.json
+            evidence/registry-closure-evidence.json
+            evidence/registry-closure-state.txt
+          if-no-files-found: warn
+      - name: Retain actual current-manager and owned cleanup evidence
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ordinary-current-manager-${{ github.sha }}
+          path: evidence/*
+          if-no-files-found: warn
       - name: Documentation-only qualification decision
         if: needs.changes.outputs.code == 'false'
         run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

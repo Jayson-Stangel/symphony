@@ -49,7 +49,10 @@ esac
             result = subprocess.run(["bash", str(ROOT / "scripts/release/build-candidate-runners.sh"),
                 "codex", "x86_64", str(root / "output")], text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 44, result.stdout + result.stderr)
-            self.assertEqual(removal.read_text().strip(), "rm --force " + "1".zfill(64))
+            # Cleanup must include anonymous volumes and target only the exact
+            # acquired ID, never the generated name or an unrelated runtime.
+            self.assertEqual(removal.read_text().split(),
+                             ["rm", "--force", "--volumes", "1".zfill(64)])
             output = root / "output"
             self.assertTrue((output / "codex-x86_64.registry-state.txt").exists())
             # Execute the producer's actual top-level small-record glob: diagnostics

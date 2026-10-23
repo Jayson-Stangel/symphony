@@ -80,8 +80,9 @@ package_verified_home() {
   canonical=$(cd "$target" && pwd -P)
   case "$canonical" in "$package_app_home"/releases/*) ;; *) die 'release is outside this packaged installation' ;; esac
   [ "$(dirname "$canonical")" = "$package_app_home/releases" ] || die 'invalid versioned release directory'
-  package_helper validate-manifest "$canonical/release.json" || return
+  package_helper validate-release "$canonical/release.json" || return
   package_helper verify-files "$canonical" || return
+  package_verify_home_source "$canonical" || return
   printf '%s\n' "$canonical"
 }
 
@@ -210,19 +211,19 @@ package_stage_download() (
   package_extract_bundle "$bundle" "$temporary/unpacked" || return
   [ "$(package_helper get "$temporary/unpacked/release.json" version)" = "$version" ] &&
     [ "$(package_helper get "$temporary/unpacked/release.json" source_revision)" = "$revision" ] || die 'bundle and release manifest identities differ'
-  package_helper validate-manifest "$temporary/unpacked/release.json" || return
+  package_helper validate-release "$temporary/unpacked/release.json" || return
   [ "$(package_manifest_platform "$temporary/unpacked/release.json")" = "$package_platform" ] || die 'downloaded bundle platform does not match selected host'
   [ "$(package_helper get "$temporary/unpacked/release.json" "$(package_bundle_field filename)")" = "$filename" ] || die 'downloaded bundle platform identity differs'
   package_helper verify-files "$temporary/unpacked" || return
   [ "$(package_helper get "$manifest" channel)" = "$(package_helper get "$temporary/unpacked/release.json" channel)" ] || die 'bundle and release channels differ'
-  for agent in codex claude; do
-    for arch in arm64 x86_64; do
-      for field in image platform source_revision; do
-        [ "$(package_helper get "$manifest" "runners.$agent.$arch.$field")" = \
-          "$(package_helper get "$temporary/unpacked/release.json" "runners.$agent.$arch.$field")" ] || die 'bundle runner identity differs from release manifest'
-      done
-    done
-  done
+  [ "$(package_helper get "$manifest" schema_version)" = "$(package_helper get "$temporary/unpacked/release.json" schema_version)" ] || die 'bundle and release schemas differ'
+  [ "$(package_helper get "$manifest" runners)" = "$(package_helper get "$temporary/unpacked/release.json" runners)" ] || die 'bundle runner identity or qualification differs from release manifest'
+  [ "$(package_helper get "$manifest" distribution 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" distribution 2>/dev/null || printf '{}')" ] || die 'bundle distribution differs from release manifest'
+  [ "$(package_helper get "$manifest" original_components 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" original_components 2>/dev/null || printf '{}')" ] || die 'bundle bridge original components differ from release manifest'
+  [ "$(package_helper get "$manifest" manager_envelope 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" manager_envelope 2>/dev/null || printf '{}')" ] || die 'bundle manager envelope differs from release manifest'
+  if [ "$(package_helper get "$manifest" schema_version)" = 2 ]; then
+    [ "$(package_helper get "$manifest" compatibility)" = "$(package_helper get "$temporary/unpacked/release.json" compatibility)" ] || die 'bundle compatibility differs from release manifest'
+  fi
   # The installer preflights/copies an immutable release without changing PATH,
   # skills, current, project files, credentials, or running containers.
   target=$(package_stage_bundle "$temporary/unpacked") || return
@@ -313,6 +314,10 @@ complete_package_update() {
   package_update_lock inherited || return
   package_update_target=$(package_verified_home "$symphony_home") || return
   package_update_previous=$(package_verified_home "$1") || return
+  # Refuse an incompatible retained project before activation or transition can
+  # mutate any installed manager or project. The previous verified schema1
+  # manifest is the sole migration route for images without a protocol label.
+  package_check_retained_images "$package_update_previous" || return
   if [ -n "$2" ]; then
     local root
     root=$(repo_root)

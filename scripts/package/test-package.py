@@ -109,6 +109,91 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(self.helper("json", "idle", input='{"agent":{"draining":true},"counts":{"running":' + count + '}}').returncode, 1)
         self.assertEqual(self.helper("json", "admission", input='{"draining":false,"admission":{"ready":false,"reason":"quota_exhausted","retry_at":3}}').stdout.strip(), "quota_paused")
 
+    def test_component_manifest_keeps_original_sources_and_strict_compatibility(self):
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider, runners in value['runners'].items():
+            for arch, runner in runners.items():
+                runner.update(source_revision='a' * 40, input_identity='c' * 64, protocol=1, image_config='sha256:'+'9'*64,
+                              dependencies={'resolution_policy': 'retain-original-qualified-resolution',
+                                            'base_images': ['base@sha256:' + 'a' * 64],
+                                            'os_packages': {'git': '1.0'}, 'build_options': {'TARGETARCH': 'arm64' if arch == 'arm64' else 'amd64'}})
+                runner['tool_versions']['elixir'] = 'Elixir fixture / OTP fixture'
+                runner['qualification'] = {'repository': 'Jayson-Stangel/symphony', 'run_id': 123, 'run_attempt': 1,
+                    'controller_revision': 'b' * 40, 'job_name': f'runner-{provider}-{arch}', 'artifact_id': 456,
+                    'artifact_name': f'runner-candidate-{provider}-{arch}', 'artifact_digest': 'sha256:' + 'd' * 64,
+                    'archive_filename': f'{provider}-{arch}.docker.tar.gz', 'archive_sha256': 'e' * 64,
+                    **{key: runner[key] for key in ('source_revision', 'input_identity', 'image')}}
+        value['distribution'] = {provider: {arch: 'ghcr.io/immutable/'+provider+'@'+runner['image'].split('@')[1]
+            for arch,runner in group.items()} for provider,group in value['runners'].items()}
+        self.file.write_text(json.dumps(value))
+        self.assertOK(self.helper('validate-manifest', self.file))
+        changes = [lambda m: m['distribution']['codex'].update(arm64='ghcr.io/changed@sha256:'+'f'*64),
+                   lambda m: m['distribution']['codex'].pop('arm64'),
+                   lambda m: m['runners']['codex']['arm64'].pop('image_config'),
+                   lambda m: m.update(schema_version=1),
+                   lambda m: m['compatibility'].update(runner_protocol=True),
+                   lambda m: m['compatibility'].update(runner_protocol=2),
+                   lambda m: m['runners']['codex']['arm64'].update(protocol=1.0),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(run_id=True),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(repository='foreign/repo'),
+                   lambda m: m['runners']['codex']['arm64']['qualification'].update(source_revision='0' * 40),
+                   lambda m: m['runners']['codex']['arm64']['dependencies'].update(os_packages={})]
+        for change in changes:
+            invalid = copy.deepcopy(value)
+            change(invalid)
+            self.file.write_text(json.dumps(invalid))
+            self.assertNotEqual(self.helper('validate-manifest', self.file).returncode, 0)
+
+    def test_schema1_bridge_original_components_preserve_strict_native_proof(self):
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('bridge_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value=manifest();originals={}
+        for provider in ('codex','claude'):
+            originals[provider]={}
+            for arch in ('arm64','x86_64'):
+                original=fixture.record(provider,arch)
+                original['source_revision']=value['source_revision']
+                original['qualification']['source_revision']=value['source_revision']
+                originals[provider][arch]=original
+                selected=copy.deepcopy(original)
+                selected['image']='ghcr.io/distribution/'+provider+'@'+original['image'].split('@')[1]
+                selected.pop('qualification')
+                value['runners'][provider][arch]=selected
+        value['original_components']=originals
+        self.file.write_text(json.dumps(value));self.assertOK(self.helper('validate-manifest',self.file))
+        for mutate in (lambda m:m['runners']['codex']['arm64'].update(image='ghcr.io/changed@sha256:'+'0'*64),
+                       lambda m:m['original_components']['claude']['x86_64']['qualification'].update(run_id=True)):
+            broken=copy.deepcopy(value);mutate(broken);self.file.write_text(json.dumps(broken))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
+
+    def test_recovered_component_records_keep_failed_job_and_separate_origins(self):
+        sys.path.insert(0, str(ROOT / 'scripts/release'))
+        import artifacts
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec = spec_from_file_location('recovery_fixture', ROOT / 'scripts/release/tests/test_component_provenance.py')
+        fixture = module_from_spec(spec); spec.loader.exec_module(fixture)
+        value = manifest()
+        value.update(schema_version=2, compatibility={'runner_protocol': 1})
+        for provider in ('codex', 'claude'):
+            for arch in ('arm64', 'x86_64'):
+                record = fixture.record(provider, arch)
+                value['runners'][provider][arch] = {key: field for key, field in record.items() if key not in ('provider','architecture')}
+        proof = value['runners']['codex']['arm64']['qualification']
+        proof.update(record_origin={'run_id':789,'run_attempt':1,'controller_revision':'c'*40,'job_name':'recover-codex-arm64'},
+                     payload_origin={'run_id':123,'controller_revision':'a'*40},
+                     native_step_recovery={'job_id':1234,'original_job_conclusion':'failure','build_step_number':5,'qualification_step_number':6,
+                         'payload_step_number':7,'failure_step_number':8,'cleanup_step_number':10,
+                         'failure_reason':'bare-upload-artifact-sha256','log_sha256':'e'*64})
+        artifacts.validate(value, require_bundle=False)
+        self.file.write_text(json.dumps(value)); self.assertOK(self.helper('validate-manifest',self.file))
+        for field, invalid_value in (('job_id',True),('qualification_step_number',1.0),('original_job_conclusion','success'),('failure_reason','runtime-failure')):
+            changed = copy.deepcopy(value)
+            changed['runners']['codex']['arm64']['qualification']['native_step_recovery'][field] = invalid_value
+            self.file.write_text(json.dumps(changed))
+            self.assertNotEqual(self.helper('validate-manifest',self.file).returncode,0)
+
     def test_additive_platform_manifest_and_legacy_mac_contract(self):
         value = manifest()
         self.assertOK(self.helper("validate-manifest", self.file))
@@ -563,7 +648,9 @@ PY
         self.file.write_text(json.dumps(mismatch))
         result = call([ROOT / "scripts/release/package.sh", self.file, self.root / "mismatch-output", HELPER])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("source differs", result.stderr)
+        self.assertIn("manager input selection refused: manager manifest differs from actual checkout", result.stderr)
+        self.assertFalse(list((self.root / "mismatch-output").glob("*.tar.gz")))
+        self.assertFalse((self.root / "app/current").exists())
         self.file.write_text(json.dumps(manifest()))
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))

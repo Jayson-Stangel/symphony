@@ -10,10 +10,14 @@ symphony_home=$(cd "$symphony_home" && pwd -P)
 IFS= read -r bundle_platform < "$symphony_home/host-platform" || die 'bundle is missing its host platform marker'
 [ "$bundle_platform" = "$package_platform" ] || die 'bundle platform does not match this host'
 package_helper() { "$symphony_home/libexec/symphony-host" "$@"; }
-package_helper validate-manifest "$symphony_home/release.json" || exit 1
+package_helper validate-manager "$symphony_home/release.json" || exit 1
 package_version=$(package_helper get "$symphony_home/release.json" version)
-package_revision=$(package_helper get "$symphony_home/release.json" source_revision)
-[ "$(package_helper build-revision)" = "$package_revision" ] || die 'bundled helper does not match release source revision'
+package_revision=$(package_helper manager-revision "$symphony_home/release.json")
+package_base_version=$(package_helper manager-base-version "$symphony_home/release.json")
+package_storage_revision=$(package_helper get "$symphony_home/release.json" source_revision)
+# Stock updaters stage an envelope under its legacy component source. That
+# immutable storage key is independent from the real compiled manager source.
+package_storage_key="$package_version-$package_storage_revision"
 package_channel=$(package_helper get "$symphony_home/release.json" channel)
 package_manifest_platform() { package_helper get "$1" package_platform 2>/dev/null || printf 'macos\n'; }
 [ "$(package_manifest_platform "$symphony_home/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
@@ -49,18 +53,82 @@ See the packaged installation guide for isolated candidate storage and namespace
 USAGE
 }
 
-package_image() { package_helper get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; }
+package_image() {
+  local image
+  image=$(package_helper release-get "$symphony_home/release.json" "distribution.${1:-codex}.$package_arch" 2>/dev/null) || image=
+  if [ -n "$image" ]; then printf '%s\n' "$image"
+  else package_helper release-get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; fi
+}
 package_release_image() {
-  local runtime=$1 image=$2 agent=$3 revision=$4 platform
+  local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
   [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
-  platform=$(package_helper get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
+  [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
+  revision=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
+  platform=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; check engine network access and release availability: $image"
   fi
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'runner source revision does not match selected release'
   [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'runner architecture does not match selected release'
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'runner provider does not match selected release'
+  if [ "$(package_helper release-get "$symphony_home/release.json" schema_version)" = 2 ]; then
+    inputs=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.input_identity")
+    [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.inputs.sha256" }}' "$image")" = "$inputs" ] || die 'runner build inputs differ from selected release'
+    [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")" = 1 ] || die 'runner protocol is incompatible with this manager'
+    "$runtime" image inspect "$image" | package_helper validate-runtime-image "$symphony_home/release.json" "$agent" "$package_arch" "$image" || die 'runner config or qualified manifest differs from original component'
+  fi
 }
+# Validate retained project images independently of the selected release image.
+# An unlabeled historical image needs exact immutable previous-schema1 evidence.
+package_retained_image_compatible() {
+  local runtime=$1 image=$2 agent=$3 previous=${4:-} protocol platform legacy revision receipt directory temporary
+  [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'invalid retained runner config identity'
+  case "$agent" in codex|claude) ;; *) die 'invalid retained runner provider' ;; esac
+  [ "$("$runtime" image inspect --format '{{.Id}}' "$image")" = "$image" ] || die 'retained runner config differs'
+  [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'retained runner provider differs'
+  platform=linux/arm64; [ "$package_arch" != x86_64 ] || platform=linux/amd64
+  [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'retained runner platform differs'
+  protocol=$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")
+  [ "$protocol" != 1 ] || return 0
+  case "$protocol" in ''|'<no value>') ;; *) die 'retained runner protocol is incompatible with this manager' ;; esac
+  directory="$runner_home/compatibility"
+  receipt="$directory/${image#sha256:}.schema1"
+  if [ -e "$directory" ] || [ -L "$directory" ]; then package_helper owned-directory "$directory" || return; fi
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    package_helper owned-file "$receipt" || return
+    previous=$(cat "$receipt")
+  fi
+  [ -n "$previous" ] || die 'retained legacy runner has no verified migration evidence'
+  previous=$(package_verified_home "$previous") || return
+  [ "$(package_helper get "$previous/release.json" schema_version)" = 1 ] || die 'retained legacy runner requires exact previous schema1 evidence'
+  legacy=$(package_helper get "$previous/release.json" "runners.$agent.$package_arch.image")
+  revision=$(package_helper get "$previous/release.json" "runners.$agent.$package_arch.source_revision")
+  [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'retained legacy runner source differs from verified migration source'
+  "$runtime" image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" | grep -Fqx -- "$legacy" || die 'retained legacy runner digest differs from verified migration image'
+  if [ ! -e "$receipt" ]; then
+    if [ ! -e "$directory" ]; then (umask 077; mkdir "$directory") || return; fi
+    package_helper owned-directory "$directory" || return
+    temporary=$(mktemp "$directory/.migration.XXXXXX") || return
+    printf '%s\n' "$previous" > "$temporary"
+    # Link with no-overwrite semantics; never replace a conflicting receipt.
+    if ! ln "$temporary" "$receipt"; then rm "$temporary"; die 'legacy migration receipt changed concurrently'; fi
+    rm "$temporary" || return
+    package_helper owned-file "$receipt" || return
+  fi
+}
+
+package_check_retained_images() {
+  local previous=$1 metadata image agent runtime
+  runtime=$(container_runtime)
+  for metadata in "$runner_home"/*.env; do
+    [ -e "$metadata" ] || [ -L "$metadata" ] || continue
+    package_helper owned-file "$metadata" || return
+    image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
+    agent=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")
+    package_retained_image_compatible "$runtime" "$image" "$agent" "$previous" || return
+  done
+}
+
 package_build_image() {
   local agent=${1:-codex} runtime image
   runtime=$(container_runtime); image=$(runner_image "$agent")
@@ -68,7 +136,9 @@ package_build_image() {
     sha256:*)
       # An already-retained project image is pinned by the existing runner metadata.
       "$runtime" image inspect "$image" >/dev/null 2>&1 || die 'retained runner image is missing; recover through symphony update'
-      [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$image")" = "$agent" ] || die 'retained runner provider differs'
+      local previous=
+      if [ -L "$package_app_home/previous" ] && [ -d "$package_app_home/previous" ]; then previous=$(cd "$package_app_home/previous" && pwd -P) || return; fi
+      package_retained_image_compatible "$runtime" "$image" "$agent" "$previous"
       ;;
     *) package_release_image "$runtime" "$image" "$agent" "$package_revision" ;;
   esac
@@ -90,13 +160,26 @@ package_use_project_image() {
   esac
 }
 
+# Verify the selected home's own helper, not the currently running manager's
+# compiled revision: previous and future release homes have distinct sources.
+package_verify_home_source() {
+  local source=$1 count actual expected
+  package_helper owned-file "$source/libexec/symphony-host" || return
+  count=$(LC_ALL=C grep -Ecx '[a-f0-9]{64}  \./libexec/symphony-host' "$source/files.sha256" || true)
+  [ "$count" = 1 ] || die 'bundle inventory must bind its exact host helper'
+  actual=$("$source/libexec/symphony-host" build-revision) || return
+  expected=$(package_helper manager-revision "$source/release.json") || return
+  [ "$actual" = "$expected" ] || die 'selected home helper differs from actual manager source revision'
+}
+
 package_stage_bundle() {
   local source=$1 destination stage version revision
-  package_helper validate-manifest "$source/release.json" || return
+  package_helper validate-release "$source/release.json" || return
   version=$(package_helper get "$source/release.json" version) || return
   revision=$(package_helper get "$source/release.json" source_revision) || return
   [ "$(package_manifest_platform "$source/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
   package_helper verify-files "$source" || return
+  package_verify_home_source "$source" || return
   destination="$package_app_home/releases/$version-$revision"
   # Validate each owned storage boundary before following it for staging.
   # mkdir-p would follow an existing (including dangling) releases symlink.
@@ -131,7 +214,7 @@ package_preflight_links() {
   done
   if [ -e "$package_app_home/current" ] || [ -L "$package_app_home/current" ]; then
     [ -L "$package_app_home/current" ] || die 'application current path is not a managed release link'
-    [ "$(cd "$package_app_home/current" && pwd -P)" = "$package_app_home/releases/$package_version-$package_revision" ] || die 'another version is installed; use symphony update'
+    [ "$(cd "$package_app_home/current" && pwd -P)" = "$package_app_home/releases/$package_storage_key" ] || die 'another version is installed; use symphony update'
   fi
 }
 
@@ -163,7 +246,7 @@ package_install() (
   # application lock. Recheck after the long copy before any activation.
   package_preflight_links || return
   next="$package_app_home/.current-$$"
-  package_helper ensure-link "releases/$package_version-$package_revision" "$next" || return
+  package_helper ensure-link "releases/$package_storage_key" "$next" || return
   package_helper replace-link "$next" "$package_app_home/current" || { rm -f "$next"; return 1; }
   mkdir -p "$bin_dir" "$skills_dir" || return
   package_helper ensure-link "$package_app_home/current/scripts/symphony" "$bin_dir/symphony" || return
@@ -190,7 +273,7 @@ package_doctor() {
   global_skills_ready || ready=false
   package_helper verify-files "$symphony_home" >/dev/null || ready=false
   if "$json"; then
-    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s"}\n' "$ready" "$package_version" "$package_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)"
+    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s"}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)"
   else
     printf 'Symphony %s (%s), packaged %s %s\nReady: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
     "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2

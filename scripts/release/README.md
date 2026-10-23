@@ -1,8 +1,9 @@
 # Runner and manager release artifacts
 
 The installed manager consumes `release.json`, independent of Git and the Symphony
-source checkout. Its version, 40-character source revision, host architecture and
-provider resolve one immutable Linux OCI image digest. `arm64` uses Linux ARM64;
+source checkout. The manager version/source revision identifies the actual bundle
+and helper. Each provider/platform record independently identifies the original
+runner source and immutable Linux OCI image digest. `arm64` uses Linux ARM64;
 `x86_64` uses Linux AMD64. Missing records are errors. Never substitute another
 architecture, provider or mutable tag. `tool_versions` records versions observed
 inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
@@ -76,14 +77,39 @@ first completed release; new GHCR packages may default to private. A failed
 anonymous digest pull fails publication. Approval remains an operator action for
 the exact production scope; setting the variable alone is not approval.
 
-After the normal review, promotion and release approval gates, create the matching
-`vVERSION` tag. All four native candidate image qualifications must pass before
-the protected publication jobs can push those exact tested images. Publication
-then removes login credentials, pulls each GHCR digest anonymously, reruns smoke,
-and records the actual public digest. The manager archive and checksum are built
-from those four records at the same revision. The packaged-manager prerequisite
-must be integrated: absent `package.sh`, production fails closed. No Burrito engine
-binary is needed to build or run the container manager bundle.
+After normal review, promotion and release approval, a matching `vVERSION` tag
+uses the complete source-bound component plan. Before the protected transfer job,
+all original native evidence and payload availability are reverified. Every
+reused public digest must already be anonymously available with raw manifest
+bytes and a registry digest header matching the exact original OCI digest.
+Every referenced config is fetched and checksummed; every layer must provide a
+successful anonymous HEAD with its exact digest and length. Index manifests are
+followed within fixed graph/count/byte bounds. Missing or denied referenced
+blobs refuse despite a valid root manifest. All transfer records, unique target
+selections, original origins and destination availability are validated before
+the first payload retrieval or image mutation.
+
+The protected job transfers only missing newly built components. It loads the
+original verified payload, checks the original config/source/input/platform,
+pushes that exact image and refuses any digest conversion. After a new transfer,
+it streams and checksums every referenced blob anonymously, without executing
+foreign-architecture images or claiming a new native image qualification.
+Already available original digests are never retagged or pushed. Manager-only schema2 releases run
+zero image build, export, transfer or repeated native qualification commands.
+The complete original records and separate immutable `distribution` map reach
+both internal and external manager manifests, built with already-qualified
+native helpers. Repository publication credentials reach only the registry
+client, never Docker build arguments or container environments.
+
+A strict schema1 bridge remains publishable: its plan requires all four actual
+current-source components. The legacy `runners` view selects their public refs;
+additive `original_components` retains every original native record unchanged.
+Both views must agree in source, config, tools and exact OCI digest. New native
+validators check this relation; old strict schema1 updaters keep their existing
+source-equals-manager contract. Manual runner-release defaults to this explicit
+bridge mode; ordinary component integration uses schema2, while the protected
+automated release follows the committed release-schema policy. No
+production publication has been exercised by the nonpublishing qualification.
 
 The GitHub release job runs only after every executable smoke and runner/bundle
 job succeeds. Stable download/update consumers select only a completed public
@@ -96,6 +122,88 @@ These checks prove artifact identity and model-free container behavior. They do
 not prove native login, authenticated inference, clean macOS installation, or a
 complete listener update. Those require the install/update stories' separately
 recorded observations and explicit disposable-account authorization.
+
+
+## Independent manager and runner components
+
+`scripts/release/manager-version` is the manager release version and tag contract.
+`elixir/mix.exs` remains the engine/runtime version reported by actual engines and
+runner images. A manager semver change therefore does not itself change engine
+source inputs. Never update an old image's version or source labels to claim the
+new manager version; record the two component identities separately.
+
+Schema 1 retains its strict single-revision contract. A bridge candidate may add
+native component receipts while keeping every runner source equal to the bridge
+manager source. Its real new helper understands schemas 1 and 2. An older
+installed updater first installs that explicit schema-1 bridge with its ordinary
+`--release` path, then uses the bridge updater for schema 2. Direct schema-2
+selection by an older validator refuses before activation and preserves the
+usable installation. Actual installed update/rollback proof is required before
+this path is accepted; a shape-valid fixture is insufficient. Platform policy
+and per-bundle architecture metadata belong to the supported-host contract.
+
+Schema 2 retains top-level `source_revision` for the manager/helper and carries
+original runner `source_revision`, immutable image digest, `input_identity`,
+protocol compatibility, resolved dependency inventory and native qualification
+origin. The installed consumer checks the selected runner's own source/input and
+protocol labels. It never substitutes the manager source. Internal/external bundle
+metadata must match the complete runner records, including provenance fields.
+
+`runner_inputs.py` hashes the selected production stage graph, pinned base
+references, effective declared options and actual consumed committed files/modes.
+It follows supported COPY and Dockerignore semantics and includes the **whole**
+current `COPY elixir` tree, including its docs, AGENTS and WORKFLOW. JAY-693's event
+classification does not change what an actual image build consumes. Claude-only
+stage/source changes do not enter Codex's closure. Manager/helper files outside
+that closure do not enter either image. Unknown syntax, ignored metadata loss,
+platform overrides, dirty/untracked consumed files or unsafe links refuse reuse.
+Metadata arguments may only reach final labels, including through stage inheritance.
+
+That identity describes declared source/recipe inputs, not a fresh resolution of
+mutable external apt indexes. Each native image records its actual resolved OS
+packages, Elixir/OTP and agent/browser/tool versions, pinned base references and
+build options. Reuse explicitly retains that **original qualified resolution**
+and immutable payload. It never claims current-head dependency resolution or old
+native checks ran at the new manager head. Changing locks, a base or the effective
+recipe invalidates reuse; requesting a new OS resolution requires such an actual
+input change and a newly qualified image.
+
+After an image payload upload, `component_provenance.py seal` binds its actual
+archive checksum, immutable artifact ID/digest, source/controller revisions and
+native job/run. The sealed small record is then uploaded separately. A reuse
+selection downloads and checksum-verifies that original small record, compares
+its complete content, checks the successful native job and live original payload
+availability, and rejects expired/missing/foreign/corrupt evidence. Schema-2
+assembly repeats this verification; a local receipt alone never authorizes reuse.
+The current manager's actual bundle/integration qualification is separate from
+these original native image results. Actual downstream archive/digest loading
+and installed lifecycle proof remain mandatory at their consumer boundary.
+
+`runner_reuse.py --root . --output PLAN` plans one build-or-reuse decision per
+provider/platform. Its default discovery inspects at most three artifact-list
+pages and 24 small native record artifacts; each selected controller and source
+must belong to verified fork dev/main ancestry. `--baseline FILE` selects an
+explicit manifest while retaining those origin checks. An explicitly authorized
+manual candidate may use `--baseline-run ID` for that exact pre-merge native run.
+This diagnostic exception does not authorize production publication.
+
+Unchanged inputs and verified original evidence permit reuse; missing evidence
+requests an explicitly reported verified-input rebuild. Unknown source closure
+stops before any reuse. `--require-reuse` fails if any runner needs rebuilding.
+Plans retain complete records and original origins, plus conditional build/reuse
+matrices; a completed plan is not actual component qualification. Reused records
+preserve every original digest/label/source and never cause export/upload just to
+associate the image with a new manager head. A genuinely distinct original prior
+image is optional evidence for image-changing lifecycle tests; absence is explicit.
+
+The producer uploads actual image payloads before sealing small records. Separate
+`record_filename` and `archive_filename` fields bind previous records to their real
+shared payload when appropriate. Every planned build requires a matching actual
+current-source native record at the terminal join. Unique registry ownership is
+recorded before acquisition, and always-cleanup verifies the exact name, label
+and ID before removing it. Cleanup evidence is retained even on qualification or
+upload failure. Production preflight validates all selected components and public
+reuse availability before the single protected transfer job can push anything.
 
 ## Native Docker layer cache
 
@@ -142,6 +250,65 @@ or archive replay evidence. Those remain the candidate/lifecycle consumers' proo
 Compare actual results before reporting an improvement; unexecuted targets remain
 open acceptance. No production publication, installed manager or existing runtime
 is involved.
+
+Ordinary event planning and original payload retrieval
+----------------------------------------------------
+
+`component-plan.yml` resolves the same committed Docker input closure and bounded
+original native evidence on ordinary PR and dev/main push events. The full plan
+is retained as a source-bound artifact; job outputs contain only explicit
+`build`/`reuse` decisions. Browser CI builds and executes browser qualification
+only when its browser closure requires a build. Browser reuse requires matching
+verified root/Codex and agent-user/Claude native qualifications for that same
+browser closure, retaining both original records and origins. Actual production
+build options are projected into the browser stage graph; provider-only options
+are excluded. Reuse records the retained qualification explicitly. A missing, failed or
+cancelled plan cannot become a successful omission. Documentation-only events
+continue to omit both planning and behavioral work.
+
+`reuse_payload.py --plan PLAN --provider codex --architecture x86_64
+--destination NEW_DIRECTORY` independently rechecks the original origin and
+current committed closure, downloads the original immutable artifact, verifies
+its archive digest, then selects and verifies the exact Docker archive member.
+It retains the original record, checksum and origin beside those actual bytes.
+It never builds, exports, uploads or renames an image. `--prior` requires an
+available original prior record; it never fabricates one. Download, checksum and
+member failures leave no completed destination or successful receipt.
+
+Payload retrieval prepares the existing packaged-manager lifecycle consumer;
+it does not itself prove Docker config identity or runtime behavior. Ordinary
+runner integration assembles actual native packages from the current manager
+source, verifies their source and archive checksums, then executes the installed
+current manager with original immutable runner payloads. Unchanged components
+bypass the native image producer entirely. Changed components use the same
+production native producer and retain their actual original records.
+
+`package-lifecycle.py --current-manager-only PACKAGES RUNNERS EVIDENCE` qualifies
+one actual current manager package, source-free installation, both provider
+listeners, same-basename project isolation, persistent dirty/untracked/state and
+auth-volume canaries, stop/restart and owned cleanup. It retains explicit
+single-manager evidence and never invents a prior package revision. The default
+controller mode continues to require two real manager revisions and exercises
+actual update, failure, pinned retry and rollback separately. Both modes verify
+original runner config/source/protocol/input labels and restore/pull only the
+original isolated-registry digest, without assigning a manager revision to an
+older image.
+
+`build-manager-package.sh MANIFEST OUTPUT PLATFORM SOURCE FULL_SHA [HELPER]`
+extracts the native package assembly used by these consumers. It calls the
+existing native helper builders and source's packer, verifies exact source,
+platform and binary CPU, and builds historical Mac helpers with `--native`.
+An explicitly supplied already-qualified helper avoids a duplicate compile.
+`current-manager-package.yml` consumes the shared two-host policy and binds both
+actual archive hashes; no nonexistent platform archive receives a placeholder
+checksum.
+
+Pre-merge candidate diagnostics may pass `--baseline-run ID` to the payload
+consumer only in an explicitly invoked `workflow_dispatch` context. The consumer
+independently verifies that selected original run; a plan's diagnostic metadata
+never grants permission. Ordinary PR/push consumers always require original
+source/controller ancestry in verified fork dev/main history. Actual archive
+retrieval also bounds the streamed artifact bytes and total download time.
 
 ### Portable host helper (candidate qualification)
 
@@ -214,23 +381,38 @@ build and lifecycle acceptance in `runner-release`.
 
 ## Candidate image transfer
 
-`export-image.py` streams `docker save` through bounded `pigz -1 -n` when present
-(up to four CPUs), or standard `gzip -1 -n`. It emits the existing gzip/Docker-load
-format and checksum filename selected by its caller. Multiple `--image` values
-share one archive, retaining Docker's shared-layer serialization for two sources.
-The archive's config hash set must match the inspected source/provider/platform
-identities before publication. Original distribution digests remain provenance;
-a Docker-load representation is never relabeled as an old registry digest.
+The normal `export-image.py --registry-state STATE --record RECORD ...` path
+captures the **exact raw qualified manifest, config and compressed layer blobs**
+from the still-owned loopback registry. The shared graph-only gzip tar retains
+both current/prior roots and deduplicates common blobs. Its reserved namespace is
+`symphony-qualified-graphs/v1/{index.json,blobs/sha256/<digest>}`. The historical
+`.docker.tar.gz` filename and checksum/provenance binding stay the same; this
+format is restored through the registry and pulled by its original digest. It is
+not a Docker-load archive. Missing graphs and unexpected members fail closed.
 
-The adjacent `.metrics.txt` contains JSON for each actual image identity,
-compressor/version, process CPU, overlapped export/compression wall times, checksum
-and archive-verification costs, and compressed bytes. Export wall time includes
-pipe backpressure; those overlapping wall times must not be added together.
-Only the compressed payload is staged; owned temporary files and children are
-cleaned on failure. Existing outputs are refused. Actions uploads gzip payloads
-with `compression-level: 0` to avoid redundant ZIP deflation. Metadata consumers
-must continue downloading only native qualification records, not image payloads
-or transport telemetry.
+Every root is verified against its original source/provider/platform/config and,
+when recorded, input identity/protocol. Raw manifest hashes, all compressed blob
+hashes/sizes, gzip CRCs and ordered config DiffIDs must pass before the archive,
+checksum and metrics are atomically published without overwrite. Config identity
+comes from the qualified manifest descriptor; containerd's manifest ID is never
+recorded as the config ID. Consumers verify the entire archived graph even when
+selecting one root, restore exact bytes to an owned registry, and pull the exact
+immutable reference. They never infer the original registry digest from a
+Docker-load/re-push representation.
+
+The adjacent `.metrics.txt` reports actual graph capture/verification, compressor,
+CPU, overlapping archive/compression wall times, checksum costs and payload bytes.
+The graph and compressed archive are staged on disk, with their actual combined
+peak bytes reported; no uncompressed layer tar is staged. Compression remains
+bounded `pigz -1 -n` (up to four CPUs) or `gzip -1 -n`. Payload uploads use
+`compression-level: 0`. These new graph transport costs require their own
+measurements; historical Docker-save benchmark timings do not qualify this path.
+
+Historical transfer diagnostics may explicitly opt into
+`--legacy-docker-save-diagnostic` (or the matching Python flag). This diagnostic
+mode preserves the previous Docker-save experiment and cannot silently replace
+the normal exact-graph producer. Metadata jobs still download only small runner
+records, without graph payloads or transport telemetry.
 
 For build-free, nonpublishing native measurements, dispatch the existing
 `runner-release` workflow with `transfer_diagnostic_run` set to an exact retained
@@ -315,7 +497,113 @@ partly evicted blobs can force dependency rebuilding even after an initial
 `CACHED` marker; report the later errors and actual timings, not marker counts
 alone. No other workflow's cache is deleted to make a probe succeed.
 
-For an explicitly selected raw `previous_revision`, qualification resolves the
+Manager activation checks every retained project image before changing the active
+manager or starting a runner transition. The config identity, provider and native
+container platform must match, and protocol 2 or an unknown protocol is refused.
+Protocol 1 is compatible. A historical image without a protocol label has one
+explicit migration route: its source and immutable RepoDigest must exactly match
+the verified previous schema1 release. A private config-keyed receipt retains
+the original canonical release directory as the migration basis. Every later
+start, update and rollback revalidates that original release inventory and exact
+image/source evidence; a receipt alone grants no trust. That original directory
+must remain available; removal or tampering causes explicit refusal. Arbitrary
+unlabeled local images cannot satisfy that route. Retained project starts apply the same checks. Projects still
+using older images outside that exact previous release need a compatible bridge
+runner transition before a later manager-only update; refusal preserves the
+current manager and project state. Native lifecycle qualification must establish
+that migration and refusal behavior separately from these portable regressions.
+
+Schema2 may carry a separate `distribution` provider/architecture map. Each value
+is an immutable image reference with exactly the original qualified OCI digest;
+changing that digest is rejected by Python and the native helper. Original runner
+records and proof remain unchanged. Installed consumers select the distribution
+reference but verify the original source, input identity, protocol and config ID.
+External and bundled manifests must carry identical distribution maps. This
+contract alone does not establish availability of an alias. Plan-aware protected
+publication verifies actual anonymous immutable availability and transfers only
+missing newly built components; candidate tests remain loopback-only.
+Ordinary current-manager helper scheduling
+------------------------------------------
+
+`runner-integration` gates expensive work on the shared portable preflight. The
+`native-manager-helpers` reusable workflow then builds and qualifies the exact
+current-source Linux x86-64 static helper and macOS ARM64 helper concurrently
+with changed-component planning/building. It uses the shared two-host policy,
+runs each host's native package contracts and the clean Ubuntu helper proof, and
+retains source-bound checksums in same-run artifacts. Current-manager assembly
+requires that successful source revision, verifies the downloaded checksum before
+restoring executable permissions, and rechecks actual source/platform/CPU through
+the shared builder. It does not compile a second current helper after images
+finish. The terminal current-manager guard requires portable and helper success
+as well as the actual package/component decisions; cancelled or skipped native
+qualification cannot produce a successful behavioral receipt.
+
+A manual ordinary-integration diagnostic may set `distribution_alias=true` to
+exercise the schema2 distribution map in the existing installed lifecycle. It
+uses fixed disposable localhost repositories and each original OCI digest,
+without changing original component records, sources, labels, input identities
+or checksums. The native Linux x86-64 controller pushes/pulls each provider's
+alias, verifies the same original digest and config, then checks the actual
+installed manager's selected container reference. Both native ARM payloads retain
+their original qualification; this x86-64 lifecycle does not claim ARM alias
+runtime proof. Alias references and the deliberately incompatible protocol2
+negative fixture are cleanup-owned diagnostics, never new reusable baselines.
+
+
+The committed `scripts/release/release-schema` selects the production manager
+format independently of both the manager version and engine `mix.exs` version.
+It starts at 1 so the normal protected tag path can publish an actual strict
+schema1 bridge. Shared preflight validates the policy and exports it to Burrito's
+runner caller; publication rejects a format that differs from that committed
+policy. First publish and install an approved bridge version through the ordinary
+stable release path; a candidate-only bridge cannot migrate stable installations.
+Only a later, separately versioned manager release changes `manager-version` and this policy
+to 2, outside every runner Docker input closure. Engine version and original
+runner labels remain their actual original values.
+
+Manual full candidates may select `previous_artifact_run` from an actual successful
+current-manager package run. Cheap common qualification first checks that exact
+fork/workflow/source/attempt, every native image and package stage, prior installed
+lifecycle, immutable metadata and available payload service identities. The final
+Ubuntu lifecycle consumer independently repeats those checks, downloads only the
+needed historical Linux package and x86 image payloads, verifies ZIP/member hashes
+and actual selected config/source/provider/platform, and preserves old records.
+Historical images are never rebuilt, exported or uploaded as new candidate
+artifacts. `legacy_artifact_run` additionally supplies an actual old installed
+package for a three-package manager-only migration; `manager_only_update` refuses
+if the current source plan needs any runner build. Original archive tags and
+immutable digests remain provenance even when the isolated loader creates a
+local role alias. Small lifecycle summary artifacts retain original sources,
+checksums, request/checkpoints and cleanup independently of full evidence.
+
+The manual ordinary `distribution_alias` proof additionally runs a tiny synthetic
+OCI closure probe after actual manager/alias integration cleanup. Its new owned
+registry is separate from qualified runners. Complete blob checksums, an actual
+missing storage blob, a real HTTP permission denial and a foreign digest are
+negative protocol fixtures; they never become native image qualifications or
+reusable records. Reuse availability reads each config and a bounded byte range
+from each layer as well as HEAD metadata, so descriptor caches cannot alone prove
+that the stored blob is readable. New publication transfers checksum every byte.
+
+`package-lifecycle.py --manager-only-update` requires two distinct actual manager
+packages with exactly unchanged original runner records. It proves installed
+manager activation, release rollback, checksum refusal and retry, then restarts
+the retained projects while checking both projects and their persistent canaries.
+When `packages/legacy/release.json` is supplied, it requires three distinct real
+sources: the historical schema1 manager in `packages/legacy`, the strict schema1
+bridge in `packages/previous`, and the schema2 manager at the package root. It
+installs and initializes both providers under the historical manager, retains
+those actual unlabeled images through both manager updates, and exercises the
+bridge's durable compatibility basis across the later rollback/retry/restart.
+`images/legacy` contains the verified original historical archive/checksum pairs;
+the root contains unchanged bridge runner payloads. The consumer loads the old
+archive first and creates only a local `:previous` role alias before loading the
+current root tags. Original records, archive tags, source labels and OCI digests
+remain unchanged. Without the legacy input, the result explicitly limits its
+claim to the two actual managers; it does not invent a historical migration.
+
+The shared JAY-695 source-build graph supports an explicitly selected raw
+`previous_revision`: its qualification resolves the
 full commit and checks native/Linux package capabilities before image fanout.
 Both prior helpers build alongside current helpers and images; assembly consumes
 same-run, platform/prior-SHA/checksummed helper artifacts rather than compiling
@@ -325,3 +613,68 @@ Historical universal-layout fixtures do not describe this native-only target;
 all current native/helper fixtures remain required on both supported hosts.
 Previously qualified artifact subjects use an empty raw source-build selector
 and therefore do not trigger any old helper compilation.
+
+The component producer currently refuses raw prior-source composition during
+common qualification, before old helper or image work. Its supported historical
+route is the verified artifact selector above. The reusable prior-helper interfaces
+remain available to the independent source-build controller without claiming that
+legacy recipes satisfy the new input/protocol closure.
+
+An explicit manual baseline may select a completed mixed component join even if
+later manager integration failed. The joined artifact contains the exact source
+plan, manifest and all four original records. Its successful join step, selected
+run/attempt/source, immutable service digest, bounded regular members and member
+hashes must all agree. Every original source/controller/record controller must
+be an ancestor of that selected source, and every native record, original small
+record and payload origin is independently verified again. All four members are
+checked before any transitive member can authorize reuse. This is one bounded
+join, with no recursive parent-run authority. Unknown or broken links refuse the
+explicit incomplete selection; plans never grant authorization themselves.
+
+The original origin returned to consumers remains unchanged. The plan separately
+retains the joined anchor and its actual overall run conclusion; a successful
+component join is not a successful manager lifecycle. Current manager integration
+must still run. Ordinary PR/push discovery can inspect joined records but retains
+its existing protected-history origin requirements, and cannot instantiate this
+manual override. Thus a Claude-only candidate can retain the original Codex
+components, and a downstream retry can select those same successful components
+without rebuilding, exporting, uploading or requalifying them.
+
+
+A schema2 prior manager is independent of its runner components. Its selector
+requires its actual source-bound package jobs, both native helper qualifications,
+and installed manager lifecycle to succeed. It also verifies the complete joined
+selection and all four original native/payload proofs before retrieving anything
+large. It fetches the actual prior manager bundle and only the original x86-64
+payloads; every archive config, source, protocol, input identity and checksum is
+checked against that original record. It never invents native jobs or images at
+the newer manager revision. Original tags remain unchanged; the existing isolated
+loader creates only a local previous-role alias. This stricter prior-manager
+eligibility is distinct from component reuse after a downstream manager failure:
+successful component artifacts can resume, while an unsuccessful manager cannot
+be used as a qualified installed update subject.
+
+Exact graph publication
+-----------------------
+
+The protected component publisher preflights every selected origin, destination,
+archive checksum, and complete original graph before requesting credentials or
+writing a blob. It copies compressed blobs and the raw manifest to the fixed
+GHCR repository, preserving the original digest. It never loads, retags, saves,
+or pushes a Docker representation. Already available reused components perform
+no transfer or credentialed push-authorization request. Anonymous availability
+verification may still obtain a public pull token from the fixed GHCR endpoint.
+
+GitHub credentials reach only the fixed GHCR token endpoint. Repository-scoped
+Bearer tokens remain on GHCR; authenticated requests never follow redirects.
+New transfers retain full anonymous manifest/config/layer checksum verification.
+Anonymous blob reads may follow at most two HTTPS redirects to the exact public
+GHCR storage host, without forwarding Authorization. Redirected range reads must
+still prove the original size and byte range. Signed query strings and tokens
+are not diagnostic output.
+
+The graph client has synthetic credential, isolated HTTP, and existing-public-
+content read tests. No production registry writes are implied by those tests.
+The manager-envelope stable tag/channel planning contract remains separately
+unsupported and fails closed; this raw transfer path does not resolve that
+release-policy gap or qualify a native Linux lifecycle by itself.

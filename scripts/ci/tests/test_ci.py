@@ -101,7 +101,7 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('  '+job+':',text)
             self.assertIn('if: ${{ always() }}',text)
             self.assertIn('test "$RESULT" = success',text)
-            self.assertIn('case "$CODE" in true|false)',text)
+            self.assertIn('case "$CODE" in',text)
             self.assertNotIn('\n    paths:',text)
             if name == 'package-checks':
                 # Package work moved into concurrent jobs. The named required
@@ -110,10 +110,19 @@ class WorkflowContracts(unittest.TestCase):
                     block = re.split(r'(?m)^  [a-zA-Z0-9_-]+:', text.split('  ' + heavy + ':\n', 1)[1], maxsplit=1)[0]
                     self.assertIn("needs.changes.outputs.code == 'true'", block)
                 continue
-            steps=text.split('    steps:\n',1)[1]
+            if name == 'runner-integration':
+                self.assertIn("if: needs.plan.outputs.has_builds == 'true'", text)
+                steps=text.split('  listener-and-cleanup:\n',1)[1].split('    steps:\n',1)[1]
+            else:
+                steps=text.split('    steps:\n',1)[1]
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
-                self.assertIn("if: needs.changes.outputs.code != 'false'",step)
+                if name == 'browser-smoke':
+                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 ==", step)
+                elif name == 'runner-integration':
+                    self.assertIn("needs.changes.outputs.code == 'true'", step)
+                else:
+                    self.assertIn("if: needs.changes.outputs.code != 'false'",step)
 
     def test_package_matrix_and_actual_required_wrapper(self):
         text=(ROOT/'.github/workflows/package-checks.yml').read_text()

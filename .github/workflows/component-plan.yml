@@ -1,0 +1,74 @@
+name: component-plan
+
+on:
+  workflow_call:
+    inputs:
+      baseline_run:
+        description: Optional explicit manual original-record run; rejected for PR/push
+        type: string
+        default: ''
+    outputs:
+      has_builds:
+        value: ${{ jobs.plan.outputs.has_builds }}
+      browser_x86_64:
+        value: ${{ jobs.plan.outputs.browser_x86_64 }}
+      codex_x86_64:
+        value: ${{ jobs.plan.outputs.codex_x86_64 }}
+      claude_x86_64:
+        value: ${{ jobs.plan.outputs.claude_x86_64 }}
+      artifact_name:
+        value: ${{ jobs.plan.outputs.artifact_name }}
+      manager_revision:
+        value: ${{ jobs.plan.outputs.manager_revision }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      has_builds: ${{ steps.plan.outputs.has_builds }}
+      browser_x86_64: ${{ steps.plan.outputs.browser_x86_64 }}
+      codex_x86_64: ${{ steps.plan.outputs.codex_x86_64 }}
+      claude_x86_64: ${{ steps.plan.outputs.claude_x86_64 }}
+      artifact_name: component-plan-${{ github.run_id }}-${{ github.run_attempt }}
+      manager_revision: ${{ steps.plan.outputs.manager_revision }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Resolve exact inputs against available original native evidence
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+        run: |
+          args=()
+          if [ -n "$BASELINE_RUN" ]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            [[ "$BASELINE_RUN" =~ ^[0-9]+$ ]] || exit 1
+            args+=(--baseline-run "$BASELINE_RUN")
+          fi
+          python3 scripts/release/runner_reuse.py --root . --output component-plan.json "${args[@]}"
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          plan = json.load(open('component-plan.json'))
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert plan['planning_complete'] is True and plan['manager_source_revision'] == revision
+          assert type(plan['has_builds']) is bool
+          outputs = {'has_builds': str(plan['has_builds']).lower(), 'manager_revision': revision, 'browser_x86_64': plan['browser']['x86_64']['action']}
+          outputs.update({provider + '_x86_64': plan['components'][provider]['x86_64']['action'] for provider in ('codex', 'claude')})
+          assert all(value in ('build', 'reuse') for key, value in outputs.items() if key not in ('manager_revision', 'has_builds'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              for key, value in outputs.items():
+                  stream.write(key + '=' + value + '\n')
+          PYTHON
+      - name: Retain complete source-bound decisions and original provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: component-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: component-plan.json
+          if-no-files-found: error

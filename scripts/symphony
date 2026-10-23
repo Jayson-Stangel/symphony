@@ -1739,7 +1739,7 @@ run() {
 }
 
 case "${1:-}" in
-  --version) if "$packaged_install"; then printf '{"mode":"cli","installation":"packaged","version":"%s","source_revision":"%s","source_state":"packaged"}\n' "$package_version" "$package_revision"; exit; fi; printf '{"mode":"cli","source_revision":"%s","source_state":"%s"}\n' "$(source_revision)" "$(source_state)" ;;
+  --version) if "$packaged_install"; then printf '{"mode":"cli","installation":"packaged","version":"%s","base_version":"%s","source_revision":"%s","storage_revision":"%s","source_state":"packaged"}\n' "$package_version" "$package_base_version" "$package_revision" "$package_storage_revision"; exit; fi; printf '{"mode":"cli","source_revision":"%s","source_state":"%s"}\n' "$(source_revision)" "$(source_state)" ;;
   --help|-h|'') usage ;;
   install) shift; install "$@" ;;
   setup) shift; setup "$@" ;;

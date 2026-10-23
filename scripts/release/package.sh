@@ -24,10 +24,32 @@ if [ "$platform" = macos ]; then
   [ "$helper_architectures" = arm64 ] || { echo 'macOS helper must contain only arm64; universal or other CPU payload refused' >&2; exit 1; }
 fi
 "$bundle/libexec/symphony-host" validate-manifest "$manifest"
+python3 "$root/scripts/release/manager_inputs.py" "$manifest" --root "$root"
 if "$bundle/libexec/symphony-host" get "$manifest" "$field.sha256" >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
-revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
+if python3 - "$manifest" <<'PYCHECK'
+import json,sys
+sys.exit(0 if 'manager_envelope' in json.load(open(sys.argv[1])) else 1)
+PYCHECK
+then
+  python3 "$root/scripts/release/manager_envelope.py" --validate "$manifest" >/dev/null
+  "$bundle/libexec/symphony-host" validate-manager "$manifest"
+  revision=$("$bundle/libexec/symphony-host" manager-revision "$manifest")
+  # Recompute the complete physical transition at packaging, independently of
+  # any previously generated plan or core receipt.
+  PYTHONPATH="$root/scripts/release" python3 - "$manifest" "$root" <<'PYMEASURE'
+import sys
+from pathlib import Path
+from manager_envelope import decode,validate_core
+from finite_transition import evaluate
+core=validate_core(decode((Path(sys.argv[1]).parent/'manager-core.json').read_bytes()))
+assert evaluate(sys.argv[2],core['original_components'])==core['compatibility']['input_transition']
+PYMEASURE
+  cp "$(dirname "$manifest")/manager-core.json" "$bundle/manager-core.json"
+else
+  revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
+fi
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
-[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-platform)" = "$platform" ] || { echo 'helper platform differs from bundle build host' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-architecture)" = "$(uname -m)" ] || { echo 'helper architecture differs from bundle build host' >&2; exit 1; }
