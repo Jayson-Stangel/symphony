@@ -377,23 +377,28 @@ PY
 
     @unittest.skipUnless(sys.platform == "darwin", "Mach-O slice validation requires native macOS")
     def test_supplied_universal_helper_refused_before_packaging(self):
-        # Reuse a pre-existing system Intel slice: no Intel compilation starts.
-        # This is a refusal fixture, never a valid cross-CPU Symphony release.
-        intel = self.root/'existing-system-intel-slice'
-        self.assertOK(call(['lipo', '/usr/bin/true', '-thin', 'x86_64', '-output', intel]))
-        universal = self.root/'universal-helper-fixture'
-        self.assertOK(call(['lipo', '-create', HELPER, intel, '-output', universal]))
-        universal.chmod(0o755)
-        self.assertEqual(set(self.assertOK(call(['lipo', '-archs', universal])).split()), {'arm64', 'x86_64'})
-        # The previously used checks all succeed on the real executing ARM
-        # slice, demonstrating why inspecting only that slice was insufficient.
-        self.assertEqual(self.assertOK(call([universal, 'build-revision'])), manifest()['source_revision'])
-        self.assertEqual(self.assertOK(call([universal, 'host-platform'])), 'macos')
-        self.assertEqual(self.assertOK(call([universal, 'host-architecture'])), 'arm64')
+        # Exercise the architecture refusal without creating any Intel payload.
+        # The fake inspection result represents a supplied universal helper;
+        # the sentinel proves refusal happens before helper execution.
+        tools = self.root/'inspection-tools'; tools.mkdir()
+        inspected = self.root/'inspection.calls'
+        lipo = tools/'lipo'
+        lipo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_INSPECTION_CALLS"\n'
+                        '[ "$1" = -archs ] || exit 99\nprintf "arm64 x86_64\\n"\n')
+        lipo.chmod(0o755)
+        sentinel = self.root/'helper-executed'
+        helper = self.root/'helper-sentinel'
+        helper.write_text('#!/bin/sh\ntouch "$TEST_HELPER_EXECUTED"\nexit 99\n')
+        helper.chmod(0o755)
+        env = dict(os.environ, PATH=f'{tools}:' + os.environ['PATH'],
+                   TEST_INSPECTION_CALLS=str(inspected), TEST_HELPER_EXECUTED=str(sentinel))
         output = self.root/'universal-output'
-        refused = call([ROOT/'scripts/release/package.sh', self.file, output, universal])
+        refused = call([ROOT/'scripts/release/package.sh', self.file, output, helper], env=env)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn('macOS helper must contain only arm64', refused.stderr)
+        self.assertEqual(len(inspected.read_text().splitlines()), 1)
+        self.assertTrue(inspected.read_text().startswith('-archs '))
+        self.assertFalse(sentinel.exists())
         self.assertFalse(list(output.glob('*.tar.gz')))
         self.assertFalse((self.root/'app').exists())
 
