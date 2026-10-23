@@ -41,7 +41,8 @@ func validateManifestObject(_ manifest: [String: Any]) throws -> [String: Any] {
           manifest["host_architectures"] as? [String] == ["arm64", "x86_64"] else { fail("invalid or unsupported release manifest") }
     if schema == 2 {
         let compatibility = object(manifest["compatibility"])
-        guard Set(compatibility.keys) == Set(["runner_protocol"]), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager/runner compatibility") }
+        let protocolOnly = compatibility["selection_mode"] as? String == "runner-protocol-v1"
+        guard Set(compatibility.keys) == (protocolOnly ? Set(["runner_protocol", "selection_mode"]) : Set(["runner_protocol"])), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager/runner compatibility") }
     }
     if schema == 2 { validateComponentSelections(manifest, revision: revision) }
     else if manifest["component_selections"] != nil { fail("component selections require schema2") }
@@ -241,6 +242,10 @@ func componentSelection(provider: String, arch: String, revision: String) -> [St
             "changes": reviewedTransition["changes"]!]
 }
 func validateComponentSelections(_ manifest: [String: Any], revision: String) {
+    if object(manifest["compatibility"])["selection_mode"] as? String == "runner-protocol-v1" {
+        guard manifest["component_selections"] == nil else { fail("protocol compatibility must not claim finite input equality") }
+        return
+    }
     let selections = object(manifest["component_selections"])
     if manifest["component_selections"] != nil {
         guard Set(selections.keys) == Set(["codex", "claude"]) else { fail("invalid finite component provider set") }
@@ -261,6 +266,10 @@ func validateComponentSelections(_ manifest: [String: Any], revision: String) {
     } }
 }
 func validateTransition(_ compatibility: [String: Any], originals: [String: Any], revision: String, legacy: String) {
+    if compatibility["selection_mode"] as? String == "runner-protocol-v1" {
+        guard Set(compatibility.keys) == Set(["runner_protocol", "selection_mode"]), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager runtime protocol contract") }
+        return
+    }
     guard Set(compatibility.keys) == Set(["runner_protocol", "selection_mode", "input_transition"]),
           integer(compatibility["runner_protocol"]) == 1,
           compatibility["selection_mode"] as? String == "finite-input-transition-v1" else { fail("unsupported original component selection") }
@@ -367,12 +376,17 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     normalized["source_revision"] = envelope.revision
     normalized["runners"] = originals
     normalized["distribution"] = distribution
-    normalized["compatibility"] = ["runner_protocol": 1]
-    normalized["component_selections"] = Dictionary(uniqueKeysWithValues: ["codex", "claude"].map { provider in
-        (provider, Dictionary(uniqueKeysWithValues: ["arm64", "x86_64"].map { arch in
-            (arch, componentSelection(provider: provider, arch: arch, revision: envelope.revision))
-        }))
-    })
+    if object(core["compatibility"])["selection_mode"] as? String == "runner-protocol-v1" {
+        normalized["compatibility"] = ["runner_protocol": 1, "selection_mode": "runner-protocol-v1"]
+        normalized.removeValue(forKey: "component_selections")
+    } else {
+        normalized["compatibility"] = ["runner_protocol": 1]
+        normalized["component_selections"] = Dictionary(uniqueKeysWithValues: ["codex", "claude"].map { provider in
+            (provider, Dictionary(uniqueKeysWithValues: ["arm64", "x86_64"].map { arch in
+                (arch, componentSelection(provider: provider, arch: arch, revision: envelope.revision))
+            }))
+        })
+    }
     normalized["supported_hosts"] = core["supported_hosts"]
     _ = try validateManifestObject(normalized)
     normalized["storage_revision"] = legacy

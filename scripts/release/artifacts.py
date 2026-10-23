@@ -27,7 +27,7 @@ def validate(value, require_bundle=True):
     schema = value.get("schema_version")
     require(type(schema) is int and schema in (1, 2), "unsupported release manifest schema")
     if schema == 2:
-        require(value.get("compatibility") == {"runner_protocol": 1} and
+        require(value.get("compatibility") in ({"runner_protocol": 1}, {"runner_protocol": 1,"selection_mode":"runner-protocol-v1"}) and
                 type(value["compatibility"].get("runner_protocol")) is int,
                 "unsupported manager/runner compatibility")
     require(VERSION.fullmatch(value.get("version", "")), "invalid release version")
@@ -56,8 +56,11 @@ def validate(value, require_bundle=True):
                 require(isinstance(tools.get(tool), str) and bool(tools[tool].strip()), f"missing {tool} version")
     if schema==1:require('component_selections' not in value,'component selections require independent component schema')
     if schema==2:
-        from finite_transition import validate_manifest_selections
-        validate_manifest_selections(value)
+        if value['compatibility'].get('selection_mode')=='runner-protocol-v1':
+            require('component_selections' not in value,'protocol compatibility must not claim finite input equality')
+        else:
+            from finite_transition import validate_manifest_selections
+            validate_manifest_selections(value)
     if "original_components" in value:
         originals=value["original_components"]
         require(schema == 1 and isinstance(originals,dict) and set(originals)==set(PROVIDERS), "invalid bridge original components")
