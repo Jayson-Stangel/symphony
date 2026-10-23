@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import socket
 import subprocess
 import sys
@@ -74,6 +75,15 @@ def assert_owned_listener(value, name, provider, uri, validated_id, captured_id=
     assert labels["com.symphony.agent"] == provider, "foreign provider"
     assert captured_id is None or value["Id"] == captured_id, "foreign replacement"
     assert_container_image(value, uri, validated_id)
+
+
+def workspace_canary_command(workspaces="/workspaces", state="/state"):
+    """Snapshot the same proof subdirectory created inside the listener."""
+    proof = Path(workspaces) / "proof"
+    quote = lambda path: shlex.quote(str(path))
+    return ("sha256sum " + " ".join(quote(path) for path in (proof / "edited", proof / "untracked", Path(state) / "proof-state"))
+        + "; git -c " + quote("safe.directory=" + str(proof)) + " -C " + quote(proof) + " rev-parse HEAD"
+        + "; GIT_OPTIONAL_LOCKS=0 git -c " + quote("safe.directory=" + str(proof)) + " -C " + quote(proof) + " status --porcelain")
 
 
 def seed_project_transport(config_home, identifier):
@@ -210,7 +220,7 @@ def main():
     def utility(image, *arguments):
         return d("run", "--rm", "--label", LABEL + "=" + token, "--network", "none", "--read-only",
                  "--entrypoint", "sh", *arguments, image, "-ceu",
-                 "sha256sum /proof/edited /proof/untracked /state/proof-state; git -c safe.directory=/proof -C /proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -c safe.directory=/proof -C /proof status --porcelain").stdout
+                 workspace_canary_command()).stdout
 
     try:
         observed = json.loads(d("info", "--format", "{{json .}}").stdout)
@@ -330,7 +340,7 @@ def main():
                 assert_container_image(config, images[provider], policy["images"][provider][1])
                 output[name] = {"id": config["Id"], "image": config["Image"], "running": config["State"]["Running"],
                     "mounts": sorted(config["Mounts"], key=lambda value: value["Destination"]),
-                    "data": utility(images[provider], "--volume", name + "-workspaces:/proof:ro", "--volume", name + "-state:/state:ro")}
+                    "data": utility(images[provider], "--volume", name + "-workspaces:/workspaces:ro", "--volume", name + "-state:/state:ro")}
             return output
         product("runner", "stop", cwd=projects[0][0])
         baseline = snapshot()

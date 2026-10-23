@@ -44,6 +44,31 @@ class OwnershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
 
 
+class WorkspaceCanaryTests(unittest.TestCase):
+    def test_exact_snapshot_shell_reads_nested_proof_and_detects_changes(self):
+        with tempfile.TemporaryDirectory(prefix="canary paths ") as temp:
+            workspaces, state = Path(temp) / "workspaces", Path(temp) / "state"
+            proof = workspaces / "proof"; proof.mkdir(parents=True); state.mkdir()
+            def run(*args): return subprocess.run(args, text=True, capture_output=True, check=True).stdout
+            run("git", "-C", str(proof), "init", "-q")
+            run("git", "-C", str(proof), "config", "user.name", "Fixture")
+            run("git", "-C", str(proof), "config", "user.email", "fixture@example.invalid")
+            (proof / "edited").write_text("committed")
+            run("git", "-C", str(proof), "add", "edited"); run("git", "-C", str(proof), "commit", "-qm", "fixture")
+            (proof / "edited").write_text("committeddirty"); (proof / "untracked").write_text("untracked")
+            (state / "proof-state").write_text("state-canary")
+            command = lifecycle.workspace_canary_command(workspaces, state)
+            first = run("sh", "-ceu", command)
+            self.assertIn(" M edited", first); self.assertIn("?? untracked", first)
+            self.assertIn(run("git", "-C", str(proof), "rev-parse", "HEAD").strip(), first)
+            self.assertEqual(run("sh", "-ceu", command), first)
+            (proof / "untracked").write_text("changed")
+            self.assertNotEqual(run("sh", "-ceu", command), first)
+            (proof / "edited").unlink()
+            with self.assertRaises(subprocess.CalledProcessError): run("sh", "-ceu", command)
+            self.assertIn("/workspaces/proof/edited", lifecycle.workspace_canary_command())
+
+
 class ContainerIdentityTests(unittest.TestCase):
     def test_immutable_uri_and_validated_id_launch_forms(self):
         uri, runtime_id = "localhost:1234/symphony-codex@sha256:" + "a" * 64, "sha256:" + "b" * 64
