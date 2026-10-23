@@ -169,6 +169,11 @@ class CommittedReleaseMode(unittest.TestCase):
         caller = (ROOT / '.github/workflows/burrito-release.yml').read_text()
         self.assertIn('manifest_schema: ${{ needs.qualification.outputs.release_schema }}', caller)
         self.assertIn('uses: ./.github/workflows/release-preflight.yml', caller)
+        dispatch = caller.split('  workflow_dispatch:\n', 1)[1].split('  push:', 1)[0]
+        self.assertRegex(dispatch, r'(?m)^      baseline_run:\n        description: [^\n]+\n        type: string\n        default: \'\'\n')
+        runner_call = caller.split('  runners:\n', 1)[1].split('  build:', 1)[0]
+        self.assertIn('baseline_run: ${{ inputs.baseline_run }}', runner_call)
+        self.assertIn("publish: ${{ startsWith(github.ref, 'refs/tags/v') }}", runner_call)
         preflight = (ROOT / '.github/workflows/release-preflight.yml').read_text()
         self.assertIn('schema=$(python3 scripts/release/manager_version.py --schema)', preflight)
         producer = (ROOT / '.github/workflows/runner-release.yml').read_text()
@@ -205,7 +210,7 @@ runner_reuse.main()
             subprocess.run(['bash', '-e', '-c', receipt_script], cwd=ROOT, check=True,
                            env=dict(os.environ, GITHUB_SHA=revision, GITHUB_OUTPUT=str(receipt_output)))
             selected_schema = dict(line.split('=', 1) for line in receipt_output.read_text().splitlines())['schema']
-            for mode in ('unchanged', 'changed', 'incompatible-finite'):
+            for mode in ('unchanged', 'changed', 'incompatible-finite', 'forbidden-baseline'):
                 records = copy.deepcopy(templates)
                 if mode != 'incompatible-finite':
                     for record in records:
@@ -219,11 +224,14 @@ runner_reuse.main()
                     env=dict(os.environ, PATH=str(tools)+os.pathsep+os.environ['PATH'], REAL_PYTHON=sys.executable,
                              SYNTHETIC_DRIVER=str(driver), SYNTHETIC_RECORDS=str(records_path),
                              RELEASE_MODULES=str(ROOT / 'scripts/release'), GITHUB_SHA=revision,
-                             GITHUB_OUTPUT=str(directory / 'producer-output'), BASELINE_RUN='', PREVIOUS_REVISION='',
+                             GITHUB_OUTPUT=str(directory / 'producer-output'),
+                             BASELINE_RUN='123' if mode == 'forbidden-baseline' else '', PREVIOUS_REVISION='',
+                             GITHUB_EVENT_NAME='push' if mode == 'forbidden-baseline' else 'workflow_dispatch',
+                             GITHUB_REPOSITORY='Jayson-Stangel/symphony',
                              MANIFEST_SCHEMA='1' if mode == 'incompatible-finite' else selected_schema,
                              SELECTED_PLAN_ARTIFACT='', PREVIOUS_ARTIFACT_RUN='', LEGACY_ARTIFACT_RUN='',
                              MANAGER_ONLY_UPDATE='false'))
-                if mode == 'incompatible-finite':
+                if mode in ('incompatible-finite', 'forbidden-baseline'):
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn('no reuse decision was authorized', result.stderr)
                     continue
