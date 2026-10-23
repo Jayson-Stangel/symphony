@@ -56,7 +56,7 @@ jobs:
           working_directory: elixir
 
       - name: Codex protected-command failure regressions
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.application != 'false'
         run: python3 runner/test_codex_readiness.py
 
       - name: Cache deps and build
