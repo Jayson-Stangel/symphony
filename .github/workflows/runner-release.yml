@@ -3,11 +3,27 @@ name: runner-release
 on:
   workflow_call:
     inputs:
+      previous_revision:
+        description: Optional full prior Linux-capable source for actual two-revision package lifecycle
+        type: string
+        default: ''
+      retain_diagnostic:
+        description: Preserve this caller-owned diagnostic and its package checks
+        type: boolean
+        default: false
+      preflight_revision:
+        description: Exact successful caller-owned portable preflight output; empty runs it here
+        type: string
+        default: ''
       publish:
         type: boolean
         default: false
   workflow_dispatch:
     inputs:
+      retain_diagnostic:
+        description: Preserve this explicitly requested diagnostic run across new commits
+        type: boolean
+        default: false
       transfer_diagnostic_run:
         description: Existing same-repository runner candidate run ID for build-free transfer diagnosis (empty builds candidates)
         type: string
@@ -39,6 +55,7 @@ on:
         description: Skip cold build and import the previous completed probe run from a fresh builder
         type: boolean
         default: false
+
       previous_revision:
         description: Full prior Linux-capable candidate source SHA for real two-revision package lifecycle
         type: string
@@ -56,9 +73,57 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: runner-candidate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  portable:
+    if: inputs.preflight_revision == ''
+    uses: ./.github/workflows/release-preflight.yml
+  package-inputs:
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    needs: qualification
+    uses: ./.github/workflows/package-checks.yml
+    with:
+      portable_revision: ${{ github.sha }}
+      previous_revision: ${{ inputs.previous_revision }}
+      retain_diagnostic: ${{ inputs.retain_diagnostic }}
+  qualification:
+    needs: portable
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exact successful local or caller-owned preflight
+        env:
+          LOCAL_RESULT: ${{ needs.portable.result }}
+          LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
+          CALLER_REVISION: ${{ inputs.preflight_revision }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          CACHE_PROBE: ${{ inputs.cache_probe }}
+          DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+        run: |
+          if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
+          if [ -n "${PREVIOUS_REVISION:-}" ]; then [[ "$PREVIOUS_REVISION" =~ ^[0-9a-f]{40}$ ]] || exit 1; fi
+          if [ -n "$CALLER_REVISION" ]; then
+            test "$LOCAL_RESULT" = skipped
+            test "$CALLER_REVISION" = "$GITHUB_SHA"
+          else
+            test "$LOCAL_RESULT" = success
+            test "$LOCAL_REVISION" = "$GITHUB_SHA"
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.previous_revision != ''
+        with:
+          fetch-depth: 0
+      - name: Refuse unavailable or incapable selected prior before native fanout
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
   candidate:
-    if: ${{ !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: runner-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -74,9 +139,8 @@ jobs:
         architecture: [arm64, x86_64]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Verify release version and run metadata tests
+      - name: Read preflight-validated release version
         run: |
-          python3 -m unittest discover -s scripts/release/tests -v
           version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
           if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
           printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
@@ -117,8 +181,8 @@ jobs:
           retention-days: 30
 
   publish:
-    if: inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
-    needs: candidate
+    if: ${{ always() && !cancelled() && needs.candidate.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    needs: [candidate, candidate-qualification]
     environment: production-release
     permissions:
       contents: read
@@ -171,6 +235,7 @@ jobs:
           if-no-files-found: error
 
   candidate-metadata:
+    if: ${{ always() && !cancelled() && needs.candidate.result == 'success' }}
     needs: candidate
     runs-on: ubuntu-24.04
     steps:
@@ -201,6 +266,7 @@ jobs:
           path: dist/**
 
   packaged-release-platform:
+    if: ${{ always() && !cancelled() && needs.publish.result == 'success' }}
     needs: publish
     strategy:
       fail-fast: false
@@ -227,7 +293,7 @@ jobs:
           mkdir -p dist
           python3 scripts/release/artifacts.py assemble --version "$version" --revision "$GITHUB_SHA" \
             --channel stable --platform-bundles --output "$RUNNER_TEMP/release.json" records/*.json
-          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host"
+          if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host" --native
           else bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"; cp "$RUNNER_TEMP/linux-helper/symphony-host" "$RUNNER_TEMP/symphony-host"; fi
           bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist "$RUNNER_TEMP/symphony-host"
       - uses: actions/upload-artifact@v4
@@ -237,6 +303,7 @@ jobs:
           if-no-files-found: error
 
   packaged-release:
+    if: ${{ always() && !cancelled() && needs.packaged-release-platform.result == 'success' }}
     needs: packaged-release-platform
     runs-on: ubuntu-24.04
     environment: production-release
@@ -266,8 +333,227 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  packaged-candidate:
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' }}
+    needs: [candidate-metadata, package-inputs]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-14
+          - platform: linux_x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: runner-candidate-metadata
+          path: metadata
+      - name: Download current exact-source qualified helper
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ format('native-host-helper-{0}-{1}', matrix.platform, github.sha) }}
+          path: ${{ runner.temp }}/qualified-helper
+      - name: Verify qualified helper source, platform and checksum
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP/qualified-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod +x symphony-host
+          test "$(./symphony-host build-revision)" = "$GITHUB_SHA"
+          test "$(./symphony-host host-platform)" = "$PLATFORM"
+      - name: Download exact prior helper qualified alongside current images
+        if: inputs.previous_revision != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualified-prior-helper
+      - name: Verify prior helper checksum, source and native CPU
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP/qualified-prior-helper"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
+          else shasum -a 256 --check symphony-host.sha256; fi
+          chmod +x symphony-host
+          test "$(./symphony-host build-revision)" = "$PREVIOUS_REVISION"
+          test "$(./symphony-host host-platform)" = "$PLATFORM"
+          if [ "$PLATFORM" = macos ]; then test "$(lipo -archs symphony-host)" = arm64
+          else readelf -h symphony-host | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'; fi
+      - name: Build source-bound native candidate archives
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          for selection in current previous; do
+            source=$PWD; manifest="$PWD/metadata/release.json"; destination="$PWD/dist"; revision=$GITHUB_SHA
+            if [ "$selection" = previous ]; then
+              [ -n "$PREVIOUS_REVISION" ] || continue
+              source="$RUNNER_TEMP/previous-package"
+              bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
+              manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"; revision=$PREVIOUS_REVISION
+            fi
+            mkdir -p "$destination"
+            helper="$RUNNER_TEMP/qualified-helper/symphony-host"
+            if [ "$selection" = previous ]; then
+              helper="$RUNNER_TEMP/qualified-prior-helper/symphony-host"
+            fi
+            bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-candidate-${{ matrix.platform }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 30
+
+  packaged-candidate-metadata:
+    if: ${{ always() && !cancelled() && needs.packaged-candidate.result == 'success' }}
+    needs: packaged-candidate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packaged-candidate-*
+          path: packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runner-records-*
+          path: records
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: runner-candidate-metadata
+          path: records
+      - name: Bind both platform archives without changing the legacy macOS contract
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: |
+          for selection in current previous; do
+            directory=packages; inputs=records; revision=$GITHUB_SHA
+            if [ "$selection" = previous ]; then
+              [ -n "$PREVIOUS_REVISION" ] || continue
+              directory=packages/previous; inputs=records/previous; revision=$PREVIOUS_REVISION
+            fi
+            version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json")
+            python3 scripts/release/artifacts.py assemble --version "$version" --revision "$revision" --channel candidate \
+              --bundle "$directory/symphony-$version-macos.tar.gz" \
+              --linux-bundle "$directory/symphony-$version-linux_x86_64.tar.gz" \
+              --output "$directory/release.json" "$inputs"/codex-*.json "$inputs"/claude-*.json
+            python3 scripts/release/artifacts.py validate "$directory/release.json"
+            (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-candidate
+          path: packages/**
+          if-no-files-found: error
+          retention-days: 30
+
+  ubuntu-package-lifecycle:
+    if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && inputs.previous_revision != '' }}
+    needs: packaged-candidate-metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaged-candidate
+          path: packages
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runner-candidate-*-x86_64
+          path: runners
+          merge-multiple: true
+      - name: Real source-independent Ubuntu 26.04 manager lifecycle
+        run: python3 scripts/release/package-lifecycle.py packages runners evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ubuntu26-package-lifecycle-${{ github.sha }}
+          path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+
+  lifecycle-diagnostic:
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate explicit diagnostic identities
+        env:
+          ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
+        run: |
+          [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]]
+          [[ "$PACKAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          echo 'DIAGNOSTIC ONLY: reused packages do not qualify this controller head for acceptance.'
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaged-candidate
+          path: packages
+          run-id: ${{ inputs.diagnostic_artifact_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runner-candidate-*-x86_64
+          path: runners
+          merge-multiple: true
+          run-id: ${{ inputs.diagnostic_artifact_run }}
+          github-token: ${{ github.token }}
+      - name: Diagnose actual Ubuntu lifecycle using selected real artifacts
+        env:
+          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
+          DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+        run: python3 scripts/release/package-lifecycle.py packages runners evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
+          path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+  candidate-qualification:
+    needs: [qualification, package-inputs, candidate, candidate-metadata, packaged-candidate-metadata, ubuntu-package-lifecycle]
+    if: ${{ always() && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all requested candidate work without accepting omitted failures
+        env:
+          PREFLIGHT: ${{ needs.qualification.result }}
+          PACKAGES: ${{ needs.package-inputs.result }}
+          RUNNERS: ${{ needs.candidate.result }}
+          METADATA: ${{ needs.candidate-metadata.result }}
+          BUNDLES: ${{ needs.packaged-candidate-metadata.result }}
+          LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: |
+          test "$PREFLIGHT" = success
+          test "$PACKAGES" = success
+          test "$RUNNERS" = success
+          test "$METADATA" = success
+          test "$BUNDLES" = success
+          if [ -n "$PREVIOUS_REVISION" ]; then test "$LIFECYCLE" = success
+          else test "$LIFECYCLE" = skipped; fi
+          echo 'Exact-head preflight, native fixtures, all four provider/platform images and native package archives succeeded. Two-source lifecycle is required when a prior revision was requested.' >> "$GITHUB_STEP_SUMMARY"
   cache-probe:
-    if: inputs.cache_probe && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     name: cache-probe-${{ matrix.provider }}-${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -367,162 +653,6 @@ jobs:
         run: |
           test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker rm -f "$REGISTRY_ID"
-  packaged-candidate:
-    needs: candidate-metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos
-            runner: macos-14
-          - platform: linux_x86_64
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: runner-candidate-metadata
-          path: metadata
-      - name: Build source-bound native candidate archives
-        env:
-          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          for selection in current previous; do
-            source=$PWD; manifest="$PWD/metadata/release.json"; destination="$PWD/dist"; revision=$GITHUB_SHA
-            if [ "$selection" = previous ]; then
-              [ -n "$PREVIOUS_REVISION" ] || continue
-              source="$RUNNER_TEMP/previous-package"
-              bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
-              manifest="$PWD/metadata/previous/release.json"; destination="$PWD/dist/previous"; revision=$PREVIOUS_REVISION
-            fi
-            mkdir -p "$destination"
-            helper="$destination/symphony-host"
-            if [ "$PLATFORM" = macos ]; then bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
-            else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
-            bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: packaged-candidate-${{ matrix.platform }}
-          path: dist/**
-          if-no-files-found: error
-          retention-days: 30
-
-  packaged-candidate-metadata:
-    needs: packaged-candidate
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: packaged-candidate-*
-          path: packages
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: runner-records-*
-          path: records
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: runner-candidate-metadata
-          path: records
-      - name: Bind both platform archives without changing the legacy macOS contract
-        env:
-          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
-        run: |
-          for selection in current previous; do
-            directory=packages; inputs=records; revision=$GITHUB_SHA
-            if [ "$selection" = previous ]; then
-              [ -n "$PREVIOUS_REVISION" ] || continue
-              directory=packages/previous; inputs=records/previous; revision=$PREVIOUS_REVISION
-            fi
-            version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json")
-            python3 scripts/release/artifacts.py assemble --version "$version" --revision "$revision" --channel candidate \
-              --bundle "$directory/symphony-$version-macos.tar.gz" \
-              --linux-bundle "$directory/symphony-$version-linux_x86_64.tar.gz" \
-              --output "$directory/release.json" "$inputs"/codex-*.json "$inputs"/claude-*.json
-            python3 scripts/release/artifacts.py validate "$directory/release.json"
-            (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: packaged-candidate
-          path: packages/**
-          if-no-files-found: error
-          retention-days: 30
-
-  ubuntu-package-lifecycle:
-    if: inputs.previous_revision != ''
-    needs: packaged-candidate-metadata
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: packaged-candidate
-          path: packages
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: runner-candidate-*-x86_64
-          path: runners
-          merge-multiple: true
-      - name: Real source-independent Ubuntu 26.04 manager lifecycle
-        run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ubuntu26-package-lifecycle-${{ github.sha }}
-          path: evidence/**
-          if-no-files-found: error
-          retention-days: 30
-
-  lifecycle-diagnostic:
-    if: github.event_name == 'workflow_dispatch' && !inputs.cache_probe && inputs.diagnostic_artifact_run != '' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate explicit diagnostic identities
-        env:
-          ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
-          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
-        run: |
-          [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]]
-          [[ "$PACKAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
-          echo 'DIAGNOSTIC ONLY: reused packages do not qualify this controller head for acceptance.'
-      - uses: actions/download-artifact@v4
-        with:
-          name: packaged-candidate
-          path: packages
-          run-id: ${{ inputs.diagnostic_artifact_run }}
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: runner-candidate-*-x86_64
-          path: runners
-          merge-multiple: true
-          run-id: ${{ inputs.diagnostic_artifact_run }}
-          github-token: ${{ github.token }}
-      - name: Diagnose actual Ubuntu lifecycle using selected real artifacts
-        env:
-          PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
-          DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
-        run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
-          path: evidence/**
-          if-no-files-found: error
-          retention-days: 30
 
   retained-transfer-timing:
     if: ${{ inputs.transfer_timing_run != '' && !inputs.cache_probe }}

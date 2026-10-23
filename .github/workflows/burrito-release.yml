@@ -4,6 +4,14 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      previous_revision:
+        description: Optional full prior Linux-capable source for actual two-revision package lifecycle
+        type: string
+        default: ''
+      retain_diagnostic:
+        description: Preserve this explicitly requested full candidate across new commits
+        type: boolean
+        default: false
       engine_only:
         description: Qualify only the two native standalone engines; omit runner images and publication
         type: boolean
@@ -19,14 +27,30 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: engine-candidate-${{ github.event_name }}-${{ github.ref }}-${{ (inputs.controller_only || inputs.retain_diagnostic) && github.run_id || 'latest' }}
+  cancel-in-progress: ${{ !inputs.controller_only && !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
+  qualification:
+    if: ${{ !inputs.controller_only }}
+    uses: ./.github/workflows/release-preflight.yml
   host-policy:
     uses: ./.github/workflows/host-policy.yml
 
+  engine-fixtures:
+    needs: qualification
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
+    uses: ./.github/workflows/release-native.yml
+
   runners:
+    needs: qualification
     if: ${{ !inputs.controller_only && !inputs.engine_only }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
+      previous_revision: ${{ inputs.previous_revision }}
+      preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
       publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: read
@@ -34,9 +58,9 @@ jobs:
       packages: write
 
   build:
+    needs: [qualification, host-policy]
     if: ${{ !inputs.controller_only }}
     name: build-${{ matrix.target }}
-    needs: host-policy
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -136,9 +160,6 @@ jobs:
       - name: Install Linux test controller utility
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lsof
-
-      - name: Test false-green and cleanup regressions
-        run: python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
       - name: Qualify actual standalone engine
         run: |

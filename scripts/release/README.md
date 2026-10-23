@@ -314,3 +314,14 @@ The GitHub cache quota is shared across these bounded snapshots. Missing or
 partly evicted blobs can force dependency rebuilding even after an initial
 `CACHED` marker; report the later errors and actual timings, not marker counts
 alone. No other workflow's cache is deleted to make a probe succeed.
+
+For an explicitly selected raw `previous_revision`, qualification resolves the
+full commit and checks native/Linux package capabilities before image fanout.
+Both prior helpers build alongside current helpers and images; assembly consumes
+same-run, platform/prior-SHA/checksummed helper artifacts rather than compiling
+old helpers after images finish. The old macOS helper uses `--native`, actual
+Mach-O ARM64/source/platform/hash checks, and its real later package assembly.
+Historical universal-layout fixtures do not describe this native-only target;
+all current native/helper fixtures remain required on both supported hosts.
+Previously qualified artifact subjects use an empty raw source-build selector
+and therefore do not trigger any old helper compilation.

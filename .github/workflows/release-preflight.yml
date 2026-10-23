@@ -1,0 +1,26 @@
+name: Release preflight
+on:
+  workflow_call:
+    outputs:
+      qualified_revision:
+        description: Exact source that passed inexpensive portable checks
+        value: ${{ jobs.portable.outputs.qualified_revision }}
+permissions:
+  contents: read
+jobs:
+  portable:
+    outputs:
+      qualified_revision: ${{ steps.qualified.outputs.revision }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Portable policy and package input preflight
+        run: python3 scripts/ci/release_tests.py portable
+      - name: Validate selected release version before native or image work
+        run: |
+          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          test -n "$version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+      - id: qualified
+        run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"

@@ -52,7 +52,7 @@ class HostTargets(unittest.TestCase):
                 self.assertEqual([host['target'] for host in matrix['include']], [target])
         package = (ROOT/'.github/workflows/package-checks.yml').read_text()
         self.assertNotIn('macos-15-intel', package)
-        self.assertIn('fromJSON(needs.macos-host-policy.outputs.matrix)', package)
+        self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', package)
 
     def test_helper_builder_compiles_only_the_matching_supported_native_target(self):
         # Execute the real build wrapper with a recording compiler. These prove
