@@ -63,7 +63,7 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: inputs.previous_revision != ''
         with:
           fetch-depth: 0
@@ -90,7 +90,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Build actual native macOS ARM64 helper
@@ -163,7 +163,7 @@ jobs:
           if [ "$PLATFORM" = linux_x86_64 ]; then
             SYMPHONY_TEST_HOST_HELPER="$helper" python3 "$source/scripts/package/test-package.py" -v
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.previous_revision != ''
         with:
           name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -171,7 +171,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Retain actual exact-source platform helper and qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-host-helper-${{ matrix.platform }}-${{ github.sha }}
           path: ${{ runner.temp }}/host-helper/*

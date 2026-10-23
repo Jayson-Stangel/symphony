@@ -28,7 +28,7 @@ jobs:
         env:
           PORTABLE_REVISION: ${{ inputs.portable_revision }}
         run: test "$PORTABLE_REVISION" = "$GITHUB_SHA"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Build actual native macOS ARM64 helper
@@ -75,7 +75,7 @@ jobs:
             /symphony-host lock /contract/lock 8 inherited
           ' | tee "$RUNNER_TEMP/host-helper/ubuntu26.log"
       - name: Retain actual exact-source platform helper and qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: current-manager-helper-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/host-helper/*
