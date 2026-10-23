@@ -43,4 +43,76 @@ class OwnershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
 
 
+class AuthFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self.cwd = "/private/tmp/owned-project"
+        self.storage = "symphony-owned-project"
+        self.profile = "a" * 64
+        self.policy = {"projects": {self.cwd: {"storage": self.storage, "profile": self.profile}},
+            "images": {"codex": ["codex@sha256:" + "b" * 64], "claude": ["claude@sha256:" + "c" * 64]},
+            "codex_volume": "symphony-owned-codex-auth"}
+
+    def claude(self, action="check"):
+        return ["run", "--rm", *(["--interactive", "--tty"] if action == "login" else []),
+            "--name", self.storage + "-claude-auth", "--label", "com.symphony.storage=" + self.storage,
+            "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+            "--volume", self.storage + "-claude-auth:/home/claude", "--entrypoint", "/usr/local/bin/node",
+            self.policy["images"]["claude"][0], "/opt/symphony/claude/auth.mjs", action]
+
+    def test_exact_login_check_and_actual_product_profile_parser(self):
+        output = lifecycle.auth_fixture(self.claude(), self.policy, self.cwd)
+        self.assertEqual(json.loads(output), {"ready": True, "profile": self.profile})
+        self.assertIn("credential-free", lifecycle.auth_fixture(self.claude("login"), self.policy, self.cwd))
+        script = Path(__file__).parents[1] / "symphony"
+        result = subprocess.run(["/bin/bash", "-euc", 'source "$1" --help >/dev/null; host_json profile', "fixture", str(script)],
+            input=output, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), self.profile)
+
+    def test_foreign_scope_image_storage_and_malformed_auth_refuse(self):
+        for changed in (self.claude() + ["extra"], self.claude("logout"),
+                        [x.replace(self.storage, "foreign") for x in self.claude()],
+                        [x.replace("claude@", "foreign@") for x in self.claude()]):
+            with self.assertRaises(ValueError): lifecycle.auth_fixture(changed, self.policy, self.cwd)
+        with self.assertRaises(ValueError): lifecycle.auth_fixture(self.claude(), self.policy, "/private/tmp/foreign")
+        self.policy["projects"][self.cwd]["profile"] = True
+        with self.assertRaises((ValueError, TypeError)): lifecycle.auth_fixture(self.claude(), self.policy, self.cwd)
+
+    def test_codex_exact_owned_volume_and_no_real_auth_fallback(self):
+        args = ["run", "--rm", "--volume", self.policy["codex_volume"] + ":/root/.codex", "--entrypoint", "codex", self.policy["images"]["codex"][0], "login", "status"]
+        self.assertIn("credential-free", lifecycle.auth_fixture(args, self.policy, self.cwd))
+        for bad in (args + ["--network"], [x.replace(self.policy["codex_volume"], "foreign") for x in args], ["run", "--entrypoint", "codex", "foreign", "login"]):
+            with self.assertRaises(ValueError): lifecycle.auth_fixture(bad, self.policy, self.cwd)
+        self.assertIsNone(lifecycle.auth_fixture(["image", "inspect", "sha256:abc"], self.policy, self.cwd))
+
+    def test_preexisting_codex_volume_is_preserved_even_if_looks_owned(self):
+        calls = []
+        def docker(*args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess([], 0, json.dumps([{"Name":"owned", "Labels":{lifecycle.LABEL:"token"}}]), "")
+        pending = set()
+        with self.assertRaises(AssertionError): lifecycle.acquire_owned_volume(docker, "owned", "token", pending)
+        self.assertEqual(calls, [("volume", "inspect", "owned")]); self.assertEqual(pending, set())
+
+    def test_storage_mismatch_never_removes_volume(self):
+        calls = []
+        def docker(*args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess([], 0, json.dumps([{"Name":"owned", "Labels":{lifecycle.LABEL:"token", "com.symphony.storage":"foreign"}}]), "")
+        with self.assertRaises(AssertionError): lifecycle.cleanup_owned_volume(docker, "owned", "token", "expected")
+        self.assertEqual(calls, [("volume", "inspect", "owned")])
+
+    def test_dual_owned_volume_created_and_verified(self):
+        calls = []; value = None
+        def docker(*args, **kwargs):
+            nonlocal value
+            calls.append(args)
+            if args[:2] == ("volume", "create"):
+                value = {"Name":"owned", "Labels":{lifecycle.LABEL:"token", "com.symphony.storage":"storage"}}
+                return subprocess.CompletedProcess([], 0, "owned", "")
+            return subprocess.CompletedProcess([], 1, "", "No such volume") if value is None else subprocess.CompletedProcess([], 0, json.dumps([value]), "")
+        pending = set(); lifecycle.acquire_owned_volume(docker, "owned", "token", pending, "storage")
+        self.assertIn("com.symphony.storage=storage", calls[1]); self.assertEqual(pending, {"owned"})
+
+
 if __name__ == '__main__':unittest.main()

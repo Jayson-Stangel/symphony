@@ -16,6 +16,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 import uuid
@@ -35,23 +36,65 @@ def volume_absent(receipt):
     return receipt.returncode == 1 and "no such volume" in receipt.stderr.lower()
 
 
-def acquire_owned_volume(docker, name, token, pending):
+def acquire_owned_volume(docker, name, token, pending, storage=None):
     receipt = docker("volume", "inspect", name, expected=None)
     assert volume_absent(receipt), "preexisting or uncertain volume preserved"
     pending.add(name)  # Before a create can complete with a lost receipt.
-    docker("volume", "create", "--label", LABEL + "=" + token, name)
+    labels = ["--label", LABEL + "=" + token]
+    if storage is not None: labels += ["--label", "com.symphony.storage=" + storage]
+    docker("volume", "create", *labels, name)
     value = json.loads(docker("volume", "inspect", name).stdout)[0]
     assert value["Name"] == name and value["Labels"][LABEL] == token
+    if storage is not None: assert value["Labels"]["com.symphony.storage"] == storage
 
 
-def cleanup_owned_volume(docker, name, token):
+def cleanup_owned_volume(docker, name, token, storage=None):
     receipt = docker("volume", "inspect", name, expected=None)
     if volume_absent(receipt):return
     assert receipt.returncode == 0, "volume inspection uncertain"
     value = json.loads(receipt.stdout)[0]
     assert value["Name"] == name and value["Labels"][LABEL] == token, "foreign volume preserved"
+    if storage is not None: assert value["Labels"].get("com.symphony.storage") == storage, "foreign storage preserved"
     docker("volume", "rm", name)
     assert volume_absent(docker("volume", "inspect", name, expected=None)), "owned volume absence uncertain"
+
+
+def auth_fixture(arguments, policy, cwd):
+    """Exact product auth argv only; no account code or provider requests run."""
+    scoped = policy["projects"].get(str(Path(cwd).resolve()))
+    auth_like = any("auth.mjs" in x for x in arguments) or "codex" in arguments or "login" in arguments
+    if not auth_like: return None
+    if scoped is None: raise ValueError("auth outside owned fixture project")
+    storage = scoped["storage"]
+    profile = scoped["profile"]
+    if not isinstance(profile, str) or not re.fullmatch(r"[a-f0-9]{64}", profile): raise ValueError("malformed fixture profile")
+    for image in policy["images"]["codex"]:
+        for action, flags in ((["login", "status"], []), (["login", "--device-auth"], ["--interactive", "--tty"])):
+            expected = ["run", "--rm", *flags, "--volume", policy["codex_volume"] + ":/root/.codex", "--entrypoint", "codex", image, *action]
+            if arguments == expected: return "FIXTURE credential-free Codex login/status only\n"
+    for image in policy["images"]["claude"]:
+        for action, flags in (("login", ["--interactive", "--tty"]), ("check", [])):
+            expected = ["run", "--rm", *flags, "--name", storage + "-claude-auth",
+                "--label", "com.symphony.storage=" + storage, "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+                "--volume", storage + "-claude-auth:/home/claude", "--entrypoint", "/usr/local/bin/node",
+                image, "/opt/symphony/claude/auth.mjs", action]
+            if arguments == expected:
+                return json.dumps({"ready": True, "profile": profile}) + "\n" if action == "check" else "FIXTURE credential-free Claude login only\n"
+    raise ValueError("foreign or malformed auth invocation refused")
+
+
+def docker_peer(policy_path):
+    policy = json.loads(Path(policy_path).read_text())
+    arguments = sys.argv[1:]
+    with (Path(policy["root"]) / "docker-calls.log").open("a") as log:
+        log.write(json.dumps(arguments) + "\n")
+    if not arguments or arguments[0] in ("build", "buildx", "save", "load", "commit", "login", "push"):
+        raise ValueError("forbidden image operation")
+    output = auth_fixture(arguments, policy, os.getcwd())
+    if output is not None:
+        print(output, end=""); return
+    os.execv(policy["docker"], [policy["docker"], *arguments])
 
 
 def main():
@@ -78,7 +121,8 @@ def main():
     log = (root / "commands.log").open("w")
     result = {"passed": False, "scope": "native Mac ARM B-to-C manager-only; stock handoff tested separately",
               "owner": token, "image_build_export_requalification": False, "checks": [], "cleanup": []}
-    containers, volumes, planned_containers = {}, set(), set()
+    containers, volumes, planned_containers = {}, set(), {}
+    volume_storage = {}
     completed = False
 
     def run(arguments, expected=0, cwd=None, timeout=120, product=False, input_text=None):
@@ -104,8 +148,9 @@ def main():
         receipt = d(kind, "inspect", name, expected=None)
         assert receipt.returncode == 1 and "no such" in receipt.stderr.lower(), (name, receipt.stdout, receipt.stderr)
 
-    def create_volume(name):
-        acquire_owned_volume(d, name, token, volumes)
+    def create_volume(name, storage=None):
+        volume_storage[name] = storage
+        acquire_owned_volume(d, name, token, volumes, storage)
 
     def state(port):
         deadline = time.monotonic() + 60
@@ -185,16 +230,14 @@ def main():
         result["original_components"] = before[1]["original_components"]
         check("both actual packages and original ARM configs/digests/source/input/protocol verified")
         wrapper = root / "docker-peer"
-        wrapper.write_text('''#!/bin/bash
-set -euo pipefail
-printf '%q ' "$@" >> "$PROOF_ROOT/docker-calls.log"; printf '\\n' >> "$PROOF_ROOT/docker-calls.log"
-case "$1" in build|buildx|save|load|commit|login|push) echo forbidden >&2; exit 96 ;; esac
-if [[ "$*" == *"--entrypoint codex "* ]] && { [[ "$*" == *" login status" ]] || [[ "$*" == *" login --device-auth" ]]; }; then
- echo 'FIXTURE native Codex login/status only'; exit 0
-fi
-if [[ "$*" == *"/opt/symphony/claude/auth.mjs login" ]]; then echo 'FIXTURE native Claude login only'; exit 0; fi
-exec "$ACTUAL_DOCKER" "$@"
-'''); wrapper.chmod(0o755)
+        policy_path = root / "auth-fixture.json"
+        policy = {"root": str(root), "docker": docker, "images": {}, "projects": {}, "codex_volume": prefix + "-codex-auth"}
+        for provider, image in images.items():
+            policy["images"][provider] = [image, inspect(image)["Id"]]
+        policy_path.write_text(json.dumps(policy))
+        wrapper.write_text("#!" + sys.executable + "\nimport importlib.util\ns=importlib.util.spec_from_file_location('fixture', " + repr(str(Path(__file__).resolve())) + ")\nm=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nm.docker_peer(" + repr(str(policy_path)) + ")\n")
+        wrapper.chmod(0o755)
+        result["auth_proof"] = "exact credential-free login/check fixture; no native provider auth acceptance"
         product_env = {"SYMPHONY_HOME": "", "SYMPHONY_APP_HOME": str(root / "app"),
             "SYMPHONY_CONFIG_HOME": str(root / "config"), "SYMPHONY_BIN_DIR": str(root / "bin"),
             "SYMPHONY_SKILLS_DIR": str(root / "skills"), "SYMPHONY_RUNNER_NAMESPACE": namespace,
@@ -215,14 +258,17 @@ exec "$ACTUAL_DOCKER" "$@"
             product("init", "--linear-project", "local-memory-fixture", cwd=repo)
             (repo / "WORKFLOW.md").write_text("---\ntracker:\n  kind: memory\nworkspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\n---\nEmpty local fixture; zero inference.\n")
             identifier = run(["/bin/bash", "-euc", 'source "$1" --help >/dev/null; project_id "$2"', "fixture", command, repo], product=True).stdout.strip()
-            name = prefix + "-" + identifier
+            name = run(["/bin/bash", "-euc", 'source "$1" --help >/dev/null; runner_storage_id "$2"', "fixture", command, repo], product=True).stdout.strip()
+            assert name == prefix + "-" + identifier
+            policy["projects"][str(repo.resolve())] = {"storage": name, "profile": hashlib.sha256((token + name).encode()).hexdigest()}
+            policy_path.write_text(json.dumps(policy))
             absent("container", name)
             for suffix in ("workspaces", "state", "claude-auth"):
-                create_volume(name + "-" + suffix)
+                create_volume(name + "-" + suffix, name)
             for agent in ("codex", "claude"):
                 product("auth", agent, "login", cwd=repo)
             port = free_port()
-            planned_containers.add(name)
+            planned_containers[name] = provider
             product("run", "--agent", provider, "--port", str(port), cwd=repo)
             config = inspect(name)
             assert config["Config"]["Labels"]["com.symphony.storage"] == name
@@ -286,6 +332,10 @@ exec "$ACTUAL_DOCKER" "$@"
                     continue
                 value = json.loads(receipt.stdout)[0]
                 assert value["Name"] == "/" + name and value["Config"]["Labels"]["com.symphony.storage"] == name
+                provider = planned_containers[name]
+                assert value["Config"]["Labels"]["com.symphony.mode"] == "listener"
+                assert value["Config"]["Labels"]["com.symphony.agent"] == provider
+                assert value["Config"]["Image"] in policy["images"][provider]
                 assert name not in containers or value["Id"] == containers[name]
                 d("rm", "-f", value["Id"]); absent("container", value["Id"])
                 result["cleanup"].append(value["Id"])
@@ -293,7 +343,7 @@ exec "$ACTUAL_DOCKER" "$@"
                 value = inspect(identifier); assert value["Config"]["Labels"][LABEL] == token
                 d("rm", "-f", identifier); absent("container", identifier); result["cleanup"].append(identifier)
             for name in volumes:
-                cleanup_owned_volume(d, name, token); result["cleanup"].append(name)
+                cleanup_owned_volume(d, name, token, volume_storage[name]); result["cleanup"].append(name)
             result["passed"] = completed
         finally:
             (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
