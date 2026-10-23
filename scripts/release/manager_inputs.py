@@ -16,6 +16,10 @@ def validate_checkout(root,manifest):
     artifacts.require(manifest.get('source_revision')==revision,'manager manifest differs from actual checkout')
     artifacts.validate(manifest,require_bundle=False)
     if manifest['schema_version']==1:return manifest
+    if manifest['compatibility'].get('selection_mode')=='runner-protocol-v1':
+        # Original runtime inputs remain original. Host manager compatibility
+        # does not claim this checkout was baked into those unchanged images.
+        return manifest
     for provider in artifacts.PROVIDERS:
         for architecture in artifacts.ARCHITECTURES:
             record=manifest['runners'][provider][architecture]
