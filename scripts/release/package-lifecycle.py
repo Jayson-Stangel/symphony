@@ -567,9 +567,13 @@ fi
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
             retained()
-            client_run([str(command), 'run', '--port', str(port)], cwd=repo); state(port); unchanged()
-            assert inspect(name, '{{.Image}}') == runner_snapshot[name][1]
-            assert inspect(names[1], '{{.Id}}') == runner_snapshot[names[1]][0] and metadata[1].read_bytes() == second_metadata
+            for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, ('codex', 'claude')):
+                client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
+                assert inspect(selected_name, '{{.State.Running}}') == 'false'
+                client_run([str(command), 'run', '--agent', selected_agent, '--port', str(selected_port)], cwd=selected_repo)
+                state(selected_port); unchanged()
+                assert inspect(selected_name, '{{.Image}}') == runner_snapshot[selected_name][1]
+                assert [path.read_bytes() for path in metadata] == metadata_snapshot
             for selected_repo, selected_name in zip(repositories, names):
                 client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
