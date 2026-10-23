@@ -94,6 +94,49 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
             "browser": browser, "components": choices}
 
 
+def compatible_plan(root,baseline,verify=verify_origin,candidates=None):
+    """The finite migration mode refuses missing evidence; it never schedules builds."""
+    from finite_transition import evaluate,policy
+    expected=policy();pool=list(candidates or [])
+    for provider,group in baseline.get('runners',{}).items():
+        for architecture,record in group.items():pool.append(dict(record,provider=provider,architecture=architecture))
+    selected={};origins={};cache={}
+    def checked(record):
+        key=json.dumps(record,sort_keys=True)
+        if key not in cache:cache[key]=verify(record)
+        return cache[key]
+    for provider in artifacts.PROVIDERS:
+        selected[provider]={};origins[provider]={}
+        for architecture in artifacts.ARCHITECTURES:
+            matches=[r for r in pool if r.get('provider')==provider and r.get('architecture')==architecture and
+                     r.get('source_revision')==expected['source_revision'] and
+                     r.get('input_identity')==expected['source_input_identities'][provider][architecture]]
+            for record in matches:
+                try:origin=checked(record)
+                except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):continue
+                selected[provider][architecture]=record;origins[provider][architecture]=origin;break
+            artifacts.require(architecture in selected[provider], 'compatible original proof/payload unavailable; refusing migration without image builds')
+    transition=evaluate(root,selected)
+    records=[selected[p][a] for p in artifacts.PROVIDERS for a in artifacts.ARCHITECTURES]
+    result=plan(root,{},verify=checked,candidates=records,browser_inputs=identity)
+    reuses=[]
+    for provider in artifacts.PROVIDERS:
+        for architecture in artifacts.ARCHITECTURES:
+            record=selected[provider][architecture];origin=origins[provider][architecture]
+            decision=result['components'][provider][architecture]
+            decision.update(action='reuse',reason='explicit finite compatible-original selection; original qualification retained',
+                source_revision=record['source_revision'],selected_input_identity=record['input_identity'],
+                desired_input_identity=decision['input_identity'],selection_mode='finite-input-transition-v1',
+                input_transition=transition,record=record,origin=origin,verified_origin=origin,
+                runner={k:v for k,v in record.items() if k not in ('provider','architecture')})
+            reuses.append({'provider':provider,'architecture':architecture,'source_revision':record['source_revision'],
+                'input_identity':decision['input_identity'],'selected_input_identity':record['input_identity'],
+                'desired_input_identity':decision['input_identity'],'record':record,'origin':origin})
+    result.update(has_builds=False,all_reuse_verified=True,build_matrix={'include':[]},reuse_matrix={'include':reuses},
+                  release_mode='manager-envelope-v1',input_transition=transition)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
@@ -101,6 +144,7 @@ def main():
     parser.add_argument("--baseline-run", type=int, help="exact authorized manual candidate qualification run (diagnostic plan only)")
     parser.add_argument("--output", required=True)
     parser.add_argument("--require-reuse", action="store_true")
+    parser.add_argument("--compatible-originals",action="store_true",help="finite verified original selection; missing evidence refuses without builds")
     parser.add_argument("--same-source-bridge", action="store_true", help="qualify all four real current-source schema1 bridge images")
     args = parser.parse_args()
     try:
@@ -121,7 +165,9 @@ def main():
             verifier=manual_verifier(args.baseline_run)
             verifier.validate_candidates(candidates or [])
         else:verifier=verify_origin
-        result = plan(args.root, baseline, verify=verifier, candidates=candidates, browser_inputs=identity, same_source_bridge=args.same_source_bridge)
+        artifacts.require(not args.same_source_bridge,'forced same-source image bridge retired; select compatible originals explicitly')
+        if args.compatible_originals:result=compatible_plan(args.root,baseline,verify=verifier,candidates=candidates)
+        else:result=plan(args.root,baseline,verify=verifier,candidates=candidates,browser_inputs=identity)
         result["baseline_selection"] = {"mode": "explicit-manual-candidate" if args.baseline_run else
                                        "explicit-manifest" if args.baseline else "bounded-verified-fork-history",
                                        "run_id": args.baseline_run, "candidate_count": len(candidates or [])}
