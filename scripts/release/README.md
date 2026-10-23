@@ -726,3 +726,13 @@ This path performs no image build, retrieval, export, upload or requalification.
 An explicitly requested optional reference-image build still computes its actual
 Docker input closure and must qualify changed images normally. It cannot use
 protocol compatibility to claim current source was baked into an old image.
+
+A manual full Burrito candidate may set `baseline_run` to an explicitly selected
+original native-record run when continuing composition after a downstream
+controller failure. The reusable producer permits this only for manual events
+and independently revalidates the successful original native jobs, exact input
+closures, source/image identities and live immutable payloads. Unchanged inputs
+retain those original identities and do not rebuild images. This does not turn
+the earlier failed full run into success or qualify old images at the new source;
+the new manager/helper/package composition must pass at its own exact revision.
+The production tag caller supplies no manual baseline override.
