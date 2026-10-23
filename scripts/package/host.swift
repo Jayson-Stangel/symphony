@@ -201,6 +201,32 @@ func coreValue(_ value: Any) {
         guard CFGetTypeID(number) == CFBooleanGetTypeID() || integer(number) != nil else { fail("manager core contains a noninteger number") }
     } else { fail("manager core contains an unsupported value") }
 }
+// Use the specified ASCII JSON encoding, independent of Foundation's key
+// ordering and escape choices. Exact round-trip also rejects duplicate keys.
+func canonicalCoreJSON(_ value: Any) -> String {
+    if let string = value as? String {
+        let encoded = string.unicodeScalars.map { scalar -> String in
+            switch scalar.value {
+            case 34: return "\\\""
+            case 92: return "\\\\"
+            case 9: return "\\t"
+            case 10: return "\\n"
+            case 13: return "\\r"
+            default: return String(scalar)
+            }
+        }.joined()
+        return "\"" + encoded + "\""
+    }
+    if let values = value as? [String: Any] {
+        return "{" + values.keys.sorted().map { canonicalCoreJSON($0) + ":" + canonicalCoreJSON(values[$0]!) }.joined(separator: ",") + "}"
+    }
+    if let values = value as? [Any] { return "[" + values.map(canonicalCoreJSON).joined(separator: ",") + "]" }
+    if let number = value as? NSNumber {
+        return CFGetTypeID(number) == CFBooleanGetTypeID() ? (number.boolValue ? "true" : "false") : number.stringValue
+    }
+    fail("manager core contains an unsupported canonical value")
+}
+
 // This is the finite reviewed 68 source-to-host-policy transition, not a path allowlist.
 let transitionAuthority = "13d8a16cc765fb4844f4a1269fb0192210d794d2f47802f7a705c86602300f36"
 let reviewedTransition = object(try! json(Data(#"{"changes":[{"after":{"blob":"1064cc082cafe6880bf7fbd731fd629f5b2f13eb","mode":"100644","sha256":"40424ff480652b279f75ed64b2bf4efe17020bccb2b0e17be0db7c9c3c2edaf9"},"before":{"blob":"f4ed3fbaaa3854b81b13152ae017d0f198bdb615","mode":"100644","sha256":"f39384f8ea29822f985096f73cc5f564cae09f30bb053a3c0f20ff9a5dc068b3"},"classification":"human-readme-v1","path":"elixir/README.md"},{"after":{"blob":"aad0dfc711d21ec469f07e51f83c8ad4f3a9a219","mode":"100644","sha256":"affa5d0f6498cb924f3b7d0da607592cf81fa6b831a8e3d9c381867c86e5171d"},"before":{"blob":"f2269f266c7359e91a168148da871864e731577a","mode":"100644","sha256":"86332e5f23b77098d6ae89f16444a3705aafd0001227cbbdee956c32df253a3f"},"classification":"standalone-targets-v1","path":"elixir/mix.exs"}],"manager_input_identities":{"claude":{"arm64":"31582b7a9278d96848bc989781650f6cbef1101a4445d21e25e6e79091ce0b8f","x86_64":"c73a52fd00ff0f92ccb0da5d779e7076182c9700d69de6757a8c3d9387af6465"},"codex":{"arm64":"b245620ee7ac849272634298b6ecaad783871e914ee80a825c301162b3c1f830","x86_64":"4e1ba5d3f712f27c759367617cbe041305d92457f50589a7878f939b4419b33e"}},"source_input_identities":{"claude":{"arm64":"cb5b2cdae310d75b083c8152118b76b28ffcbdb5eb8da80069b0612e4fbb3935","x86_64":"5e18d340c018720eb8eb4457deeb9aa6513467660744a507b8814d844870e8aa"},"codex":{"arm64":"bfd2b01487d18d5494244c7fd1204184cfbf2177d579ab7128de386d7762e11a","x86_64":"01613d9baa3a9557d358c2dfbd3bf755a7de127dc1a109a4d8f3a82002affd68"}},"source_revision":"68ae23bb195965b96c53b3532d5fab01d7244453"}"#.utf8)))
@@ -286,7 +312,7 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     let data = try read(filename)
     guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == envelope.coreHash else { fail("manager core checksum differs from bound version") }
     let core = object(try json(data)); coreValue(core)
-    var canonical = try JSONSerialization.data(withJSONObject: core, options: [.sortedKeys, .withoutEscapingSlashes]); canonical.append(10)
+    let canonical = Data((canonicalCoreJSON(core) + "\n").utf8)
     guard canonical == data else { fail("manager core is not canonical ASCII JSON") }
     guard Set(core.keys) == Set(["schema_version", "manager_source_revision", "base_version", "channel", "legacy_source_revision", "original_components", "verified_origins", "distribution", "supported_hosts", "compatibility"]),
           integer(core["schema_version"]) == 1, core["manager_source_revision"] as? String == envelope.revision,
