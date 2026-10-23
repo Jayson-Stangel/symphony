@@ -111,11 +111,8 @@ def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=d
     return destination / archive.name
 
 
-def selected(plan, provider, architecture, revision):
-    require(plan.get('planning_complete') is True and plan.get('manager_source_revision') == revision,
-            'reuse plan is incomplete or bound to another manager revision')
-    entry = plan['components'][provider][architecture]
-    require(entry.get('action') == 'reuse', 'component requires a verified-input rebuild')
+def validate_decision_inputs(record,entry,revision,provider,architecture):
+    """Only the two reviewed finite authorities may select unequal input IDs."""
     mode=entry.get('selection_mode')
     if mode=='finite-input-transition-v1':
         from finite_transition import validate_evidence
@@ -128,11 +125,21 @@ def selected(plan, provider, architecture, revision):
         old=evidence['selected_input_identity'];desired=evidence['desired_input_identity']
     else:
         require(mode is None,'unknown component selection authority')
+        require('input_transition' not in entry,'generic exact selection cannot carry finite authority')
         old=desired=entry['input_identity']
-    if mode is not None:require(entry['record']['source_revision']==evidence['source_revision'],'selected original source differs from finite authority')
-    require(entry['record']['input_identity']==entry.get('selected_input_identity',old)==old and
+    if mode is not None:require(record['source_revision']==evidence['source_revision'],'selected original source differs from finite authority')
+    require(record['input_identity']==entry.get('selected_input_identity',old)==old and
             entry['input_identity']==entry.get('desired_input_identity',desired)==desired,
             'component selected/desired closure differs from plan')
+    return old
+
+
+def selected(plan, provider, architecture, revision):
+    require(plan.get('planning_complete') is True and plan.get('manager_source_revision') == revision,
+            'reuse plan is incomplete or bound to another manager revision')
+    entry = plan['components'][provider][architecture]
+    require(entry.get('action') == 'reuse', 'component requires a verified-input rebuild')
+    validate_decision_inputs(entry['record'],entry,revision,provider,architecture)
     return entry
 
 

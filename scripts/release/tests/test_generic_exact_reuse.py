@@ -94,6 +94,27 @@ class GenericExactReuse(unittest.TestCase):
             changed=commit(root,'Change actual runtime after manager D')
             altered=copy.deepcopy(manifest);altered['source_revision']=changed
             with self.assertRaisesRegex(ValueError,'selected exact runner inputs differ'):validate_checkout(root,altered)
+            forged=copy.deepcopy(selected);forged['manager_source_revision']=changed
+            for provider,group in forged['components'].items():
+                for architecture,decision in group.items():
+                    decision.update(input_identity=identity(root,provider,architecture)['input_identity'],
+                                    selected_input_identity=decision['record']['input_identity'],
+                                    desired_input_identity=identity(root,provider,architecture)['input_identity'])
+            with self.assertRaisesRegex(ValueError,'component selected/desired closure differs'):join(forged,'/no-build-records',changed,verifier)
+            with self.assertRaisesRegex(ValueError,'component selected/desired closure differs'):validate_join_checkout(root,forged,joined)
+            import runpy
+            prepare=runpy.run_path(str(ROOT/'scripts/release/prepare-manager-inputs.py'))['prepare']
+            destination=Path(temporary)/'forged-manager'
+            with self.assertRaisesRegex(ValueError,'component selected/desired closure differs'):
+                prepare(root,forged,None,destination,None,verifier)
+            self.assertFalse(destination.exists())
+            smuggled=copy.deepcopy(selected)
+            smuggled['components']['codex']['arm64']['input_transition']={'authority_sha256':'0'*64}
+            with self.assertRaisesRegex(ValueError,'generic exact selection cannot carry finite authority'):
+                join(smuggled,'/no-build-records',manager,verifier)
+            unknown=copy.deepcopy(selected)
+            unknown['components']['codex']['arm64']['selection_mode']='unreviewed-exception'
+            with self.assertRaisesRegex(ValueError,'unknown component selection authority'):join(unknown,'/no-build-records',manager,verifier)
             stale=copy.deepcopy(selected);stale['manager_source_revision']=changed
             with self.assertRaisesRegex(ValueError,'actual manager checkout input differs'):validate_join_checkout(root,stale,joined)
             manifest_path.write_text(json.dumps(altered))

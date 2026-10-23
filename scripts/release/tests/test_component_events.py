@@ -36,6 +36,20 @@ class ComponentEvents(unittest.TestCase):
         caller=(ROOT/'.github/workflows/burrito-release.yml').read_text()
         self.assertIn('manifest_schema: ${{ needs.qualification.outputs.release_schema }}',caller)
 
+    def test_git_object_authority_consumers_checkout_complete_history(self):
+        import re
+        jobs={'component-plan.yml':['plan'],
+              'runner-release.yml':['component-plan','candidate-metadata','packaged-release-platform','packaged-candidate'],
+              'runner-integration.yml':['manager-inputs','listener-and-cleanup'],
+              'current-manager-package.yml':['package']}
+        for filename,names in jobs.items():
+            workflow=(ROOT/'.github/workflows'/filename).read_text()
+            for name in names:
+                with self.subTest(workflow=filename,job=name):
+                    block=re.search(r'(?ms)^  '+re.escape(name)+r':\n.*?(?=^  [a-z][a-z-]+:|\Z)',workflow)
+                    self.assertIsNotNone(block)
+                    self.assertRegex(block.group(),r'uses: actions/checkout@[^\n]+\n        with:\n          fetch-depth: 0')
+
     def test_browser_wrapper_requires_complete_plan_except_explicit_docs(self):
         workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
         block = workflow.split('        run: |\n', 1)[1].split('      - ', 1)[0]

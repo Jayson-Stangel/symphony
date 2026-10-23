@@ -24,19 +24,8 @@ def join(plan, records, revision, verify):
                 artifacts.require(decision['action'] == 'build', 'unknown planned action')
                 record = json.loads((Path(records) / f'{provider}-{architecture}.json').read_text())
                 artifacts.require(record.get('source_revision') == revision, 'new native build source differs')
-            selected_input=decision.get('selected_input_identity',decision['input_identity'])
-            if decision.get('selection_mode')=='finite-input-transition-v1':
-                from finite_transition import validate_evidence
-                evidence=validate_evidence(decision['input_transition'],revision)
-                artifacts.require(record['source_revision']==evidence['source_revision'] and selected_input==evidence['source_input_identities'][provider][architecture] and
-                                  decision['input_identity']==decision.get('desired_input_identity')==evidence['manager_input_identities'][provider][architecture],
-                                  'selected original and desired manager input identities differ from finite transition')
-            if decision.get('selection_mode')=='finite-component-v1':
-                from finite_transition import validate_component_evidence
-                evidence=validate_component_evidence(decision['input_transition'],revision,provider,architecture)
-                artifacts.require(record['source_revision']==evidence['source_revision'] and selected_input==evidence['selected_input_identity'] and
-                                  decision['input_identity']==decision.get('desired_input_identity')==evidence['desired_input_identity'],
-                                  'finite component selected/desired identities differ')
+            from reuse_payload import validate_decision_inputs
+            selected_input=validate_decision_inputs(record,decision,revision,provider,architecture)
             artifacts.require(record.get('provider') == provider and record.get('architecture') == architecture and
                               record.get('input_identity') == selected_input, 'actual native record differs from plan')
             origin=verify(record)
@@ -55,10 +44,14 @@ def validate_join_checkout(root,plan,selected):
     for record in selected:
         provider,architecture=record['provider'],record['architecture']
         decision=plan['components'][provider][architecture]
+        from reuse_payload import validate_decision_inputs
+        validate_decision_inputs(record,decision,actual,provider,architecture)
         artifacts.require(identity(root,provider,architecture)['input_identity']==decision['input_identity'],
                           'actual manager checkout input differs from planned component')
-        if decision.get('selection_mode')=='finite-component-v1':
-            artifacts.require(evaluate_component(root,record,provider,architecture)==decision['input_transition'],
+        if decision.get('selection_mode') in ('finite-component-v1','finite-input-transition-v1'):
+            measured=evaluate_component(root,record,provider,architecture)
+            artifacts.require(measured['selected_input_identity']==record['input_identity'] and
+                              measured['desired_input_identity']==decision['input_identity'],
                               'actual source differs from finite component plan')
 
 

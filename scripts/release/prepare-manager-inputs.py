@@ -38,6 +38,8 @@ def _prepare(root, plan, built, output, payloads, verify, distribution_alias=Fal
                 record = decision['record']
             else:
                 record = dict(built['runners'][provider][architecture], provider=provider, architecture=architecture)
+            from reuse_payload import validate_decision_inputs
+            validate_decision_inputs(record,decision,revision,provider,architecture)
             snapshot = identity(root, provider, architecture)
             artifacts.require(snapshot['input_identity'] == decision['input_identity'] and record['input_identity']==decision.get('selected_input_identity',decision['input_identity']),
                               'actual component input closure differs from current source')

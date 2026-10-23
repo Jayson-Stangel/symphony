@@ -50,6 +50,8 @@ def records_from_join(data):
                               {k:v for k,v in record.items() if k not in ('provider','architecture')}==originals[provider][arch],
                               'joined original record differs from manifest')
             decision=plan['components'][provider][arch]
+            from reuse_payload import validate_decision_inputs
+            validate_decision_inputs(record,decision,manifest['source_revision'],provider,arch)
             artifacts.require(decision.get('selected_input_identity',decision['input_identity'])==record['input_identity'],'joined plan input differs')
             if decision.get('selection_mode')=='finite-input-transition-v1':
                 from finite_transition import validate_evidence
