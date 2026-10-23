@@ -55,3 +55,25 @@ class RegistryOwnershipTest(unittest.TestCase):
                 registry.start(self.path)
             self.assertEqual(run.call_count, 1)
         self.assertIsNone(json.loads(self.path.read_text())['container_id'])
+
+    def test_explicit_port_is_loopback_only_and_retained_before_acquisition(self):
+        for port in (5000, 32123):
+            def create(*args):
+                state = json.loads(self.path.read_text())
+                self.assertEqual(state['host_port'], port)
+                if args[0] == 'create':
+                    self.assertIn('127.0.0.1:%s:5000' % port, args)
+                    self.assertIsNone(state['container_id'])
+                return 'a' * 64
+            with patch.object(registry, 'docker', side_effect=create) as run:
+                registry.start(self.path, port)
+            self.assertEqual(run.call_count, 2)
+
+    def test_invalid_port_refuses_before_state_or_docker_mutation(self):
+        original = self.path.read_bytes()
+        for value in (0, -1, 65536, True, '5000', 5000.0):
+            with patch.object(registry, 'docker') as run:
+                with self.assertRaisesRegex(ValueError, 'host port'):
+                    registry.start(self.path, value)
+                run.assert_not_called()
+                self.assertEqual(self.path.read_bytes(), original)

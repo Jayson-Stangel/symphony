@@ -14,12 +14,15 @@ def docker(*args):
     return subprocess.check_output(['docker', *args], text=True, stderr=subprocess.PIPE, timeout=120).strip()
 
 
-def start(path):
+def start(path, host_port=5000):
+    if type(host_port) is not int or not 1 <= host_port <= 65535:
+        raise ValueError('registry host port must be an integer between 1 and 65535')
     token = secrets.token_hex(16)
-    state = {'name': 'symphony-native-' + token, 'owner': token, 'container_id': None, 'cleanup': 'pending'}
+    state = {'name': 'symphony-native-' + token, 'owner': token, 'container_id': None, 'cleanup': 'pending',
+             'host_port': host_port}
     path.write_text(json.dumps(state) + '\n')  # retained before acquisition, including uncertain create completion
     container = docker('create', '--name', state['name'], '--label', LABEL + '=' + token,
-                       '-p', '127.0.0.1:5000:5000', 'registry:3')
+                       '-p', f'127.0.0.1:{host_port}:5000', 'registry:3')
     if not re.fullmatch(r"[a-f0-9]{64}", container):
         raise ValueError("invalid registry acquisition receipt; recover by owned unique name")
     state['container_id'] = container
@@ -59,9 +62,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('start', 'cleanup'))
     parser.add_argument('state', type=Path)
+    parser.add_argument('--host-port', type=int, default=5000,
+                        help='explicit loopback host port for start; default 5000')
     args = parser.parse_args()
     try:
-        (start if args.operation == 'start' else cleanup)(args.state)
+        if args.operation == 'start':start(args.state, args.host_port)
+        else:cleanup(args.state)
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, 'native registry: ' + type(error).__name__ + '; ownership/cleanup unresolved\n')
 
