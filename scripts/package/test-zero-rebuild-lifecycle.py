@@ -59,6 +59,23 @@ def cleanup_owned_volume(docker, name, token, storage=None):
     assert volume_absent(docker("volume", "inspect", name, expected=None)), "owned volume absence uncertain"
 
 
+def assert_container_image(value, qualified_uri, validated_id):
+    """The launch argument may be an immutable URI or its prevalidated runtime ID."""
+    assert value["Image"] == validated_id, "container resolved to a different image"
+    assert value["Config"]["Image"] in (qualified_uri, validated_id), "foreign image launch reference"
+    assert value["Config"]["Labels"]["com.symphony.image"] == validated_id, "container image label differs"
+
+
+def assert_owned_listener(value, name, provider, uri, validated_id, captured_id=None):
+    assert value["Name"] == "/" + name, "foreign container name"
+    labels = value["Config"]["Labels"]
+    assert labels["com.symphony.storage"] == name, "foreign storage"
+    assert labels["com.symphony.mode"] == "listener", "foreign mode"
+    assert labels["com.symphony.agent"] == provider, "foreign provider"
+    assert captured_id is None or value["Id"] == captured_id, "foreign replacement"
+    assert_container_image(value, uri, validated_id)
+
+
 def seed_project_transport(config_home, identifier):
     """Seed only a fresh product-init file; this value is not a credential."""
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", identifier): raise ValueError("invalid owned project id")
@@ -193,7 +210,7 @@ def main():
     def utility(image, *arguments):
         return d("run", "--rm", "--label", LABEL + "=" + token, "--network", "none", "--read-only",
                  "--entrypoint", "sh", *arguments, image, "-ceu",
-                 "sha256sum /proof/edited /proof/untracked /state/proof-state; git -C /proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -C /proof status --porcelain").stdout
+                 "sha256sum /proof/edited /proof/untracked /state/proof-state; git -c safe.directory=/proof -C /proof rev-parse HEAD; GIT_OPTIONAL_LOCKS=0 git -c safe.directory=/proof -C /proof status --porcelain").stdout
 
     try:
         observed = json.loads(d("info", "--format", "{{json .}}").stdout)
@@ -286,9 +303,9 @@ def main():
             planned_containers[name] = provider
             product("run", "--agent", provider, "--port", str(port), cwd=repo)
             config = inspect(name)
-            assert config["Config"]["Labels"]["com.symphony.storage"] == name
+            assert_owned_listener(config, name, provider, images[provider], policy["images"][provider][1])
             containers[name] = config["Id"]
-            assert config["Config"]["Image"] == images[provider]
+            assert_container_image(config, images[provider], policy["images"][provider][1])
             state(port)
             d("exec", name, "sh", "-ceu", "mkdir /workspaces/proof; git -C /workspaces/proof init -q; git -C /workspaces/proof config user.name Fixture; git -C /workspaces/proof config user.email fixture@example.invalid; printf committed > /workspaces/proof/edited; git -C /workspaces/proof add edited; git -C /workspaces/proof commit -qm fixture; printf dirty >> /workspaces/proof/edited; printf untracked > /workspaces/proof/untracked; printf state-canary > /var/lib/symphony/proof-state")
             projects.append((repo, name, port, provider))
@@ -310,6 +327,7 @@ def main():
             output = {}
             for _, name, _, provider in projects:
                 config = inspect(name)
+                assert_container_image(config, images[provider], policy["images"][provider][1])
                 output[name] = {"id": config["Id"], "image": config["Image"], "running": config["State"]["Running"],
                     "mounts": sorted(config["Mounts"], key=lambda value: value["Destination"]),
                     "data": utility(images[provider], "--volume", name + "-workspaces:/proof:ro", "--volume", name + "-state:/state:ro")}
@@ -335,8 +353,25 @@ def main():
         product("update", *selection, cwd=projects[0][0]); assert identity() == after[3]; unchanged()
         check("actual B-to-C activation, rollback, checksum refusal and retry retain both original runners/states/canaries")
         for repo, name, port, provider in projects:
-            product("run", "--agent", provider, "--port", str(port), cwd=repo); state(port)
-            assert inspect(name)["Id"] == containers[name]
+            product("runner", "stop", cwd=repo)
+            stopped = inspect(name)
+            assert stopped["State"]["Running"] is False
+            assert_owned_listener(stopped, name, provider, images[provider], policy["images"][provider][1], containers[name])
+            # Product deliberately recreates a stopped listener. Retain the
+            # planned exact name/storage/image ownership if acquisition loses
+            # its receipt; capture the replacement ID immediately on success.
+            del containers[name]
+            product("run", "--agent", provider, "--port", str(port), cwd=repo)
+            restarted = inspect(name)
+            assert_owned_listener(restarted, name, provider, images[provider], policy["images"][provider][1])
+            containers[name] = restarted["Id"]
+            state(port)
+            current = snapshot()[name]
+            assert current["image"] == baseline[name]["image"]
+            assert current["mounts"] == baseline[name]["mounts"]
+            assert current["data"] == baseline[name]["data"]
+            assert {p: stock.digest(p) for p in canaries} == canaries
+            assert auth_snapshot() == auth_before
             product("runner", "stop", cwd=repo)
         completed = True
     finally:
@@ -349,12 +384,8 @@ def main():
                     assert receipt.returncode == 1 and "no such container" in receipt.stderr.lower()
                     continue
                 value = json.loads(receipt.stdout)[0]
-                assert value["Name"] == "/" + name and value["Config"]["Labels"]["com.symphony.storage"] == name
                 provider = planned_containers[name]
-                assert value["Config"]["Labels"]["com.symphony.mode"] == "listener"
-                assert value["Config"]["Labels"]["com.symphony.agent"] == provider
-                assert value["Config"]["Image"] in policy["images"][provider]
-                assert name not in containers or value["Id"] == containers[name]
+                assert_owned_listener(value, name, provider, images[provider], policy["images"][provider][1], containers.get(name))
                 d("rm", "-f", value["Id"]); absent("container", value["Id"])
                 result["cleanup"].append(value["Id"])
             for identifier in d("ps", "-aq", "--filter", "label=" + LABEL + "=" + token).stdout.split():

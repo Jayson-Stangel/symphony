@@ -44,6 +44,30 @@ class OwnershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
 
 
+class ContainerIdentityTests(unittest.TestCase):
+    def test_immutable_uri_and_validated_id_launch_forms(self):
+        uri, runtime_id = "localhost:1234/symphony-codex@sha256:" + "a" * 64, "sha256:" + "b" * 64
+        for reference in (uri, runtime_id):
+            value = {"Image":runtime_id,"Config":{"Image":reference,"Labels":{"com.symphony.image":runtime_id}}}
+            lifecycle.assert_container_image(value, uri, runtime_id)
+        for value in ({"Image":"sha256:" + "c" * 64,"Config":{"Image":uri,"Labels":{"com.symphony.image":runtime_id}}},
+                      {"Image":runtime_id,"Config":{"Image":"foreign:latest","Labels":{"com.symphony.image":runtime_id}}},
+                      {"Image":runtime_id,"Config":{"Image":uri,"Labels":{"com.symphony.image":"foreign"}}}):
+            with self.assertRaises(AssertionError): lifecycle.assert_container_image(value, uri, runtime_id)
+
+    def test_replacement_receipt_loss_requires_full_owned_identity(self):
+        uri, runtime_id, name = "qualified@sha256:" + "a" * 64, "sha256:" + "b" * 64, "symphony-nonce-project"
+        value = {"Name":"/" + name,"Id":"replacement", "Image":runtime_id,"Config":{"Image":runtime_id,
+            "Labels":{"com.symphony.storage":name,"com.symphony.mode":"listener","com.symphony.agent":"codex","com.symphony.image":runtime_id}}}
+        lifecycle.assert_owned_listener(value, name, "codex", uri, runtime_id)
+        with self.assertRaises(AssertionError): lifecycle.assert_owned_listener(value, name, "codex", uri, runtime_id, "old-stopped")
+        for key, bad in (("com.symphony.storage","foreign"),("com.symphony.agent","claude"),("com.symphony.mode","utility")):
+            changed = json.loads(json.dumps(value)); changed["Config"]["Labels"][key] = bad
+            with self.assertRaises(AssertionError): lifecycle.assert_owned_listener(changed, name, "codex", uri, runtime_id)
+        changed = dict(value, Name="/foreign")
+        with self.assertRaises(AssertionError): lifecycle.assert_owned_listener(changed, name, "codex", uri, runtime_id)
+
+
 class ProjectTransportTests(unittest.TestCase):
     def test_placeholder_passes_actual_product_loader_without_host_tokens(self):
         with tempfile.TemporaryDirectory() as temp:
