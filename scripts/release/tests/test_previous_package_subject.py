@@ -15,6 +15,7 @@ from unittest.mock import patch
 import zipfile
 sys.path.insert(0,str(Path(__file__).parents[1]))
 from test_artifacts import manifest
+from test_component_provenance import record as component_record
 import component_provenance as proof
 SPEC=importlib.util.spec_from_file_location('previous_subject',Path(__file__).parents[1]/'previous-package-subject.py')
 subject=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(subject)
@@ -97,6 +98,25 @@ class PreviousSubjectTest(unittest.TestCase):
             self.assertEqual(record['archive_tag'],f'localhost:5000/symphony-{provider}:candidate')
             self.assertIsNone(record['protocol']);self.assertIsNone(record['input_identity'])
         self.assertFalse((self.root/'foreign').exists())
+    def test_published_bridge_verifies_every_original_receipt_even_when_public_view_omits_it(self):
+        value=copy.deepcopy(self.manifest);value['original_components']={}
+        for provider in ('codex','claude'):
+            value['original_components'][provider]={}
+            for arch in ('arm64','x86_64'):
+                original=component_record(provider,arch);original['source_revision']=self.revision
+                original['qualification'].update(controller_revision=self.revision,source_revision=self.revision)
+                value['original_components'][provider][arch]=original
+                public=copy.deepcopy(original);public.pop('qualification')
+                value['runners'][provider][arch]=public
+        metadata=self.artifacts[0];raw=zipped({'release.json':json.dumps(value)})
+        self.payloads[metadata['id']]=raw;metadata.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw))
+        with patch.object(subject.proof,'verify_origin',side_effect=ValueError('expired original receipt')) as verify:
+            with self.assertRaisesRegex(ValueError,'expired original receipt'):subject.select(123,self.source,self.api)
+            self.assertEqual(verify.call_count,1)
+        with patch.object(subject.proof,'verify_origin',return_value={'verified':'actual original'}) as verify:
+            selected=subject.select(123,self.source,self.api)
+            self.assertEqual(verify.call_count,4)
+            self.assertEqual(selected['manifest'],value)
     def test_three_manager_route_downloads_previous_package_without_duplicate_runner_payloads(self):
         selected=subject.select(123,self.source,self.api);calls=[]
         def fetch(item,path):

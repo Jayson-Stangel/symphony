@@ -83,7 +83,7 @@ def select(run_id,root,fetch=proof.api):
         manifest=json.loads(archive.read('release.json'))
     artifacts.validate(manifest,require_bundle=False)
     artifacts.require(manifest['schema_version']==1 and manifest['source_revision']==source,'historical subject must be the actual current schema1 source')
-    for provider,group in manifest['runners'].items():
+    for provider,group in manifest.get('original_components',manifest['runners']).items():
         for architecture,record in group.items():
             if 'qualification' in record:
                 native_proof=record['qualification']
@@ -133,7 +133,9 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
                               'historical package manifest missing or oversized')
             raw=archive.read('release.json');manifest=json.loads(raw);artifacts.validate(manifest)
             artifacts.require(manifest['schema_version']==1 and manifest['source_revision']==selected['source_revision'] and
-                              manifest['runners']==selected['manifest']['runners'],'historical package/native identities differ')
+                              manifest['runners']==selected['manifest']['runners'] and
+                              manifest.get('original_components')==selected['manifest'].get('original_components'),
+                              'historical package/native identities differ')
             bundle=manifest['bundles']['linux_x86_64'];name=bundle['filename']
             artifacts.require(archive.namelist().count(name)==1 and archive.getinfo(name).file_size<=MAX_PACKAGE,
                               'historical Linux package missing or oversized')
