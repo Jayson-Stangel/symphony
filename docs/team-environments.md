@@ -64,9 +64,7 @@ under the current isolation rules; Symphony does not add service orchestration.
 
 The Codex example installs ESPHome 2025.9.3 and yamllint for the real
 `Jayson-Stangel/home-assistant-voice-te` repository; `esphome config
-home-assistant-voice.yaml` is its dependency-bearing validation command. Python's
-venv support must be present in the selected base; if absent, install the matching
-OS package in the team recipe. Use the team's existing setup commands rather than
+home-assistant-voice.yaml` is its dependency-bearing validation command. The template installs Python's venv OS support before creating its isolated tool environment. Use the team's existing setup commands rather than
 assuming every project needs these packages.
 
 ## Evidence boundaries
