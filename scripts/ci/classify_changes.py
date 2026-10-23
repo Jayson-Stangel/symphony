@@ -218,6 +218,10 @@ def changed_revisions(event, name):
         # Compare the complete PR, including older commits and stale bases.
         base = git('merge-base', base, head).decode().strip()
     elif name == 'push':
+        # A moved tag can have a valid docs-only diff. It still selects complete
+        # release artifacts, so never apply ordinary branch omission policy.
+        if str(event.get('ref', '')).startswith('refs/tags/'):
+            raise ValueError('tag events require full artifact qualification')
         base, head = event['before'], event['after']
     else:
         raise ValueError('event requires full code qualification')
@@ -246,7 +250,7 @@ def classify(event, name):
         return not code, ('all changed paths are human-facing documentation' if not code
                           else 'behavioral or unknown paths require code qualification'), paths
     except (KeyError, TypeError, ValueError, UnicodeError, OSError, subprocess.SubprocessError):
-        return False, 'diff discovery unavailable or incomplete; require code qualification', []
+        return False, 'full-event policy or unavailable/incomplete diff requires code qualification', []
 
 
 def main():
@@ -267,7 +271,7 @@ def main():
                 f.write(key + '=' + str(required).lower() + '\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
     summary += 'Browser qualification required: **' + str(browser).lower() + '**. ' + (
-        'Browser build/qualification inputs changed or diff discovery is unavailable.\n\n'
+        'Browser inputs, validation controls or full-event policy require qualification.\n\n'
         if browser else 'No browser build/qualification inputs changed.\n\n')
     for key, required in routing.items():
         summary += f'{key}: **{str(required).lower()}**.\n\n'

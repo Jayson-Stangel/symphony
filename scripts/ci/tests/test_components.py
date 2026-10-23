@@ -105,6 +105,11 @@ class Consumers(unittest.TestCase):
                 self.assertFalse(route(dict(before=base, after=app), 'push')['native'])
                 self.assertEqual(route(dict(before=app, after=linux), 'push')['native_platform'], 'linux_x86_64')
                 self.assertFalse(route(dict(before=linux, after=docs), 'push')['native'])
+                # Existing tag moves have valid nonzero before/after revisions.
+                # Selected release artifacts still require full qualification.
+                tag = dict(ref='refs/tags/v1.2.3', before=linux, after=docs)
+                self.assertTrue(all(route(tag, 'push')[key] for key in classifier.COMPONENTS))
+                self.assertTrue(classifier.browser_required(classifier.classify(tag, 'push')[2], tag, 'push'))
                 for target in ('dev', 'main'):
                     event = dict(pull_request=dict(base=dict(sha=base, ref=target), head=dict(sha=docs)))
                     result = route(event, 'pull_request')

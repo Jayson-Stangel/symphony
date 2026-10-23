@@ -366,8 +366,9 @@ routing owner is `scripts/ci/classify_changes.py`; its explicit consumers are
 `application`, `portable`, `package_macos`, `package_linux`, `fixtures`, plus the
 existing Docker-stage-aware `browser` decision. `native` and `native_platform`
 are derived from helper/fixture requirements and validated again in the aggregate.
-Ordinary CI uses no workflow path filters. A missing/empty range selects every
-consumer; malformed event JSON fails classification. Failed/cancelled/missing
+Ordinary CI uses no workflow path filters. Tag events always select complete
+qualification, including moved tags with valid documentation-only ranges. A
+missing/empty range selects every consumer; malformed event JSON fails classification. Failed/cancelled/missing
 classification, malformed outputs, inconsistent derived flags, unexpected skips,
 or failed native matrices fail the required aggregate.
 
