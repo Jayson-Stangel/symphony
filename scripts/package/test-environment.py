@@ -28,6 +28,7 @@ cmd=sys.argv[1]
 if cmd in ("owned-directory","validate-environment-selection"):
  p=Path(sys.argv[2]); assert not p.is_symlink()
  assert (p.is_dir() if cmd=="owned-directory" else p.is_file())
+ if cmd=="owned-directory": assert p.stat().st_mode & 0o777 == 0o700
  if cmd=="validate-environment-selection":
   v=json.loads(p.read_text()); assert v["schema_version"]==1
 elif cmd=="get":
@@ -92,6 +93,14 @@ package_selected_image_compatible() {{ [ -z "${{INCOMPATIBLE:-}}" ] || die incom
         self.assertEqual(result.stdout, IMAGE)
         operations = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertTrue(all(op[:2] == ["image", "inspect"] for op in operations))
+
+    def test_first_selection_creates_private_storage_under_ordinary_umask(self):
+        self.runners.rmdir()
+        result = self.run_shell('umask 022; environment_select /project codex team:chosen')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.runners.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.selection.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.selection.stat().st_mode & 0o777, 0o600)
 
     def test_missing_image_never_builds_pulls_or_changes_selection(self):
         result = self.select(MISSING="1")

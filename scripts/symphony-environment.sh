@@ -57,6 +57,10 @@ environment_select() {
   package_update_lock || return
   [ "$(package_current_home)" = "$symphony_home" ] || die 'manager changed; retry selection through the installed command'
   [ -z "$(package_pending_transition)" ] || die 'finish or roll back the pending installed update before selecting an environment'
+  # Create private derived storage before the legacy lock path mkdir-p can use
+  # the caller's ordinary umask. Existing paths are verified, never chmodded.
+  if [ ! -e "$runner_home" ] && [ ! -L "$runner_home" ]; then (umask 077; mkdir -p "$runner_home") || return; fi
+  package_helper owned-directory "$runner_home" || return
   runner_project_lock "$root"
   runtime=$(container_runtime)
   "$runtime" image inspect "$reference" >/dev/null 2>&1 || die "team environment is unavailable locally: $reference; build or obtain it with your team tools, then select it again"
