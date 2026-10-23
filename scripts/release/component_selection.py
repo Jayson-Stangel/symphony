@@ -50,6 +50,8 @@ def records_from_join(data):
                               {k:v for k,v in record.items() if k not in ('provider','architecture')}==originals[provider][arch],
                               'joined original record differs from manifest')
             decision=plan['components'][provider][arch]
+            from reuse_payload import validate_decision_inputs
+            validate_decision_inputs(record,decision,manifest['source_revision'],provider,arch)
             artifacts.require(decision.get('selected_input_identity',decision['input_identity'])==record['input_identity'],'joined plan input differs')
             if decision.get('selection_mode')=='finite-input-transition-v1':
                 from finite_transition import validate_evidence
@@ -57,6 +59,11 @@ def records_from_join(data):
                 artifacts.require(decision['input_identity']==decision.get('desired_input_identity')==transition['manager_input_identities'][provider][arch] and
                                   record['input_identity']==transition['source_input_identities'][provider][arch],
                                   'joined finite selected/desired identities differ')
+            if decision.get('selection_mode')=='finite-component-v1':
+                from finite_transition import validate_component_evidence
+                transition=validate_component_evidence(decision['input_transition'],manifest['source_revision'],provider,arch)
+                artifacts.require(decision['input_identity']==decision.get('desired_input_identity')==transition['desired_input_identity'] and
+                                  record['input_identity']==transition['selected_input_identity'],'joined finite component identity differs')
             if decision['action']=='reuse':
                 artifacts.require(decision['record']==record,'joined reused record differs from exact plan selection')
             else:

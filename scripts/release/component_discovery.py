@@ -27,7 +27,8 @@ def discover(fetch=api, candidate_run=None):
                 if inspected>=MAX_RECORD_ARTIFACTS:return candidates
                 inspected+=1
                 try:
-                    require(item.get('expired') is False and type(item.get('size_in_bytes')) is int and 0<item['size_in_bytes']<=MAX_RECORD_BYTES,'joined discovery bound differs')
+                    from component_selection import MAX_JOIN_BYTES
+                    require(item.get('expired') is False and type(item.get('size_in_bytes')) is int and 0<item['size_in_bytes']<=MAX_JOIN_BYTES,'joined discovery bound differs')
                     data=fetch(f"actions/artifacts/{item['id']}/zip",binary=True)
                     require('sha256:'+hashlib.sha256(data).hexdigest()==item.get('digest'),'joined discovery checksum differs')
                     from component_selection import records_from_join

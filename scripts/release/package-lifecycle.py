@@ -90,7 +90,7 @@ def package_selections(packages, current_only, revision, manager_update_only=Fal
     selected = [(packages / "previous", previous), (packages, current)]
     if manager_update_only and (packages / 'legacy/release.json').exists():
         legacy = load_release(packages / 'legacy/release.json')
-        assert legacy['schema_version'] == previous['schema_version'] == 1 and current['schema_version'] == 2, 'legacy chain requires actual schema1 old/bridge and schema2 current packages'
+        assert legacy['schema_version'] == 1 and json.loads((packages/'previous/release.json').read_text())['schema_version'] == 1 and current['schema_version'] == 2, 'legacy chain requires actual schema1 descriptors for old/bridge and independent current manager semantics'
         assert len({legacy['source_revision'], previous['source_revision'], current['source_revision']}) == 3, 'three distinct actual manager sources required'
         selected.insert(0, (packages / 'legacy', legacy))
     return selected
@@ -669,7 +669,7 @@ fi
         corrupted_manifest = root / "corrupt.json"; corrupted_manifest.write_text(json.dumps(corrupt))
         failed = client_run([str(command), "update", "--candidate-manifest", str(corrupted_manifest), "--candidate-bundle", str(second_archive)], cwd=repo, expected=1)
         assert "checksum mismatch" in failed.stdout
-        bad_platform_manifest, bad_platform_archive = negative_archive(second_archive, current, "platform")
+        bad_platform_manifest, bad_platform_archive = negative_archive(second_archive, json.loads(second_manifest.read_text()), "platform")
         failed = client_run([str(command), "update", "--candidate-manifest", str(bad_platform_manifest), "--candidate-bundle", str(bad_platform_archive)], cwd=repo, expected=1)
         assert "platform" in failed.stdout
         failed = client_run([str(command), "doctor", "--json"], expected=1, overrides={"SYMPHONY_CONTAINER_RUNTIME": "/missing/docker"})

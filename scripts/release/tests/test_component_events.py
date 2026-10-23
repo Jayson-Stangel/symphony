@@ -20,13 +20,35 @@ class ComponentEvents(unittest.TestCase):
             (root/'elixir/mix.exs').write_text('    version: "0.0.4",\n')
             (root/'scripts/release/manager-version').write_text('0.0.5\n')
             (root/'scripts/release/manager_version.py').write_text((ROOT/'scripts/release/manager_version.py').read_text())
-            for policy,tag,expected in (('1\n','v0.0.5',True),('2\n','v0.0.5',True),('2\n','v0.0.4',False),('3\n','v0.0.5',False)):
+            subprocess.run(['git','init','--quiet',str(root)],check=True)
+            subprocess.run(['git','-C',str(root),'add','.'],check=True)
+            subprocess.run(['git','-C',str(root),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','Freeze actual manager source'],check=True)
+            revision=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+            bound='v0.0.5-manager.'+revision+'.manifest.'+'d'*64
+            for policy,tag,expected in (('1\n',bound,True),('1\n','v0.0.5',False),
+                                        ('1\n',bound.replace(revision,'e'*40),False),
+                                        ('1\n',bound[:-1],False),('2\n','v0.0.5',True),
+                                        ('2\n','v0.0.4',False),('3\n','v0.0.5',False)):
                 (root/'scripts/release/release-schema').write_text(policy)
                 result=subprocess.run(['bash','-e','-c',script],cwd=root,capture_output=True,
                     env=dict(os.environ,GITHUB_REF_TYPE='tag',GITHUB_REF_NAME=tag))
                 self.assertEqual(result.returncode==0,expected,(policy,tag,result.stderr))
         caller=(ROOT/'.github/workflows/burrito-release.yml').read_text()
         self.assertIn('manifest_schema: ${{ needs.qualification.outputs.release_schema }}',caller)
+
+    def test_git_object_authority_consumers_checkout_complete_history(self):
+        import re
+        jobs={'component-plan.yml':['plan'],
+              'runner-release.yml':['component-plan','candidate-metadata','packaged-release-platform','packaged-candidate'],
+              'runner-integration.yml':['manager-inputs','listener-and-cleanup'],
+              'current-manager-package.yml':['package']}
+        for filename,names in jobs.items():
+            workflow=(ROOT/'.github/workflows'/filename).read_text()
+            for name in names:
+                with self.subTest(workflow=filename,job=name):
+                    block=re.search(r'(?ms)^  '+re.escape(name)+r':\n.*?(?=^  [a-z][a-z-]+:|\Z)',workflow)
+                    self.assertIsNotNone(block)
+                    self.assertRegex(block.group(),r'uses: actions/checkout@[^\n]+\n        with:\n          fetch-depth: 0')
 
     def test_browser_wrapper_requires_complete_plan_except_explicit_docs(self):
         workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()

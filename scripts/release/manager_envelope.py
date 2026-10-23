@@ -124,6 +124,8 @@ def validate_release(path):
                 'channel':core['channel'],'runners':core['original_components'],'distribution':core['distribution'],
                 'compatibility':{'runner_protocol':1},'supported_hosts':core['supported_hosts'],'host_architectures':['arm64','x86_64'],
                 'bundle':manifest['bundle'],'bundles':manifest['bundles'],'manager_envelope':descriptor}
+    from finite_transition import component_evidence
+    normalized['component_selections']={p:{a:component_evidence(core['manager_source_revision'],p,a) for a in group} for p,group in core['original_components'].items()}
     if 'package_platform' in manifest:normalized['package_platform']=manifest['package_platform']
     return normalized
 

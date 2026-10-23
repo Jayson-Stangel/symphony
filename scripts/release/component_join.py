@@ -24,13 +24,8 @@ def join(plan, records, revision, verify):
                 artifacts.require(decision['action'] == 'build', 'unknown planned action')
                 record = json.loads((Path(records) / f'{provider}-{architecture}.json').read_text())
                 artifacts.require(record.get('source_revision') == revision, 'new native build source differs')
-            selected_input=decision.get('selected_input_identity',decision['input_identity'])
-            if decision.get('selection_mode')=='finite-input-transition-v1':
-                from finite_transition import validate_evidence
-                evidence=validate_evidence(decision['input_transition'],revision)
-                artifacts.require(selected_input==evidence['source_input_identities'][provider][architecture] and
-                                  decision['input_identity']==decision.get('desired_input_identity')==evidence['manager_input_identities'][provider][architecture],
-                                  'selected original and desired manager input identities differ from finite transition')
+            from reuse_payload import validate_decision_inputs
+            selected_input=validate_decision_inputs(record,decision,revision,provider,architecture)
             artifacts.require(record.get('provider') == provider and record.get('architecture') == architecture and
                               record.get('input_identity') == selected_input, 'actual native record differs from plan')
             origin=verify(record)
@@ -38,6 +33,26 @@ def join(plan, records, revision, verify):
                 artifacts.require(origin==decision['origin'],'original reused origin changed after planning')
             selected.append(record)
     return selected
+
+
+def validate_join_checkout(root,plan,selected):
+    import subprocess
+    actual=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    artifacts.require(actual==plan.get('manager_source_revision'),'joined plan differs from actual manager checkout')
+    from finite_transition import evaluate_component
+    from runner_inputs import identity
+    for record in selected:
+        provider,architecture=record['provider'],record['architecture']
+        decision=plan['components'][provider][architecture]
+        from reuse_payload import validate_decision_inputs
+        validate_decision_inputs(record,decision,actual,provider,architecture)
+        artifacts.require(identity(root,provider,architecture)['input_identity']==decision['input_identity'],
+                          'actual manager checkout input differs from planned component')
+        if decision.get('selection_mode') in ('finite-component-v1','finite-input-transition-v1'):
+            measured=evaluate_component(root,record,provider,architecture)
+            artifacts.require(measured['selected_input_identity']==record['input_identity'] and
+                              measured['desired_input_identity']==decision['input_identity'],
+                              'actual source differs from finite component plan')
 
 
 def main():
@@ -61,6 +76,7 @@ def main():
             return selected_verifier(record)
         plan = json.loads(Path(args.plan).read_text())
         selected = join(plan, args.records, revision, verify)
+        validate_join_checkout('.',plan,selected)
         output = Path(args.output)
         output.mkdir(parents=True, exist_ok=True)
         files = []
@@ -79,6 +95,7 @@ def main():
         else:
             artifacts.assemble(SimpleNamespace(records=files, schema_version=args.schema,
                                version=manager_version.read(), revision=revision, channel='candidate',
+                               component_selections=__import__('finite_transition').selections_from_plan(plan),
                                bundle=None, platform_bundles=True, output=str(output / 'release.json')), verifier=verify)
         (output/'component-plan.json').write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
     except (ValueError, KeyError, TypeError, OSError) as error:
