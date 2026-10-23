@@ -41,6 +41,12 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual([r["tags"][0].split(":")[-1] for r in inventory], ["candidate", "previous"])
         self.assertTrue(all(r["transport_only"] for r in inventory))
 
+    def test_remote_context_and_other_socket_are_not_authorized(self):
+        restore.require_local_daemon('unix:///Users/jayson/.docker/run/docker.sock')
+        for value in ('tcp://127.0.0.1:2375','ssh://host','default','unix:///tmp/foreign.sock','unix:///var/run/docker.sock'):
+            with self.assertRaisesRegex(ValueError,'approved local Docker socket'):
+                restore.require_local_daemon(value)
+
     def test_config_corruption_and_foreign_tags_refuse(self):
         with self.assertRaisesRegex(ValueError, "config SHA"):
             self.archive(bad_config=True)

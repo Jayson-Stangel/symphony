@@ -16,10 +16,15 @@ import subprocess
 import tarfile
 
 REGISTRY_LABEL = "com.symphony.native-test-owner"
+APPROVED_DOCKER_HOST = "unix:///Users/jayson/.docker/run/docker.sock"
 
 
 def require(condition, message):
     if not condition:raise ValueError(message)
+
+
+def require_local_daemon(value):
+    require(value == APPROVED_DOCKER_HOST, "only the explicitly approved local Docker socket is authorized")
 
 
 def sha256(path):
@@ -108,6 +113,7 @@ def main():
     parser.add_argument("--docker-host", required=True)
     parser.add_argument("--docker-config", type=Path, required=True)
     args = parser.parse_args()
+    require_local_daemon(args.docker_host)
     require((args.docker_config / "config.json").read_text().strip() == "{}", "empty isolated Docker config required")
     env = {"PATH": os.environ["PATH"], "HOME": str(args.docker_config.parent),
            "DOCKER_HOST": args.docker_host, "DOCKER_CONFIG": str(args.docker_config)}

@@ -23,6 +23,35 @@ import uuid
 spec = importlib.util.spec_from_file_location("stock_fixture", Path(__file__).with_name("test-zero-rebuild-stock.py"))
 stock = importlib.util.module_from_spec(spec); spec.loader.exec_module(stock)
 LABEL = "com.symphony.zero-rebuild-owner"
+APPROVED_DOCKER_HOST = "unix:///Users/jayson/.docker/run/docker.sock"
+
+
+def require_local_daemon(value):
+    if value != APPROVED_DOCKER_HOST:
+        raise ValueError("only the explicitly approved local Docker socket is authorized")
+
+
+def volume_absent(receipt):
+    return receipt.returncode == 1 and "no such volume" in receipt.stderr.lower()
+
+
+def acquire_owned_volume(docker, name, token, pending):
+    receipt = docker("volume", "inspect", name, expected=None)
+    assert volume_absent(receipt), "preexisting or uncertain volume preserved"
+    pending.add(name)  # Before a create can complete with a lost receipt.
+    docker("volume", "create", "--label", LABEL + "=" + token, name)
+    value = json.loads(docker("volume", "inspect", name).stdout)[0]
+    assert value["Name"] == name and value["Labels"][LABEL] == token
+
+
+def cleanup_owned_volume(docker, name, token):
+    receipt = docker("volume", "inspect", name, expected=None)
+    if volume_absent(receipt):return
+    assert receipt.returncode == 0, "volume inspection uncertain"
+    value = json.loads(receipt.stdout)[0]
+    assert value["Name"] == name and value["Labels"][LABEL] == token, "foreign volume preserved"
+    docker("volume", "rm", name)
+    assert volume_absent(docker("volume", "inspect", name, expected=None)), "owned volume absence uncertain"
 
 
 def main():
@@ -31,6 +60,7 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--docker-host", required=True)
     args = parser.parse_args()
+    require_local_daemon(args.docker_host)
     assert os.uname().sysname == "Darwin" and os.uname().machine == "arm64", "actual native Mac ARM required"
     root = args.evidence.resolve(); root.mkdir(mode=0o700)
     token = uuid.uuid4().hex
@@ -75,10 +105,7 @@ def main():
         assert receipt.returncode == 1 and "no such" in receipt.stderr.lower(), (name, receipt.stdout, receipt.stderr)
 
     def create_volume(name):
-        absent("volume", name)
-        d("volume", "create", "--label", LABEL + "=" + token, name)
-        volumes.add(name)
-        assert json.loads(d("volume", "inspect", name).stdout)[0]["Labels"][LABEL] == token
+        acquire_owned_volume(d, name, token, volumes)
 
     def state(port):
         deadline = time.monotonic() + 60
@@ -261,8 +288,7 @@ exec "$ACTUAL_DOCKER" "$@"
                 value = inspect(identifier); assert value["Config"]["Labels"][LABEL] == token
                 d("rm", "-f", identifier); absent("container", identifier); result["cleanup"].append(identifier)
             for name in volumes:
-                value = json.loads(d("volume", "inspect", name).stdout)[0]; assert value["Labels"][LABEL] == token
-                d("volume", "rm", name); absent("volume", name); result["cleanup"].append(name)
+                cleanup_owned_volume(d, name, token); result["cleanup"].append(name)
             result["passed"] = completed
         finally:
             (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
