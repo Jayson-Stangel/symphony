@@ -2,6 +2,7 @@
 """Local proof harness failure ownership tests; no Docker daemon operations."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -42,6 +43,41 @@ class OwnershipTests(unittest.TestCase):
         lifecycle.require_local_daemon('unix:///Users/jayson/.docker/run/docker.sock')
         for value in ('tcp://127.0.0.1:2375','ssh://example','unix:///tmp/other.sock','default'):
             with self.assertRaises(ValueError):lifecycle.require_local_daemon(value)
+
+
+class ChecksumNegativeTests(unittest.TestCase):
+    def test_exact_diagnostic_required_not_generic_early_refusal(self):
+        lifecycle.assert_checksum_refusal(subprocess.CompletedProcess([], 1, "", "symphony: release bundle checksum mismatch; installed manager and runner retained"))
+        for receipt in (subprocess.CompletedProcess([],0,"","release bundle checksum mismatch"),
+                        subprocess.CompletedProcess([],1,"","symphony: invalid platform bundles"),
+                        subprocess.CompletedProcess([],1,"","missing manager core")):
+            with self.assertRaises(AssertionError): lifecycle.assert_checksum_refusal(receipt)
+
+    @unittest.skipUnless(os.environ.get("SYMPHONY_CHECKSUM_MANIFEST"), "requires actual frozen envelope/native helper fixture")
+    def test_actual_native_metadata_accepts_checksum_case_and_distinguishes_early_guards(self):
+        manifest = Path(os.environ["SYMPHONY_CHECKSUM_MANIFEST"])
+        core = Path(os.environ["SYMPHONY_CHECKSUM_CORE"])
+        helper = Path(os.environ["SYMPHONY_CHECKSUM_HELPER"])
+        def validate(path):return subprocess.run([str(helper),"validate-release",str(path)],text=True,capture_output=True)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bad = lifecycle.checksum_negative_fixture(manifest, core, root / "checksum")
+            value = json.loads(bad.read_text())
+            self.assertEqual(value["bundle"]["sha256"], "0" * 64)
+            self.assertEqual(value["bundles"]["macos"], value["bundle"])
+            self.assertEqual((bad.parent / "manager-core.json").read_bytes(), core.read_bytes())
+            accepted = validate(bad); self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            mismatch = root / "mismatch"; mismatch.mkdir()
+            value["bundle"]["sha256"] = "1" * 64
+            (mismatch / "manager-core.json").write_bytes(core.read_bytes())
+            (mismatch / "release.json").write_text(json.dumps(value))
+            early = validate(mismatch / "release.json")
+            self.assertNotEqual(early.returncode, 0); self.assertIn("invalid platform bundles", early.stderr)
+            (bad.parent / "manager-core.json").unlink()
+            missing = validate(bad)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertNotIn("release bundle checksum mismatch", missing.stderr)
+            self.assertNotIn("invalid platform bundles", missing.stderr)
 
 
 class TransitionLockTests(unittest.TestCase):

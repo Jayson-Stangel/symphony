@@ -100,6 +100,22 @@ def transition_lock_snapshot(runner_home, expected_names):
     return result
 
 
+def checksum_negative_fixture(manifest, core, folder):
+    """Keep the selected envelope valid so corruption reaches bundle hashing."""
+    value = json.loads(Path(manifest).read_text())
+    value["bundle"]["sha256"] = "0" * 64
+    value["bundles"]["macos"]["sha256"] = "0" * 64
+    folder = Path(folder); folder.mkdir()
+    shutil.copyfile(core, folder / "manager-core.json")
+    path = folder / "release.json"; path.write_text(json.dumps(value))
+    return path
+
+
+def assert_checksum_refusal(receipt):
+    assert receipt.returncode != 0, "corrupt bundle was accepted"
+    assert "release bundle checksum mismatch" in receipt.stderr, "checksum guard was not reached"
+
+
 def seed_project_transport(config_home, identifier):
     """Seed only a fresh product-init file; this value is not a credential."""
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", identifier): raise ValueError("invalid owned project id")
@@ -371,10 +387,11 @@ def main():
         selection = ("--candidate-manifest", args.after_manifest.resolve(), "--candidate-bundle", args.after_bundle.resolve())
         product("update", *selection, cwd=projects[0][0]); assert identity() == after[3]; unchanged()
         product("update", "--rollback-release", cwd=projects[0][0]); assert identity() == before[3]; unchanged()
-        invalid = json.loads(args.after_manifest.read_text()); invalid["bundle"]["sha256"] = "0" * 64
-        bad = root / "corrupt-release.json"; bad.write_text(json.dumps(invalid))
+        bad = checksum_negative_fixture(args.after_manifest, after[2] / "manager-core.json", root / "corrupt")
+        run([before[2] / "libexec/symphony-host", "validate-release", bad])
         receipt = product("update", "--candidate-manifest", bad, "--candidate-bundle", args.after_bundle.resolve(), cwd=projects[0][0], expected=None)
-        assert receipt.returncode != 0
+        assert_checksum_refusal(receipt)
+        check("corrupt metadata validates before exact release bundle checksum mismatch refusal")
         assert identity() == before[3]; unchanged()
         product("update", *selection, cwd=projects[0][0]); assert identity() == after[3]; unchanged()
         check("actual B-to-C activation, rollback, checksum refusal and retry retain both original runners/states/canaries")
