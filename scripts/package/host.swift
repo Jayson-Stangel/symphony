@@ -193,12 +193,12 @@ func validateManifest(_ path: String) throws -> [String: Any] {
 }
 func coreValue(_ value: Any) {
     if let string = value as? String {
-        guard string.unicodeScalars.allSatisfy({ $0.value < 128 && ($0.value >= 32 || [9, 10, 13].contains($0.value)) }) else { fail("manager core contains unsupported text") }
+        guard string.unicodeScalars.allSatisfy({ $0.value <= 126 && ($0.value >= 32 || [9, 10, 13].contains($0.value)) }) else { fail("manager core contains unsupported text") }
     } else if let values = value as? [String: Any] {
         for (key, item) in values { coreValue(key); coreValue(item) }
     } else if let values = value as? [Any] { for item in values { coreValue(item) } }
     else if let number = value as? NSNumber {
-        guard CFGetTypeID(number) == CFBooleanGetTypeID() || integer(number) != nil else { fail("manager core contains a noninteger number") }
+        guard CFGetTypeID(number) == CFBooleanGetTypeID() || (integer(number).map { $0 >= 0 && $0 <= 9007199254740991 } ?? false) else { fail("manager core contains a noninteger number") }
     } else { fail("manager core contains an unsupported value") }
 }
 // Use the specified ASCII JSON encoding, independent of Foundation's key
@@ -308,7 +308,7 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     }
     let filename = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("manager-core.json").path
     let info = checkedInfo(filename)
-    guard info.st_size > 0 && info.st_size <= 4 * 1024 * 1024 else { fail("manager core exceeds size bound") }
+    guard info.st_size > 0 && info.st_size <= 1024 * 1024 else { fail("manager core exceeds size bound") }
     let data = try read(filename)
     guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == envelope.coreHash else { fail("manager core checksum differs from bound version") }
     let core = object(try json(data)); coreValue(core)
