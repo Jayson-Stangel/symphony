@@ -62,7 +62,12 @@ def browser_required(paths, event=None, name=None):
             return True
         sources = {source for stage in current.values() for source in stage['sources']}
         for source in sources:
-            expression = pattern_expression(source.rstrip('/'))
+            source_path = PurePosixPath(source)
+            if source_path.is_absolute() or '..' in source_path.parts:
+                return True
+            # Docker accepts leading/repeated ./ and directory COPY sources.
+            # Normalize those before matching; unsupported patterns still refuse.
+            expression = pattern_expression(str(source_path))
             if any(expression.fullmatch(path) or any(expression.fullmatch(str(parent)) for parent in PurePosixPath(path).parents)
                    for path in paths):
                 return True

@@ -74,6 +74,31 @@ class BrowserRouting(unittest.TestCase):
             finally:
                 os.chdir(original)
 
+    def test_dot_relative_copy_and_unsafe_sources_cannot_hide_consumed_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], stderr=subprocess.PIPE).decode().strip()
+            def commit(path, content):
+                target = Path(folder) / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+                git('add', '--all'); git('commit', '-qm', 'fixture')
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            original = os.getcwd(); os.chdir(folder)
+            try:
+                for index, source in enumerate(('./runner/browser/smoke.cjs', '././runner/browser/smoke.cjs',
+                                                '../runner/browser/smoke.cjs', '/runner/browser/smoke.cjs',
+                                                '$BROWSER_SOURCE', 'runner/browser/[s]moke.cjs', '.')):
+                    recipe = ('FROM example/base@sha256:' + 'a' * 64 + ' AS browser-tools\nCOPY ' + source + ' /smoke.cjs\n')
+                    before = commit('runner/Dockerfile', recipe)
+                    after = commit('runner/browser/smoke.cjs', 'browser change ' + str(index))
+                    event = dict(before=before, after=after)
+                    paths = CLASSIFY.changed_paths(event, 'push')
+                    self.assertTrue(CLASSIFY.browser_required(paths, event, 'push'), source)
+            finally:
+                os.chdir(original)
+
     def test_missing_history_unknown_metadata_and_build_controls_require_qualification(self):
         for paths, event, name in (([], {}, 'push'), (['elixir/test/fixture.exs'], {}, 'push'),
                                     (['../runner/browser/package.json'], {}, 'push'),
