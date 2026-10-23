@@ -128,6 +128,16 @@ def validate_release(path):
     return normalized
 
 
+def normalize_document(manifest,core_bytes):
+    """Verify a bounded service member with the same file-level contract."""
+    import json,tempfile
+    with tempfile.TemporaryDirectory(prefix='manager-core-check-') as directory:
+        path=Path(directory)/'release.json'
+        path.write_text(json.dumps(manifest))
+        (path.parent/CORE).write_bytes(core_bytes)
+        return validate_release(path)
+
+
 def load_release(path):
     """Read actual manager/component semantics, preserving raw descriptor on disk."""
     import json

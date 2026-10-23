@@ -51,6 +51,26 @@ class EnvelopeTests(unittest.TestCase):
             outer=json.loads(path.read_text());outer['version']=outer['version'].replace('.manifest.','.manifest.0')
             path.write_text(json.dumps(outer))
             with self.assertRaises(ValueError):validate_release(path)
+    def test_actual_joined_envelope_members_bind_originals_and_manager(self):
+        import io,zipfile
+        from component_selection import records_from_join
+        plan=compatible_plan(ROOT,{},verify=self.verify,candidates=self.fixture['records'])
+        with tempfile.TemporaryDirectory() as t:
+            path=write_release(self.core(),t)
+            def bundle(include_core=True):
+                stream=io.BytesIO()
+                with zipfile.ZipFile(stream,'w') as archive:
+                    archive.writestr('release.json',path.read_bytes())
+                    archive.writestr('component-plan.json',json.dumps(plan))
+                    if include_core:archive.writestr('manager-core.json',(path.parent/'manager-core.json').read_bytes())
+                    for record in self.fixture['records']:
+                        archive.writestr(record['provider']+'-'+record['architecture']+'.json',json.dumps(record))
+                return stream.getvalue()
+            result=records_from_join(bundle())
+            self.assertEqual(result['manifest']['source_revision'],plan['manager_source_revision'])
+            self.assertEqual(result['records'],[self.records[p][a] for p in ('codex','claude') for a in ('arm64','x86_64')])
+            with self.assertRaises(ValueError):records_from_join(bundle(False))
+
     def test_stripped_envelope_cannot_become_legacy_identity(self):
         with tempfile.TemporaryDirectory() as t:
             path=write_release(self.core(),t);value=json.loads(path.read_text())

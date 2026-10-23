@@ -18,6 +18,7 @@ import artifacts
 import component_provenance as proof
 from reuse_payload import checksum,download
 MAX_PACKAGE=512*1024*1024
+MAX_JOIN_BYTES=4*1024*1024
 MAX_PAYLOAD=4*1024**3
 
 
@@ -69,14 +70,21 @@ def select(run_id,root,fetch=proof.api):
                           'historical artifact has no bounded immutable identity')
         proof.available(item,name,item['digest'],run_id,source,datetime.now(timezone.utc));within(item,stage)
         return item
-    meta=artifact('runner-candidate-metadata',proof.MAX_RECORD_BYTES,metadata)
+    meta=artifact('runner-candidate-metadata',MAX_JOIN_BYTES,metadata)
     raw=fetch(f"actions/artifacts/{meta['id']}/zip",binary=True)
-    artifacts.require(len(raw)<=proof.MAX_RECORD_BYTES and 'sha256:'+hashlib.sha256(raw).hexdigest()==meta['digest'],
+    artifacts.require(len(raw)<=MAX_JOIN_BYTES and 'sha256:'+hashlib.sha256(raw).hexdigest()==meta['digest'],
                       'historical native metadata archive checksum differs')
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         artifacts.require(archive.namelist().count('release.json')==1 and
-                          sum(item.file_size for item in archive.infolist())<=proof.MAX_RECORD_BYTES,'historical metadata member is ambiguous or oversized')
+                          sum(item.file_size for item in archive.infolist())<=MAX_JOIN_BYTES,'historical metadata member is ambiguous or oversized')
         manifest=json.loads(archive.read('release.json'))
+        raw_manifest=manifest
+        core_bytes=None
+        if 'manager_envelope' in manifest:
+            artifacts.require(archive.namelist().count('manager-core.json')==1,'historical manager core missing')
+            from manager_envelope import normalize_document
+            core_bytes=archive.read('manager-core.json')
+            manifest=normalize_document(manifest,core_bytes)
     artifacts.validate(manifest,require_bundle=False)
     artifacts.require(manifest['source_revision']==source,'historical manager must be the actual selected current source')
     originals=manifest.get('original_components',manifest['runners']);origins={};helper_jobs={}
@@ -127,7 +135,8 @@ def select(run_id,root,fetch=proof.api):
     return {'run_id':run_id,'run_attempt':run['run_attempt'],'source_revision':source,'role':'current',
             'native_jobs':{key:value['id'] for key,value in native.items()},'lifecycle_job':lifecycle['id'],
             'metadata_artifact':meta,'package_artifact':package,'payload_artifacts':payloads,'manifest':manifest,
-            'original_native_origins':origins,'manager_helper_jobs':helper_jobs}
+            'original_native_origins':origins,'manager_helper_jobs':helper_jobs,'raw_manifest':raw_manifest,
+            'manager_core_ascii':core_bytes.decode('ascii') if core_bytes is not None else None}
 
 
 def archive_config(path,provider,source,record=None):
@@ -166,6 +175,14 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
             artifacts.require(archive.namelist().count('release.json')==1 and archive.getinfo('release.json').file_size<=proof.MAX_RECORD_BYTES,
                               'historical package manifest missing or oversized')
             raw=archive.read('release.json');manifest=json.loads(raw);artifacts.validate(manifest)
+            if 'manager_envelope' in manifest:
+                artifacts.require(archive.namelist().count('manager-core.json')==1 and
+                                  archive.getinfo('manager-core.json').file_size<=1024*1024,'historical packaged manager core missing or oversized')
+                core=archive.read('manager-core.json')
+                artifacts.require(core.decode('ascii')==selected.get('manager_core_ascii'),'historical package core differs from selected original metadata')
+                from manager_envelope import normalize_document
+                manifest=normalize_document(manifest,core)
+                (previous/'manager-core.json').write_bytes(core)
             artifacts.require(manifest['schema_version']==selected['manifest']['schema_version'] and manifest['source_revision']==selected['source_revision'] and
                               manifest['runners']==selected['manifest']['runners'] and
                               manifest.get('original_components')==selected['manifest'].get('original_components'),
