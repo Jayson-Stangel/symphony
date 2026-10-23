@@ -3,6 +3,7 @@ const http = require('node:http');
 const { chromium } = require('@playwright/test');
 
 async function main() {
+  assert.equal(process.versions.node.split('.')[0], '24', 'browser tooling requires Node 24');
   const server = http.createServer((_request, response) => {
     response.setHeader('Content-Type', 'text/html');
     response.end('<title>Browser smoke test</title><button onclick="this.textContent=\'Passed\'">Run</button>');
