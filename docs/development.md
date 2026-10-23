@@ -525,7 +525,9 @@ artifact source guard, runtime cleanup or provider/platform proof is replaced.
 
 Supersession remains scoped by workflow/event/PR-or-ref. Production tags and
 retained candidate diagnostics are not cancelled. Explicit integration runs have
-run-specific groups and do not cancel another operator-requested composition.
+run-specific groups and pass `retain_diagnostic: true` into nested runner
+qualification, so neither parent nor selected component builds cancel another
+operator-requested composition.
 Ordinary browser runs use cancellable PR/ref groups.
 Queue, execution and wall-clock timings are separate measurements: eliminating
 an allocation reduces exposure to shared-runner queues, not a queue-time SLA.

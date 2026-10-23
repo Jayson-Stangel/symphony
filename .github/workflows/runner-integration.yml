@@ -134,6 +134,7 @@ jobs:
       component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
+      retain_diagnostic: true
       publish: false
     permissions:
       contents: read

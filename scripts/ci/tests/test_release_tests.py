@@ -110,6 +110,12 @@ class RetainedDiagnosticContractTest(unittest.TestCase):
         self.assertIn('previous_revision: ${{ inputs.previous_revision }}', burrito)
         self.assertIn('      previous_revision:', runner.split('  workflow_call:', 1)[1].split('  workflow_dispatch:', 1)[0])
         self.assertNotIn('inputs.controller_only', packages)
+        integration = (root / '.github/workflows/runner-integration.yml').read_text()
+        selected_runners = integration.split('  runners:\n', 1)[1].split('  manager-inputs:\n', 1)[0]
+        self.assertIn("github.event_name == 'workflow_dispatch'", selected_runners)
+        self.assertIn('retain_diagnostic: true', selected_runners)
+        self.assertIn('compose_packages: false', selected_runners)
+        self.assertIn('publish: false', selected_runners)
 
 
 class ReusedPreflightSchedulingTest(unittest.TestCase):
