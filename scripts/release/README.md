@@ -30,6 +30,17 @@ bundles support only x86-64. Both Linux container architectures remain required.
 
 ## Candidate qualification without publication
 
+Disposable GitHub-hosted native qualification explicitly prepares the shipped
+Codex AppArmor profile using `scripts/ci/prepare-codex-apparmor.sh`, with local
+daemon/host, checksum, kernel/LSM and loaded-enforce checks before protected tests.
+The same preparation covers fresh installed-manager/lifecycle and transfer replay
+hosts, with owned-policy cleanup and retained nonsecret diagnostics on failure.
+Actual image qualification verifies runtime application before the existing
+protected workspace, process and network tests; a version/browser handshake or
+profile load alone cannot pass qualification. No-AppArmor hosts keep their
+existing shipped selection. General managers never install host policy silently.
+
+
 Run `runner-release` manually. It builds both providers on native ARM64 and AMD64
 Linux hosts, temporarily pushes each image to a loopback-only disposable registry,
 removes the selected local image, pulls the exact distribution digest and runs
