@@ -211,6 +211,85 @@ Evidence records the controller SHA, package SHA and diagnostic artifact run
 separately. This never publishes and does not replace final same-head native
 build and lifecycle acceptance in `runner-release`.
 
+
+## Candidate image transfer
+
+`export-image.py` streams `docker save` through bounded `pigz -1 -n` when present
+(up to four CPUs), or standard `gzip -1 -n`. It emits the existing gzip/Docker-load
+format and checksum filename selected by its caller. Multiple `--image` values
+share one archive, retaining Docker's shared-layer serialization for two sources.
+The archive's config hash set must match the inspected source/provider/platform
+identities before publication. Original distribution digests remain provenance;
+a Docker-load representation is never relabeled as an old registry digest.
+
+The adjacent `.metrics.txt` contains JSON for each actual image identity,
+compressor/version, process CPU, overlapped export/compression wall times, checksum
+and archive-verification costs, and compressed bytes. Export wall time includes
+pipe backpressure; those overlapping wall times must not be added together.
+Only the compressed payload is staged; owned temporary files and children are
+cleaned on failure. Existing outputs are refused. Actions uploads gzip payloads
+with `compression-level: 0` to avoid redundant ZIP deflation. Metadata consumers
+must continue downloading only native qualification records, not image payloads
+or transport telemetry.
+
+For build-free, nonpublishing native measurements, dispatch the existing
+`runner-release` workflow with `transfer_diagnostic_run` set to an exact retained
+same-repository candidate run ID. The diagnostic verifies the successful native
+producer, original source records, archive checksums and actual config hashes.
+It compares original gzip-default export/load against the selected faster
+compressor, retaining current/prior images together when provided by that run.
+Separate hosted upload/download steps retain their real timings. A downstream
+job changes an actual archive byte to prove checksum refusal before Docker load,
+restores and rechecks the original payload, loads it, and runs actual Git/browser,
+empty-tracker startup and graceful-shutdown checks for every retained source.
+This does not rebuild images or publish a registry/release. Missing or expired
+payloads fail; a successful metadata receipt alone is insufficient.
+
+Local transport fixtures run with:
+
+```sh
+python3 -m unittest discover -s scripts/release/tests -p test_image_export.py -v
+```
+
+Those fixtures exercise actual gzip/tar bytes and subprocess failure propagation;
+they do not replace native production-image benchmark/replay evidence.
+
+To consume an already completed benchmark without repeating export/compression,
+set `transfer_replay_run` to that immutable benchmark run ID instead. The replay
+checks the successful matching provider/architecture producer and available
+payload. It uses the existing candidate lifecycle's isolated loopback `registry:3`
+route: push the retained candidate/previous tags, require each observed digest to
+equal the original qualified record exactly, pull that original digest, and run
+Git/browser/startup/graceful-stop against the digest. A changed distribution
+digest fails; config-ID equality alone is insufficient. Only `localhost:5000`
+references are permitted, and registry cleanup verifies the owned container label
+and actual absence. No public registry publication, credentials or image rebuild
+is involved. The input source-run revision and original image revisions remain
+separate, truthful provenance.
+
+For one bounded measurement of a retained original gzip candidate payload, use
+`runner-release.yml` with `transfer_timing_run`, `transfer_timing_provider` and
+`transfer_timing_architecture`. Its existing dispatch entry calls the reusable
+`transfer-timing.yml`; candidate builds, benchmarks and runtime replays skip.
+This diagnostic currently requires the legacy combined image/record artifact
+layout, such as run `39857032359`; split record/payload layouts fail closed
+until their normal integration. It verifies the successful completed producer
+and matching native Ubuntu runner label before downloading its artifact.
+It downloads only that original artifact, checks its original checksum and
+source/config identities, and measures real checksum, identity inspection and
+archive verification CPU/wall time. It never loads, rebuilds or re-exports an
+image, starts a registry, or schedules another provider/architecture. Receipts
+name the retained archive SHA and byte count. These are measurements of the
+existing original payload, not reconstructed timings for a deleted benchmark
+baseline with potentially different compressed bytes. A representative dispatch
+for the retained Claude x86-64 payload is:
+
+```sh
+gh workflow run runner-release.yml --ref codex/faster-image-transfer \
+  -f transfer_timing_run=39857032359 \
+  -f transfer_timing_provider=claude -f transfer_timing_architecture=x86_64
+```
+
 The real current/prior candidate controller uses `build-runner-cached.sh` through
 an explicit executable callback. Each source context retains its actual Git
 revision, version, recipe and native platform; both roles receive persistent
