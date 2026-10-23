@@ -254,19 +254,22 @@ is involved.
 Ordinary event planning and original payload retrieval
 ----------------------------------------------------
 
-`component-plan.yml` resolves the same committed Docker input closure and bounded
-original native evidence for explicit manual reference qualification and browser
-component checks. Ordinary manager PR and dev/main push validation does not
-invoke the reference-image planner. The full plan
-is retained as a source-bound artifact; job outputs contain only explicit
-`build`/`reuse` decisions. Browser CI builds and executes browser qualification
-only when its browser closure requires a build. Browser reuse requires matching
-verified root/Codex and agent-user/Claude native qualifications for that same
-browser closure, retaining both original records and origins. Actual production
-build options are projected into the browser stage graph; provider-only options
-are excluded. Reuse records the retained qualification explicitly. A missing, failed or
-cancelled plan cannot become a successful omission. Documentation-only events
-continue to omit both planning and behavioral work.
+`component-plan.yml` resolves the committed Docker input closure and bounded
+original native evidence for explicit manual reference qualification. The full
+plan is retained as a source-bound artifact; job outputs contain explicit
+`build`/`reuse` decisions. Ordinary manager PR and dev/main push validation does
+not invoke the reference-image planner.
+
+Browser CI independently classifies the complete event diff. It uses the existing
+closed Docker parser to compare the `browser-tools` stage and its dependencies
+from the actual base/head Git blobs, then checks changes to consumed COPY paths.
+Provider-final labels and Elixir fixture changes do not affect that target. Actual
+browser base, recipe, dependency or smoke changes require a browser-layer build
+and all existing root and Claude-user browser checks. Changes to browser build or
+validation machinery also require that qualification. Unknown syntax, missing
+history, unsafe paths and incomplete decisions fail closed. This routing needs no
+historical image baseline and makes no provenance reuse claim. A missing, failed
+or cancelled classification cannot become a successful omission.
 
 `reuse_payload.py --plan PLAN --provider codex --architecture x86_64
 --destination NEW_DIRECTORY` independently rechecks the original origin and

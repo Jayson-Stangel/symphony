@@ -307,6 +307,14 @@ lifecycle guard. Fixture success is not a newly qualified image or an installed
 selected-environment composition receipt. Reference-image planning is optional distribution work. A team's installed image
 selection and its dependency-bearing authenticated task need their own installed
 evidence; a successful reference-image graph does not establish that proof.
+Browser checks compare the actual consumed browser stage graph and COPY paths
+across the complete event diff, without consulting reference-image provenance.
+Pure manager changes omit browser work; actual browser inputs or its build/test
+machinery still require the browser layer and both-user smoke checks. Unknown
+syntax or history requires qualification. Provider-final Dockerfile metadata does
+not by itself change the browser target. This is change routing, not a claim of
+new or reused image qualification.
+
 Image-input changes can require matching provider/architecture builds. Changing
 only the host manager does not qualify or relabel an unchanged embedded runtime.
 Missing, failed, cancelled, unexpectedly skipped or wrong-source prerequisites

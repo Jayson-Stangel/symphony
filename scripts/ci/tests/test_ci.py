@@ -118,7 +118,7 @@ class WorkflowContracts(unittest.TestCase):
             # Every application/setup/test step is gated by the shared decision.
             for step in steps.split('      - ')[2:-1]:
                 if name == 'browser-smoke':
-                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.plan.outputs.browser_x86_64 ==", step)
+                    self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser ==", step)
                 elif name == 'runner-integration':
                     self.assertIn("needs.changes.outputs.code == 'true'", step)
                 else:
