@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative event-wide documentation classification; no API or dependencies."""
+"""Conservative event-wide code and browser classification; no API or dependencies."""
 import importlib.util
 import json
 import os
@@ -242,7 +242,9 @@ def main():
             for key, required in routing.items():
                 f.write(key + '=' + str(required).lower() + '\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
-    summary += 'Browser input qualification required: **' + str(browser).lower() + '**.\n\n'
+    summary += 'Browser qualification required: **' + str(browser).lower() + '**. ' + (
+        'Browser build/qualification inputs changed or diff discovery is unavailable.\n\n'
+        if browser else 'No browser build/qualification inputs changed.\n\n')
     for key, required in routing.items():
         summary += f'{key}: **{str(required).lower()}**.\n\n'
     # Render arbitrary Git paths as escaped JSON inside a code block.

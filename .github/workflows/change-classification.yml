@@ -6,7 +6,7 @@ on:
         description: Whether behavioral qualification is required
         value: ${{ jobs.classify.outputs.code }}
       browser:
-        description: Whether browser-consumed inputs or its validation path require qualification
+        description: Whether actual browser inputs or validation controls require shared qualification
         value: ${{ jobs.classify.outputs.browser }}
       application:
         description: Ordinary consumer decision for application
@@ -45,7 +45,7 @@ jobs:
       native: ${{ steps.changes.outputs.native }}
       native_platform: ${{ steps.changes.outputs.native_platform }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false

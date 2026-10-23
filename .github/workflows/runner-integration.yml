@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build live E2E and Claude qualification images in their harness contexts
         run: |
           docker build -t symphony-live-node-smoke elixir/test/support/live_e2e_docker
@@ -84,14 +84,14 @@ jobs:
             false) test "$RUNNERS" = skipped ;;
             *) exit 1 ;;
           esac
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.plan.outputs.artifact_name }}
           path: plan
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.plan.outputs.has_builds == 'true'
         with:
           name: runner-candidate-metadata
@@ -111,7 +111,7 @@ jobs:
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ "$HAS_BUILDS" = true ]; then args+=(--built-metadata built/release.json); fi
           python3 scripts/release/prepare-manager-inputs.py --plan plan/component-plan.json --output manager-inputs "${args[@]}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: manager-inputs/*
@@ -162,20 +162,20 @@ jobs:
           esac
       - name: Checkout actual current manager
         if: needs.changes.outputs.code == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.changes.outputs.code == 'true'
         with:
           name: ${{ needs.plan.outputs.artifact_name }}
           path: plan
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.changes.outputs.code == 'true'
         with:
           name: current-manager-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: bound
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.changes.outputs.code == 'true'
         with:
           name: ${{ needs.manager-package.outputs.package_artifact }}
@@ -203,7 +203,7 @@ jobs:
         run: python3 scripts/release/probe-registry-closure.py --output evidence
       - name: Retain small current-manager and distribution cleanup receipts
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ordinary-current-manager-summary-${{ github.sha }}
           path: |
@@ -213,7 +213,7 @@ jobs:
           if-no-files-found: warn
       - name: Retain actual current-manager and owned cleanup evidence
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ordinary-current-manager-${{ github.sha }}
           path: evidence/*
