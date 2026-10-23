@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative event-wide documentation classification; no API or dependencies."""
+"""Conservative event-wide code and browser classification; no API or dependencies."""
 import importlib.util
 import json
 import os
@@ -50,7 +50,7 @@ def browser_required(paths, event=None, name=None):
         '.github/workflows/browser-smoke.yml', '.github/workflows/change-classification.yml',
         'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
     }
-    prefixes = ('.github/actions/', 'scripts/release/runner-cache-', 'scripts/release/build-runner-')
+    prefixes = ('scripts/ci/', '.github/actions/', 'scripts/release/runner-cache-', 'scripts/release/build-runner-')
     try:
         if any(PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts or
                path in exact or path.startswith(prefixes) for path in paths):
@@ -132,7 +132,9 @@ def main():
             f.write(f'code={value}\n')
             f.write('browser=' + str(browser).lower() + '\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
-    summary += 'Browser input qualification required: **' + str(browser).lower() + '**.\n\n'
+    summary += 'Browser qualification required: **' + str(browser).lower() + '**. ' + (
+        'Browser build/qualification inputs changed or diff discovery is unavailable.\n\n'
+        if browser else 'No browser build/qualification inputs changed.\n\n')
     # Render arbitrary Git paths as escaped JSON inside a code block.
     summary += 'Changed paths: ' + str(len(paths)) + '\n\n' + '\n'.join('    ' + json.dumps(p) for p in paths) + '\n'
     print(summary)

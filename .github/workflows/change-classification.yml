@@ -6,7 +6,7 @@ on:
         description: Whether behavioral qualification is required
         value: ${{ jobs.classify.outputs.code }}
       browser:
-        description: Whether browser-consumed inputs or its validation path require qualification
+        description: Whether actual browser inputs or validation controls require shared qualification
         value: ${{ jobs.classify.outputs.browser }}
 permissions:
   contents: read
