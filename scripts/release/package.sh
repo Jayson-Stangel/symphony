@@ -49,7 +49,7 @@ else
   revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 fi
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
-[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/symphony-environment.sh scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/symphony-environment.sh runner/templates docs/team-environments.md scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-platform)" = "$platform" ] || { echo 'helper platform differs from bundle build host' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-architecture)" = "$(uname -m)" ] || { echo 'helper architecture differs from bundle build host' >&2; exit 1; }
@@ -67,6 +67,9 @@ PYMANIFEST
 printf '%s\n' "$platform" > "$bundle/host-platform"
 cp "$root/scripts/symphony" "$root/scripts/symphony-package.sh" "$root/scripts/symphony-environment.sh" "$bundle/scripts/"
 if [ -f "$root/scripts/symphony-package-update.sh" ]; then cp "$root/scripts/symphony-package-update.sh" "$bundle/scripts/"; fi
+mkdir -p "$bundle/runner/templates" "$bundle/docs"
+cp "$root/runner/templates/"*.Dockerfile "$bundle/runner/templates/"
+cp "$root/docs/team-environments.md" "$bundle/docs/"
 cp "$root/elixir/WORKFLOW.md" "$bundle/elixir/"
 for skill in commit push pull linear land; do cp -R "$root/.codex/skills/$skill" "$bundle/.codex/skills/"; done
 cat > "$bundle/install.sh" <<'INSTALL'

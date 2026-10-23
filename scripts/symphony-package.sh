@@ -321,7 +321,7 @@ package_doctor() {
           selected=$(cat "$selection_file")
           runtime=$(container_runtime) || ready=false
           if [ -n "$runtime" ]; then
-            package_selected_image_compatible "$runtime" "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" provider)" || ready=false
+            selected_environment_validate_record "$runtime" "$selection_file" || ready=false
           fi
         else ready=false; fi
       fi

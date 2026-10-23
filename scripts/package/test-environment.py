@@ -90,7 +90,8 @@ package_selected_image_compatible() {{ [ -z "${{INCOMPATIBLE:-}}" ] || die incom
         result = self.run_shell('environment_use_project /project codex; printf "%s" "$SYMPHONY_RUNNER_IMAGE"', IMAGE_ID="sha256:" + "c" * 64)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, IMAGE)
-        self.assertEqual(self.log.read_text(), "")
+        operations = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertTrue(all(op[:2] == ["image", "inspect"] for op in operations))
 
     def test_missing_image_never_builds_pulls_or_changes_selection(self):
         result = self.select(MISSING="1")
@@ -126,6 +127,19 @@ package_selected_image_compatible() {{ [ -z "${{INCOMPATIBLE:-}}" ] || die incom
         result = self.run_shell('selected_environment_validate_all "$(container_runtime)"', INCOMPATIBLE="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("incompatible", result.stderr)
+
+    def test_valid_json_identity_corruption_refuses_without_rewriting(self):
+        self.assertEqual(self.select().returncode, 0)
+        original = json.loads(self.selection.read_text())
+        for field, value in (("runtime_revision", "d" * 40), ("platform", "linux/amd64")):
+            record = dict(original, **{field: value})
+            self.selection.write_text(json.dumps(record))
+            before = self.selection.read_bytes()
+            for body in ('environment_show /project true', 'selected_environment_image /project codex', 'selected_environment_validate_all "$(container_runtime)"'):
+                result = self.run_shell(body)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("differs from its immutable image", result.stderr)
+                self.assertEqual(self.selection.read_bytes(), before)
 
     def test_show_reports_real_runtime_separately(self):
         self.assertEqual(self.select().returncode, 0)
