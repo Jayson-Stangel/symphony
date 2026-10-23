@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Codex.SandboxReadiness
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -643,6 +644,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp agent_admission(state) do
     readiness = state.readiness || %{}
+
+    readiness =
+      if Config.coding_agent() == :codex and not SandboxReadiness.qualified?(),
+        do: %{ready: false, provider: "codex", code: "sandbox_inputs_changed"},
+        else: readiness
 
     admission = %{
       ready: false,

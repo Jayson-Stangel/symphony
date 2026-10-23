@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, Config, SSH, ToolCall, Workspace}
+  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, Codex.SandboxReadiness, Config, SSH, ToolCall, Workspace}
 
   @initialize_id 1
   @thread_start_id 2
@@ -40,33 +40,41 @@ defmodule SymphonyElixir.Codex.AppServer do
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
     dynamic_tool_binding = DynamicTool.bind()
+    settings = Config.settings!()
+    command = if is_nil(worker_host), do: pinned_command(settings.codex.command), else: settings.codex.command
 
-    with {:ok, expanded_workspace} <- Workspace.validate_agent_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding) do
+    runtime_opts = [remote: is_binary(worker_host)]
+
+    with true <- SandboxReadiness.qualified?(workspace, settings),
+         {:ok, expanded_workspace} <- Workspace.validate_agent_cwd(workspace, worker_host),
+         {:ok, session_policies} <- Config.resolve_codex_runtime_settings(settings, expanded_workspace, runtime_opts),
+         {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, command) do
       metadata = port_metadata(port, worker_host)
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
-           {:ok, thread_id, model} <-
-             do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
-        {:ok,
-         %{
-           port: port,
-           metadata: metadata,
-           approval_policy: session_policies.approval_policy,
-           auto_approve_requests: session_policies.approval_policy == "never",
-           thread_sandbox: session_policies.thread_sandbox,
-           turn_sandbox_policy: session_policies.turn_sandbox_policy,
-           thread_id: thread_id,
-           model: model,
-           workspace: expanded_workspace,
-           worker_host: worker_host,
-           dynamic_tool_binding: dynamic_tool_binding
-         }}
-      else
+      case do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
+        {:ok, thread_id, model} ->
+          {:ok,
+           %{
+             port: port,
+             metadata: metadata,
+             approval_policy: session_policies.approval_policy,
+             auto_approve_requests: session_policies.approval_policy == "never",
+             thread_sandbox: session_policies.thread_sandbox,
+             turn_sandbox_policy: session_policies.turn_sandbox_policy,
+             thread_id: thread_id,
+             model: model,
+             workspace: expanded_workspace,
+             worker_host: worker_host,
+             dynamic_tool_binding: dynamic_tool_binding
+           }}
+
         {:error, reason} ->
           stop_port(port)
           {:error, reason}
       end
+    else
+      false -> {:error, :sandbox_inputs_changed}
+      error -> error
     end
   end
 
@@ -183,7 +191,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
-  defp start_port(workspace, nil, dynamic_tool_binding) do
+  defp start_port(workspace, nil, dynamic_tool_binding, command) do
     executable = System.find_executable("bash")
 
     if is_nil(executable) do
@@ -196,7 +204,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
+            args: [~c"-c", String.to_charlist(local_launch_command(dynamic_tool_binding, command))],
             cd: String.to_charlist(workspace),
             env: tracker_secret_port_env(dynamic_tool_binding),
             line: @port_line_bytes
@@ -207,25 +215,36 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, worker_host, dynamic_tool_binding) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace, dynamic_tool_binding)
+  defp start_port(workspace, worker_host, dynamic_tool_binding, command) when is_binary(worker_host) do
+    remote_command = remote_launch_command(workspace, dynamic_tool_binding, command)
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp local_launch_command(dynamic_tool_binding) do
+  defp local_launch_command(dynamic_tool_binding, command) do
     [
       tracker_secret_unset_command(dynamic_tool_binding),
-      "exec #{Config.settings!().codex.command}"
+      "exec #{command}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
 
-  defp remote_launch_command(workspace, dynamic_tool_binding) when is_binary(workspace) do
+  # The public gate accepts a direct Codex command. Pin its already-qualified
+  # executable instead of allowing a login shell to select another installation.
+  # Nonstandard commands remain usable by protocol fixtures with explicit test
+  # receipts; they cannot establish a production receipt through the gate.
+  defp pinned_command(command) do
+    case Regex.run(~r/^([A-Za-z0-9_.\/+\-]+)( (?:(?:--config|-c) shell_environment_policy\.inherit=all )?app-server)$/, command) do
+      [_, binary, rest] -> shell_escape(System.find_executable(binary) || binary) <> rest
+      _ -> command
+    end
+  end
+
+  defp remote_launch_command(workspace, dynamic_tool_binding, command) when is_binary(workspace) do
     [
       "cd #{shell_escape(workspace)}",
       tracker_secret_unset_command(dynamic_tool_binding),
-      "exec #{Config.settings!().codex.command}"
+      "exec #{command}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
@@ -233,6 +252,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp tracker_secret_port_env(dynamic_tool_binding) do
     dynamic_tool_binding.secret_environment_names
+    |> Kernel.++(["BASH_ENV", "ENV"])
     |> valid_environment_names()
     |> Enum.map(fn name -> {String.to_charlist(name), false} end)
   end
@@ -288,14 +308,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       send_message(port, %{"method" => "initialized", "params" => %{}})
       :ok
     end
-  end
-
-  defp session_policies(workspace, nil) do
-    Config.codex_runtime_settings(workspace)
-  end
-
-  defp session_policies(workspace, worker_host) when is_binary(worker_host) do
-    Config.codex_runtime_settings(workspace, remote: true)
   end
 
   defp do_start_session(port, workspace, session_policies, dynamic_tool_binding) do

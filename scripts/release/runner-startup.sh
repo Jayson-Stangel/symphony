@@ -28,12 +28,19 @@ observability:
 No issues exist in this isolated credential-free release qualification.
 WORKFLOW
 chmod 644 "$fixture/WORKFLOW.md"
-docker run -d --name "$name" --network none --read-only --cap-drop ALL \
+launch=(docker run --cap-drop ALL)
+if [ "$provider" = codex ]; then
+  root=$(cd "$(dirname "$0")/../.." && pwd)
+  SYMPHONY_HOME="$root" source "$root/scripts/symphony" --help >/dev/null
+  launch=(runner_codex_run docker)
+fi
+"${launch[@]}" -d --name "$name" --network none --read-only \
   --security-opt no-new-privileges --pids-limit 512 \
   --tmpfs /tmp:rw,nosuid,nodev,size=128m \
   --tmpfs "$home:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
   --tmpfs "/var/lib/symphony:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
   --tmpfs "/workspaces:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
+  -e SYMPHONY_CONTAINERIZED=1 \
   -e SYMPHONY_GIT_TOKEN=credential-free-smoke-placeholder \
   --mount "type=bind,src=$fixture/WORKFLOW.md,dst=/etc/symphony/WORKFLOW.md,readonly" \
   "$image" >/dev/null
@@ -61,7 +68,13 @@ assert state['agent']['provider'] == sys.argv[1], state
 if sys.argv[1] == 'claude':
     assert state['agent']['readiness']['ready'] is False, state
     assert state['agent']['readiness']['code'] == 'auth_required', state
-# Codex readiness qualifies policy transport; it is not proof of native login.
+else:
+    assert state['agent']['readiness']['ready'] is True, state
+    assert state['agent']['admission']['ready'] is True, state
+    effective = state['agent']['execution']['effective']['codex']
+    assert effective['thread_sandbox'] == 'workspace-write', state
+    assert effective['turn_sandbox_type'] in ('default', 'workspaceWrite'), state
+# Credential-free readiness does not establish native account login.
 print(json.dumps({'counts': state['counts'], 'agent': state['agent']}, sort_keys=True))
 PY
 docker stop --time 20 "$name" >/dev/null

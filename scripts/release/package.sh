@@ -21,7 +21,7 @@ else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host
 if "$bundle/libexec/symphony-host" get "$manifest" "$field.sha256" >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
 revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
-[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/codex-seccomp.json scripts/codex-seccomp.LICENSE scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-platform)" = "$platform" ] || { echo 'helper platform differs from bundle build host' >&2; exit 1; }
 python3 - "$manifest" "$bundle/release.json" "$platform" <<'PYMANIFEST'
@@ -31,7 +31,7 @@ value["package_platform"]=sys.argv[3]
 with open(sys.argv[2],"w") as output: json.dump(value,output,indent=2,sort_keys=True); output.write("\n")
 PYMANIFEST
 printf '%s\n' "$platform" > "$bundle/host-platform"
-cp "$root/scripts/symphony" "$root/scripts/symphony-package.sh" "$bundle/scripts/"
+cp "$root/scripts/symphony" "$root/scripts/codex-seccomp.json" "$root/scripts/codex-seccomp.LICENSE" "$root/scripts/symphony-package.sh" "$bundle/scripts/"
 if [ -f "$root/scripts/symphony-package-update.sh" ]; then cp "$root/scripts/symphony-package-update.sh" "$bundle/scripts/"; fi
 cp "$root/elixir/WORKFLOW.md" "$bundle/elixir/"
 for skill in commit push pull linear land; do cp -R "$root/.codex/skills/$skill" "$bundle/.codex/skills/"; done

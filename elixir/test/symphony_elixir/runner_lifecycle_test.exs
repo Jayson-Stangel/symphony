@@ -44,6 +44,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *com.symphony.agent*) cat "$state.agent" ;;
           *com.symphony.port*)
             if [ "$(cat "$state.agent")" = '<no value>' ]; then echo '<no value>'; else cat "$state.port"; fi ;;
+          *com.symphony.codex.runtime*) cat "$state.codex-runtime" ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
           *com.symphony.storage*) cat "$state.storage" ;;
@@ -57,6 +58,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             esac ;;
         esac ;;
       image)
+        if [ -n "${FIXTURE_TAG_CHANGED_FILE:-}" ] && [ -f "$FIXTURE_TAG_CHANGED_FILE" ]; then
+          case "$*" in *'{{.Id}}'*runner-codex:*) echo unqualified-image; exit 0 ;; esac
+        fi
         case "$*" in
           *com.symphony.agent*)
             case "$*" in *runner-claude*|*fixture-claude-image*) echo claude ;; *) echo codex ;; esac ;;
@@ -81,6 +85,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
+          *--check-codex-sandbox*)
+            if [ -n "${FIXTURE_TAG_CHANGED_FILE:-}" ]; then touch "$FIXTURE_TAG_CHANGED_FILE"; fi
+            case "$*" in *unqualified-image*) echo sandbox_namespace_denied; exit 1 ;; esac
+            [ "${FIXTURE_SANDBOX_FAIL:-false}" != true ] || { echo sandbox_namespace_denied; exit 1; } ;;
           *--detach*)
             echo true > "$FIXTURE_STATE"
             printf '%s' "${!#}" > "$FIXTURE_STATE.image"
@@ -89,6 +97,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.storage=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.storage" ;;
                 com.symphony.agent=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.agent" ;;
                 com.symphony.port=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.port" ;;
+                com.symphony.codex.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.codex-runtime" ;;
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
             done
@@ -145,7 +154,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
         case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
-        for suffix in '' .agent .port .profile .image .storage; do
+        for suffix in '' .agent .port .profile .image .storage .codex-runtime; do
           if [ -f "$from$suffix" ]; then mv "$from$suffix" "$to$suffix"; fi
         done ;;
     esac
@@ -290,7 +299,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch(ctx, "start")
 
     calls = File.read!(ctx.log) |> String.split("\n", trim: true)
-    runs = Enum.filter(calls, &String.starts_with?(&1, "run\t"))
+    runs = Enum.filter(calls, &(String.starts_with?(&1, "run\t") and String.contains?(&1, "--detach\t")))
     assert [first, second] = runs
     assert first == second
     assert first =~ "--restart\tunless-stopped\t"
@@ -1217,6 +1226,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch(ctx, "doctor")
     calls = File.read!(ctx.log)
     assert calls =~ "login\tstatus"
+    assert calls =~ "--check-codex-sandbox"
     assert calls =~ "--network\tnone"
     refute calls =~ "--detach"
     refute calls =~ "build\t"
@@ -1225,9 +1235,86 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["runner", "doctor", "--agent", "claude"])
     calls = File.read!(ctx.log)
     assert calls =~ "auth.mjs\tcheck"
+    refute calls =~ "--check-codex-sandbox"
     refute calls =~ "--detach"
     refute calls =~ "build\t"
     refute File.exists?(ctx.state)
+  end
+
+  test "sandbox refusal prevents fresh listener and doctor authentication", ctx do
+    for args <- [["runner", "start"], ["runner", "doctor"]] do
+      File.write!(ctx.log, "")
+      assert {output, 1} = launch_args(ctx, args, [{"FIXTURE_SANDBOX_FAIL", "true"}])
+      assert output =~ "sandbox_namespace_denied"
+      refute File.exists?(ctx.state)
+      calls = File.read!(ctx.log)
+      refute calls =~ "--detach"
+      refute calls =~ "login\tstatus"
+      check = calls |> String.split("\n") |> Enum.find(&String.contains?(&1, "--check-codex-sandbox"))
+      refute check =~ "codex-auth"
+      refute check =~ "--env-file"
+      assert check =~ "--volume\t/workspaces"
+      assert check =~ "SYMPHONY_CONTAINERIZED=1"
+      assert check =~ "seccomp="
+    end
+  end
+
+  test "candidate sandbox refusal preserves usable runner and user files before drain", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    before = {File.read!(ctx.state), File.read!(metadata), File.read!(credentials)}
+    canary = Path.join(ctx.repo, "untracked-work")
+    File.write!(canary, "preserve user work")
+    File.write!(ctx.log, "")
+    assert {output, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_SANDBOX_FAIL", "true"}])
+    assert output =~ "sandbox_namespace_denied"
+    assert before == {File.read!(ctx.state), File.read!(metadata), File.read!(credentials)}
+    assert File.read!(canary) == "preserve user work"
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    calls = File.read!(ctx.log)
+    refute calls =~ "stop\t"
+    refute calls =~ "rename\t"
+    refute calls =~ "--detach"
+  end
+
+  test "packaged pending journal retry checks sandbox before draining retained source", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    File.mkdir!(journal)
+    fields = %{"target" => "codex", "port" => "4010", "image" => "fixture-image", "package.revision" => "fixture-revision"}
+    Enum.each(fields, fn {name, value} -> File.write!(Path.join(journal, name), value) end)
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
+    File.write!(Path.join(journal, "previous.env"), metadata)
+    File.write!(ctx.log, "")
+    # Exercise the actual packaged retry control flow with prepared immutable
+    # image metadata. Native manifest/host-helper validation has separate tests.
+    script = """
+    source "$1" --help >/dev/null
+    runner_project_lock "$2"
+    packaged_install=true
+    project_id() { printf '%s' "$FIXTURE_PROJECT_ID"; }
+    legacy_project_id() { printf service; }
+    source_revision() { printf fixture-revision; }
+    package_image() { printf fixture-image; }
+    package_release_image() { return 0; }
+    package_helper() {
+      case "$1" in lock-directory) return 0 ;; sha256) shasum -a 256 "$2" | cut -d ' ' -f 1 ;; *) return 1 ;; esac
+    }
+    runner_transition "$2" codex false
+    """
+
+    env = Map.merge(Map.new(ctx.env), %{"FIXTURE_PROJECT_ID" => @project_id, "FIXTURE_SANDBOX_FAIL" => "true"}) |> Enum.to_list()
+    assert {output, 1} = System.cmd("bash", ["-euc", script, "retry", @launcher, ctx.repo], env: env, cd: ctx.repo, stderr_to_stdout: true)
+    assert output =~ "sandbox_namespace_denied"
+    assert File.read!(ctx.state) |> String.trim() == "true"
+    assert File.read!(Path.join(journal, "previous.env")) == metadata
+    Enum.each(fields, fn {name, value} -> assert File.read!(Path.join(journal, name)) == value end)
+    calls = File.read!(ctx.log)
+    refute calls =~ "stop\t"
+    refute calls =~ "rename\t"
+    refute calls =~ "--detach"
   end
 
   test "foreign native volumes and active profile removal fail before native mutation", ctx do
@@ -1263,6 +1350,41 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   defp launch(ctx, command), do: launch_args(ctx, ["runner", command])
+
+  test "candidate tag changes after qualification cannot select a different image", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    changed = Path.join(ctx.root, "tag-changed")
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_TAG_CHANGED_FILE", changed}])
+    assert File.exists?(changed)
+    assert File.read!(ctx.state <> ".image") == "fixture-image"
+  end
+
+  test "same-image transition replaces an old runtime profile instead of recovering it", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".codex-runtime", "old-profile")
+    File.write!(ctx.log, "")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"])
+    assert message =~ "Runner transition complete"
+    refute message =~ "Previously completed"
+    calls = File.read!(ctx.log)
+    assert calls =~ "rename\t"
+    assert calls =~ "--detach"
+    refute File.read!(ctx.state <> ".codex-runtime") == "old-profile"
+  end
+
+  test "same-image reuse refuses a changed runtime profile without touching the runner", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".codex-runtime", "old-profile")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["run"])
+    assert message =~ "Codex runtime profile differs"
+    calls = File.read!(ctx.log)
+    refute calls =~ "stop\t"
+    refute calls =~ "rm\t"
+    refute calls =~ "--check-codex-sandbox"
+  end
 
   defp launch_args(ctx, args, extra_env \\ []) do
     env = Map.merge(Map.new(ctx.env), Map.new(extra_env)) |> Enum.to_list()

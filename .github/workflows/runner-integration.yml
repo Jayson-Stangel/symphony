@@ -51,6 +51,9 @@ jobs:
         run: |
           bash runner/node-smoke.sh symphony-codex-smoke symphony-claude-smoke
           docker run --rm --network none --entrypoint codex symphony-codex-smoke --version
+      - name: Qualify real credential-free Codex protected command effects
+        if: needs.changes.outputs.code != 'false'
+        run: bash runner/codex-sandbox-smoke.sh symphony-codex-smoke
       - name: Verify isolated updater, rollback and project identity lifecycle
         if: needs.changes.outputs.code != 'false'
         run: python3 runner/updater-smoke.py symphony-codex-smoke symphony-claude-smoke

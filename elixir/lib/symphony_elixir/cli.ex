@@ -3,7 +3,7 @@ defmodule SymphonyElixir.CLI do
   Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
   """
 
-  alias SymphonyElixir.LogFile
+  alias SymphonyElixir.{Codex.SandboxReadiness, LogFile}
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, agent: [:string, :keep]]
@@ -11,6 +11,7 @@ defmodule SymphonyElixir.CLI do
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
           optional(:set_coding_agent) => (:codex | :claude -> :ok),
+          optional(:check_sandbox) => (-> :ok | {:error, String.t()}),
           file_regular?: (String.t() -> boolean()),
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
@@ -26,6 +27,22 @@ defmodule SymphonyElixir.CLI do
   @doc false
   @spec main([String.t()], (-> ensure_started_result())) :: no_return()
   def main(args, ensure_all_started) do
+    if match?(["--check-codex-sandbox", _], args) do
+      [_, workflow] = args
+      SymphonyElixir.Workflow.set_workflow_file_path(Path.expand(workflow))
+
+      case SandboxReadiness.check() do
+        :ok ->
+          IO.puts("Codex sandbox protected-command checks passed.")
+
+        {:error, code} ->
+          IO.puts(:stderr, "Codex sandbox not ready: #{code}")
+          System.halt(1)
+      end
+
+      System.halt(0)
+    end
+
     case evaluate(args, runtime_deps(ensure_all_started)) do
       :ok ->
         wait_for_shutdown()
@@ -67,15 +84,18 @@ defmodule SymphonyElixir.CLI do
     if deps.file_regular?.(expanded_path) do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
-      case deps.ensure_all_started.() do
-        {:ok, _started_apps} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
+      with :ok <- Map.get(deps, :check_sandbox, fn -> :ok end).() do
+        start_application(expanded_path, deps)
       end
     else
       {:error, "Workflow file not found: #{expanded_path}"}
+    end
+  end
+
+  defp start_application(path, deps) do
+    case deps.ensure_all_started.() do
+      {:ok, _started_apps} -> :ok
+      {:error, reason} -> {:error, "Failed to start Symphony with workflow #{path}: #{inspect(reason)}"}
     end
   end
 
@@ -92,8 +112,20 @@ defmodule SymphonyElixir.CLI do
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
-      ensure_all_started: ensure_all_started
+      ensure_all_started: ensure_all_started,
+      check_sandbox: &check_sandbox/0
     }
+  end
+
+  defp check_sandbox do
+    if SymphonyElixir.Config.coding_agent() == :codex do
+      case SandboxReadiness.check() do
+        :ok -> :ok
+        {:error, code} -> {:error, "Codex sandbox not ready: #{code}"}
+      end
+    else
+      :ok
+    end
   end
 
   defp maybe_set_coding_agent(opts, deps) do

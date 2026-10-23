@@ -5,7 +5,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
-  test "container environment gives the local worker full access" do
+  test "container environment retains protected workspace execution" do
     keys = ["SYMPHONY_CONTAINERIZED"]
     previous = Map.new(keys, &{&1, System.get_env(&1)})
 
@@ -18,8 +18,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert settings.workspace.root == "/workspaces"
     assert settings.server.host == "0.0.0.0"
     assert settings.codex.approval_policy == "never"
-    assert settings.codex.thread_sandbox == "danger-full-access"
-    assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+    assert settings.codex.thread_sandbox == "workspace-write"
+    assert settings.codex.turn_sandbox_policy == nil
   end
 
   test "container bindings expose safe requested and effective values for both providers" do
@@ -68,12 +68,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert settings.execution.effective.codex == %{
                approval_policy: "never",
-               thread_sandbox: "danger-full-access",
-               turn_sandbox_type: "dangerFullAccess"
+               thread_sandbox: "custom",
+               turn_sandbox_type: "workspaceWrite"
              }
 
       refute inspect(settings.execution) =~ "secret-canary"
-      assert settings.codex.turn_sandbox_policy == %{"type" => "dangerFullAccess"}
+      assert settings.codex.turn_sandbox_policy == config["codex"]["turn_sandbox_policy"]
 
       requested_ssh = Map.put(config, "worker", %{"ssh_hosts" => ["ssh.example"]})
       assert {:error, {:invalid_workflow_config, message}} = Schema.parse(requested_ssh)

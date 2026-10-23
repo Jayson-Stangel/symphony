@@ -174,17 +174,24 @@ defmodule SymphonyElixir.Config do
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
     with {:ok, settings} <- settings() do
-      with {:ok, turn_sandbox_policy} <-
-             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
-        {:ok,
-         %{
-           model: settings.codex.model,
-           reasoning_effort: settings.codex.reasoning_effort,
-           approval_policy: settings.codex.approval_policy,
-           thread_sandbox: settings.codex.thread_sandbox,
-           turn_sandbox_policy: turn_sandbox_policy
-         }}
-      end
+      resolve_codex_runtime_settings(settings, workspace, opts)
+    end
+  end
+
+  @doc false
+  @spec resolve_codex_runtime_settings(Schema.t(), Path.t() | nil, keyword()) ::
+          {:ok, codex_runtime_settings()} | {:error, term()}
+  def resolve_codex_runtime_settings(settings, workspace, opts) do
+    with {:ok, turn_sandbox_policy} <-
+           Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+      {:ok,
+       %{
+         model: settings.codex.model,
+         reasoning_effort: settings.codex.reasoning_effort,
+         approval_policy: settings.codex.approval_policy,
+         thread_sandbox: settings.codex.thread_sandbox,
+         turn_sandbox_policy: turn_sandbox_policy
+       }}
     end
   end
 

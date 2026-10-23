@@ -915,6 +915,21 @@ runner_report() {
   fi
 }
 
+codex_runtime_profile_id() { printf '%s' '9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b'; }
+
+# One launch adapter is shared by Codex listeners and credential-free probes.
+# Runtime security inputs belong here rather than in a diagnostic-only path.
+runner_codex_run() {
+  local runtime=$1; shift
+  local profile="$symphony_home/scripts/codex-seccomp.json" digest
+  [ -f "$profile" ] && [ ! -L "$profile" ] || die 'Codex runtime profile is missing or unsafe'
+  if "$packaged_install"; then digest=$(package_helper sha256 "$profile")
+  elif command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$profile"); digest=${digest%% *}
+  else digest=$(shasum -a 256 "$profile"); digest=${digest%% *}; fi
+  [ "$digest" = "$(codex_runtime_profile_id)" ] || die 'Codex runtime profile integrity check failed'
+  "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
+}
+
 runner_start() {
   local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume
   validate_agent "$agent"
@@ -957,6 +972,9 @@ runner_start() {
       image_id=$("$runtime" image inspect --format '{{.Id}}' "$image")
       existing_image=$("$runtime" inspect --format '{{.Image}}' "$name")
       [ -n "$image_id" ] && [ "$image_id" = "$existing_image" ] || die 'listener image differs; transition through symphony update --agent'
+      if [ "$agent" = codex ]; then
+        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
+      fi
       if [ "$agent" = claude ]; then
         profile=$(claude_native_profile)
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")" = "$profile" ] || die 'listener native profile differs; transition through symphony update --agent'
@@ -989,6 +1007,7 @@ runner_start() {
     ) || return 1
   fi
   if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
+  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image_id"; fi
   [ "$state" = missing ] || "$runtime" rm "$name" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-workspaces" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-state" >/dev/null
@@ -1008,9 +1027,10 @@ runner_start() {
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
     unset SYMPHONY_GIT_TOKEN
   else
-  "$runtime" run --detach --restart unless-stopped --name "$name" \
+  runner_codex_run "$runtime" --detach --restart unless-stopped --name "$name" \
     --label com.symphony.mode=listener \
     --label "com.symphony.storage=$storage_id" \
+    --label "com.symphony.codex.runtime=$(codex_runtime_profile_id)" \
     --label com.symphony.agent=codex --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
     --publish "127.0.0.1:$port:4010" \
     --env-file "$project_env" \
@@ -1332,8 +1352,9 @@ runner_refresh_pending() {
   fi
   export SYMPHONY_RUNNER_IMAGE="$desired"
   runner_build_image "$agent"
-  runner_doctor "$root" "$agent"
   replacement=$("$runtime" image inspect --format '{{.Id}}' "$desired")
+  export SYMPHONY_RUNNER_IMAGE="$replacement"
+  runner_doctor "$root" "$agent"
   [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
   if [ "$replacement" = "$old" ]; then return; fi
 
@@ -1501,6 +1522,7 @@ runner_transition() (
       [ "$(cat "$journal/package.revision")" = "$(source_revision)" ] || die 'pending packaged release revision differs; updater refused'
       package_release_image "$runtime" "$candidate" "$agent" "$(source_revision)"
       [ "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" = "$(cat "$journal/image")" ] || die 'pending packaged image differs from selected release; updater refused'
+      if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$(cat "$journal/image")"; fi
     fi
     if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
     candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
@@ -1515,6 +1537,8 @@ runner_transition() (
     [ -r "$env_file" ] || die 'runner metadata is missing; updater refused'
     port=$(runner_update_port "$root" "$runtime" "$name")
     runner_build_image "$agent"
+    candidate=$("$runtime" image inspect --format '{{.Id}}' "$candidate")
+    export SYMPHONY_RUNNER_IMAGE="$candidate"
     runner_doctor "$root" "$agent"
     local journal_tmp
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
@@ -1525,7 +1549,7 @@ runner_transition() (
     fi
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
-    "$runtime" image inspect --format '{{.Id}}' "$candidate" >"$journal_tmp/image"
+    printf '%s\n' "$candidate" >"$journal_tmp/image"
     if "$packaged_install"; then package_write_transition "$journal_tmp" || return; fi
     mv "$journal_tmp" "$journal"
   fi
@@ -1534,7 +1558,8 @@ runner_transition() (
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
     if [ "$(runner_status "$root")" = true ] &&
        ! runner_is_legacy "$runtime" "$name" &&
-       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ]; then
+       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] &&
+       { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
@@ -1557,6 +1582,9 @@ runner_transition() (
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
     [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
+    if [ "$agent" = codex ]; then
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id)" ] || die 'candidate Codex runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
+    fi
     if [ "$(runner_status "$root")" = false ]; then
       # The retained container already has the chosen immutable image, mounts and
       # persistent drain markers. Restart it without recreating or rewriting them.
@@ -1648,11 +1676,24 @@ runner_stop() {
   printf 'Runner stopped: %s\nContainer, workspace and log volumes retained for restart or updater transition.\n' "$name"
 }
 
+runner_codex_sandbox_ready() {
+  local root=$1 runtime=$2 image=$3
+  # Same user and Docker security defaults as the Codex listener. Anonymous
+  # storage replaces project data/auth; --rm owns its cleanup. No model request,
+  # native login, host home or project credential is made available to the probe.
+  runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
+    --volume "$root/WORKFLOW.md:/etc/symphony/WORKFLOW.md:ro" \
+    --volume /workspaces --volume /var/lib/symphony \
+    --entrypoint /usr/bin/timeout "$image" --signal=KILL 25 \
+    /opt/symphony/elixir/bin/symphony --check-codex-sandbox /etc/symphony/WORKFLOW.md
+}
+
 runner_doctor() {
   if "$packaged_install"; then package_use_project_image "$1" "${2:-codex}"; fi
   local root=$1 agent=${2:-codex} runtime image
   validate_agent "$agent"
   runtime=$(container_runtime); image=$(runner_image "$agent")
+  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image"; fi
   if [ "$agent" = claude ]; then claude_auth check
   else auth_codex_check; fi
   "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
