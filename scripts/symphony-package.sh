@@ -160,6 +160,18 @@ package_use_project_image() {
   esac
 }
 
+# Verify the selected home's own helper, not the currently running manager's
+# compiled revision: previous and future release homes have distinct sources.
+package_verify_home_source() {
+  local source=$1 count actual expected
+  package_helper owned-file "$source/libexec/symphony-host" || return
+  count=$(LC_ALL=C grep -Ecx '[a-f0-9]{64}  \./libexec/symphony-host' "$source/files.sha256" || true)
+  [ "$count" = 1 ] || die 'bundle inventory must bind its exact host helper'
+  actual=$("$source/libexec/symphony-host" build-revision) || return
+  expected=$(package_helper manager-revision "$source/release.json") || return
+  [ "$actual" = "$expected" ] || die 'selected home helper differs from actual manager source revision'
+}
+
 package_stage_bundle() {
   local source=$1 destination stage version revision
   package_helper validate-release "$source/release.json" || return
@@ -167,6 +179,7 @@ package_stage_bundle() {
   revision=$(package_helper get "$source/release.json" source_revision) || return
   [ "$(package_manifest_platform "$source/release.json")" = "$package_platform" ] || die 'bundle platform does not match this host'
   package_helper verify-files "$source" || return
+  package_verify_home_source "$source" || return
   destination="$package_app_home/releases/$version-$revision"
   # Validate each owned storage boundary before following it for staging.
   # mkdir-p would follow an existing (including dangling) releases symlink.
