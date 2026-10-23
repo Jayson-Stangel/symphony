@@ -46,6 +46,22 @@ def join(plan, records, revision, verify):
     return selected
 
 
+def validate_join_checkout(root,plan,selected):
+    import subprocess
+    actual=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    artifacts.require(actual==plan.get('manager_source_revision'),'joined plan differs from actual manager checkout')
+    from finite_transition import evaluate_component
+    from runner_inputs import identity
+    for record in selected:
+        provider,architecture=record['provider'],record['architecture']
+        decision=plan['components'][provider][architecture]
+        artifacts.require(identity(root,provider,architecture)['input_identity']==decision['input_identity'],
+                          'actual manager checkout input differs from planned component')
+        if decision.get('selection_mode')=='finite-component-v1':
+            artifacts.require(evaluate_component(root,record,provider,architecture)==decision['input_transition'],
+                              'actual source differs from finite component plan')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', required=True)
@@ -67,12 +83,7 @@ def main():
             return selected_verifier(record)
         plan = json.loads(Path(args.plan).read_text())
         selected = join(plan, args.records, revision, verify)
-        from finite_transition import evaluate_component
-        for record in selected:
-            decision=plan['components'][record['provider']][record['architecture']]
-            if decision.get('selection_mode')=='finite-component-v1':
-                artifacts.require(evaluate_component('.',record,record['provider'],record['architecture'])==decision['input_transition'],
-                                  'actual source differs from finite component plan')
+        validate_join_checkout('.',plan,selected)
         output = Path(args.output)
         output.mkdir(parents=True, exist_ok=True)
         files = []
