@@ -43,6 +43,8 @@ func validateManifestObject(_ manifest: [String: Any]) throws -> [String: Any] {
         let compatibility = object(manifest["compatibility"])
         guard Set(compatibility.keys) == Set(["runner_protocol"]), integer(compatibility["runner_protocol"]) == 1 else { fail("unsupported manager/runner compatibility") }
     }
+    if schema == 2 { validateComponentSelections(manifest, revision: revision) }
+    else if manifest["component_selections"] != nil { fail("component selections require schema2") }
     guard Set(object(manifest["runners"]).keys) == Set(["codex", "claude"]) else { fail("both runner providers are required") }
     let bridgeOriginals = object(manifest["original_components"])
     if manifest["original_components"] != nil {
@@ -230,6 +232,34 @@ func canonicalCoreJSON(_ value: Any) -> String {
 // This is the finite reviewed 68 source-to-host-policy transition, not a path allowlist.
 let transitionAuthority = "13d8a16cc765fb4844f4a1269fb0192210d794d2f47802f7a705c86602300f36"
 let reviewedTransition = object(try! json(Data(#"{"changes":[{"after":{"blob":"1064cc082cafe6880bf7fbd731fd629f5b2f13eb","mode":"100644","sha256":"40424ff480652b279f75ed64b2bf4efe17020bccb2b0e17be0db7c9c3c2edaf9"},"before":{"blob":"f4ed3fbaaa3854b81b13152ae017d0f198bdb615","mode":"100644","sha256":"f39384f8ea29822f985096f73cc5f564cae09f30bb053a3c0f20ff9a5dc068b3"},"classification":"human-readme-v1","path":"elixir/README.md"},{"after":{"blob":"aad0dfc711d21ec469f07e51f83c8ad4f3a9a219","mode":"100644","sha256":"affa5d0f6498cb924f3b7d0da607592cf81fa6b831a8e3d9c381867c86e5171d"},"before":{"blob":"f2269f266c7359e91a168148da871864e731577a","mode":"100644","sha256":"86332e5f23b77098d6ae89f16444a3705aafd0001227cbbdee956c32df253a3f"},"classification":"standalone-targets-v1","path":"elixir/mix.exs"}],"manager_input_identities":{"claude":{"arm64":"31582b7a9278d96848bc989781650f6cbef1101a4445d21e25e6e79091ce0b8f","x86_64":"c73a52fd00ff0f92ccb0da5d779e7076182c9700d69de6757a8c3d9387af6465"},"codex":{"arm64":"b245620ee7ac849272634298b6ecaad783871e914ee80a825c301162b3c1f830","x86_64":"4e1ba5d3f712f27c759367617cbe041305d92457f50589a7878f939b4419b33e"}},"source_input_identities":{"claude":{"arm64":"cb5b2cdae310d75b083c8152118b76b28ffcbdb5eb8da80069b0612e4fbb3935","x86_64":"5e18d340c018720eb8eb4457deeb9aa6513467660744a507b8814d844870e8aa"},"codex":{"arm64":"bfd2b01487d18d5494244c7fd1204184cfbf2177d579ab7128de386d7762e11a","x86_64":"01613d9baa3a9557d358c2dfbd3bf755a7de127dc1a109a4d8f3a82002affd68"}},"source_revision":"68ae23bb195965b96c53b3532d5fab01d7244453"}"#.utf8)))
+func componentSelection(provider: String, arch: String, revision: String) -> [String: Any] {
+    return ["schema_version": 1, "authority_sha256": transitionAuthority,
+            "source_revision": reviewedTransition["source_revision"]!, "manager_source_revision": revision,
+            "provider": provider, "architecture": arch,
+            "selected_input_identity": object(object(reviewedTransition["source_input_identities"])[provider])[arch]!,
+            "desired_input_identity": object(object(reviewedTransition["manager_input_identities"])[provider])[arch]!,
+            "changes": reviewedTransition["changes"]!]
+}
+func validateComponentSelections(_ manifest: [String: Any], revision: String) {
+    let selections = object(manifest["component_selections"])
+    if manifest["component_selections"] != nil {
+        guard Set(selections.keys) == Set(["codex", "claude"]) else { fail("invalid finite component provider set") }
+        for provider in ["codex", "claude"] {
+            guard selections[provider] is [String: Any], Set(object(selections[provider]).keys).isSubset(of: Set(["arm64", "x86_64"])) else { fail("invalid finite component platform set") }
+        }
+    }
+    for provider in ["codex", "claude"] { for arch in ["arm64", "x86_64"] {
+        let record = object(object(object(manifest["runners"])[provider])[arch])
+        let receipt = object(object(selections[provider])[arch])
+        let finite = record["source_revision"] as? String == reviewedTransition["source_revision"] as? String && revision != reviewedTransition["source_revision"] as? String
+        if finite {
+            let expected = componentSelection(provider: provider, arch: arch, revision: revision)
+            guard Set(receipt.keys) == Set(expected.keys), integer(receipt["schema_version"]) == 1,
+                  NSDictionary(dictionary: receipt).isEqual(to: expected),
+                  record["input_identity"] as? String == expected["selected_input_identity"] as? String else { fail("missing or altered finite original component selection") }
+        } else if object(selections[provider])[arch] != nil { fail("orphan finite component selection") }
+    } }
+}
 func validateTransition(_ compatibility: [String: Any], originals: [String: Any], revision: String, legacy: String) {
     guard Set(compatibility.keys) == Set(["runner_protocol", "selection_mode", "input_transition"]),
           integer(compatibility["runner_protocol"]) == 1,
@@ -338,6 +368,11 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     normalized["runners"] = originals
     normalized["distribution"] = distribution
     normalized["compatibility"] = ["runner_protocol": 1]
+    normalized["component_selections"] = Dictionary(uniqueKeysWithValues: ["codex", "claude"].map { provider in
+        (provider, Dictionary(uniqueKeysWithValues: ["arm64", "x86_64"].map { arch in
+            (arch, componentSelection(provider: provider, arch: arch, revision: envelope.revision))
+        }))
+    })
     normalized["supported_hosts"] = core["supported_hosts"]
     _ = try validateManifestObject(normalized)
     normalized["storage_revision"] = legacy
