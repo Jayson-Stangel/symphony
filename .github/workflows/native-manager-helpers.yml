@@ -50,6 +50,7 @@ jobs:
           python3 scripts/package/test-package.py -v
           python3 scripts/package/test-selected-image.py -v
           python3 scripts/package/test-environment.py -v
+          python3 scripts/package/test-manager-protocol.py -v
       - name: Execute artifact in clean Ubuntu 26.04 without build tools
         if: matrix.platform == 'linux_x86_64'
         env:
