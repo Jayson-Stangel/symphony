@@ -127,6 +127,14 @@ class AuthTests(unittest.TestCase):
             def close(self):pass
         return publish.GHCR('jayson-stangel/symphony-codex','Fixture','NONCREDENTIAL-placeholder',connection=Connection),calls
 
+    def test_upload_read_default_and_oversized_requests_are_capped(self):
+        class Spy:
+            def __init__(self):self.sizes=[]
+            def read(self,size):self.sizes.append(size);return b'x'
+        stream=Spy();reader=publish.Upload(stream,2,'sha256:'+'a'*64)
+        reader.read();reader.read(1<<40)
+        self.assertEqual(stream.sizes,[1<<20,1<<20])
+
     def test_basic_only_fixed_token_endpoint_bearer_only_fixed_repo(self):
         client,calls=self.client([Response(value={'token':'SYNTHETIC-bearer','expires_in':300}),Response(200,headers={'Content-Length':'0'})])
         client.request('HEAD','/blobs/sha256:'+'a'*64,maximum=0)

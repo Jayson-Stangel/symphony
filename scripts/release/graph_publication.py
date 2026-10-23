@@ -106,7 +106,7 @@ class Upload:
         self.deadline = time.monotonic() + 1200
     def read(self, size=-1):
         graph.require(time.monotonic() < self.deadline, 'publication upload deadline exceeded')
-        block = self.stream.read(size); self.count += len(block); self.digest.update(block)
+        block = self.stream.read((1 << 20) if size < 0 else min(size, 1 << 20)); self.count += len(block); self.digest.update(block)
         graph.require(self.count <= self.size, 'publication upload grew')
         return block
     def tell(self): return self.stream.tell()
