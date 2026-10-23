@@ -48,7 +48,8 @@ class EnvelopeTests(unittest.TestCase):
             repo=Path(t)/'repo'
             subprocess.run(['git','clone','--shared','--quiet',str(ROOT),str(repo)],check=True)
             path=repo/'runner/claude/entrypoint.sh'
-            path.write_bytes(path.read_bytes()+b'\nprintf "bounded-claude-input-probe\\n" >&2\n')
+            first,body=path.read_bytes().split(b'\n',1)
+            path.write_bytes(first+b'\nprintf "bounded-claude-input-probe\\n" >&2\n'+body)
             subprocess.run(['git','-C',str(repo),'add','runner/claude/entrypoint.sh'],check=True)
             subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','Change actual Claude runtime input'],check=True)
             mixed=plan(repo,{},verify=self.verify,candidates=self.fixture['records'])
