@@ -248,8 +248,8 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Same metadata validation plus make-all, package, listener/updater and browser qualification |
-| Merge/push to dev or main | Before/after classification; named wrappers report omission | Behavioral qualification |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Same metadata validation plus make-all, package, listener/updater qualification; browser qualification when its inputs change |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | Behavioral qualification; browser qualification when its inputs change |
 | Manual candidate / version tag | Full candidate/release qualification | Full candidate/release qualification |
 
 The classifier uses the complete PR merge-base-to-head diff, or the exact push
@@ -259,6 +259,30 @@ failures require behavioral qualification. Workflow-level path filters are not
 used for required checks, so documentation PRs do not leave pending contexts.
 The classification job lists paths and the decision in its summary. Required
 wrappers reject failed, cancelled, missing or invalid classifier outputs.
+
+The required `browser-smoke / chromium` check uses the same event diff with a
+separate `browser` decision. Unrelated Elixir/application and prose changes omit
+checkout, image build and browser execution and explicitly report qualification
+as intentionally omitted, not executed. Missing/invalid/empty history requires
+browser qualification; failed/cancelled classifiers or malformed outputs fail
+the wrapper before any omission can pass.
+
+Its dependency closure follows the actual consumers:
+
+- `runner/Dockerfile` includes the `browser-tools` stage and its Node base stage;
+  `runner/browser/` supplies package manifests, lockfile and smoke script.
+- `.dockerignore` and `runner/Dockerfile.dockerignore` control the build context.
+- `.github/actions/build-runner/` builds that target and invokes
+  `scripts/release/runner-cache-policy.sh`; `runner/node-smoke.sh` verifies Node.
+- `.github/workflows/browser-smoke.yml`,
+  `.github/workflows/change-classification.yml` and `scripts/ci/` own routing,
+  required wrapper semantics and their regressions.
+
+Keep this set aligned with new COPY sources, build stages and invoked tools.
+The later application/Claude/Codex stages are not dependencies of `browser-tools`.
+Relevant changes retain root and UID/GID 11001 Chromium and CLI coverage. Release
+and manual candidate paths continue their existing actual-image qualification
+through `scripts/release/runner-smoke.sh` without consulting the browser decision.
 
 Human-facing prose is explicitly allowlisted in `scripts/ci/classify_changes.py`.
 Packaged agent skills and runtime `WORKFLOW.md` templates remain code inputs.

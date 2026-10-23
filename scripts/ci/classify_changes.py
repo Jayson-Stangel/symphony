@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative event-wide documentation classification; no API or dependencies."""
+"""Conservative event-wide code and browser classification; no API or dependencies."""
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -21,6 +21,22 @@ def documentation(path):
         return True
     return (path.startswith(('docs/', 'elixir/docs/')) and
             p.suffix.lower() in ('.md', '.txt', '.rst'))
+
+
+# Dependency closure of browser-smoke -> build-runner -> browser-tools and
+# node-smoke. Keep aligned with the build/consumer map in docs/development.md.
+BROWSER_FILES = {
+    'runner/Dockerfile', '.dockerignore', 'runner/Dockerfile.dockerignore',
+    'runner/node-smoke.sh', 'scripts/release/runner-cache-policy.sh',
+    '.github/workflows/browser-smoke.yml',
+    '.github/workflows/change-classification.yml',
+}
+BROWSER_TREES = ('runner/browser/', '.github/actions/build-runner/', 'scripts/ci/')
+
+
+def browser_required(paths):
+    # Discovery failures (including empty diffs) never prove safe omission.
+    return not paths or any(p in BROWSER_FILES or p.startswith(BROWSER_TREES) for p in paths)
 
 
 def git(*args):
@@ -64,10 +80,14 @@ def main():
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     docs, reason, paths = classify(event, os.environ['GITHUB_EVENT_NAME'])
     value = 'false' if docs else 'true'
+    browser = 'true' if browser_required(paths) else 'false'
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-            f.write(f'code={value}\n')
+            f.write(f'code={value}\nbrowser={browser}\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
+    summary += f'Browser qualification required: **{browser}**. ' + (
+        'Browser build/qualification inputs changed or diff discovery is unavailable.\n\n'
+        if browser == 'true' else 'No browser build/qualification inputs changed.\n\n')
     # Render arbitrary Git paths as escaped JSON inside a code block.
     summary += 'Changed paths: ' + str(len(paths)) + '\n\n' + '\n'.join('    ' + json.dumps(p) for p in paths) + '\n'
     print(summary)
