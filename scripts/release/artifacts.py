@@ -54,6 +54,7 @@ def validate(value, require_bundle=True):
             require(isinstance(tools, dict), "tool versions must be an object")
             for tool in (provider, "git", "node", "playwright"):
                 require(isinstance(tools.get(tool), str) and bool(tools[tool].strip()), f"missing {tool} version")
+    if schema==1:require('component_selections' not in value,'component selections require independent component schema')
     if schema==2:
         from finite_transition import validate_manifest_selections
         validate_manifest_selections(value)

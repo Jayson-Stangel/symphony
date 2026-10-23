@@ -113,6 +113,25 @@ class EnvelopeTests(unittest.TestCase):
             outer=json.loads(path.read_text());outer['version']=outer['version'].replace('.manifest.','.manifest.0')
             path.write_text(json.dumps(outer))
             with self.assertRaises(ValueError):validate_release(path)
+    def test_three_manager_selection_uses_actual_sources_and_stock_descriptor_schema(self):
+        import runpy
+        package_selections=runpy.run_path(str(ROOT/'scripts/release/package-lifecycle.py'))['package_selections']
+        with tempfile.TemporaryDirectory() as t:
+            packages=Path(t)
+            write_release(self.core(),packages)
+            # Structural selection fixture uses the separately qualified688
+            # native helper identity. This does not claim lifecycle execution.
+            prior=self.core();prior['manager_source_revision']='688e702e536c84e4c1047a8dc46bbdddc85f3c16'
+            prior['compatibility']['input_transition']['manager_source_revision']=prior['manager_source_revision']
+            write_release(prior,packages/'previous')
+            (packages/'legacy').mkdir()
+            old={'schema_version':1,'source_revision':'9e1b61e4fdbf8c5a5c4154fba8d4ddecd91a7ecb'}
+            (packages/'legacy/release.json').write_text(json.dumps(old))
+            selected=package_selections(packages,False,self.core()['manager_source_revision'],True)
+            self.assertEqual([v['source_revision'] for _,v in selected],[old['source_revision'],prior['manager_source_revision'],self.core()['manager_source_revision']])
+            self.assertEqual(selected[1][1]['schema_version'],2)
+            self.assertEqual(json.loads((packages/'previous/release.json').read_text())['schema_version'],1)
+
     def test_actual_joined_envelope_members_bind_originals_and_manager(self):
         import io,zipfile
         from component_selection import records_from_join
