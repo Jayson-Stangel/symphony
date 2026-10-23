@@ -212,3 +212,35 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         name: Bind successful qualification to the exact source
         run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  listener-and-cleanup:
+    needs: [changes, qualification, native, native-host-package, macos-package]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require complete ordinary manager and process fixture evidence
+        env:
+          RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          PORTABLE: ${{ needs.qualification.result }}
+          NATIVE: ${{ needs.native.result }}
+          PACKAGE: ${{ needs.native-host-package.result }}
+          AGGREGATE: ${{ needs.macos-package.result }}
+          QUALIFIED_REVISION: ${{ needs.macos-package.outputs.qualified_revision }}
+        run: |
+          test "$RESULT" = success
+          test "$PORTABLE" = success
+          test "$AGGREGATE" = success
+          case "$CODE" in
+            false)
+              test "$NATIVE" = skipped
+              test "$PACKAGE" = skipped
+              test -z "$QUALIFIED_REVISION"
+              echo "Documentation-only event; manager and process fixtures intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY" ;;
+            true)
+              test "$NATIVE" = success
+              test "$PACKAGE" = success
+              test "$QUALIFIED_REVISION" = "$GITHUB_SHA"
+              echo "Current-source portable checks, both native helpers, package/updater/selection fixtures and native listener/process cleanup fixtures passed. This is fixture proof; selected-environment image qualification and installed composition are separate explicit integration." >> "$GITHUB_STEP_SUMMARY" ;;
+            *) exit 1 ;;
+          esac

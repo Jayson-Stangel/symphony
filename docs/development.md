@@ -292,14 +292,19 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Metadata validation, make-all, native package/controller checks and installed listener/updater integration. Component plans qualify changed reference-image inputs and retain original evidence for unchanged components. |
-| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same component decisions and behavioral checks; PR metadata validation is a PR event only. |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Metadata validation, make-all, both native helper/package/selection fixtures and native listener/updater process fixtures. Ordinary manager checks do not invoke reference-image planning, builds or payload retrieval. |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same source-bound manager and process fixtures; PR metadata validation is a PR event only. |
 | Manual full candidate | No documentation shortcut | Portable preflight, both native host engines/helpers, selected reference-image components and current manager packages. Lifecycle joins consume the exact requested current/prior artifacts. |
 | Manual `manager_only_update` candidate | No documentation shortcut | Requires an explicit previous package artifact and a complete plan with zero image builds. Reuses original immutable environments without image export/upload; installed update/rollback validation remains required. |
 | Manual `engine_only` / `controller_only` diagnostic | No documentation shortcut | Only the selected engine/native-fixture or controller path executes. Omitted image/package work is not qualified by the diagnostic. |
 | Version tag | No documentation shortcut | Candidate qualification plus separately gated publication; protected production environment and release variable checks remain in force. |
 
-Reference-image planning is optional distribution work. A team's installed image
+The `listener-and-cleanup` context is produced by `package-checks` on ordinary
+events and requires its actual current-source native manager/process fixtures
+and exact qualified revision. It adds no duplicate builds or fixture runs. The
+manual `runner-integration` workflow retains its separate strict artifact/package/
+lifecycle guard. Fixture success is not a newly qualified image or an installed
+selected-environment composition receipt. Reference-image planning is optional distribution work. A team's installed image
 selection and its dependency-bearing authenticated task need their own installed
 evidence; a successful reference-image graph does not establish that proof.
 Image-input changes can require matching provider/architecture builds. Changing
