@@ -13,6 +13,9 @@ inputs:
   revision:
     description: Actual source revision
     default: unknown
+  input-identity:
+    description: Exact declared component input identity, recorded on the finished image
+    default: unknown
   no-cache:
     description: Diagnostic cold build; still exports its successful layers
     default: 'false'
@@ -58,6 +61,7 @@ runs:
         build-args: |
           SYMPHONY_VERSION=${{ inputs.version }}
           SYMPHONY_REVISION=${{ inputs.revision }}
+          SYMPHONY_INPUT_IDENTITY=${{ inputs.input-identity }}
         cache-from: |
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-codex
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.namespace }}-claude

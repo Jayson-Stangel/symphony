@@ -49,13 +49,51 @@ esac
             result = subprocess.run(["bash", str(ROOT / "scripts/release/build-candidate-runners.sh"),
                 "codex", "x86_64", str(root / "output")], text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 44, result.stdout + result.stderr)
-            self.assertEqual(removal.read_text().strip(), "rm --force " + "1".zfill(64))
+            # Cleanup must include anonymous volumes and target only the exact
+            # acquired ID, never the generated name or an unrelated runtime.
+            self.assertEqual(removal.read_text().split(),
+                             ["rm", "--force", "--volumes", "1".zfill(64)])
             output = root / "output"
             self.assertTrue((output / "codex-x86_64.registry-state.txt").exists())
             # Execute the producer's actual top-level small-record glob: diagnostics
             # cannot masquerade as native records at metadata assembly.
             (output / "codex-x86_64.json").write_text('{"provider":"codex"}')
             self.assertEqual([path.name for path in output.glob("*.json")], ["codex-x86_64.json"])
+
+
+class CandidateNodeContractTest(unittest.TestCase):
+    def test_only_the_exact_built_source_node_contract_runs_before_qualification(self):
+        controller = (ROOT / 'scripts/release/build-candidate-runners.sh').read_text()
+        block = controller[controller.index('  # New reference environments'):controller.index('  python3 "$root/scripts/release/record.py"')]
+        with tempfile.TemporaryDirectory(prefix='candidate-node-contract-') as directory:
+            root = Path(directory); source = root / 'source'; source.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(source), *args], stderr=subprocess.PIPE).decode().strip()
+            def commit(message):
+                git('add', '--all'); git('commit', '-qm', message)
+                return git('rev-parse', 'HEAD')
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            (source / 'README').write_text('historical source without a Node contract')
+            historical = commit('historical source')
+            (source / 'runner').mkdir()
+            script = source / 'runner/node-smoke.sh'
+            script.write_text('#!/bin/sh\nprintf "%s\\n" "$1" > "$NODE_RECEIPT"\nexit "${NODE_FAILURE:-0}"\n')
+            current = commit('source-owned Node contract')
+            # A modified manager/worktree script must never replace the built source's blob.
+            script.write_text('#!/bin/sh\nexit 99\n')
+            digest = 'localhost:5000/codex@sha256:' + 'a' * 64
+            for revision, status, invoked in ((historical, 0, False), (current, 0, True), (current, 37, True)):
+                receipt = root / 'node-receipt'; sealed = root / 'sealed'
+                for path in (receipt, sealed):
+                    if path.exists(): path.unlink()
+                result = subprocess.run(['bash', '-e', '-u', '-o', 'pipefail', '-c', block + '\nprintf sealed > "$SEAL_RECEIPT"'],
+                                        env=dict(os.environ, source=str(source), revision=revision, digest=digest,
+                                                 NODE_RECEIPT=str(receipt), SEAL_RECEIPT=str(sealed), NODE_FAILURE=str(status)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(receipt.exists(), invoked)
+                self.assertEqual(sealed.exists(), status == 0)
+                if invoked: self.assertEqual(receipt.read_text().strip(), digest)
 
 
 class CleanUbuntuDriverTest(unittest.TestCase):
@@ -75,7 +113,7 @@ class CleanUbuntuDriverTest(unittest.TestCase):
 
     def test_docker_contract_failure_cannot_be_hidden_by_successful_tee(self):
         with tempfile.TemporaryDirectory(prefix="symphony-clean-driver-") as directory:
-            root = Path(directory); (root / "linux-helper").mkdir()
+            root = Path(directory); (root / "host-helper").mkdir()
             docker = root / "docker"
             for status in (0, 23):
                 with self.subTest(docker_exit=status):
@@ -86,11 +124,11 @@ class CleanUbuntuDriverTest(unittest.TestCase):
                     result = subprocess.run(["bash", "-e", "-c", self.actual_workflow_script()],
                         text=True, capture_output=True, env=env)
                     self.assertEqual(result.returncode == 0, status == 0, result.stdout + result.stderr)
-                    self.assertIn(f"container result {status}", (root / "linux-helper/ubuntu26.log").read_text())
+                    self.assertIn(f"container result {status}", (root / "host-helper/ubuntu26.log").read_text())
 
     def test_present_forbidden_runtime_fails_at_absence_guard(self):
         with tempfile.TemporaryDirectory(prefix="symphony-clean-tools-") as directory:
-            root = Path(directory); (root / "linux-helper").mkdir()
+            root = Path(directory); (root / "host-helper").mkdir()
             scripts = {
                 "docker": '''#!/bin/sh
 while [ "$#" -gt 0 ] && [ "$1" != ubuntu:26.04 ]; do shift; done

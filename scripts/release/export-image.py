@@ -3,7 +3,8 @@
 
 Build-time only. Export and compression stream concurrently; process CPU and
 overlapping wall times are recorded honestly. No uncompressed tar is staged.
-Existing outputs are never replaced. Existing Docker load consumers remain usable.
+Existing outputs are never replaced. Normal payloads preserve exact compressed OCI graphs; historical Docker-save
+diagnostics remain explicit and are not a source of immutable digest restoration.
 """
 import argparse
 import hashlib
@@ -16,6 +17,10 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qualified_graph
 
 
 def pipeline(export_command, compression_command, output):
@@ -124,7 +129,11 @@ def publish_files(pairs):
         raise
 
 
-def export(image, output, checksum_output):
+def export(image, output, checksum_output, registry_state=None, records=None, legacy_diagnostic=False):
+    if registry_state is None and not legacy_diagnostic:
+        raise ValueError('normal export requires owned registry state and exact records; Docker-save is diagnostic-only')
+    if registry_state is not None and legacy_diagnostic:
+        raise ValueError('legacy diagnostic cannot select normal graph export')
     # Keep transport telemetry outside the *.json runner-record namespace.
     metrics_output = output.with_name(output.name + '.metrics.txt')
     for path in (output, checksum_output, metrics_output):
@@ -134,7 +143,25 @@ def export(image, output, checksum_output):
     if not images:
         raise ValueError('at least one image is required')
     identities = []
-    for reference in images:
+    selected_records = []
+    if registry_state is not None:
+        if not records or len(records) != len(images):
+            raise ValueError('graph export requires every original qualified record')
+        selected_records = [json.loads(Path(path).read_text()) for path in records]
+        for reference, record in zip(images, selected_records):
+            if qualified_graph.REFERENCE.fullmatch(reference):
+                original, config_id = reference, record['image_config']
+            else:
+                original, config_id, _ = qualified_graph.qualified_config(reference, registry_state)
+            if (original.rsplit('@', 1)[-1] != record['image'].rsplit('@', 1)[-1] or
+                    original.split('@')[0].split('/', 1)[1] != record['image'].split('@')[0].split('/', 1)[1] or
+                    config_id != record['image_config']):
+                raise ValueError('export image differs from original qualified record')
+            identities.append({'image_reference': reference, 'image_id': config_id,
+                               'original_repo_digests': [record['image']],
+                               'source_revision': record['source_revision'],
+                               'provider': record['provider'], 'architecture': record['architecture']})
+    for reference in ([] if registry_state is not None else images):
         config = json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference], text=True, timeout=30))[0]
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', config.get('Id', '')):
             raise ValueError('image has no immutable config identity')
@@ -148,23 +175,34 @@ def export(image, output, checksum_output):
                            'original_repo_digests': config.get('RepoDigests', []),
                            'source_revision': labels['org.opencontainers.image.revision'],
                            'provider': labels['com.symphony.agent'], 'architecture': config['Architecture']})
-    metrics = {'images': identities, 'format': 'docker-save+gzip'}
+    metrics = {'images': identities, 'format': 'qualified-graph-v1+tar+gzip' if registry_state is not None else 'docker-save+gzip'}
     # Caller must provide an existing output directory. This also keeps staging
     # on the same filesystem for atomic, no-overwrite publication.
     with tempfile.TemporaryDirectory(prefix='.image-export-', dir=output.parent) as temporary:
         stage = Path(temporary)
         compressed = stage / 'image.tar.gz'
+        export_command = ['docker', 'save', *images]
+        if registry_state is not None:
+            started = time.monotonic()
+            graph = stage / 'graph'
+            qualified_graph.capture_graphs(selected_records, graph, registry_state)
+            metrics['graph_capture_wall_seconds'] = time.monotonic() - started
+            metrics['graph_blob_staging_bytes'] = sum(path.stat().st_size for path in graph.rglob('*') if path.is_file())
+            export_command = [sys.executable, str(Path(__file__).with_name('qualified_graph.py')), 'archive', '--graph', str(graph)]
         command = compressor()
         metrics['compressor_command'] = command
         metrics['compressor_version'] = subprocess.run([command[0], '--version'], text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True, timeout=10).stdout.splitlines()[0]
         with compressed.open('wb') as stream:
-            metrics.update(pipeline(['docker', 'save', *images], command, stream))
+            metrics.update(pipeline(export_command, command, stream))
         start, cpu = time.monotonic(), time.process_time()
-        metrics['tar_member_bytes'] = verify_tar(compressed, [value['image_id'] for value in identities])
+        if registry_state is not None:
+            metrics['tar_member_bytes'] = qualified_graph.verify_archive(compressed, selected_records, graph)
+        else:
+            metrics['tar_member_bytes'] = verify_tar(compressed, [value['image_id'] for value in identities])
         metrics['archive_verification'] = {'wall_seconds': time.monotonic() - start,
                                            'cpu_seconds': time.process_time() - cpu}
-        metrics['peak_payload_staging_bytes'] = compressed.stat().st_size
+        metrics['peak_payload_staging_bytes'] = compressed.stat().st_size + metrics.get('graph_blob_staging_bytes', 0)
         start, cpu = time.monotonic(), time.process_time()
         digest = checksum(compressed)
         metrics['checksum'] = {'wall_seconds': time.monotonic() - start,
@@ -182,12 +220,15 @@ def export(image, output, checksum_output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', nargs='+', action='extend', required=True)
+    parser.add_argument('--legacy-docker-save-diagnostic', action='store_true', help='explicit historical transport diagnostic only')
+    parser.add_argument('--registry-state', type=Path, help='required for normal exact graph producer')
+    parser.add_argument('--record', type=Path, action='append', help='each original qualified record, in image order')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--checksum-output', type=Path, required=True)
     args = parser.parse_args()
     try:
-        metrics = export(args.image, args.output, args.checksum_output)
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError, tarfile.TarError, EOFError) as error:
+        metrics = export(args.image, args.output, args.checksum_output, args.registry_state, args.record, args.legacy_docker_save_diagnostic)
+    except (ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.SubprocessError, tarfile.TarError, EOFError) as error:
         parser.exit(1, 'image export: ' + str(error) + '\n')
     print(json.dumps(metrics, sort_keys=True))
 

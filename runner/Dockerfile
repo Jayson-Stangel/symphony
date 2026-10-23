@@ -85,10 +85,12 @@ ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/symphony-claude-runner"
 # Identity belongs to the finished image, after every dependency/application layer.
 ARG SYMPHONY_VERSION=development
 ARG SYMPHONY_REVISION=unknown
+ARG SYMPHONY_INPUT_IDENTITY=unknown
 ARG TARGETARCH
 LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
       org.opencontainers.image.revision=$SYMPHONY_REVISION \
-      com.symphony.architecture=$TARGETARCH
+      com.symphony.architecture=$TARGETARCH \
+      com.symphony.inputs.sha256=$SYMPHONY_INPUT_IDENTITY
 
 # Credential-free Linux verification of the same transport and process ownership.
 FROM claude AS claude-test
@@ -114,7 +116,9 @@ LABEL com.symphony.codex.version=$CODEX_VERSION
 # Keep revision-only changes out of the dependency and compilation cache keys.
 ARG SYMPHONY_VERSION=development
 ARG SYMPHONY_REVISION=unknown
+ARG SYMPHONY_INPUT_IDENTITY=unknown
 ARG TARGETARCH
 LABEL org.opencontainers.image.version=$SYMPHONY_VERSION \
       org.opencontainers.image.revision=$SYMPHONY_REVISION \
-      com.symphony.architecture=$TARGETARCH
+      com.symphony.architecture=$TARGETARCH \
+      com.symphony.inputs.sha256=$SYMPHONY_INPUT_IDENTITY

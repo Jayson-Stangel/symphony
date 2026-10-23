@@ -30,6 +30,7 @@ class CandidateCacheTest(unittest.TestCase):
                        ACTIONS_RESULTS_URL='https://results.invalid', GITHUB_EVENT_NAME='pull_request',
                        GITHUB_REF='refs/pull/42/merge', PR_NUMBER='42', GITHUB_STEP_SUMMARY=str(root/'summary'))
             for selection in ('current','previous'):
+                env['SYMPHONY_CANDIDATE_INPUT_IDENTITY'] = 'd'*64
                 result = subprocess.run(['bash', str(ROOT/'scripts/release/build-runner-cached.sh'), 'codex', 'x86_64',
                                          str(source), 'localhost:5000/symphony-codex:'+('candidate' if selection=='current' else 'previous'), '0.0.4', revision, selection],
                                         env=env, text=True, capture_output=True)
@@ -39,12 +40,13 @@ class CandidateCacheTest(unittest.TestCase):
                 self.assertEqual(args[args.index('--platform')+1], 'linux/amd64')
                 self.assertEqual(args[-1], str(source.resolve()))
                 self.assertIn('SYMPHONY_REVISION='+revision, args)
+                self.assertIn('SYMPHONY_INPUT_IDENTITY='+'d'*64, args)
                 self.assertIn('type=gha,scope=runner-v1-amd64-pr-42-claude', args)
                 self.assertIn('type=gha,scope=runner-v1-amd64-trusted-codex-prior', args)
                 export = args[args.index('--cache-to')+1]
                 self.assertEqual(export, 'type=gha,scope=runner-v1-amd64-pr-42-codex'+('-prior' if selection=='previous' else '')+',mode=max')
                 self.assertNotIn('fixture-cache-token', ' '.join(args)+result.stdout+result.stderr)
-            for altered in ({'SYMPHONY_GHA_RUNNER_CACHE':''}, {'ACTIONS_RUNTIME_TOKEN':''}):
+            for altered in ({'SYMPHONY_GHA_RUNNER_CACHE':''}, {'ACTIONS_RUNTIME_TOKEN':''}, {'SYMPHONY_CANDIDATE_INPUT_IDENTITY':'unknown'}):
                 (root/'proof').unlink(missing_ok=True)
                 result = subprocess.run(['bash', str(ROOT/'scripts/release/build-runner-cached.sh'), 'codex', 'x86_64',
                                          str(source), 'localhost:5000/symphony-codex:candidate', '0.0.4', revision, 'current'], env=dict(env, **altered), capture_output=True)

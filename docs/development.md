@@ -177,14 +177,18 @@ UID migration and authenticated inference remain separate qualification.
 ### Native standalone engine qualification
 
 The `burrito-release` workflow can be manually dispatched on a feature branch.
-A branch dispatch builds candidate artifacts and runs all four existing native
-smoke targets (Linux x86-64/ARM64, macOS Intel/Apple Silicon), without publishing
+A branch dispatch builds candidate artifacts and runs exactly two native standalone
+smoke targets (Linux x86-64 and macOS ARM64), without publishing
 a GitHub release or GHCR images. Production publication still requires its tag,
 repository variable and protected environment gates. Dispatch the exact reviewed
 head and record the workflow/job URLs; any subsequent commit requires another
 candidate run. A skipped or unavailable native runner is an acceptance gap.
+For bounded standalone-only native acceptance, dispatch the same exact feature
+head with `engine_only=true`. Both retained native engines build and execute;
+runner images and publication are intentionally omitted. This is standalone
+engine evidence, not a claim that image/package qualification ran.
 For a focused controller regression diagnosis, dispatch the same workflow with
-`controller_only=true`: this runs only the macOS Intel fixture tests and skips
+`controller_only=true`: this runs only the macOS ARM64 fixture tests and skips
 artifact building, native engine qualification and publication. Its success is
 controller evidence only, never a substitute for the full native candidate run.
 
@@ -225,6 +229,46 @@ The fixture HTTP server binds numeric loopback directly without reverse DNS;
 startup failure logs include fixture stacks and the last connection error. This
 avoids a proven hosted Intel macOS `getfqdn` stall without altering the engine.
 
+## Candidate preflight and CI ownership
+
+Ordinary pull requests retain the named required quality, package and metadata
+checks. Component plans separately decide whether optional reference images need
+new qualification. Unchanged compatible components retain their original source
+and native evidence; current manager packages use current-source helpers. Manual
+full candidates also qualify the two supported standalone host engines. Tags
+retain the protected production environment and publication conditions; a
+candidate run never grants publication approval.
+
+Portable release metadata and package-input/shell checks run once before native
+qualification. Native process and shell-updater fixtures run once per OS/CPU,
+separately from provider image qualification. New unclassified release suites
+conservatively enter the native group. Missing native prerequisites or skipped
+fixtures fail qualification. Portable preflight produces an exact source output. Native fixtures, package/helper
+checks, selected image fan-out and engine builds then start independently; no image or engine
+job waits for an unrelated macOS helper queue. Final qualification joins the required
+native and helper evidence. Final manifests join verified runner records; standalone
+smokes consume actual built engines. No placeholder records replace artifacts.
+
+The Burrito caller owns portable qualification and passes its successful exact-head
+output to the runner workflow, avoiding a second qualification. A direct runner
+candidate performs its own portable qualification. Native/helper checks run concurrently
+with images in the runner workflow, and its terminal verdict requires their success. The runner workflow rejects absent,
+failed, cancelled, skipped or wrong-head qualification, except its explicitly
+caller-owned path; its final verdict also requires all images and metadata.
+The shell/controller tests support early feedback, not native image acceptance.
+
+PR and branch groups cancel obsolete work for the same workflow/event/ref. Tag
+operations do not cancel each other. Explicit `retain_diagnostic` runner runs and
+standalone controller-only diagnostics use run-specific groups so deliberately
+retained evidence survives new commits. Other branches and workflow scopes have
+separate groups. Existing owned-resource cleanup remains part of each test.
+
+Run `python3 scripts/ci/release_tests.py portable` and
+`python3 scripts/ci/release_tests.py native` to exercise the same suite selection.
+The native group requires `lsof`; these commands report actual suite names,
+pass/fail/skip counts and elapsed execution time. They are not image-cache or
+native engine artifact evidence. Full candidate/job timelines remain necessary
+for queue/build/export/transfer performance measurements.
 ## Ubuntu package candidate qualification
 
 Build the portable helper on native Linux x86-64 with
@@ -248,9 +292,34 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Same metadata validation plus make-all, package, listener/updater qualification; browser qualification when its inputs change |
-| Merge/push to dev or main | Before/after classification; named wrappers report omission | Behavioral qualification; browser qualification when its inputs change |
-| Manual candidate / version tag | Full candidate/release qualification | Full candidate/release qualification |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Metadata validation, make-all, both native helper/package/selection fixtures and native listener/updater process fixtures. Ordinary manager checks do not invoke reference-image planning, builds or payload retrieval. |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same source-bound manager and process fixtures; PR metadata validation is a PR event only. |
+| Manual full candidate | No documentation shortcut | Portable preflight, both native host engines/helpers, selected reference-image components and current manager packages. Lifecycle joins consume the exact requested current/prior artifacts. |
+| Manual `manager_only_update` candidate | No documentation shortcut | Requires an explicit previous package artifact and a complete plan with zero image builds. Reuses original immutable environments without image export/upload; installed update/rollback validation remains required. |
+| Manual `engine_only` / `controller_only` diagnostic | No documentation shortcut | Only the selected engine/native-fixture or controller path executes. Omitted image/package work is not qualified by the diagnostic. |
+| Version tag | No documentation shortcut | Candidate qualification plus separately gated publication; protected production environment and release variable checks remain in force. |
+
+The `listener-and-cleanup` context is produced by `package-checks` on ordinary
+events and requires its actual current-source native manager/process fixtures
+and exact qualified revision. It adds no duplicate builds or fixture runs. The
+manual `runner-integration` workflow retains its separate strict artifact/package/
+lifecycle guard. Fixture success is not a newly qualified image or an installed
+selected-environment composition receipt. Reference-image planning is optional distribution work. A team's installed image
+selection and its dependency-bearing authenticated task need their own installed
+evidence; a successful reference-image graph does not establish that proof.
+Browser checks compare the actual consumed browser stage graph and COPY paths
+across the complete event diff, without consulting reference-image provenance.
+Pure manager changes omit browser work; actual browser inputs or its build/test
+machinery still require the browser layer and both-user smoke checks. Unknown
+syntax or history requires qualification. Provider-final Dockerfile metadata does
+not by itself change the browser target. This is change routing, not a claim of
+new or reused image qualification.
+
+Image-input changes can require matching provider/architecture builds. Changing
+only the host manager does not qualify or relabel an unchanged embedded runtime.
+Missing, failed, cancelled, unexpectedly skipped or wrong-source prerequisites
+fail their consuming joins. The plan records intentional reuse separately from
+new execution, so a skipped build is never reported as a newly qualified image.
 
 The classifier uses the complete PR merge-base-to-head diff, or the exact push
 before/after diff. It disables rename detection so both old and new paths are
@@ -269,8 +338,10 @@ the wrapper before any omission can pass.
 
 Its dependency closure follows the actual consumers:
 
-- `runner/Dockerfile` includes the `browser-tools` stage and its Node base stage;
-  `runner/browser/` supplies package manifests, lockfile and smoke script.
+- `runner/Dockerfile` projects the `browser-tools` stage and its transitive Node
+  base stage; only consumed COPY sources count, including the browser package
+  manifests, lockfile and smoke script. Provider-final metadata and unconsumed
+  prose under `runner/browser/` do not alone change that projection.
 - `.dockerignore` and `runner/Dockerfile.dockerignore` control the build context.
 - `.github/actions/build-runner/` builds that target and invokes
   `scripts/release/runner-cache-policy.sh`; `runner/node-smoke.sh` verifies Node.
@@ -280,6 +351,8 @@ Its dependency closure follows the actual consumers:
 
 Keep this set aligned with new COPY sources, build stages and invoked tools.
 The later application/Claude/Codex stages are not dependencies of `browser-tools`.
+Unsupported syntax or unsafe COPY sources require qualification; this is routing,
+not historical-image provenance reuse.
 Relevant changes retain root and UID/GID 11001 Chromium and CLI coverage. Release
 and manual candidate paths continue their existing actual-image qualification
 through `scripts/release/runner-smoke.sh` without consulting the browser decision.

@@ -16,6 +16,8 @@ defmodule SymphonyElixir.InstallationTest do
     availability = "\ntool_available() { case \"$1\" in gh|codex) return 1 ;; *) command -v \"$1\" >/dev/null 2>&1 ;; esac; }\n"
     File.write!(Path.join(source, "scripts/symphony"), definitions <> availability <> "\ncase \"${1:-}\" in" <> dispatch)
 
+    File.cp!(Path.join(Path.dirname(@launcher), "symphony-environment.sh"), Path.join(source, "scripts/symphony-environment.sh"))
+
     for skill <- ~w(commit push pull linear land), do: File.mkdir_p!(Path.join(source, ".codex/skills/#{skill}"))
 
     File.chmod!(Path.join(source, "scripts/symphony"), 0o755)
