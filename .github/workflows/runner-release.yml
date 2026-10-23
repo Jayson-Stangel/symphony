@@ -73,7 +73,7 @@ jobs:
             runner: ubuntu-24.04
         architecture: [arm64, x86_64]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify release version and run metadata tests
         run: |
           python3 -m unittest discover -s scripts/release/tests -v
@@ -91,7 +91,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: bash scripts/release/build-candidate-runners.sh "$PROVIDER" "$ARCHITECTURE" dist "$PREVIOUS_REVISION"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/**
@@ -99,7 +99,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Retain small source-bound records for metadata consumers
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-records-${{ matrix.provider }}-${{ matrix.architecture }}
           path: |
@@ -109,7 +109,7 @@ jobs:
           retention-days: 30
       - name: Retain attempted native registry cleanup evidence
         if: ${{ always() && steps.native-build.outcome != 'skipped' && steps.native-build.outcome != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*.registry-state.txt
@@ -136,8 +136,8 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runner-candidate-${{ matrix.provider }}-${{ matrix.architecture }}
           path: candidate
@@ -164,7 +164,7 @@ jobs:
           mkdir -p dist
           python3 scripts/release/record.py --image "$digest" --provider "$PROVIDER" \
             --architecture "$ARCHITECTURE" --revision "$GITHUB_SHA" --output "dist/$PROVIDER-$ARCHITECTURE.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-stable-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*.json
@@ -174,8 +174,8 @@ jobs:
     needs: candidate
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-records-*
           path: candidate
@@ -195,7 +195,7 @@ jobs:
             python3 scripts/release/artifacts.py assemble --version "$old_version" --revision "$PREVIOUS_REVISION" \
               --channel candidate --platform-bundles --output dist/previous/release.json candidate/previous/*.json
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-candidate-metadata
           path: dist/**
@@ -213,8 +213,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-stable-*
           path: records
@@ -230,7 +230,7 @@ jobs:
           if [ "$PLATFORM" = macos ]; then bash scripts/release/build-host-helper.sh "$RUNNER_TEMP/symphony-host"
           else bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/linux-helper"; cp "$RUNNER_TEMP/linux-helper/symphony-host" "$RUNNER_TEMP/symphony-host"; fi
           bash scripts/release/package.sh "$RUNNER_TEMP/release.json" dist "$RUNNER_TEMP/symphony-host"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release-platform-${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -241,13 +241,13 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-stable-*
           path: records
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packaged-release-platform-*
           path: dist
@@ -260,7 +260,7 @@ jobs:
             --linux-bundle "dist/symphony-$version-linux_x86_64.tar.gz" --output dist/release.json records/*.json
           python3 scripts/release/artifacts.py validate dist/release.json
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release
           path: dist/*
@@ -282,7 +282,7 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Prepare isolated registry and evidence
         id: registry
         run: |
@@ -354,7 +354,7 @@ jobs:
         run: python3 scripts/release/runner-cache-probe.py changed
       - name: Retain native build and transfer measurements
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-cache-${{ matrix.provider }}-${{ matrix.architecture }}-${{ github.sha }}
           path: ${{ runner.temp }}/runner-cache-measurements/**
@@ -380,8 +380,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runner-candidate-metadata
           path: metadata
@@ -404,7 +404,7 @@ jobs:
             else bash scripts/release/build-linux-host-helper.sh "$destination" "$source" "$revision"; fi
             bash "$source/scripts/release/package.sh" "$manifest" "$destination" "$helper"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-candidate-${{ matrix.platform }}
           path: dist/**
@@ -415,18 +415,18 @@ jobs:
     needs: packaged-candidate
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packaged-candidate-*
           path: packages
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-records-*
           path: records
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runner-candidate-metadata
           path: records
@@ -448,7 +448,7 @@ jobs:
             python3 scripts/release/artifacts.py validate "$directory/release.json"
             (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-candidate
           path: packages/**
@@ -461,19 +461,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-candidate
           path: packages
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-candidate-*-x86_64
           path: runners
           merge-multiple: true
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
         run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: ubuntu26-package-lifecycle-${{ github.sha }}
@@ -489,7 +489,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate explicit diagnostic identities
         env:
           ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
@@ -498,13 +498,13 @@ jobs:
           [[ "$ARTIFACT_RUN" =~ ^[0-9]+$ ]]
           [[ "$PACKAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           echo 'DIAGNOSTIC ONLY: reused packages do not qualify this controller head for acceptance.'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packaged-candidate
           path: packages
           run-id: ${{ inputs.diagnostic_artifact_run }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: runner-candidate-*-x86_64
           path: runners
@@ -516,7 +516,7 @@ jobs:
           PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
         run: python3 scripts/release/package-lifecycle.py packages runners evidence
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
@@ -547,7 +547,7 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify original run and successful native producer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -575,7 +575,7 @@ jobs:
               output.write('ORIGINAL_SOURCE=' + run['head_sha'] + '\n')
           PYTHON
       - name: Download original qualified image payloads
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.transfer_diagnostic_run }}
@@ -595,7 +595,7 @@ jobs:
             --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$ORIGINAL_SOURCE"
           cp -R provenance improved/
       - name: Upload improved replay payloads without recompression
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
           path: improved/**
@@ -604,7 +604,7 @@ jobs:
           retention-days: 30
       - name: Retain small timing and original-provenance evidence on failure
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-timing-${{ matrix.provider }}-${{ matrix.architecture }}
           path: |
@@ -628,7 +628,7 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify completed benchmark source before replay
         env:
           GH_TOKEN: ${{ github.token }}
@@ -655,7 +655,7 @@ jobs:
           Path('evidence/transport-source.txt').write_text(json.dumps({'run':run, 'producer':producer[0]}, indent=2))
           PYTHON
       - name: Download improved image payloads
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.transfer_replay_run || github.run_id }}
@@ -671,7 +671,7 @@ jobs:
             --provider "$PROVIDER" --architecture "$ARCHITECTURE" --source-revision "$source"
       - name: Retain actual load, startup and transfer evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: transfer-runtime-${{ matrix.provider }}-${{ matrix.architecture }}
           path: evidence/**
