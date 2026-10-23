@@ -49,6 +49,9 @@ for selection in current previous; do
   images+=("$image")
 done
 # One archive for both real source revisions shares their common layers.
-docker save "${images[@]}" | gzip > "$output/$provider-$architecture.docker.tar.gz"
-(cd "$output" && sha256sum ./*.docker.tar.gz > "$provider-$architecture.sha256")
+export_arguments=()
+for image in "${images[@]}"; do export_arguments+=(--image "$image"); done
+python3 "$root/scripts/release/export-image.py" "${export_arguments[@]}" \
+  --output "$output/$provider-$architecture.docker.tar.gz" \
+  --checksum-output "$output/$provider-$architecture.sha256"
 docker logs "$registry_id" > "$output/$provider-$architecture.registry.log" 2>&1
