@@ -14,6 +14,7 @@ def docker(*args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--registry-state", help="owned qualification registry; derive true config from original manifest")
     parser.add_argument("--provider", choices=("codex", "claude"), required=True)
     parser.add_argument("--architecture", choices=("arm64", "x86_64"), required=True)
     parser.add_argument("--revision", required=True)
@@ -25,7 +26,17 @@ def main():
     if args.archive_tag is not None and not re.fullmatch(re.escape(f"localhost:5000/symphony-{args.provider}") + r":(?:candidate|previous)", args.archive_tag):
         parser.error("archive tag differs from the original provider/current-prior namespace")
     config = json.loads(docker("image", "inspect", args.image))[0]
-    labels = config["Config"]["Labels"]
+    if args.registry_state:
+        import qualified_graph
+        original, config_id, raw_config = qualified_graph.qualified_config(args.image, args.registry_state, config)
+        if original != args.image:
+            parser.error("record must select its original immutable qualified reference")
+        labels = raw_config["config"]["Labels"]
+        if raw_config.get("architecture") != config["Architecture"] or raw_config.get("os") != "linux":
+            parser.error("qualified config platform differs from inspection")
+    else:
+        config_id = config["Id"]
+        labels = config["Config"]["Labels"]
     expected = "amd64" if args.architecture == "x86_64" else "arm64"
     if (config["Architecture"] != expected or labels.get("org.opencontainers.image.revision") != args.revision
             or labels.get("com.symphony.architecture") != expected or labels.get("com.symphony.agent") != args.provider):
@@ -45,7 +56,7 @@ def main():
                                  "process.stdout.write(execFileSync(nativeExecutable(), ['--version'], {encoding:'utf8', timeout:15000}));")
     result = {"provider": args.provider, "architecture": args.architecture,
               "platform": f"linux/{expected}", "source_revision": args.revision,
-              "image": args.image, "image_config": config["Id"],
+              "image": args.image, "image_config": config_id,
               "archive_tag": args.archive_tag or f"localhost:5000/symphony-{args.provider}:candidate",
               "engine_version": labels.get("org.opencontainers.image.version"), "tool_versions": tools}
     if args.inputs:

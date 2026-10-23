@@ -16,6 +16,7 @@ trap cleanup EXIT
 python3 "$root/scripts/release/test_registry.py" start "$registry_state"
 registry_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["container_id"])' "$registry_state")
 images=()
+records=()
 for selection in current previous; do
   source=$root; destination=$output; tag=candidate
   if [ "$selection" = previous ]; then
@@ -57,14 +58,16 @@ for selection in current previous; do
   docker pull "$digest"
   bash "$root/scripts/release/runner-smoke.sh" "$digest" "$provider" "$architecture" "$revision"
   python3 "$root/scripts/release/record.py" --image "$digest" --provider "$provider" --architecture "$architecture" \
-    --revision "$revision" ${record_flags[@]+"${record_flags[@]}"} --output "$destination/$provider-$architecture.json"
+    --revision "$revision" --registry-state "$registry_state" ${record_flags[@]+"${record_flags[@]}"} --output "$destination/$provider-$architecture.json"
   docker tag "$digest" "$image"
   images+=("$image")
+  records+=("$destination/$provider-$architecture.json")
 done
 # One archive for both real source revisions shares their common layers.
 export_arguments=()
 for image in "${images[@]}"; do export_arguments+=(--image "$image"); done
-python3 "$root/scripts/release/export-image.py" "${export_arguments[@]}" \
+for record in "${records[@]}"; do export_arguments+=(--record "$record"); done
+python3 "$root/scripts/release/export-image.py" "${export_arguments[@]}" --registry-state "$registry_state" \
   --output "$output/$provider-$architecture.docker.tar.gz" \
   --checksum-output "$output/$provider-$architecture.sha256"
 docker logs "$registry_id" > "$output/$provider-$architecture.registry.log" 2>&1

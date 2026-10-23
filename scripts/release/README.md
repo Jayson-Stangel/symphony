@@ -381,23 +381,38 @@ build and lifecycle acceptance in `runner-release`.
 
 ## Candidate image transfer
 
-`export-image.py` streams `docker save` through bounded `pigz -1 -n` when present
-(up to four CPUs), or standard `gzip -1 -n`. It emits the existing gzip/Docker-load
-format and checksum filename selected by its caller. Multiple `--image` values
-share one archive, retaining Docker's shared-layer serialization for two sources.
-The archive's config hash set must match the inspected source/provider/platform
-identities before publication. Original distribution digests remain provenance;
-a Docker-load representation is never relabeled as an old registry digest.
+The normal `export-image.py --registry-state STATE --record RECORD ...` path
+captures the **exact raw qualified manifest, config and compressed layer blobs**
+from the still-owned loopback registry. The shared graph-only gzip tar retains
+both current/prior roots and deduplicates common blobs. Its reserved namespace is
+`symphony-qualified-graphs/v1/{index.json,blobs/sha256/<digest>}`. The historical
+`.docker.tar.gz` filename and checksum/provenance binding stay the same; this
+format is restored through the registry and pulled by its original digest. It is
+not a Docker-load archive. Missing graphs and unexpected members fail closed.
 
-The adjacent `.metrics.txt` contains JSON for each actual image identity,
-compressor/version, process CPU, overlapped export/compression wall times, checksum
-and archive-verification costs, and compressed bytes. Export wall time includes
-pipe backpressure; those overlapping wall times must not be added together.
-Only the compressed payload is staged; owned temporary files and children are
-cleaned on failure. Existing outputs are refused. Actions uploads gzip payloads
-with `compression-level: 0` to avoid redundant ZIP deflation. Metadata consumers
-must continue downloading only native qualification records, not image payloads
-or transport telemetry.
+Every root is verified against its original source/provider/platform/config and,
+when recorded, input identity/protocol. Raw manifest hashes, all compressed blob
+hashes/sizes, gzip CRCs and ordered config DiffIDs must pass before the archive,
+checksum and metrics are atomically published without overwrite. Config identity
+comes from the qualified manifest descriptor; containerd's manifest ID is never
+recorded as the config ID. Consumers verify the entire archived graph even when
+selecting one root, restore exact bytes to an owned registry, and pull the exact
+immutable reference. They never infer the original registry digest from a
+Docker-load/re-push representation.
+
+The adjacent `.metrics.txt` reports actual graph capture/verification, compressor,
+CPU, overlapping archive/compression wall times, checksum costs and payload bytes.
+The graph and compressed archive are staged on disk, with their actual combined
+peak bytes reported; no uncompressed layer tar is staged. Compression remains
+bounded `pigz -1 -n` (up to four CPUs) or `gzip -1 -n`. Payload uploads use
+`compression-level: 0`. These new graph transport costs require their own
+measurements; historical Docker-save benchmark timings do not qualify this path.
+
+Historical transfer diagnostics may explicitly opt into
+`--legacy-docker-save-diagnostic` (or the matching Python flag). This diagnostic
+mode preserves the previous Docker-save experiment and cannot silently replace
+the normal exact-graph producer. Metadata jobs still download only small runner
+records, without graph payloads or transport telemetry.
 
 For build-free, nonpublishing native measurements, dispatch the existing
 `runner-release` workflow with `transfer_diagnostic_run` set to an exact retained
