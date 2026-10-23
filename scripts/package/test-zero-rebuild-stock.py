@@ -144,6 +144,7 @@ class EnvelopeHandoff(NativeCase):
         self.env = dict(os.environ, HOME=str(self.root / "home"), PATH=str(tools) + ":/usr/bin:/bin",
             SYMPHONY_HOME="", SYMPHONY_APP_HOME=str(self.root / "app"), SYMPHONY_CONFIG_HOME=str(self.root / "config"),
             SYMPHONY_BIN_DIR=str(self.root / "bin"), SYMPHONY_SKILLS_DIR=str(self.root / "skills"),
+            SYMPHONY_RUNNER_NAMESPACE="stock-" + hashlib.sha256(str(self.root).encode()).hexdigest()[:16],
             SYMPHONY_CONTAINER_RUNTIME=str(docker), TEST_DOCKER_CALLS=str(self.root / "docker.calls"))
         self.ok(run(installed / "install.sh", env=self.env))
         self.command = self.root / "bin/symphony"
@@ -160,6 +161,13 @@ class EnvelopeHandoff(NativeCase):
     def update(self, manifest=None, archive=None):
         return run(self.command, "update", "--candidate-manifest", manifest or self.external,
                    "--candidate-bundle", archive or self.archive, env=self.env)
+
+    def refused_update(self, manifest, archive, reason):
+        receipt = self.update(manifest, archive)
+        self.assertNotEqual(receipt.returncode, 0)
+        self.assertNotIn("require an isolated SYMPHONY_RUNNER_NAMESPACE", receipt.stdout + receipt.stderr)
+        self.assertRegex(receipt.stdout + receipt.stderr, reason)
+        return receipt
 
     def links(self):
         return {name: os.readlink(self.root / name) if (self.root / name).is_symlink() else None
@@ -219,7 +227,7 @@ class EnvelopeHandoff(NativeCase):
                 bundle["filename"] = bundle["filename"].replace(old, value["version"])
         outer, archive = self.repack(changed_version)
         self.ok(run(STOCK_HELPER, "validate-manifest", self.candidate / "release.json"))
-        self.assertNotEqual(self.update(outer, archive).returncode, 0)
+        self.refused_update(outer, archive, r"(version|manifest).*(differ|mismatch)|differ.*(version|manifest)")
         self.assertEqual(self.links(), before)
         self.assertEqual(self.identity()["source_revision"], STOCK_REVISION)
         self.preserved()
@@ -227,7 +235,7 @@ class EnvelopeHandoff(NativeCase):
     def test_lying_inner_manager_c_with_bound_b_token_refuses_before_activation(self):
         before = self.links()
         outer, archive = self.repack(lambda value: value["manager_envelope"].update(manager_source_revision="c" * 40))
-        self.assertNotEqual(self.update(outer, archive).returncode, 0)
+        self.refused_update(outer, archive, r"(manager|envelope|core)")
         self.assertEqual(self.links(), before)
         self.preserved()
 
@@ -240,7 +248,7 @@ class EnvelopeHandoff(NativeCase):
         # Recompute transport/inventory checksums deliberately: the independent
         # core D commitment, rather than incidental archive corruption, must fail.
         outer, archive = self.repack(lambda value: None)
-        self.assertNotEqual(self.update(outer, archive).returncode, 0)
+        self.refused_update(outer, archive, r"(core|checksum)")
         self.assertEqual(self.links(), before)
         self.assertEqual(self.identity()["source_revision"], STOCK_REVISION)
         self.preserved()
@@ -282,7 +290,7 @@ class EnvelopeHandoff(NativeCase):
         before = self.links()
         shutil.copyfile(other, self.candidate / "libexec/symphony-host")
         outer, archive = self.repack(lambda value: None)
-        self.assertNotEqual(self.update(outer, archive).returncode, 0)
+        self.refused_update(outer, archive, r"(manager|helper).*(source|revision)|compiled")
         self.assertEqual(self.links(), before)
         self.assertEqual(self.identity()["source_revision"], STOCK_REVISION)
         self.preserved()
