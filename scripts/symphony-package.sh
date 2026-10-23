@@ -75,7 +75,7 @@ package_release_image() {
     inputs=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.input_identity")
     [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.inputs.sha256" }}' "$image")" = "$inputs" ] || die 'runner build inputs differ from selected release'
     [ "$("$runtime" image inspect --format '{{ index .Config.Labels "com.symphony.protocol" }}' "$image")" = 1 ] || die 'runner protocol is incompatible with this manager'
-    [ "$("$runtime" image inspect --format '{{.Id}}' "$image")" = "$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.image_config")" ] || die 'runner config differs from original qualified component'
+    "$runtime" image inspect "$image" | package_helper validate-runtime-image "$symphony_home/release.json" "$agent" "$package_arch" "$image" || die 'runner config or qualified manifest differs from original component'
   fi
 }
 # Validate retained project images independently of the selected release image.

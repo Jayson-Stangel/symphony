@@ -380,6 +380,31 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     return normalized
 }
 
+// A qualified OCI digest binds its original config cryptographically. Classic
+// daemons expose that config as Id; manifest stores expose the manifest as Id.
+// Never confuse an archive transport manifest with the qualified OCI identity.
+func validateRuntimeImage(_ manifest: [String: Any], provider: String, arch: String, reference: String, data: Data) throws {
+    guard integer(manifest["schema_version"]) == 2, ["codex", "claude"].contains(provider),
+          ["arm64", "x86_64"].contains(arch), data.count <= 1024 * 1024,
+          let values = try json(data) as? [[String: Any]], values.count == 1 else { fail("invalid qualified runtime image receipt") }
+    let original = object(object(object(manifest["runners"])[provider])[arch])
+    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? original["image"] as? String
+    guard reference == selected, let qualified = original["image"] as? String,
+          let config = original["image_config"] as? String else { fail("runtime image is outside selected qualified release") }
+    let receipt = values[0], labels = object(object(receipt["Config"])["Labels"])
+    guard receipt["Os"] as? String == "linux", receipt["Architecture"] as? String == (arch == "arm64" ? "arm64" : "amd64"),
+          labels["org.opencontainers.image.revision"] as? String == original["source_revision"] as? String,
+          labels["com.symphony.agent"] as? String == provider,
+          labels["com.symphony.inputs.sha256"] as? String == original["input_identity"] as? String,
+          labels["com.symphony.protocol"] as? String == "1" else { fail("runtime image differs from original qualified source, platform or inputs") }
+    if receipt["Id"] as? String == config { return }
+    let digest = String(qualified.split(separator: "@").last ?? "")
+    let descriptor = object(receipt["Descriptor"])
+    guard receipt["Id"] as? String == digest, descriptor["digest"] as? String == digest,
+          ["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].contains(descriptor["mediaType"] as? String ?? ""),
+          (receipt["RepoDigests"] as? [String])?.contains(reference) == true else { fail("runtime image config or qualified manifest identity differs") }
+}
+
 func gitValue(_ input: String) -> String {
     var result = "", quoted = false, escaped = false
     for ch in input {
@@ -479,7 +504,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -525,6 +550,9 @@ do {
         if lstat(args[2], &info) == 0 { guard info.st_mode & S_IFMT == S_IFLNK, info.st_uid == geteuid() else { fail("refusing to replace an unmanaged activation path") } }
         else if errno != ENOENT { fail("cannot inspect activation path") }
         guard rename(args[1], args[2]) == 0 else { fail("cannot activate release link") }
+    case "validate-runtime-image":
+        let data = FileHandle.standardInput.readDataToEndOfFile()
+        try validateRuntimeImage(validateRelease(args[1]), provider: args[2], arch: args[3], reference: args[4], data: data)
     case "validate-manifest": _ = try validateManifest(args[1])
     case "validate-release": _ = try validateRelease(args[1])
     case "validate-manager":
