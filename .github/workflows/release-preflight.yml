@@ -16,9 +16,11 @@ jobs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
       release_schema: ${{ steps.qualified.outputs.schema }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - name: Portable policy and package input preflight
         run: python3 scripts/ci/release_tests.py portable
       - name: Validate selected release version before native or image work

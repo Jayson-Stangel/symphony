@@ -22,20 +22,25 @@ jobs:
       - name: Require a complete classification decision
         env:
           RESULT: ${{ needs.changes.result }}
-          CODE: ${{ needs.changes.outputs.code }}
+          CODE: ${{ needs.changes.outputs.application }}
         run: |
           test "$RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
       - name: Checkout
-        if: needs.changes.outputs.code != 'false'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Workflow and metadata regressions
-        if: needs.changes.outputs.code != 'false'
         run: python3 -m unittest discover -s scripts/ci/tests -v
 
+      - name: Validate all workflow and composite action definitions
+        run: |
+          curl -fsSL --retry 3 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
+
       - name: Set up mise tools
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.application != 'false'
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           install: true
@@ -43,7 +48,7 @@ jobs:
           working_directory: elixir
 
       - name: Cache deps and build
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.application != 'false'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -54,9 +59,9 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify make all
-        if: needs.changes.outputs.code != 'false'
+        if: needs.changes.outputs.application != 'false'
         working-directory: elixir
         run: make all
-      - name: Documentation-only qualification decision
-        if: needs.changes.outputs.code == 'false'
-        run: echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Application qualification omission
+        if: needs.changes.outputs.application == 'false'
+        run: echo "No application inputs changed; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"

@@ -71,7 +71,8 @@ class BrowserRouting(unittest.TestCase):
                                                  GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(Path(folder) / 'summary')),
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.read_text(), 'code=true\nbrowser=true\n')
+                outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual((outputs['code'], outputs['browser']), ('true', 'true'))
             finally:
                 os.chdir(original)
 

@@ -69,14 +69,14 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'
-        docs = dict(CODE='false', PORTABLE='success', NATIVE='skipped', PACKAGE='skipped')
+        docs = dict(NATIVE_REQUIRED='false', PORTABLE='success', PACKAGE='skipped')
         self.assertEqual(self.guard('package-checks.yml', name, docs), 0)
-        for key in ('PORTABLE', 'NATIVE', 'PACKAGE'):
+        for key in ('PORTABLE', 'PACKAGE'):
             self.assertNotEqual(self.guard('package-checks.yml', name, dict(docs, **{key: 'failure'})), 0)
-        code = dict(CODE='true', PORTABLE='success', NATIVE='success', PACKAGE='success')
+        code = dict(NATIVE_REQUIRED='true', PORTABLE='success', PACKAGE='success')
         self.assertEqual(self.guard('package-checks.yml', name, code), 0)
         for key in code:
-            if key != 'CODE':
+            if key != 'NATIVE_REQUIRED':
                 self.assertNotEqual(self.guard('package-checks.yml', name, dict(code, **{key: 'skipped'})), 0)
 
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
@@ -135,7 +135,6 @@ class ReusedPreflightSchedulingTest(unittest.TestCase):
             'current-manager-package.yml': {'package':['host-policy'],'metadata':['package']},
             'native-manager-helpers.yml': {'helper':['host-policy'],'qualification':['helper']},
             'package-checks.yml': {
-                'native': ['changes', 'qualification'],
                 'native-host-package': ['changes', 'qualification', 'host-policy']}}
         for filename, jobs in expected.items():
             text = (root / '.github/workflows' / filename).read_text()

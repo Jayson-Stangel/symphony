@@ -50,7 +50,7 @@ def browser_required(paths, event=None, name=None):
         '.github/workflows/browser-smoke.yml', '.github/workflows/change-classification.yml',
         'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
     }
-    prefixes = ('.github/actions/', 'scripts/release/runner-cache-', 'scripts/release/build-runner-')
+    prefixes = ('scripts/ci/', '.github/actions/', 'scripts/release/runner-cache-', 'scripts/release/build-runner-')
     try:
         if any(PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts or
                path in exact or path.startswith(prefixes) for path in paths):
@@ -74,6 +74,113 @@ def browser_required(paths, event=None, name=None):
         return False
     except (KeyError, ValueError, TypeError, UnicodeError, OSError, subprocess.SubprocessError):
         return True
+
+
+# Ordinary consumers. Full manual/tag/candidate calls never use a diff omission.
+COMPONENTS = ('application', 'portable', 'package_macos', 'package_linux', 'fixtures')
+ALL = set(COMPONENTS)
+PACKAGES = {'portable', 'package_macos', 'package_linux'}
+# These controllers/tests have no native-helper or native process consumer.
+# Unknown release inputs retain every native consumer until audited.
+PORTABLE_RELEASE = {
+    'benchmark-transfer.py', 'build-candidate-runners.sh', 'build-runner-cached.sh',
+    'export-image.py', 'package-lifecycle.py', 'prepare-candidate-source.sh',
+    'record.py', 'runner-cache-policy.sh', 'runner-cache-probe.py', 'runner-smoke.sh',
+    'runner-startup.sh', 'test_registry.py', 'component_discovery.py', 'component_join.py',
+    'component_publication.py', 'component_restore.py', 'component_selection.py',
+    'graph_publication.py', 'manager_inputs.py',
+    'previous-package-subject.py', 'probe-registry-closure.py', 'qualified_graph.py',
+    'recover_native_record.py', 'registry_closure.py', 'reuse_payload.py',
+    'runner_reuse.py', 'prepare-manager-inputs.py', 'verify-prior-source.py',
+    'build-manager-package.sh', 'finalize-manager-packages.py',
+}
+
+
+def consumers(path):
+    p = PurePosixPath(path)
+    if p.is_absolute() or '..' in p.parts:
+        return ALL
+    if documentation(path):
+        return set()
+    if path in ('.github/pull_request_template.md', '.github/workflows/pr-description-lint.yml',
+                'scripts/ci/check_pr_body.py'):
+        return set()  # checked by always-on metadata/policy validation
+    if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
+        return ALL
+    if path == '.github/workflows/make-all.yml':
+        return {'application'}
+    if path.startswith('.github/workflows/'):
+        # Native package/release controls can affect portable and native evidence;
+        # manual-only image controllers are validated by portable contract tests.
+        if p.stem in ('runner-release', 'runner-integration', 'component-plan',
+                       'transfer-timing', 'current-manager-package'):
+            return {'portable'}
+        if p.stem in ('package-checks', 'release-native', 'release-preflight',
+                       'host-policy', 'native-manager-helpers', 'burrito-release'):
+            return PACKAGES | {'fixtures'}
+        if p.stem == 'browser-smoke':
+            return {'portable'}
+        return ALL
+    if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
+        return PACKAGES | {'application'}
+    if path == 'elixir/mix.exs':
+        return {'application', 'portable'}
+    if path.startswith('elixir/'):
+        return {'application'}
+    if path in ('scripts/symphony', 'scripts/symphony-package.sh', 'scripts/symphony-package-update.sh'):
+        return PACKAGES | {'application', 'fixtures'}
+    if path == 'scripts/symphony-environment.sh':
+        return PACKAGES | {'application'}
+    if path.startswith('scripts/package/linux/') or path == 'scripts/release/build-linux-host-helper.sh':
+        return {'portable', 'package_linux'}
+    if path.startswith('scripts/package/'):
+        return PACKAGES
+    if path in ('scripts/release/engine-smoke.py', 'scripts/release/tests/test_engine_smoke.py',
+                'scripts/release/tests/test_package_update.py'):
+        return {'portable', 'fixtures'}
+    if path in ('scripts/release/tests/test_component_provenance.py',
+                'scripts/release/tests/fixtures/manager-original-68.json'):
+        return PACKAGES
+    if path.startswith('scripts/release/tests/'):
+        # Existing portable suite inventory is explicit; new tests remain native.
+        spec = importlib.util.spec_from_file_location('ci_release_suites', Path(__file__).with_name('release_tests.py'))
+        suites = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(suites)
+        return {'portable'} if p.name in suites.PORTABLE else ALL
+    if path.startswith('scripts/release/'):
+        relative = str(p.relative_to('scripts/release'))
+        if relative in PORTABLE_RELEASE:
+            return {'portable'}
+        if relative in {
+            'artifacts.py', 'build-host-helper.sh', 'package.sh', 'component_provenance.py',
+            'finite_transition.py', 'host-targets.json', 'manager-transition-policy.json',
+            'manager_contract.py', 'manager_envelope.py', 'manager_version.py',
+            'manager-version', 'release-schema', 'runner_inputs.py', 'select-hosts.py',
+        }:
+            return PACKAGES
+        return ALL
+    if path.startswith('.github/actions/'):
+        if path.split('/')[2] in ('build-runner', 'configure-runner-cache', 'runner-cache-runtime'):
+            return {'portable'}
+        return ALL
+    if path.startswith('runner/claude/qualification/'):
+        return {'portable'}  # explicit manual reference_node_smoke consumes the image
+    if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
+        return {'application'}
+    if path.startswith('runner/browser/') or path in ('runner/Dockerfile', '.dockerignore',
+            'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh'):
+        return {'portable'}  # browser graph independently routes actual browser inputs
+    return ALL
+
+
+def decisions(paths):
+    selected = set().union(*(consumers(path) for path in paths)) if paths else ALL
+    values = {key: key in selected for key in COMPONENTS}
+    macos = values['package_macos'] or values['fixtures']
+    linux = values['package_linux'] or values['fixtures']
+    values['native'] = macos or linux
+    values['native_platform'] = 'all' if macos == linux else ('macos' if macos else 'linux_x86_64')
+    return values
 
 
 def git(*args):
@@ -114,7 +221,7 @@ def classify(event, name):
         code = [p for p in paths if not documentation(p)]
         return not code, ('all changed paths are human-facing documentation' if not code
                           else 'behavioral or unknown paths require code qualification'), paths
-    except (KeyError, ValueError, UnicodeError, subprocess.SubprocessError):
+    except (KeyError, TypeError, ValueError, UnicodeError, OSError, subprocess.SubprocessError):
         return False, 'diff discovery unavailable or incomplete; require code qualification', []
 
 
@@ -127,12 +234,17 @@ def main():
         value = 'true'
         if docs:
             reason = 'browser-consumed inputs or browser validation require code qualification'
+    routing = decisions(paths)
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write(f'code={value}\n')
             f.write('browser=' + str(browser).lower() + '\n')
+            for key, required in routing.items():
+                f.write(key + '=' + str(required).lower() + '\n')
     summary = f'### Change classification\n\nCode qualification required: **{value}**. {reason}.\n\n'
     summary += 'Browser input qualification required: **' + str(browser).lower() + '**.\n\n'
+    for key, required in routing.items():
+        summary += f'{key}: **{str(required).lower()}**.\n\n'
     # Render arbitrary Git paths as escaped JSON inside a code block.
     summary += 'Changed paths: ' + str(len(paths)) + '\n\n' + '\n'.join('    ' + json.dumps(p) for p in paths) + '\n'
     print(summary)

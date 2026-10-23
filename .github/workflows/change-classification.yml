@@ -8,6 +8,27 @@ on:
       browser:
         description: Whether browser-consumed inputs or its validation path require qualification
         value: ${{ jobs.classify.outputs.browser }}
+      application:
+        description: Ordinary consumer decision for application
+        value: ${{ jobs.classify.outputs.application }}
+      portable:
+        description: Ordinary consumer decision for portable
+        value: ${{ jobs.classify.outputs.portable }}
+      package_macos:
+        description: Ordinary consumer decision for package_macos
+        value: ${{ jobs.classify.outputs.package_macos }}
+      package_linux:
+        description: Ordinary consumer decision for package_linux
+        value: ${{ jobs.classify.outputs.package_linux }}
+      fixtures:
+        description: Ordinary consumer decision for fixtures
+        value: ${{ jobs.classify.outputs.fixtures }}
+      native:
+        description: Ordinary consumer decision for native
+        value: ${{ jobs.classify.outputs.native }}
+      native_platform:
+        description: Ordinary consumer decision for native_platform
+        value: ${{ jobs.classify.outputs.native_platform }}
 permissions:
   contents: read
 jobs:
@@ -16,6 +37,13 @@ jobs:
     outputs:
       code: ${{ steps.changes.outputs.code }}
       browser: ${{ steps.changes.outputs.browser }}
+      application: ${{ steps.changes.outputs.application }}
+      portable: ${{ steps.changes.outputs.portable }}
+      package_macos: ${{ steps.changes.outputs.package_macos }}
+      package_linux: ${{ steps.changes.outputs.package_linux }}
+      fixtures: ${{ steps.changes.outputs.fixtures }}
+      native: ${{ steps.changes.outputs.native }}
+      native_platform: ${{ steps.changes.outputs.native_platform }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

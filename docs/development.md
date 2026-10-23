@@ -292,16 +292,18 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Metadata validation, make-all, both native helper/package/selection fixtures and native listener/updater process fixtures. Ordinary manager checks do not invoke reference-image planning, builds or payload retrieval. |
-| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same source-bound manager and process fixtures; PR metadata validation is a PR event only. |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Always-on metadata, policy regression and workflow validation; only affected application, portable, native helper/package, process/updater and browser consumers execute. Ordinary checks do not invoke reference-image planning, builds or payload retrieval. |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same consumer routing from the exact before/after range; PR metadata validation is a PR event only. |
 | Manual full candidate | No documentation shortcut | Portable preflight, both native host engines/helpers, selected reference-image components and current manager packages. Lifecycle joins consume the exact requested current/prior artifacts. |
 | Manual `manager_only_update` candidate | No documentation shortcut | Requires an explicit previous package artifact and a complete plan with zero image builds. Reuses original immutable environments without image export/upload; installed update/rollback validation remains required. |
 | Manual `engine_only` / `controller_only` diagnostic | No documentation shortcut | Only the selected engine/native-fixture or controller path executes. Omitted image/package work is not qualified by the diagnostic. |
 | Version tag | No documentation shortcut | Candidate qualification plus separately gated publication; protected production environment and release variable checks remain in force. |
 
 The `listener-and-cleanup` context is produced by `package-checks` on ordinary
-events and requires its actual current-source native manager/process fixtures
-and exact qualified revision. It adds no duplicate builds or fixture runs. The
+events and requires success or intentional omission for each selected consumer.
+Only complete portable, both-host helper/package and native fixture qualification
+emits `qualified_revision`; partial qualification and omission emit no full-source
+receipt. It adds no duplicate builds or fixture runs. The
 manual `runner-integration` workflow retains its separate strict artifact/package/
 lifecycle guard. Fixture success is not a newly qualified image or an installed
 selected-environment composition receipt. Reference-image planning is optional distribution work. A team's installed image
@@ -329,6 +331,91 @@ used for required checks, so documentation PRs do not leave pending contexts.
 The classification job lists paths and the decision in its summary. Required
 wrappers reject failed, cancelled, missing or invalid classifier outputs.
 
+### Complete CI consumer audit (JAY-712)
+
+This table covers every workflow job, reusable workflow and local action. The
+routing owner is `scripts/ci/classify_changes.py`; its explicit consumers are
+`application`, `portable`, `package_macos`, `package_linux`, `fixtures`, plus the
+existing Docker-stage-aware `browser` decision. `native` and `native_platform`
+are derived from helper/fixture requirements and validated again in the aggregate.
+Ordinary CI uses no workflow path filters. A missing/empty range selects every
+consumer; malformed event JSON fails classification. Failed/cancelled/missing
+classification, malformed outputs, inconsistent derived flags, unexpected skips,
+or failed native matrices fail the required aggregate.
+
+| Ordinary workflow / jobs | Actual inputs and reason to run |
+| --- | --- |
+| `change-classification / classify`; each caller's `changes` | Always: full PR merge-base/head or exact push before/after paths, both sides of renames and deletions; dependency-free Python and Git. |
+| `pr-description-lint / validate-pr-description` | Every applicable PR metadata event; PR template, body and validator. Explicit cheap exception. |
+| `make-all / make-all` | Always validates routing/metadata regressions and all workflow definitions with checksum-pinned actionlint. Elixir/mise/dependencies/Node setup and `make all` only for application inputs. |
+| `package-checks / portable` | Selected portable policy/controller tests, shell/package input checks and release version/schema validation; ordinary events execute this once, before native allocation. A caller may supply only successful exact-source preflight evidence. |
+| `package-checks / qualification` | Always verifies local/caller preflight source or explicit omission; prior-source verification when explicitly requested. Cheap status/source gate. |
+| `package-checks / host-policy` | Only if native work is selected; calls `host-policy / select` with `all`, `macos` or `linux_x86_64`. The retained target policy stays authoritative. |
+| `package-checks / native-host-package` | One allocation per affected host: native helper builds and source-independent package/selection/environment/protocol tests when that platform's helper/package inputs change; native process/updater fixtures when their inputs change. Helper-only work omits process fixtures; fixture-only work omits helper compilation and artifacts. Linux helper qualification retains clean Ubuntu 26.04 execution without development tools. |
+| `package-checks / macos-package`, `listener-and-cleanup` | Always present, strict status/decision/source joins with explicit omission summaries. Full exact-source receipt only for the complete qualification set, never for omitted or partial work. |
+| `browser-smoke / chromium` | Always-present guard; only builds/tests for changed browser-consumed stages/COPY sources, context controls, shared build action/cache controller or CI routing/validation controls. Both users retain actual Chromium and CLI smoke. |
+
+Application closure: `elixir/` source/tests/dependency locks/config/build tools,
+Claude transport/runtime/tests, runner entrypoints, launchers and packaged
+behavioral skill/WORKFLOW inputs. `elixir/mix.exs` also affects portable release
+version checks. Helper/package closure: native Swift source and platform locks,
+build/package controllers, installed shell/environment scripts, packaged skills
+and `elixir/WORKFLOW.md`, manager envelope/version/schema/contracts and their
+transitive metadata/input validators and fixtures. Shared Swift/package inputs
+select both hosts; Linux SDK/controller inputs select Linux only. Build identity
+changes alone are not treated as changes to every consumer's behavior.
+
+The portable suite inventory in `scripts/ci/release_tests.py` was audited: metadata,
+Docker input graphs, provenance, archive/registry joins, controller command peers,
+Git histories, and shell selection with fake native helpers do not require a Mac
+runner, Swift build or Docker image. These run once on Ubuntu. Real loopback/process
+ownership (`test_engine_smoke.py`) and installed shell updater/locking/activation
+(`test_package_update.py`) retain both-host execution. New suites default to native;
+new/unrecognized controllers and workflow/action paths conservatively select all
+consumers until their dependencies are reviewed. Tests imported by native helper
+fixtures (including component provenance and original manager metadata) fan out
+to both helper consumers even when their own unit suite is portable.
+
+| Explicit manual/reusable/release workflow / jobs | Dependency/event reason (no ordinary diff shortcut) |
+| --- | --- |
+| `release-preflight / portable` | Full portable policy/version/schema gate for caller-selected candidates; full Git history for retained-source fixtures. |
+| `host-policy / select` | Cheap validation of exactly native Linux x86-64 and macOS ARM64; platform filter preserves this policy. Container architectures remain separate. |
+| `release-native / host-policy`, `native` | Full native fixtures for explicit engine-only qualification; package-checks now runs its native fixtures inside its helper allocation instead of calling a second matrix. |
+| `native-manager-helpers / host-policy`, `helper`, `qualification` | Explicit integration needs actual exact-source native helpers; verifies source/platform/contracts and emits a receipt only after the complete matrix succeeds. |
+| `current-manager-package / host-policy`, `package`, `metadata` | Assemble selected manager packages from exact-source qualified helpers; verify original checksums before executable permission, selected metadata and both native archives before joining. |
+| `component-plan / plan` | Explicit composition: source-bound original evidence discovery; selected component build/reuse decisions, never manager-change-implies-image-rebuild. |
+| `runner-integration / changes`, `portable`, `helpers`, `plan` | Explicit selected-environment composition: full preflight and native helper qualification before dependent work. |
+| `runner-integration / reference-node-smoke` | Only explicit `reference_node_smoke`: build and test both reference harness Docker contexts and their Node/CLI controls. No ordinary allocation. |
+| `runner-integration / runners`, `manager-inputs`, `manager-package` | Build only component plan's affected provider/architecture entries, bind original immutable records and assemble matching current manager packages. |
+| `runner-integration / listener-and-cleanup` | Strict selected-component/package join and actual installed lifecycle, original-payload verification, owned-resource cleanup and retained evidence. Distribution alias probe only when explicitly requested. |
+| `burrito-release / qualification`, `host-policy` | Full candidate preflight and supported host policy, with controller-only exception. |
+| `burrito-release / engine-fixtures`, `build`, `smoke`, `controller-diagnostics` | Selected explicit engine/controller diagnostic or full candidate: both supported native engines and actual standalone acceptance; controller-only runs only native controller fixtures. |
+| `burrito-release / runners`, `release` | Full candidates request matching runner/package composition; publication only for version tags, enabled production variable and production environment after successful build/smoke/runner joins. |
+| `runner-release / portable`, `qualification`, `component-plan` | Full or successful exact-source caller preflight; explicit mode/input/source validation, then immutable component planning. |
+| `runner-release / candidate`, `candidate-metadata` | Plan-selected native provider/container architecture builds and actual-image qualification; join exact records without turning skipped/reused builds into new evidence. Both Linux container architectures and providers remain supported. |
+| `runner-release / package-inputs`, `packaged-candidate`, `packaged-candidate-metadata`, `ubuntu-package-lifecycle`, `candidate-qualification` | Explicit package composition requires full package qualification, exact helper artifacts, native archives, requested prior package lifecycle and strict terminal joins. `compose_packages=false` intentionally omits this cohort. |
+| `runner-release / publication-preflight`, `publish`, `packaged-release-platform`, `packaged-release` | Tag-only, production-gated publication and source-bound native package assembly; full selected artifact qualification retained. |
+| `runner-release / cache-probe`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
+| `runner-release / retained-transfer-timing`, `transfer-benchmark`, `transfer-replay`; `transfer-timing / retained-payload-timing` | Only selected immutable run/provider/architecture diagnostics; download/measure/verify original payloads, with explicit replay and native producer guards. |
+| Local action `build-runner` | Browser/candidate/probe consumer only: target, Docker recipe/COPY/ignore closure, scoped cache policy, native buildx and load, then caller-owned actual runtime qualification. |
+| Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests, and browser build controls route browser qualification. |
+
+The previous two ordinary Mac allocations (native fixtures and helper/package)
+now become one. Portable suites no longer repeat on each native host. Combining
+is equivalent because no fixture consumes a separately produced helper artifact;
+when both are selected they run sequentially in the same exact-source checkout.
+Release engine fixtures remain separate because they qualify an explicit engine
+candidate rather than ordinary helper/package inputs. Manual selected-image
+assembly still consumes matching qualified helper artifacts; no release identity,
+artifact source guard, runtime cleanup or provider/platform proof is replaced.
+
+Supersession remains scoped by workflow/event/PR-or-ref. Production tags and
+retained candidate diagnostics are not cancelled. Explicit integration runs have
+run-specific groups and do not cancel another operator-requested composition.
+Queue, execution and wall-clock timings are separate measurements: eliminating
+an allocation reduces exposure to shared-runner queues, not a queue-time SLA.
+No extra manual hosted or paid diagnostic is implied by this policy.
+
 Human-facing prose is explicitly allowlisted in `scripts/ci/classify_changes.py`.
 Packaged agent skills and runtime `WORKFLOW.md` templates remain code inputs.
 The Python standard-library PR validator enforces template headings/order,
@@ -347,4 +434,4 @@ and production, multiple documentation commits, merge pushes, mixed changes,
 renames/deletions, stale bases and missing history. It also executes the required
 wrapper guard from an empty workspace and checks failure/cancellation propagation.
 These are isolated event-replay results, not claims that GitHub-hosted jobs ran.
-Pure documentation changes do not run either suite.
+Pure documentation changes run the cheap policy suite and workflow lint, but omit application setup/build/tests.
