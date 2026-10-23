@@ -1,8 +1,5 @@
 name: runner-integration
 on:
-  pull_request:
-  push:
-    branches: [dev, main]
   workflow_dispatch:
     inputs:
       distribution_alias:

@@ -255,7 +255,9 @@ Ordinary event planning and original payload retrieval
 ----------------------------------------------------
 
 `component-plan.yml` resolves the same committed Docker input closure and bounded
-original native evidence on ordinary PR and dev/main push events. The full plan
+original native evidence for explicit manual reference qualification and browser
+component checks. Ordinary manager PR and dev/main push validation does not
+invoke the reference-image planner. The full plan
 is retained as a source-bound artifact; job outputs contain only explicit
 `build`/`reuse` decisions. Browser CI builds and executes browser qualification
 only when its browser closure requires a build. Browser reuse requires matching
@@ -525,20 +527,32 @@ missing newly built components; candidate tests remain loopback-only.
 Ordinary current-manager helper scheduling
 ------------------------------------------
 
-`runner-integration` gates expensive work on the shared portable preflight. The
-`native-manager-helpers` reusable workflow then builds and qualifies the exact
-current-source Linux x86-64 static helper and macOS ARM64 helper concurrently
-with changed-component planning/building. It uses the shared two-host policy,
-runs each host's native package contracts and the clean Ubuntu helper proof, and
-retains source-bound checksums in same-run artifacts. Current-manager assembly
-requires that successful source revision, verifies the downloaded checksum before
-restoring executable permissions, and rechecks actual source/platform/CPU through
-the shared builder. It does not compile a second current helper after images
-finish. The terminal current-manager guard requires portable and helper success
-as well as the actual package/component decisions; cancelled or skipped native
-qualification cannot produce a successful behavioral receipt.
+`package-checks` owns ordinary PR and dev/main push native qualification. Cheap
+portable preflight runs before the shared two-host policy fans out native process
+fixtures and actual current-source helper builds. Each host runs the existing
+source-independent package, selected-image, environment and manager-protocol
+contracts; native process fixtures cover listener ownership, observable state,
+graceful shutdown, descendant cleanup and updater recovery. The static Linux
+helper also executes in clean Ubuntu without its build toolchain.
 
-A manual ordinary-integration diagnostic may set `distribution_alias=true` to
+The existing `macos-package` aggregate requires the actual portable, native and
+helper results, then binds qualification to the exact source revision. The named
+`listener-and-cleanup` context now comes from this same workflow and checks those
+results and that revision. It adds no repeated helper build or fixture execution.
+These ordinary checks report fixture proof. They do not claim image qualification
+or installed selected-environment composition, and need no historical image
+baseline, export, upload or download. Full Elixir process tests remain in the
+separate required `make-all` context.
+
+`runner-integration` is explicit manual integration. It retains component input
+planning, actual matching image qualification when needed, current native helper
+artifacts, source/CPU/checksum-verified manager package assembly and installed
+selected-environment lifecycle execution. Its terminal guard still requires the
+complete selected artifact/package/lifecycle decisions. Missing, failed,
+cancelled, wrongly skipped or wrong-source work cannot grant composition proof.
+This manual workflow does not run again for ordinary PR or merge events.
+
+A manual integration diagnostic may set `distribution_alias=true` to
 exercise the schema2 distribution map in the existing installed lifecycle. It
 uses fixed disposable localhost repositories and each original OCI digest,
 without changing original component records, sources, labels, input identities
