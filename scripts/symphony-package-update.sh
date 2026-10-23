@@ -82,6 +82,7 @@ package_verified_home() {
   [ "$(dirname "$canonical")" = "$package_app_home/releases" ] || die 'invalid versioned release directory'
   package_helper validate-release "$canonical/release.json" || return
   package_helper verify-files "$canonical" || return
+  package_verify_home_source "$canonical" || return
   printf '%s\n' "$canonical"
 }
 
