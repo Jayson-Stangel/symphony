@@ -101,6 +101,15 @@ class BrowserRouting(unittest.TestCase):
             finally:
                 os.chdir(original)
 
+    def test_final_runtime_recipe_changes_require_browser_execution(self):
+        base, _ = CLASSIFY.browser_recipe(RECIPE.encode())
+        for instruction in ('USER 11001:11001', 'ENV PATH=/broken', 'RUN rm -rf /opt/browser',
+                            'LABEL com.symphony.agent=claude'):
+            changed, _ = CLASSIFY.browser_recipe((RECIPE + instruction + '\n').encode())
+            self.assertNotEqual(base, changed, instruction)
+        metadata, _ = CLASSIFY.browser_recipe((RECIPE + 'ARG SYMPHONY_REVISION=unknown\nLABEL org.opencontainers.image.revision=$SYMPHONY_REVISION\n').encode())
+        self.assertEqual(base, metadata)
+
     def test_nonconsuming_controls_do_not_build_browsers(self):
         with tempfile.TemporaryDirectory() as folder:
             def git(*args):
@@ -142,7 +151,7 @@ class BrowserRouting(unittest.TestCase):
             self.assertTrue(CLASSIFY.browser_required(paths, event, name))
 
     def test_guard_refuses_missing_or_failed_decisions_and_retains_both_users(self):
-        workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        workflow = (ROOT / '.github/workflows/runner-integration.yml').read_text().split('  chromium:\n', 1)[1].split('  portable:\n', 1)[0]
         self.assertNotIn('component-plan', workflow)
         self.assertNotIn('needs.plan', workflow)
         block = workflow.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
@@ -152,7 +161,8 @@ class BrowserRouting(unittest.TestCase):
             for result in ('success', 'failure', 'cancelled', 'skipped', ''):
                 actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser), capture_output=True)
                 self.assertEqual(actual.returncode == 0, expected and result == 'success')
-        for command in ('--entrypoint playwright symphony-browser-test --version',
-                        '--entrypoint node symphony-browser-test /opt/symphony/browser/smoke.cjs',
-                        '--user 11001:11001 --entrypoint node', '--user 11001:11001 --workdir /tmp --entrypoint playwright symphony-browser-test screenshot'):
-            self.assertIn(command, workflow)
+        for provider in ('codex', 'claude'):
+            self.assertIn('target: ' + provider, workflow)
+            self.assertIn('smoke-image.sh symphony-browser-' + provider + ' ' + provider, workflow)
+        self.assertIn('builder: ${{ steps.builder.outputs.name }}', workflow)
+        self.assertFalse((ROOT / '.github/workflows/browser-smoke.yml').exists())

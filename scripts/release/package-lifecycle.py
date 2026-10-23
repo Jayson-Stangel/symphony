@@ -21,6 +21,16 @@ import urllib.request
 import uuid
 
 
+def qualify_browser(run, image_id, provider, completed):
+    """Qualify restored bytes once per actual provider/image, without rebuilding."""
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", image_id), "invalid restored image ID"
+    assert provider in ("codex", "claude"), "invalid provider"
+    key = (provider, image_id)
+    if key not in completed:
+        run(["bash", str(Path(__file__).resolve().parents[2] / "runner/browser/smoke-image.sh"), image_id, provider])
+        completed.add(key)
+
+
 def acquire_container(run, *args):
     # Pull progress belongs to stderr; only Docker's authoritative stdout ID
     # grants ownership. Never infer ownership from a name after failed create.
@@ -319,6 +329,7 @@ def main():
         # All selected archive hashes and graph closures were verified before
         # acquiring a registry or performing the first image/network mutation.
         test_registry.start(registry_state, delete_enabled=True)
+        browser_completed = set()
         for provider in ("codex", "claude"):
             selected = [("candidate", current)] if current_only else [("candidate", current), ("previous", initial)]
             for role, manifest in selected:
@@ -327,6 +338,7 @@ def main():
                 original = qualified["image"]
                 assert re.fullmatch(f"localhost:5000/symphony-{provider}@sha256:[a-f0-9]{{64}}", original), "original digest must use the isolated candidate registry route"
                 pulled = restore_component(run, graph, registry_state)
+                qualify_browser(run, pulled["Id"], provider, browser_completed)
                 if legacy_chain and role == 'previous':
                     assert (pulled.get('Config', {}).get('Labels') or {}).get('com.symphony.protocol') in (None, ''), 'legacy fixture must retain the actual unlabeled old image'
                 alias = manifest.get("distribution", {}).get(provider, {}).get("x86_64")

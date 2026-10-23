@@ -167,7 +167,7 @@ class Consumers(unittest.TestCase):
         self.assertIn("if: matrix.platform == 'macos' && needs.changes.outputs.package_macos == 'true'", text)
 
     def test_actual_native_and_classification_guards(self):
-        guards = scripts(job(workflow('package-checks'), 'macos-package'))
+        guards = scripts(job(workflow('package-checks'), 'package-qualification'))[:2]
         self.assertEqual(len(guards), 2)
         statuses = ('success', 'failure', 'cancelled', 'skipped', '')
         command = '\n'.join(guards)
@@ -236,8 +236,8 @@ class Consumers(unittest.TestCase):
         self.assertNotIn('outputs.native', workflow('burrito-release'))
         self.assertIn('environment: production-release', workflow('burrito-release'))
         self.assertIn('SYMPHONY_PRODUCTION_RELEASES', workflow('runner-release'))
-        self.assertIn('cancel-in-progress: false', workflow('runner-integration'))
-        self.assertIn('${{ github.run_id }}', workflow('runner-integration'))
+        self.assertIn("cancel-in-progress: ${{ github.event_name != 'workflow_dispatch'", workflow('runner-integration'))
+        self.assertIn("github.event_name == 'workflow_dispatch' && github.run_id", workflow('runner-integration'))
 
 
 if __name__ == '__main__':

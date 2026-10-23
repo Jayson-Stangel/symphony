@@ -1,4 +1,4 @@
-name: change-classification
+name: Change classification
 on:
   workflow_call:
     outputs:
@@ -33,6 +33,7 @@ permissions:
   contents: read
 jobs:
   classify:
+    name: Classify event inputs
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.changes.outputs.code }}
@@ -45,10 +46,11 @@ jobs:
       native: ${{ steps.changes.outputs.native }}
       native_platform: ${{ steps.changes.outputs.native_platform }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - id: changes
-        name: Classify the complete event diff
+      - name: Classify the complete event diff
+        id: changes
         run: python3 scripts/ci/classify_changes.py

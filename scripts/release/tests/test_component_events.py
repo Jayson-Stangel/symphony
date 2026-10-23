@@ -51,7 +51,7 @@ class ComponentEvents(unittest.TestCase):
                     self.assertRegex(block.group(),r'uses: actions/checkout@[^\n]+\n        with:\n          fetch-depth: 0')
 
     def test_browser_wrapper_requires_explicit_classification_for_qualification_or_omission(self):
-        workflow = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        workflow = (ROOT / '.github/workflows/runner-integration.yml').read_text().split('  chromium:\n', 1)[1].split('  portable:\n', 1)[0]
         block = workflow.split('        run: |\n', 1)[1].split('      - ', 1)[0]
         guard = '\n'.join(line[10:] for line in block.splitlines())
         # Browser routing no longer depends on a reference-component plan. Both

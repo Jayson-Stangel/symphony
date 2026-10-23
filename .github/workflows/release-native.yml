@@ -5,17 +5,19 @@ permissions:
   contents: read
 jobs:
   host-policy:
+    name: Select native hosts
     uses: ./.github/workflows/host-policy.yml
   native:
+    name: Native process fixtures (${{ matrix.platform }})
     needs: host-policy
-    name: native-fixtures (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Native compatibility fixtures verify retained source trees in Git.
           fetch-depth: 0

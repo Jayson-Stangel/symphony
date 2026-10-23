@@ -45,7 +45,12 @@ def select(run_id, attempt, provider, architecture, fetch=origin.api):
     require(artifacts.REVISION.fullmatch(controller or ''), 'missing original native source')
     origin.run_identity(run_id, controller, fetch)
     require(run.get('event') == 'workflow_dispatch', 'only an explicitly selected manual native run may be recovered')
-    job = origin.selected_job(run_id, attempt, f'runner-{provider}-{architecture}', architecture, fetch)
+    listing = fetch(f'actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100')
+    require(listing.get('total_count', 0) <= 100, 'incomplete native job discovery')
+    names = artifacts.runner_job_names(provider, architecture)
+    matching = [item for item in listing.get('jobs', []) if item.get('name') in names]
+    require(len(matching) == 1, 'original native qualification is missing or ambiguous')
+    job = origin.selected_job(run_id, attempt, matching[0]['name'], architecture, fetch)
     raw_log = fetch(f"actions/jobs/{job['id']}/logs", binary=True)
     eligibility = origin.recovery_eligibility(job, raw_log)
     inventory = fetch(f'actions/runs/{run_id}/artifacts?per_page=100')
@@ -203,7 +208,7 @@ def recover(args):
                 'archive_filename':archive.name,'archive_sha256':archive_sha,'record_filename':record_path.name,
                 'payload_origin':{'run_id':args.run_id,'controller_revision':original},
                 'record_origin':{'run_id':int(os.environ['GITHUB_RUN_ID']),'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']),
-                                 'controller_revision':controller,'job_name':f'recover-{args.provider}-{args.architecture}'},
+                                 'controller_revision':controller,'job_name':f'Recover native records ({args.provider}, {args.architecture})'},
                 'native_step_recovery':selected['eligibility'],
                 **{key:record[key] for key in ('image','source_revision','input_identity')}}
             artifacts.validate_component(record,args.provider,args.architecture)

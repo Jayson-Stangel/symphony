@@ -1,4 +1,4 @@
-name: retained-transfer-timing
+name: Retained transfer timing
 
 on:
   workflow_call:
@@ -33,10 +33,12 @@ permissions:
 
 jobs:
   retained-payload-timing:
+    name: Measure retained payload transfer
     runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify immutable source and native producer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,8 +57,11 @@ jobs:
           assert run['head_repository']['full_name'] == repo, 'foreign source run'
           assert re.fullmatch('[0-9a-f]{40}', run['head_sha']), 'invalid source revision'
           jobs = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100']))['jobs']
-          name = 'runner-' + os.environ['PROVIDER'] + '-' + os.environ['ARCHITECTURE']
-          producer = [job for job in jobs if job['name'] == name]
+          import sys
+          sys.path.insert(0, 'scripts/release')
+          from artifacts import runner_job_names
+          names = runner_job_names(os.environ['PROVIDER'], os.environ['ARCHITECTURE'])
+          producer = [job for job in jobs if job['name'] in names]
           assert len(producer) == 1 and producer[0]['status'] == 'completed' and producer[0]['conclusion'] == 'success', 'native producer did not complete successfully'
           runner = 'ubuntu-24.04-arm' if os.environ['ARCHITECTURE'] == 'arm64' else 'ubuntu-24.04'
           assert runner in producer[0]['labels'], 'producer did not run on the selected native host'

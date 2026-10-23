@@ -1,6 +1,9 @@
 name: Build native runner with bounded layer cache
 description: Load a locally testable image; layer reuse never replaces runtime qualification.
 inputs:
+  builder:
+    description: Optional caller-owned Buildx builder for shared provider layers
+    default: ''
   target:
     description: Dockerfile target
     required: true
@@ -42,7 +45,9 @@ runs:
         CACHE_VARIANT: ${{ inputs.cache-variant }}
         CACHE_EXPORT: ${{ inputs.export-cache }}
       run: bash scripts/release/runner-cache-policy.sh
-    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - name: Set up native image builder
+      if: inputs.builder == ''
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
     - name: Start build measurement
       id: started
       shell: bash
@@ -51,6 +56,7 @@ runs:
       id: build
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
+        builder: ${{ inputs.builder }}
         context: .
         file: runner/Dockerfile
         target: ${{ inputs.target }}

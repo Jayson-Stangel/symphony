@@ -38,48 +38,65 @@ def browser_recipe(contents):
             for dependency in stages[name]['dependencies']:
                 visit(dependency)
     visit('browser-tools')
-    return {name: stages[name] for name in selected}, inputs.pattern_expression
+    graph = {name: dict(stages[name]) for name in selected}
+    browser_stages = set(selected)
+    for provider in ('codex', 'claude'):
+        if provider in stages:
+            visit(provider)
+    for name in selected - browser_stages:
+        stage = stages[name]
+        instructions = [item for item in stage['instructions']
+                        if not (item[0] == 'LABEL' and any(key in item[1] for key in inputs.METADATA_ARGS))
+                        and not (item[0] == 'ARG' and
+                            item[1].split('=', 1)[0] in inputs.METADATA_ARGS)]
+        graph[name] = dict(stage, instructions=instructions, sources=[])
+    return graph, inputs.pattern_expression
 
 
-def browser_required(paths, event=None, name=None):
+def browser_selection(paths, event=None, name=None):
     """Diff only consumed browser inputs; unknown syntax/history requires qualification."""
     if not paths:
-        return True
+        return True, [], ['Full-event policy or unavailable browser diff requires qualification']
     exact = {
         '.dockerignore', 'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh',
-        '.github/workflows/browser-smoke.yml', '.github/workflows/change-classification.yml',
+        '.github/workflows/browser-smoke.yml', '.github/workflows/runner-integration.yml',
+        '.github/workflows/change-classification.yml', 'runner/browser/smoke-image.sh',
         'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
-        'scripts/release/runner-cache-policy.sh',
+        'scripts/release/runner-cache-policy.sh', 'scripts/release/runner-smoke.sh',
+        'scripts/release/package-lifecycle.py',
     }
     prefixes = ('scripts/ci/', '.github/actions/build-runner/')
     nonbrowser_actions = ('.github/actions/configure-runner-cache/',
                           '.github/actions/runner-cache-runtime/')
+    triggers = []
+    for path in paths:
+        if PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts:
+            return True, [], ['Unsafe browser path: ' + path]
+        if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
+                (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
+            triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
-        if any(PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts or
-               path in exact or
-               (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
-               (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))
-               for path in paths):
-            return True
         base, head = changed_revisions(event, name)
         old, pattern_expression = browser_recipe(git('show', base + ':runner/Dockerfile'))
         current, _ = browser_recipe(git('show', head + ':runner/Dockerfile'))
         if old != current:
-            return True
+            triggers.append({'path': 'runner/Dockerfile', 'rule': 'browser dependency stage or final provider runtime recipe changed'})
         sources = {source for stage in current.values() for source in stage['sources']}
-        for source in sources:
+        for source in sorted(sources):
             source_path = PurePosixPath(source)
             if source_path.is_absolute() or '..' in source_path.parts:
-                return True
-            # Docker accepts leading/repeated ./ and directory COPY sources.
-            # Normalize those before matching; unsupported patterns still refuse.
+                return True, triggers, ['Unsafe browser COPY source: ' + source]
             expression = pattern_expression(str(source_path))
-            if any(expression.fullmatch(path) or any(expression.fullmatch(str(parent)) for parent in PurePosixPath(path).parents)
-                   for path in paths):
-                return True
-        return False
+            for path in paths:
+                if expression.fullmatch(path) or any(expression.fullmatch(str(parent)) for parent in PurePosixPath(path).parents):
+                    triggers.append({'path': path, 'rule': 'consumed browser-stage COPY input: ' + source})
+        return bool(triggers), triggers, []
     except (KeyError, ValueError, TypeError, UnicodeError, OSError, subprocess.SubprocessError):
-        return True
+        return True, triggers, ['Unavailable browser history or unsupported Docker syntax requires qualification']
+
+
+def browser_required(paths, event=None, name=None):
+    return browser_selection(paths, event, name)[0]
 
 
 # Ordinary consumers. Full manual/tag/candidate calls never use a diff omission.
@@ -117,61 +134,61 @@ PORTABLE_RELEASE = {
 }
 
 
-def consumers(path):
+def consumer_selection(path):
     p = PurePosixPath(path)
     if p.is_absolute() or '..' in p.parts:
-        return ALL
+        return ALL, 'unsafe or unrecognized path: conservative full qualification'
     if documentation(path):
-        return set()
+        return set(), 'human-facing documentation allowlist'
     if path in ('.github/pull_request_template.md', '.github/workflows/pr-description-lint.yml',
                 'scripts/ci/check_pr_body.py'):
-        return set()  # checked by always-on metadata/policy validation
+        return set(), 'always-on PR metadata validation'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
-        return ALL
+        return ALL, 'shared CI classifier, comparison or regression control'
     if path == '.github/workflows/make-all.yml':
-        return {'application'}
+        return {'application'}, 'application workflow control'
     if path.startswith('.github/workflows/'):
         # Native package/release controls can affect portable and native evidence;
         # manual-only image controllers are validated by portable contract tests.
         if p.stem in ('runner-release', 'runner-integration', 'component-plan',
                        'transfer-timing', 'current-manager-package'):
-            return {'portable'}
+            return {'portable'}, 'runner/component planning or composition control validated by portable tests'
         if p.stem in ('package-checks', 'release-native', 'release-preflight',
                        'host-policy', 'native-manager-helpers', 'burrito-release'):
-            return PACKAGES | {'fixtures'}
+            return PACKAGES | {'fixtures'}, 'portable/native package qualification workflow control'
         if p.stem == 'browser-smoke':
-            return {'portable'}
-        return ALL
+            return {'portable'}, 'browser workflow migration control'
+        return ALL, 'unknown workflow: conservative full qualification'
     if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
-        return PACKAGES | {'application'}
+        return PACKAGES | {'application'}, 'packaged behavioral skills or runtime workflow'
     if path == 'elixir/mix.exs':
-        return {'application', 'portable'}
+        return {'application', 'portable'}, 'application and release-version input'
     if path.startswith('elixir/'):
-        return {'application'}
+        return {'application'}, 'application source, tests, dependency or toolchain input'
     if path in ('scripts/symphony', 'scripts/symphony-package.sh', 'scripts/symphony-package-update.sh'):
-        return PACKAGES | {'application', 'fixtures'}
+        return PACKAGES | {'application', 'fixtures'}, 'installed manager launch/update and native process input'
     if path == 'scripts/symphony-environment.sh':
-        return PACKAGES | {'application'}
+        return PACKAGES | {'application'}, 'installed environment input'
     if path.startswith('scripts/package/linux/') or path == 'scripts/release/build-linux-host-helper.sh':
-        return {'portable', 'package_linux'}
+        return {'portable', 'package_linux'}, 'Linux helper source, SDK or build input'
     if path.startswith('scripts/package/'):
-        return PACKAGES
+        return PACKAGES, 'shared native helper/package input'
     if path in ('scripts/release/engine-smoke.py', 'scripts/release/tests/test_engine_smoke.py',
                 'scripts/release/tests/test_package_update.py'):
-        return {'portable', 'fixtures'}
+        return {'portable', 'fixtures'}, 'native process or installed updater fixture'
     if path in ('scripts/release/tests/test_component_provenance.py',
                 'scripts/release/tests/fixtures/manager-original-68.json'):
-        return PACKAGES
+        return PACKAGES, 'packaged provenance validator fixture dependency'
     if path.startswith('scripts/release/tests/'):
         # Existing portable suite inventory is explicit; new tests remain native.
         spec = importlib.util.spec_from_file_location('ci_release_suites', Path(__file__).with_name('release_tests.py'))
         suites = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(suites)
-        return {'portable'} if p.name in suites.PORTABLE else ALL
+        return ({'portable'}, 'audited portable release suite') if p.name in suites.PORTABLE else (ALL, 'unknown release suite: conservative full qualification')
     if path.startswith('scripts/release/'):
         relative = str(p.relative_to('scripts/release'))
         if relative in PORTABLE_RELEASE:
-            return {'portable'}
+            return {'portable'}, 'release controller with audited portable tests'
         if relative in {
             'artifacts.py', 'build-host-helper.sh', 'package.sh', 'component_provenance.py',
             'finite_transition.py', 'host-targets.json', 'manager-transition-policy.json',
@@ -179,22 +196,25 @@ def consumers(path):
             'manager-version', 'release-schema', 'runner_inputs.py', 'select-hosts.py',
             'component_join.py', 'component_selection.py', 'qualified_graph.py', 'reuse_payload.py',
         }:
-            return PACKAGES
-        return ALL
+            return PACKAGES, 'packaged release validator and transitive metadata dependency'
+        return ALL, 'unknown release controller: conservative full qualification'
     if path.startswith('.github/actions/'):
         if path.split('/')[2] in ('build-runner', 'configure-runner-cache', 'runner-cache-runtime'):
-            return {'portable'}
-        return ALL
+            return {'portable'}, 'audited local build/cache action control'
+        return ALL, 'unknown local action: conservative full qualification'
     if path.startswith('runner/templates/'):
-        return PACKAGES | {'application'}
+        return PACKAGES | {'application'}, 'packaged team environment template'
     if path.startswith('runner/claude/qualification/'):
-        return {'portable'}  # explicit manual reference_node_smoke consumes the image
+        return {'portable'}, 'explicit reference harness input'
     if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
-        return {'application'}
+        return {'application'}, 'Claude runtime or runner entrypoint input'
     if path.startswith('runner/browser/') or path in ('runner/Dockerfile', '.dockerignore',
             'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh'):
-        return {'portable'}  # browser graph independently routes actual browser inputs
-    return ALL
+        return {'portable'}, 'browser build input; separate Docker graph qualification'
+    return ALL, 'unrecognized path: conservative full qualification'
+
+def consumers(path):
+    return consumer_selection(path)[0]
 
 
 def decisions(paths):
@@ -243,12 +263,63 @@ def changed_paths(event, name):
     return paths
 
 
+def presentation_only(path, base, head):
+    if not (path.startswith('.github/workflows/') and path.endswith(('.yml', '.yaml')) or
+            path.startswith('.github/actions/') and PurePosixPath(path).name in ('action.yml', 'action.yaml')):
+        return False, None
+    try:
+        payload = {'path': path, 'before': git('show', base + ':' + path).decode(),
+                   'after': git('show', head + ':' + path).decode()}
+        process = subprocess.run(['ruby', str(Path(__file__).with_name('presentation_only.rb'))],
+                                 input=json.dumps(payload), text=True, capture_output=True, timeout=10)
+        if process.returncode:
+            return False, 'YAML comparison unavailable or refused; ordinary conservative path policy applies'
+        result = json.loads(process.stdout)
+        if type(result.get('presentation_only')) is not bool:
+            raise ValueError('invalid comparison result')
+        return result['presentation_only'], None
+    except (ValueError, UnicodeError, OSError, subprocess.SubprocessError):
+        return False, 'YAML comparison unavailable or refused; ordinary conservative path policy applies'
+
+
+def event_routing(paths, event, name):
+    triggers = {key: [] for key in COMPONENTS}
+    presentation = []
+    fallbacks = []
+    active = []
+    if not paths:
+        fallbacks.append('Full-event policy or unavailable/empty event diff requires all consumers')
+        return decisions([]), {key: [] for key in COMPONENTS}, [], [], fallbacks
+    try:
+        base, head = changed_revisions(event, name)
+    except (KeyError, TypeError, ValueError, UnicodeError, OSError, subprocess.SubprocessError):
+        base = head = None
+    for path in paths:
+        only_names, fallback = presentation_only(path, base, head) if base else (False, None)
+        if only_names:
+            presentation.append(path)
+            continue
+        active.append(path)
+        if fallback:
+            fallbacks.append(path + ': ' + fallback)
+        selected, rule = consumer_selection(path)
+        for key in selected:
+            triggers[key].append({'path': path, 'rule': rule})
+        if 'conservative' in rule:
+            fallbacks.append(path + ': ' + rule)
+    # An empty set after proven presentation omission is not missing history.
+    route = decisions(active) if active else dict.fromkeys(COMPONENTS, False)
+    if not active:
+        route.update(native=False, native_platform='all')
+    return route, triggers, active, presentation, fallbacks
+
+
 def classify(event, name):
     try:
         paths = changed_paths(event, name)
         code = [p for p in paths if not documentation(p)]
         return not code, ('all changed paths are human-facing documentation' if not code
-                          else 'behavioral or unknown paths require code qualification'), paths
+                          else 'selected consumers and exact triggering rules are listed below'), paths
     except (KeyError, TypeError, ValueError, UnicodeError, OSError, subprocess.SubprocessError):
         return False, 'full-event policy or unavailable/incomplete diff requires code qualification', []
 
@@ -256,13 +327,17 @@ def classify(event, name):
 def main():
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     docs, reason, paths = classify(event, os.environ['GITHUB_EVENT_NAME'])
-    value = 'false' if docs else 'true'
-    browser = browser_required(paths, event, os.environ['GITHUB_EVENT_NAME'])
-    if browser:
-        value = 'true'
-        if docs:
+    routing, triggers, active, presentation, fallbacks = event_routing(paths, event, os.environ['GITHUB_EVENT_NAME'])
+    if paths and not active:
+        browser, browser_triggers, browser_fallbacks = False, [], []
+        value = 'false'
+        reason = 'only verified presentation fields changed; policy, graph and protection contracts still validated'
+    else:
+        browser, browser_triggers, browser_fallbacks = browser_selection(active, event, os.environ['GITHUB_EVENT_NAME'])
+        value = 'true' if browser or not docs else 'false'
+        if browser and docs:
             reason = 'browser-consumed inputs or browser validation require code qualification'
-    routing = decisions(paths)
+    fallbacks.extend(browser_fallbacks)
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write(f'code={value}\n')
@@ -275,6 +350,20 @@ def main():
         if browser else 'No browser build/qualification inputs changed.\n\n')
     for key, required in routing.items():
         summary += f'{key}: **{str(required).lower()}**.\n\n'
+    for key in COMPONENTS:
+        summary += key + ' triggering inputs:\n'
+        for trigger in triggers[key]:
+            summary += '    ' + json.dumps(trigger, sort_keys=True) + '\n'
+        if not triggers[key]:
+            summary += ('    conservative full-event fallback; no trustworthy path attribution\n' if not paths
+                        else '    no relevant changes\n')
+        summary += '\n'
+    summary += 'browser triggering inputs:\n' + '\n'.join('    ' + json.dumps(item, sort_keys=True) for item in browser_triggers) + '\n'
+    if not browser_triggers:
+        summary += '    ' + ('conservative browser fallback' if browser else 'no relevant changes') + '\n'
+    summary += '\nVerified presentation-only files (always-on policy/graph/protection metadata checks remain):\n'
+    summary += '\n'.join('    ' + json.dumps(path) for path in presentation) + '\n\n'
+    summary += 'Conservative fallback reasons:\n' + '\n'.join('    ' + json.dumps(item) for item in fallbacks) + '\n\n'
     # Render arbitrary Git paths as escaped JSON inside a code block.
     summary += 'Changed paths: ' + str(len(paths)) + '\n\n' + '\n'.join('    ' + json.dumps(p) for p in paths) + '\n'
     print(summary)

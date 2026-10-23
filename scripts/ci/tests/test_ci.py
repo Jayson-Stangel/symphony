@@ -106,7 +106,7 @@ class BrowserRouting(unittest.TestCase):
                     'runner/Dockerfile', '.dockerignore', 'runner/Dockerfile.dockerignore',
                     '.github/actions/build-runner/action.yml',
                     'scripts/release/runner-cache-policy.sh', 'runner/node-smoke.sh',
-                    '.github/workflows/browser-smoke.yml',
+                    '.github/workflows/runner-integration.yml',
                     '.github/workflows/change-classification.yml',
                     'scripts/ci/classify_changes.py', 'scripts/ci/tests/test_browser_scope.py',
                 ]
@@ -144,30 +144,30 @@ class BrowserRouting(unittest.TestCase):
                 os.chdir(original)
 
     def test_actual_browser_wrapper(self):
-        text = (ROOT / '.github/workflows/browser-smoke.yml').read_text()
+        text = (ROOT / '.github/workflows/runner-integration.yml').read_text().split('  chromium:\n', 1)[1].split('  portable:\n', 1)[0]
         steps = text.split('      - ')[1:]
         guard = steps[0].split('        run: |\n')[1]
         guard = '\n'.join(line[10:] for line in guard.splitlines() if line.strip())
         # Browser qualification remains gated for both decisions, including checkout/action.
-        for step in steps[1:4]:
-            self.assertIn("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'", step)
-        self.assertIn("needs.changes.outputs.browser == 'false'", steps[4])
-        self.assertIn('intentionally omitted', steps[4])
-        self.assertIn("needs.changes.outputs.code == 'false'", steps[5])
-        self.assertIn('intentionally omitted, not executed', steps[5])
+        for step in steps[1:6]:
+            self.assertIn("if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'", step)
+        self.assertIn("needs.changes.outputs.browser == 'false'", steps[6])
+        self.assertIn('intentionally omitted', steps[6])
+        self.assertIn("needs.changes.outputs.code == 'false'", steps[7])
+        self.assertIn('intentionally omitted, not executed', steps[7])
         for result in ('success', 'failure', 'cancelled', 'skipped', ''):
             for code in ('true', 'false', '', 'invalid'):
                 for browser in ('true', 'false', '', 'invalid'):
                     actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser))
                     valid = code in ('true', 'false') and browser in ('true', 'false') and (code == 'true' or browser == 'false')
                     self.assertEqual(actual.returncode == 0, result == 'success' and valid)
-        self.assertIn('--user 11001:11001 --entrypoint node', text)
-        self.assertIn('--entrypoint node symphony-browser-test', text)
+        self.assertIn('smoke-image.sh symphony-browser-codex codex', text)
+        self.assertIn('smoke-image.sh symphony-browser-claude claude', text)
         # Candidate consumers continue to run actual-image qualification.
         release = (ROOT / '.github/workflows/runner-release.yml').read_text()
         smoke = (ROOT / 'scripts/release/runner-smoke.sh').read_text()
         self.assertNotIn('outputs.browser', release)
-        self.assertIn('smoke.cjs', smoke)
+        self.assertIn('smoke-image.sh', smoke)
 
     def test_cli_publishes_both_decisions(self):
         workflow = (ROOT / '.github/workflows/change-classification.yml').read_text()
@@ -212,7 +212,7 @@ class Metadata(unittest.TestCase):
 
 class WorkflowContracts(unittest.TestCase):
     def test_required_wrappers_and_no_workflow_path_filters(self):
-        for name,job in [('make-all','make-all'),('package-checks','macos-package'),('runner-integration','listener-and-cleanup'),('browser-smoke','chromium')]:
+        for name,job in [('make-all','make-all'),('package-checks','package-qualification'),('runner-integration','chromium')]:
             text=(ROOT/'.github/workflows'/(name+'.yml')).read_text()
             self.assertIn('  '+job+':',text)
             self.assertIn('if: ${{ always() }}',text)

@@ -14,7 +14,7 @@ class OrdinaryManagerRouting(unittest.TestCase):
     def setUpClass(cls):
         cls.packages = (ROOT / '.github/workflows/package-checks.yml').read_text()
         cls.integration = (ROOT / '.github/workflows/runner-integration.yml').read_text()
-        block = cls.packages.split('      - name: Require complete ordinary manager and process fixture evidence\n', 1)[1]
+        block = cls.packages.split('      - name: Verify the exact-source qualification receipt\n', 1)[1]
         cls.guard = textwrap.dedent(block.split('        run: |\n', 1)[1])
 
     def gate(self, **changes):
@@ -28,24 +28,24 @@ class OrdinaryManagerRouting(unittest.TestCase):
     def test_ordinary_events_have_one_native_helper_and_process_fixture_owner(self):
         events = self.integration.split('permissions:', 1)[0]
         self.assertIn('  workflow_dispatch:', events)
-        self.assertNotIn('  pull_request:', events)
-        self.assertNotIn('  push:', events)
+        self.assertIn('  pull_request:', events)
+        self.assertIn('  push:', events)
         self.assertIn('  pull_request:', self.packages)
         self.assertIn('    branches: [dev, main]', self.packages)
         self.assertNotIn('uses: ./.github/workflows/release-native.yml', self.packages)
         self.assertIn('  native-host-package:', self.packages)
         self.assertIn('Run native process and updater fixtures in the helper allocation', self.packages)
-        listener = self.packages.split('  listener-and-cleanup:\n', 1)[1]
-        self.assertIn('needs: [changes, qualification, native-host-package, macos-package]', listener)
+        listener = self.packages.split('  package-qualification:\n', 1)[1]
+        self.assertIn('needs: [changes, qualification, native-host-package]', listener)
         for forbidden in ('build-host-helper', 'build-linux-host-helper', 'component-plan', 'runner-release'):
             self.assertNotIn(forbidden, listener)
         self.assertIn('fixture proof', listener)
 
-    def test_required_contexts_retain_names_and_exact_successful_source(self):
-        self.assertIn('  macos-package:', self.packages)
-        self.assertIn('  listener-and-cleanup:', self.packages)
+    def test_consolidated_context_requires_exact_successful_source(self):
+        self.assertIn('  package-qualification:', self.packages)
+        self.assertNotIn('  listener-and-cleanup:', self.packages)
         self.assertEqual(self.gate(), 0)
-        for field in ('RESULT', 'AGGREGATE'):
+        for field in ('RESULT',):
             for outcome in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.gate(**{field: outcome}), 0, (field, outcome))
         for source in ('', 'b' * 40):
@@ -55,7 +55,7 @@ class OrdinaryManagerRouting(unittest.TestCase):
         omitted = dict(PORTABLE_REQUIRED='false', MACOS='false', LINUX='false', FIXTURES='false', QUALIFIED_REVISION='')
         self.assertEqual(self.gate(**omitted), 0)
         self.assertEqual(self.gate(**dict(omitted, LINUX='true')), 0)
-        for field in ('RESULT', 'AGGREGATE'):
+        for field in ('RESULT',):
             self.assertNotEqual(self.gate(**dict(omitted, **{field: 'failure'})), 0)
         self.assertNotEqual(self.gate(**dict(omitted, QUALIFIED_REVISION='a' * 40)), 0)
         for field in ('PORTABLE_REQUIRED', 'MACOS', 'LINUX', 'FIXTURES'):

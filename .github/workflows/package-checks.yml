@@ -17,7 +17,7 @@ on:
     outputs:
       qualified_revision:
         description: Exact source that passed portable, native and package-input checks
-        value: ${{ jobs.macos-package.outputs.qualified_revision }}
+        value: ${{ jobs.package-qualification.outputs.qualified_revision }}
   workflow_dispatch:
     inputs:
       previous_revision:
@@ -33,12 +33,15 @@ concurrency:
 
 jobs:
   changes:
+    name: Classify changes
     uses: ./.github/workflows/change-classification.yml
   portable:
+    name: Portable preflight
     needs: changes
     if: needs.changes.outputs.portable == 'true' && inputs.portable_revision == ''
     uses: ./.github/workflows/release-preflight.yml
   qualification:
+    name: Validate preflight inputs
     needs: [changes, portable]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
@@ -73,7 +76,8 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: inputs.previous_revision != ''
         with:
           fetch-depth: 0
@@ -83,22 +87,24 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
   host-policy:
+    name: Select native hosts
     needs: changes
     if: needs.changes.outputs.native == 'true'
     uses: ./.github/workflows/host-policy.yml
     with:
       platform: ${{ needs.changes.outputs.native_platform }}
   native-host-package:
+    name: Native helpers and fixtures (${{ matrix.platform }})
     needs: [changes, qualification, host-policy]
     if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' }}
-    name: native-host-package (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Build actual native macOS ARM64 helper
@@ -172,7 +178,8 @@ jobs:
           if [ "$PLATFORM" = linux_x86_64 ]; then
             SYMPHONY_TEST_HOST_HELPER="$helper" python3 "$source/scripts/package/test-package.py" -v
           fi
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Retain artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.previous_revision != ''
         with:
           name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -197,7 +204,8 @@ jobs:
           uname -sm
           python3 scripts/ci/release_tests.py native
 
-  macos-package:
+  package-qualification:
+    name: Package qualification
     needs: [changes, qualification, native-host-package]
     if: ${{ always() }}
     outputs:
@@ -252,28 +260,22 @@ jobs:
               echo "Native qualification passed at $GITHUB_SHA. Selected helpers: macOS=$MACOS, Linux=$LINUX; selected process/updater fixtures=$FIXTURES. Unselected consumers intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY" ;;
             *) exit 1 ;;
           esac
-      - id: qualified
+      - name: Bind complete successful qualification to the exact source
+        id: qualified
         if: needs.changes.outputs.portable == 'true' && needs.changes.outputs.package_macos == 'true' && needs.changes.outputs.package_linux == 'true' && needs.changes.outputs.fixtures == 'true'
-        name: Bind complete successful qualification to the exact source
+
         run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-  listener-and-cleanup:
-    needs: [changes, qualification, native-host-package, macos-package]
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require complete ordinary manager and process fixture evidence
+      - name: Verify the exact-source qualification receipt
         env:
           RESULT: ${{ needs.changes.result }}
-          AGGREGATE: ${{ needs.macos-package.result }}
           PORTABLE_REQUIRED: ${{ needs.changes.outputs.portable }}
           MACOS: ${{ needs.changes.outputs.package_macos }}
           LINUX: ${{ needs.changes.outputs.package_linux }}
           FIXTURES: ${{ needs.changes.outputs.fixtures }}
-          QUALIFIED_REVISION: ${{ needs.macos-package.outputs.qualified_revision }}
+          QUALIFIED_REVISION: ${{ steps.qualified.outputs.revision }}
         run: |
           test "$RESULT" = success
-          test "$AGGREGATE" = success
           for flag in "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done

@@ -82,7 +82,7 @@ def joined(run_id,fetch=proof.api,verify=None,now=None):
                       'joined manual anchor run/attempt differs')
     listing=fetch(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")
     artifacts.require(listing.get('total_count',0)<=100,'joined stage discovery incomplete')
-    jobs=[item for item in listing.get('jobs',[]) if item['name'] in ('candidate-metadata','runners / candidate-metadata')]
+    jobs=[item for item in listing.get('jobs',[]) if item['name'] in artifacts.candidate_job_names('candidate-metadata')]
     artifacts.require(len(jobs)==1 and jobs[0].get('status')=='completed' and jobs[0].get('conclusion')=='success',
                       'complete original component join did not succeed')
     steps=[item for item in jobs[0].get('steps',[]) if item.get('name')==JOIN_STEP]

@@ -12,13 +12,15 @@ permissions:
   contents: read
 jobs:
   portable:
+    name: Portable preflight
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
       release_schema: ${{ steps.qualified.outputs.schema }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Portable policy and package input preflight
@@ -30,7 +32,8 @@ jobs:
           python3 scripts/release/manager_version.py
           python3 scripts/release/manager_version.py --schema
           if [ "$GITHUB_REF_TYPE" = tag ]; then python3 scripts/release/manager_version.py --validate-tag "$GITHUB_REF_NAME"; fi
-      - id: qualified
+      - name: Qualified
+        id: qualified
         run: |
           echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           echo "schema=$(python3 scripts/release/manager_version.py --schema)" >> "$GITHUB_OUTPUT"
