@@ -97,6 +97,13 @@ that release. Rerunning the same unmodified version verifies its inventory.
 Existing user-owned command paths or skill links are refused before activation;
 a source installation is not repointed or migrated automatically.
 
+## Team-owned environments
+
+Use `symphony environment select --agent codex IMAGE` from the project checkout
+to pin a compatible team environment before authentication and startup. See
+[team-owned environments](team-environments.md) for requirements, templates,
+explicit changes and update/recovery behavior.
+
 ## Connect and run a project
 
 Follow [project initialization](getting-started.md#initialize-a-repository) from
