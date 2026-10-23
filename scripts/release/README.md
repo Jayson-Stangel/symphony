@@ -604,3 +604,23 @@ common qualification, before old helper or image work. Its supported historical
 route is the verified artifact selector above. The reusable prior-helper interfaces
 remain available to the independent source-build controller without claiming that
 legacy recipes satisfy the new input/protocol closure.
+
+An explicit manual baseline may select a completed mixed component join even if
+later manager integration failed. The joined artifact contains the exact source
+plan, manifest and all four original records. Its successful join step, selected
+run/attempt/source, immutable service digest, bounded regular members and member
+hashes must all agree. Every original source/controller/record controller must
+be an ancestor of that selected source, and every native record, original small
+record and payload origin is independently verified again. All four members are
+checked before any transitive member can authorize reuse. This is one bounded
+join, with no recursive parent-run authority. Unknown or broken links refuse the
+explicit incomplete selection; plans never grant authorization themselves.
+
+The original origin returned to consumers remains unchanged. The plan separately
+retains the joined anchor and its actual overall run conclusion; a successful
+component join is not a successful manager lifecycle. Current manager integration
+must still run. Ordinary PR/push discovery can inspect joined records but retains
+its existing protected-history origin requirements, and cannot instantiate this
+manual override. Thus a Claude-only candidate can retain the original Codex
+components, and a downstream retry can select those same successful components
+without rebuilding, exporting, uploading or requalifying them.

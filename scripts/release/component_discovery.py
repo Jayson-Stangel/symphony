@@ -23,6 +23,17 @@ def discover(fetch=api, candidate_run=None):
         batch = inventory.get("artifacts", [])
         require(isinstance(batch, list), "invalid artifact discovery response")
         for item in batch:
+            if item.get('name')=='runner-candidate-metadata':
+                if inspected>=MAX_RECORD_ARTIFACTS:return candidates
+                inspected+=1
+                try:
+                    require(item.get('expired') is False and type(item.get('size_in_bytes')) is int and 0<item['size_in_bytes']<=MAX_RECORD_BYTES,'joined discovery bound differs')
+                    data=fetch(f"actions/artifacts/{item['id']}/zip",binary=True)
+                    require('sha256:'+hashlib.sha256(data).hexdigest()==item.get('digest'),'joined discovery checksum differs')
+                    from component_selection import records_from_join
+                    candidates.extend(records_from_join(data)['records'])
+                except (ValueError,KeyError,TypeError,zipfile.BadZipFile,RuntimeError):pass
+                continue
             if not re.fullmatch(r"runner-records-(codex|claude)-(arm64|x86_64)", item.get("name", "")):
                 continue
             if item.get("expired") is not False or type(item.get("size_in_bytes")) is not int or not 0 < item["size_in_bytes"] <= MAX_RECORD_BYTES:

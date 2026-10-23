@@ -1,3 +1,4 @@
+import os
 import copy
 import hashlib
 import io
@@ -51,12 +52,10 @@ class ActualPayloadTests(unittest.TestCase):
         with mock.patch.object(payload, 'verify_origin') as verify:
             payload.origin_verifier(None, 'pull_request')(record)
             verify.assert_called_once_with(record, candidate_run=None)
-            verify.reset_mock()
+        with mock.patch.dict(os.environ,{'GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_REPOSITORY':'Jayson-Stangel/symphony'}), \
+             mock.patch('component_selection.proof.verify_origin') as verify:
             payload.origin_verifier(123, 'workflow_dispatch')(record)
-            verify.assert_called_once_with(record, candidate_run=123)
-            verify.reset_mock()
-            payload.origin_verifier(456, 'workflow_dispatch')(record)
-            verify.assert_called_once_with(record, candidate_run=None)
+            verify.assert_called_once_with(record,fetch=__import__('component_provenance').api,candidate_run=123)
 
     def test_real_download_stream_is_bounded_and_child_failure_propagates(self):
         original_popen = subprocess.Popen

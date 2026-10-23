@@ -22,11 +22,12 @@ class ComponentJoinTest(unittest.TestCase):
             for architecture in ('arm64', 'x86_64'):
                 original = record(provider, architecture)
                 self.plan['components'][provider][architecture] = {
-                    'action': 'reuse', 'record': original, 'input_identity': original['input_identity']}
+                    'action': 'reuse', 'record': original, 'origin':{'exact':'origin'}, 'input_identity': original['input_identity']}
         self.calls = []
 
     def verify(self, value):
         self.calls.append(copy.deepcopy(value))
+        return {"exact":"origin"}
 
     def test_reused_originals_are_verified_without_reexport_or_new_source_labels(self):
         selected = component_join.join(self.plan, self.root, 'a'*40, self.verify)
@@ -49,6 +50,11 @@ class ComponentJoinTest(unittest.TestCase):
         path.write_text(json.dumps(actual))
         with self.assertRaisesRegex(ValueError, 'differs from plan'):
             component_join.join(self.plan, self.root, 'a'*40, self.verify)
+
+    def test_reused_native_origin_must_still_equal_the_exact_plan_selection(self):
+        self.plan['components']['claude']['x86_64']['origin']={'changed':'origin'}
+        with self.assertRaisesRegex(ValueError,'origin changed after planning'):
+            component_join.join(self.plan,self.root,'a'*40,self.verify)
 
     def test_foreign_manager_plan_or_unavailable_origin_cannot_assemble(self):
         with self.assertRaisesRegex(ValueError, 'current manager'):

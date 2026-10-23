@@ -274,11 +274,15 @@ def selection_verifier(baseline_run=None, root=".", fetch=api):
                 os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
                 os.environ.get("GITHUB_REPOSITORY") == REPOSITORY,
                 "baseline selection requires an explicit manual fork diagnostic")
+    manual=None
+    if baseline_run is not None:
+        from component_selection import manual_verifier
+        manual=manual_verifier(baseline_run,fetch=fetch)
     def verify(record):
-        proof = record["qualification"]
-        record_run = proof.get("record_origin", {}).get("run_id", proof["run_id"])
-        if baseline_run is not None and record_run == baseline_run:
-            return verify_origin(record, fetch=fetch, candidate_run=baseline_run)
+        if manual is not None:
+            record_run=record['qualification'].get('record_origin',{}).get('run_id',record['qualification']['run_id'])
+            if str(record_run)!=os.environ.get('GITHUB_RUN_ID'):
+                return manual(record)
         return verify_current_origin(record, fetch=fetch, root=root)
     return verify
 

@@ -116,11 +116,17 @@ def main():
             artifacts.validate(baseline, require_bundle=False)
         else:
             candidates = discover(candidate_run=args.baseline_run)
-        verifier = lambda record: verify_origin(record, candidate_run=args.baseline_run)
+        if args.baseline_run is not None:
+            from component_selection import manual_verifier
+            verifier=manual_verifier(args.baseline_run)
+            verifier.validate_candidates(candidates or [])
+        else:verifier=verify_origin
         result = plan(args.root, baseline, verify=verifier, candidates=candidates, browser_inputs=identity, same_source_bridge=args.same_source_bridge)
         result["baseline_selection"] = {"mode": "explicit-manual-candidate" if args.baseline_run else
                                        "explicit-manifest" if args.baseline else "bounded-verified-fork-history",
                                        "run_id": args.baseline_run, "candidate_count": len(candidates or [])}
+        if args.baseline_run is not None:
+            result["baseline_selection"]["joined_anchor"]=verifier.selection_anchor()
         Path(args.output).write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
         if args.require_reuse and result["has_builds"]:
             parser.exit(1, "runner reuse: at least one component requires a verified-input rebuild; plan retained\n")

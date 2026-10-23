@@ -69,8 +69,10 @@ def origin_verifier(baseline_run, event):
     if baseline_run is not None:
         require(type(baseline_run) is int and baseline_run > 0 and event == 'workflow_dispatch',
                 'candidate baseline override requires an explicit manual diagnostic')
-    return lambda record: verify_origin(record, candidate_run=(baseline_run if
-        record['qualification'].get('record_origin', {}).get('run_id', record['qualification']['run_id']) == baseline_run else None))
+    if baseline_run is not None:
+        from component_selection import manual_verifier
+        return manual_verifier(baseline_run)
+    return lambda record:verify_origin(record,candidate_run=None)
 
 
 def retrieve(record, expected_origin, destination, verify=verify_origin, fetch=download):

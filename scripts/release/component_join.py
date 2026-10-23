@@ -26,7 +26,9 @@ def join(plan, records, revision, verify):
                 artifacts.require(record.get('source_revision') == revision, 'new native build source differs')
             artifacts.require(record.get('provider') == provider and record.get('architecture') == architecture and
                               record.get('input_identity') == decision['input_identity'], 'actual native record differs from plan')
-            verify(record)
+            origin=verify(record)
+            if decision['action']=='reuse':
+                artifacts.require(origin==decision['origin'],'original reused origin changed after planning')
             selected.append(record)
     return selected
 
@@ -62,6 +64,7 @@ def main():
         artifacts.assemble(SimpleNamespace(records=files, schema_version=args.schema,
                            version=manager_version.read(), revision=revision, channel='candidate',
                            bundle=None, platform_bundles=True, output=str(output / 'release.json')), verifier=verify)
+        (output/'component-plan.json').write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
     except (ValueError, KeyError, TypeError, OSError) as error:
         parser.exit(1, f'component join: {type(error).__name__}; candidate assembly refused\n')
 
