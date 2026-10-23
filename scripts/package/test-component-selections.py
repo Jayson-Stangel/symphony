@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--helper', type=Path, required=True)
     parser.add_argument('--core', type=Path, required=True)
+    parser.add_argument('--generic-control', type=Path, help='actual Git C/D inputs with explicitly synthetic native metadata')
     args = parser.parse_args()
     core = json.loads(args.core.read_text())
     transition = core['compatibility']['input_transition']
@@ -64,6 +65,35 @@ def main():
         validate(changed, False)
         changed['component_selections']['claude'] = {}
         validate(changed, True)
+        if args.generic_control:
+            control = args.generic_control
+            scope = json.loads((control / 'scope.json').read_text())
+            assert scope['scope'] == 'actual Git inputs; SYNTHETIC native metadata; no image qualification'
+            before, after = scope['runtime_source_C'], scope['manager_source_D']
+            checkout = control / 'checkout'
+            def git(*arguments):
+                return subprocess.check_output(['git', '-C', str(checkout), *arguments], text=True).strip()
+            assert git('rev-parse', before + '^{commit}') == before
+            assert git('rev-parse', after + '^{commit}') == after
+            assert git('diff', '--name-only', before, after).splitlines() == ['scripts/release/manager-version']
+            generic = json.loads((control / 'release.json').read_text())
+            assert generic['source_revision'] == after and before != after
+            assert 'component_selections' not in generic
+            for provider in ('codex', 'claude'):
+                for arch in ('arm64', 'x86_64'):
+                    record = generic['runners'][provider][arch]
+                    assert record['source_revision'] == before
+                    assert record['input_identity'] == scope['input_identities'][provider][arch]
+            validate(generic, True)
+            for provider in ('codex', 'claude'):
+                for arch in ('arm64', 'x86_64'):
+                    for field in ('source_revision', 'input_identity'):
+                        invalid = copy.deepcopy(generic)
+                        invalid['runners'][provider][arch][field] = '0' * (40 if field == 'source_revision' else 64)
+                        validate(invalid, False)
+            invalid = copy.deepcopy(generic)
+            invalid['component_selections'] = {'codex': {'arm64': selections['codex']['arm64']}, 'claude': {}}
+            validate(invalid, False)
     print(json.dumps({'passed': True, 'checks': checked, 'scope': 'offline native manifest receipt validation; no runtime qualification'}))
 
 
