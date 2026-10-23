@@ -387,7 +387,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           test -f scripts/release/package.sh || { echo 'Packaged manager prerequisite is not integrated; refusing incomplete stable release.' >&2; exit 1; }
-          version=$(python3 scripts/release/manager_version.py)
+          python3 scripts/release/manager_version.py
           mkdir -p dist
           bash scripts/release/build-manager-package.sh "$PWD/metadata/release.json" "$PWD/dist" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$RUNNER_TEMP/qualified-helper/symphony-host"
       - uses: actions/upload-artifact@v4
@@ -414,7 +414,7 @@ jobs:
           merge-multiple: true
       - name: Bind matching Linux and legacy macOS manager archives
         run: |
-          version=$(python3 scripts/release/manager_version.py)
+          python3 scripts/release/manager_version.py
           python3 scripts/release/finalize-manager-packages.py metadata/release.json dist
           python3 scripts/release/artifacts.py validate dist/release.json
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
@@ -631,7 +631,7 @@ jobs:
               [ -n "$PREVIOUS_REVISION" ] || continue
               directory=packages/previous; inputs=records/previous; revision=$PREVIOUS_REVISION
             fi
-            version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json")
+            python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$inputs/release.json"
             GITHUB_SHA="$revision" python3 scripts/release/finalize-manager-packages.py "$inputs/release.json" "$directory"
             python3 scripts/release/artifacts.py validate "$directory/release.json"
             (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
