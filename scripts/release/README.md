@@ -586,3 +586,21 @@ archive first and creates only a local `:previous` role alias before loading the
 current root tags. Original records, archive tags, source labels and OCI digests
 remain unchanged. Without the legacy input, the result explicitly limits its
 claim to the two actual managers; it does not invent a historical migration.
+
+The shared JAY-695 source-build graph supports an explicitly selected raw
+`previous_revision`: its qualification resolves the
+full commit and checks native/Linux package capabilities before image fanout.
+Both prior helpers build alongside current helpers and images; assembly consumes
+same-run, platform/prior-SHA/checksummed helper artifacts rather than compiling
+old helpers after images finish. The old macOS helper uses `--native`, actual
+Mach-O ARM64/source/platform/hash checks, and its real later package assembly.
+Historical universal-layout fixtures do not describe this native-only target;
+all current native/helper fixtures remain required on both supported hosts.
+Previously qualified artifact subjects use an empty raw source-build selector
+and therefore do not trigger any old helper compilation.
+
+The component producer currently refuses raw prior-source composition during
+common qualification, before old helper or image work. Its supported historical
+route is the verified artifact selector above. The reusable prior-helper interfaces
+remain available to the independent source-build controller without claiming that
+legacy recipes satisfy the new input/protocol closure.

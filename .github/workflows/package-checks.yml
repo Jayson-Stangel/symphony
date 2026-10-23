@@ -2,6 +2,10 @@ name: Package checks
 on:
   workflow_call:
     inputs:
+      previous_revision:
+        description: Explicit prior source-build target; empty when qualified artifacts are selected
+        type: string
+        default: ''
       retain_diagnostic:
         description: Keep this caller-owned diagnostic qualification across new runs
         type: boolean
@@ -59,6 +63,15 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: inputs.previous_revision != ''
+        with:
+          fetch-depth: 0
+      - name: Verify explicitly selected prior source before native work
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: python3 scripts/release/verify-prior-source.py "$PREVIOUS_REVISION"
   native:
     needs: [changes, qualification]
     if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.changes.outputs.code == 'true' }}
@@ -120,19 +133,37 @@ jobs:
             /symphony-host lock /contract/lock 8 acquire
             /symphony-host lock /contract/lock 8 inherited
           ' | tee "$RUNNER_TEMP/host-helper/ubuntu26.log"
-      - name: Build unmodified prior Linux helper with current SDK controller
-        if: matrix.platform == 'linux_x86_64' && inputs.previous_revision != ''
+      - name: Prepare the real selected prior source
+        if: inputs.previous_revision != ''
         env:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+        run: bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$RUNNER_TEMP/prior-helper-source"
+      - name: Build prior helper early on its actual supported native host
+        if: inputs.previous_revision != ''
+        env:
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
+          mkdir -p "$RUNNER_TEMP/prior-helper"
           source="$RUNNER_TEMP/prior-helper-source"
-          bash scripts/release/prepare-candidate-source.sh "$PREVIOUS_REVISION" "$source"
-          bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
-          SYMPHONY_TEST_HOST_HELPER="$RUNNER_TEMP/prior-helper/symphony-host" python3 "$source/scripts/package/test-package.py" -v
+          helper="$RUNNER_TEMP/prior-helper/symphony-host"
+          if [ "$PLATFORM" = macos ]; then
+            bash "$source/scripts/release/build-host-helper.sh" "$helper" --native
+            (cd "$RUNNER_TEMP/prior-helper" && shasum -a 256 symphony-host > symphony-host.sha256)
+            test "$(lipo -archs "$helper")" = arm64
+          else
+            bash scripts/release/build-linux-host-helper.sh "$RUNNER_TEMP/prior-helper" "$source" "$PREVIOUS_REVISION"
+          fi
+          test "$("$helper" build-revision)" = "$PREVIOUS_REVISION"
+          test "$("$helper" host-platform)" = "$PLATFORM"
+          test "$("$helper" hash-blob hello)" = b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+          if [ "$PLATFORM" = linux_x86_64 ]; then
+            SYMPHONY_TEST_HOST_HELPER="$helper" python3 "$source/scripts/package/test-package.py" -v
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: matrix.platform == 'linux_x86_64' && inputs.previous_revision != ''
+        if: inputs.previous_revision != ''
         with:
-          name: prior-linux-host-helper-${{ github.sha }}
+          name: prior-native-host-helper-${{ matrix.platform }}-${{ inputs.previous_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/prior-helper/*
           if-no-files-found: error
           retention-days: 30
