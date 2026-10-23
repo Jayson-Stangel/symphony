@@ -32,8 +32,7 @@ func checkedInfo(_ path: String, directory: Bool = false) -> stat {
     guard lstat(path, &info) == 0, info.st_uid == geteuid(), (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG), directory || info.st_nlink == 1 else { fail("unsafe or foreign metadata: \(path)") }
     return info
 }
-func validateManifest(_ path: String) throws -> [String: Any] {
-    let manifest = object(try json(read(path)))
+func validateManifestObject(_ manifest: [String: Any]) throws -> [String: Any] {
     let schema = integer(manifest["schema_version"])
     guard schema == 1 || schema == 2,
           let version = manifest["version"] as? String, matches(version, "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"),
@@ -164,6 +163,162 @@ func validateManifest(_ path: String) throws -> [String: Any] {
     }
     return manifest
 }
+struct ManagerEnvelope {
+    let revision: String
+    let base: String
+    let coreHash: String
+}
+func managerEnvelope(_ manifest: [String: Any]) -> ManagerEnvelope? {
+    let version = manifest["version"] as? String ?? ""
+    guard let raw = manifest["manager_envelope"] else {
+        guard !version.contains("-manager.") else { fail("bound manager version requires its envelope") }
+        return nil
+    }
+    let envelope = object(raw)
+    guard integer(manifest["schema_version"]) == 1,
+          Set(envelope.keys) == Set(["schema_version", "manager_source_revision", "base_version", "core_filename", "core_sha256"]),
+          integer(envelope["schema_version"]) == 1,
+          let revision = envelope["manager_source_revision"] as? String, matches(revision, "^[a-f0-9]{40}$"),
+          let base = envelope["base_version"] as? String, base.utf8.count <= 32, matches(base, "^[0-9]+\\.[0-9]+\\.[0-9]+$"),
+          envelope["core_filename"] as? String == "manager-core.json",
+          let hash = envelope["core_sha256"] as? String, matches(hash, "^[a-f0-9]{64}$"),
+          version == "\(base)-manager.\(revision).manifest.\(hash)",
+          manifest["original_components"] == nil, manifest["distribution"] == nil else { fail("invalid manager compatibility envelope") }
+    return ManagerEnvelope(revision: revision, base: base, coreHash: hash)
+}
+func validateManifest(_ path: String) throws -> [String: Any] {
+    let manifest = object(try json(read(path)))
+    _ = managerEnvelope(manifest)
+    return try validateManifestObject(manifest)
+}
+func coreValue(_ value: Any) {
+    if let string = value as? String {
+        guard string.unicodeScalars.allSatisfy({ $0.value < 128 && ($0.value >= 32 || [9, 10, 13].contains($0.value)) }) else { fail("manager core contains unsupported text") }
+    } else if let values = value as? [String: Any] {
+        for (key, item) in values { coreValue(key); coreValue(item) }
+    } else if let values = value as? [Any] { for item in values { coreValue(item) } }
+    else if let number = value as? NSNumber {
+        guard CFGetTypeID(number) == CFBooleanGetTypeID() || integer(number) != nil else { fail("manager core contains a noninteger number") }
+    } else { fail("manager core contains an unsupported value") }
+}
+// This is the finite reviewed 68 source-to-host-policy transition, not a path allowlist.
+let transitionAuthority = "13d8a16cc765fb4844f4a1269fb0192210d794d2f47802f7a705c86602300f36"
+let reviewedTransition = object(try! json(Data(#"{"changes":[{"after":{"blob":"1064cc082cafe6880bf7fbd731fd629f5b2f13eb","mode":"100644","sha256":"40424ff480652b279f75ed64b2bf4efe17020bccb2b0e17be0db7c9c3c2edaf9"},"before":{"blob":"f4ed3fbaaa3854b81b13152ae017d0f198bdb615","mode":"100644","sha256":"f39384f8ea29822f985096f73cc5f564cae09f30bb053a3c0f20ff9a5dc068b3"},"classification":"human-readme-v1","path":"elixir/README.md"},{"after":{"blob":"aad0dfc711d21ec469f07e51f83c8ad4f3a9a219","mode":"100644","sha256":"affa5d0f6498cb924f3b7d0da607592cf81fa6b831a8e3d9c381867c86e5171d"},"before":{"blob":"f2269f266c7359e91a168148da871864e731577a","mode":"100644","sha256":"86332e5f23b77098d6ae89f16444a3705aafd0001227cbbdee956c32df253a3f"},"classification":"standalone-targets-v1","path":"elixir/mix.exs"}],"manager_input_identities":{"claude":{"arm64":"31582b7a9278d96848bc989781650f6cbef1101a4445d21e25e6e79091ce0b8f","x86_64":"c73a52fd00ff0f92ccb0da5d779e7076182c9700d69de6757a8c3d9387af6465"},"codex":{"arm64":"b245620ee7ac849272634298b6ecaad783871e914ee80a825c301162b3c1f830","x86_64":"4e1ba5d3f712f27c759367617cbe041305d92457f50589a7878f939b4419b33e"}},"source_input_identities":{"claude":{"arm64":"cb5b2cdae310d75b083c8152118b76b28ffcbdb5eb8da80069b0612e4fbb3935","x86_64":"5e18d340c018720eb8eb4457deeb9aa6513467660744a507b8814d844870e8aa"},"codex":{"arm64":"bfd2b01487d18d5494244c7fd1204184cfbf2177d579ab7128de386d7762e11a","x86_64":"01613d9baa3a9557d358c2dfbd3bf755a7de127dc1a109a4d8f3a82002affd68"}},"source_revision":"68ae23bb195965b96c53b3532d5fab01d7244453"}"#.utf8)))
+func validateTransition(_ compatibility: [String: Any], originals: [String: Any], revision: String, legacy: String) {
+    guard Set(compatibility.keys) == Set(["runner_protocol", "selection_mode", "input_transition"]),
+          integer(compatibility["runner_protocol"]) == 1,
+          compatibility["selection_mode"] as? String == "finite-input-transition-v1" else { fail("unsupported original component selection") }
+    let transition = object(compatibility["input_transition"])
+    guard Set(transition.keys) == Set(["schema_version", "authority_sha256", "source_revision", "manager_source_revision", "source_input_identities", "manager_input_identities", "changes"]),
+          integer(transition["schema_version"]) == 1,
+          transition["source_revision"] as? String == legacy,
+          transition["manager_source_revision"] as? String == revision,
+          let authority = transition["authority_sha256"] as? String, matches(authority, "^[a-f0-9]{64}$"),
+          let changes = transition["changes"] as? [[String: Any]], changes.count <= 2 else { fail("invalid finite input transition") }
+    let beforeInputs = object(transition["source_input_identities"]), afterInputs = object(transition["manager_input_identities"])
+    guard authority == transitionAuthority, legacy == reviewedTransition["source_revision"] as? String,
+          NSDictionary(dictionary: beforeInputs).isEqual(to: object(reviewedTransition["source_input_identities"])),
+          NSDictionary(dictionary: afterInputs).isEqual(to: object(reviewedTransition["manager_input_identities"])),
+          NSArray(array: changes).isEqual(to: reviewedTransition["changes"] as! [Any]) else { fail("input transition differs from finite reviewed authority") }
+    for identities in [beforeInputs, afterInputs] {
+        guard Set(identities.keys) == Set(["codex", "claude"]) else { fail("incomplete transition input identities") }
+        for provider in ["codex", "claude"] {
+            let group = object(identities[provider])
+            guard Set(group.keys) == Set(["arm64", "x86_64"]) else { fail("incomplete transition input platform") }
+            for arch in ["arm64", "x86_64"] {
+                guard let identity = group[arch] as? String, matches(identity, "^[a-f0-9]{64}$") else { fail("invalid transition input identity") }
+            }
+        }
+    }
+    for provider in ["codex", "claude"] { for arch in ["arm64", "x86_64"] {
+        guard object(beforeInputs[provider])[arch] as? String == object(object(originals[provider])[arch])["input_identity"] as? String else { fail("transition source input differs from original component") }
+    } }
+    var paths = Set<String>()
+    for change in changes {
+        guard Set(change.keys) == Set(["path", "before", "after", "classification"]),
+              let path = change["path"] as? String, paths.insert(path).inserted,
+              (path == "elixir/README.md" && change["classification"] as? String == "human-readme-v1") ||
+              (path == "elixir/mix.exs" && change["classification"] as? String == "standalone-targets-v1") else { fail("unsupported finite input change") }
+        for key in ["before", "after"] {
+            let blob = object(change[key])
+            guard Set(blob.keys) == Set(["blob", "mode", "sha256"]), blob["mode"] as? String == "100644",
+                  let oid = blob["blob"] as? String, matches(oid, "^[a-f0-9]{40}$"),
+                  let hash = blob["sha256"] as? String, matches(hash, "^[a-f0-9]{64}$") else { fail("invalid finite input blob") }
+        }
+    }
+}
+func validateVerifiedOrigins(_ origins: [String: Any], originals: [String: Any]) {
+    guard Set(origins.keys) == Set(["codex", "claude"]) else { fail("missing original verified origins") }
+    let keys = Set(["run_id", "artifact_id", "artifact_digest", "record_run_id", "record_run_attempt", "record_controller_revision", "record_job_name", "native_qualification_scope", "original_job_conclusion", "record_artifact_id", "record_artifact_digest", "run_attempt", "controller_revision", "job_name", "archive_filename", "archive_sha256", "record_filename"])
+    for provider in ["codex", "claude"] {
+        guard Set(object(origins[provider]).keys) == Set(["arm64", "x86_64"]) else { fail("missing original verified platform") }
+        for arch in ["arm64", "x86_64"] {
+            let origin = object(object(origins[provider])[arch])
+            let proof = object(object(object(originals[provider])[arch])["qualification"])
+            let recordOrigin = proof["record_origin"] == nil ? proof : object(proof["record_origin"])
+            guard Set(origin.keys) == keys,
+                  ["run_id", "run_attempt", "artifact_id"].allSatisfy({ integer(origin[$0]) == integer(proof[$0]) && (integer(origin[$0]) ?? 0) > 0 }),
+                  ["artifact_digest", "controller_revision", "job_name", "archive_filename", "archive_sha256"].allSatisfy({ origin[$0] as? String == proof[$0] as? String }),
+                  integer(origin["record_run_id"]) == integer(recordOrigin["run_id"]),
+                  integer(origin["record_run_attempt"]) == integer(recordOrigin["run_attempt"]),
+                  origin["record_controller_revision"] as? String == recordOrigin["controller_revision"] as? String,
+                  origin["record_job_name"] as? String == recordOrigin["job_name"] as? String,
+                  origin["record_filename"] as? String == (proof["record_filename"] as? String ?? "\(provider)-\(arch).json"),
+                  let recordArtifact = integer(origin["record_artifact_id"]), recordArtifact > 0,
+                  let digest = origin["record_artifact_digest"] as? String, matches(digest, "^sha256:[a-f0-9]{64}$"),
+                  origin["native_qualification_scope"] as? String == (proof["native_step_recovery"] == nil ? "successful-native-job" : "successful-native-step-before-seal-failure"),
+                  origin["original_job_conclusion"] as? String == (proof["native_step_recovery"] == nil ? "success" : "failure") else { fail("verified origin differs from original native qualification") }
+        }
+    }
+}
+
+func validateRelease(_ path: String) throws -> [String: Any] {
+    let manifest = try validateManifest(path)
+    guard let envelope = managerEnvelope(manifest) else {
+        var result = manifest
+        result["storage_revision"] = manifest["source_revision"]
+        result["manager_base_version"] = manifest["version"]
+        return result
+    }
+    let filename = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("manager-core.json").path
+    let info = checkedInfo(filename)
+    guard info.st_size > 0 && info.st_size <= 4 * 1024 * 1024 else { fail("manager core exceeds size bound") }
+    let data = try read(filename)
+    guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == envelope.coreHash else { fail("manager core checksum differs from bound version") }
+    let core = object(try json(data)); coreValue(core)
+    var canonical = try JSONSerialization.data(withJSONObject: core, options: [.sortedKeys, .withoutEscapingSlashes]); canonical.append(10)
+    guard canonical == data else { fail("manager core is not canonical ASCII JSON") }
+    guard Set(core.keys) == Set(["schema_version", "manager_source_revision", "base_version", "channel", "legacy_source_revision", "original_components", "verified_origins", "distribution", "supported_hosts", "compatibility"]),
+          integer(core["schema_version"]) == 1, core["manager_source_revision"] as? String == envelope.revision,
+          core["base_version"] as? String == envelope.base, core["channel"] as? String == manifest["channel"] as? String,
+          let legacy = core["legacy_source_revision"] as? String, legacy == manifest["source_revision"] as? String,
+          NSDictionary(dictionary: object(core["supported_hosts"])).isEqual(to: ["macos": ["arm64"], "linux_x86_64": ["x86_64"]]) else { fail("manager core identity or host policy differs") }
+    let originals = object(core["original_components"]), distribution = object(core["distribution"])
+    validateTransition(object(core["compatibility"]), originals: originals, revision: envelope.revision, legacy: legacy)
+    validateVerifiedOrigins(object(core["verified_origins"]), originals: originals)
+    for provider in ["codex", "claude"] { for arch in ["arm64", "x86_64"] {
+        let original = object(object(originals[provider])[arch]), selected = object(object(object(manifest["runners"])[provider])[arch])
+        guard Set(selected.keys) == Set(["image", "platform", "source_revision", "tool_versions"]),
+              original["source_revision"] as? String == legacy,
+              selected["image"] as? String == object(distribution[provider])[arch] as? String,
+              selected["source_revision"] as? String == original["source_revision"] as? String,
+              selected["platform"] as? String == original["platform"] as? String,
+              NSDictionary(dictionary: object(selected["tool_versions"])).isEqual(to: object(original["tool_versions"])) else { fail("legacy component view differs from bound originals") }
+    } }
+    var normalized = manifest
+    normalized.removeValue(forKey: "manager_envelope")
+    normalized["schema_version"] = 2
+    normalized["source_revision"] = envelope.revision
+    normalized["runners"] = originals
+    normalized["distribution"] = distribution
+    normalized["compatibility"] = ["runner_protocol": 1]
+    normalized["supported_hosts"] = core["supported_hosts"]
+    _ = try validateManifestObject(normalized)
+    normalized["storage_revision"] = legacy
+    normalized["manager_base_version"] = envelope.base
+    return normalized
+}
+
 func gitValue(_ input: String) -> String {
     var result = "", quoted = false, escaped = false
     for ch in input {
@@ -263,7 +418,7 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -310,8 +465,15 @@ do {
         else if errno != ENOENT { fail("cannot inspect activation path") }
         guard rename(args[1], args[2]) == 0 else { fail("cannot activate release link") }
     case "validate-manifest": _ = try validateManifest(args[1])
-    case "get":
-        var value: Any = try json(read(args[1]))
+    case "validate-release": _ = try validateRelease(args[1])
+    case "validate-manager":
+        let manifest = try validateRelease(args[1])
+        guard manifest["source_revision"] as? String == compiledRevision else { fail("bundled helper does not match actual manager source revision") }
+    case "manager-revision", "manager-base-version":
+        let manifest = try validateManifest(args[1]), envelope = managerEnvelope(manifest)
+        print(command == "manager-revision" ? (envelope?.revision ?? manifest["source_revision"] as! String) : (envelope?.base ?? manifest["version"] as! String))
+    case "get", "release-get":
+        var value: Any = command == "release-get" ? try validateRelease(args[1]) : try json(read(args[1]))
         for part in args[2].split(separator: ".") { guard let next = object(value)[String(part)] else { fail("missing release field: \(args[2])") }; value = next }
         if let s = value as? String { print(s) }
         else if let n = value as? NSNumber { print(CFGetTypeID(n) == CFBooleanGetTypeID() ? (n.boolValue ? "true" : "false") : n.stringValue) }

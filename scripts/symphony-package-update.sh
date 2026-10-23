@@ -80,7 +80,7 @@ package_verified_home() {
   canonical=$(cd "$target" && pwd -P)
   case "$canonical" in "$package_app_home"/releases/*) ;; *) die 'release is outside this packaged installation' ;; esac
   [ "$(dirname "$canonical")" = "$package_app_home/releases" ] || die 'invalid versioned release directory'
-  package_helper validate-manifest "$canonical/release.json" || return
+  package_helper validate-release "$canonical/release.json" || return
   package_helper verify-files "$canonical" || return
   printf '%s\n' "$canonical"
 }
@@ -210,7 +210,7 @@ package_stage_download() (
   package_extract_bundle "$bundle" "$temporary/unpacked" || return
   [ "$(package_helper get "$temporary/unpacked/release.json" version)" = "$version" ] &&
     [ "$(package_helper get "$temporary/unpacked/release.json" source_revision)" = "$revision" ] || die 'bundle and release manifest identities differ'
-  package_helper validate-manifest "$temporary/unpacked/release.json" || return
+  package_helper validate-release "$temporary/unpacked/release.json" || return
   [ "$(package_manifest_platform "$temporary/unpacked/release.json")" = "$package_platform" ] || die 'downloaded bundle platform does not match selected host'
   [ "$(package_helper get "$temporary/unpacked/release.json" "$(package_bundle_field filename)")" = "$filename" ] || die 'downloaded bundle platform identity differs'
   package_helper verify-files "$temporary/unpacked" || return
@@ -219,6 +219,7 @@ package_stage_download() (
   [ "$(package_helper get "$manifest" runners)" = "$(package_helper get "$temporary/unpacked/release.json" runners)" ] || die 'bundle runner identity or qualification differs from release manifest'
   [ "$(package_helper get "$manifest" distribution 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" distribution 2>/dev/null || printf '{}')" ] || die 'bundle distribution differs from release manifest'
   [ "$(package_helper get "$manifest" original_components 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" original_components 2>/dev/null || printf '{}')" ] || die 'bundle bridge original components differ from release manifest'
+  [ "$(package_helper get "$manifest" manager_envelope 2>/dev/null || printf '{}')" = "$(package_helper get "$temporary/unpacked/release.json" manager_envelope 2>/dev/null || printf '{}')" ] || die 'bundle manager envelope differs from release manifest'
   if [ "$(package_helper get "$manifest" schema_version)" = 2 ]; then
     [ "$(package_helper get "$manifest" compatibility)" = "$(package_helper get "$temporary/unpacked/release.json" compatibility)" ] || die 'bundle compatibility differs from release manifest'
   fi
