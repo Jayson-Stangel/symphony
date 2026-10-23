@@ -232,16 +232,19 @@ avoids a proven hosted Intel macOS `getfqdn` stall without altering the engine.
 ## Candidate preflight and CI ownership
 
 Ordinary pull requests retain the named required quality, package and metadata
-checks. Manual full candidates add standalone engines and both Linux image
-architectures for both providers. Tags retain the protected production environment
-and publication conditions; a candidate run never grants publication approval.
+checks. Component plans separately decide whether optional reference images need
+new qualification. Unchanged compatible components retain their original source
+and native evidence; current manager packages use current-source helpers. Manual
+full candidates also qualify the two supported standalone host engines. Tags
+retain the protected production environment and publication conditions; a
+candidate run never grants publication approval.
 
 Portable release metadata and package-input/shell checks run once before native
 qualification. Native process and shell-updater fixtures run once per OS/CPU,
 separately from provider image qualification. New unclassified release suites
 conservatively enter the native group. Missing native prerequisites or skipped
 fixtures fail qualification. Portable preflight produces an exact source output. Native fixtures, package/helper
-checks, image fan-out and engine builds then start independently; no image or engine
+checks, selected image fan-out and engine builds then start independently; no image or engine
 job waits for an unrelated macOS helper queue. Final qualification joins the required
 native and helper evidence. Final manifests join verified runner records; standalone
 smokes consume actual built engines. No placeholder records replace artifacts.
@@ -289,9 +292,21 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Same metadata validation plus make-all, package, listener/updater and browser qualification |
-| Merge/push to dev or main | Before/after classification; named wrappers report omission | Behavioral qualification |
-| Manual candidate / version tag | Full candidate/release qualification | Full candidate/release qualification |
+| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Metadata validation, make-all, native package/controller checks and installed listener/updater integration. Component plans qualify changed reference-image inputs and retain original evidence for unchanged components. |
+| Merge/push to dev or main | Before/after classification; named wrappers report omission | The same component decisions and behavioral checks; PR metadata validation is a PR event only. |
+| Manual full candidate | No documentation shortcut | Portable preflight, both native host engines/helpers, selected reference-image components and current manager packages. Lifecycle joins consume the exact requested current/prior artifacts. |
+| Manual `manager_only_update` candidate | No documentation shortcut | Requires an explicit previous package artifact and a complete plan with zero image builds. Reuses original immutable environments without image export/upload; installed update/rollback validation remains required. |
+| Manual `engine_only` / `controller_only` diagnostic | No documentation shortcut | Only the selected engine/native-fixture or controller path executes. Omitted image/package work is not qualified by the diagnostic. |
+| Version tag | No documentation shortcut | Candidate qualification plus separately gated publication; protected production environment and release variable checks remain in force. |
+
+Reference-image planning is optional distribution work. A team's installed image
+selection and its dependency-bearing authenticated task need their own installed
+evidence; a successful reference-image graph does not establish that proof.
+Image-input changes can require matching provider/architecture builds. Changing
+only the host manager does not qualify or relabel an unchanged embedded runtime.
+Missing, failed, cancelled, unexpectedly skipped or wrong-source prerequisites
+fail their consuming joins. The plan records intentional reuse separately from
+new execution, so a skipped build is never reported as a newly qualified image.
 
 The classifier uses the complete PR merge-base-to-head diff, or the exact push
 before/after diff. It disables rename detection so both old and new paths are
