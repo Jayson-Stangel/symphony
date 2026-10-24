@@ -113,6 +113,13 @@ The [relative reusable call](https://docs.github.com/en/actions/sharing-automati
 resolves the worker from the same approved commit as the caller. Both retain the
 manual dev-only/exact-SHA guard and the worker restricts its caller workflow.
 
+The caller explicitly forwards only the four named Apple secrets; the worker
+requires those names in `workflow_call.secrets`. GitHub requires this forwarding
+even when secrets exist only in the worker's protected environment; omitting it
+silently yields empty values. Environment values take precedence after the
+`macos-signing` approval gate. Keep the values environment-scoped and avoid
+`secrets: inherit`. See [GitHub's environment-secret forwarding rules](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow).
+
 For example, after approval, substitute the actual full SHA and qualified run:
 
 ```sh
