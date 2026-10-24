@@ -136,6 +136,46 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     %{root: root, workspace: workspace, opts: opts, issue: %Issue{id: "one", identifier: "PROBE-1", title: "Probe"}}
   end
 
+  test "port identity parses native stat fields with spaces and parentheses in process names" do
+    port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary])
+    on_exit(fn -> if Port.info(port), do: Port.close(port) end)
+    assert {:os_pid, pid} = Port.info(port, :os_pid)
+
+    for name <- ["node", "Claude helper", "Claude (helper) worker)", "(nested (helper))"] do
+      fields = Enum.join(["S" | List.duplicate("0", 18)] ++ ["123456", "0"], " ")
+      metadata = "#{pid} (#{name}) #{fields}\n"
+
+      assert Adapter.port_identity(port, fn path ->
+               assert path == "/proc/#{pid}/stat"
+               {:ok, metadata}
+             end) == %{pid: pid, start: "123456"}
+    end
+  end
+
+  test "port identity refuses malformed, incomplete and unavailable process metadata" do
+    port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary])
+    on_exit(fn -> if Port.info(port), do: Port.close(port) end)
+    assert {:os_pid, pid} = Port.info(port, :os_pid)
+    fields = Enum.join(["S" | List.duplicate("0", 18)], " ")
+
+    for metadata <- ["", "not a stat record", "#{pid} (missing close #{fields}", "#{pid} (node) #{fields}", "#{pid} (node) #{fields} invalid"] do
+      assert Adapter.port_identity(port, fn _path -> {:ok, metadata} end) == nil
+    end
+
+    for reason <- [:enoent, :eacces] do
+      assert Adapter.port_identity(port, fn path ->
+               assert path == "/proc/#{pid}/stat"
+               {:error, reason}
+             end) == nil
+    end
+  end
+
+  test "unavailable port identity refuses before attempting a process metadata read" do
+    port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary])
+    Port.close(port)
+    assert Adapter.port_identity(port, fn _path -> flunk("closed port must not read metadata") end) == nil
+  end
+
   test "three independent helper sessions isolate callbacks, workspaces, failure and cleanup", ctx do
     parent = self()
 
