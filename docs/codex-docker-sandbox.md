@@ -68,7 +68,14 @@ stage instead of recommending a rebuilt image for an unsupported command.
 The project source is mounted read-only at the same path for doctor and listener;
 the probe copies it into disposable writable storage and invokes the actual
 wrapper before resolving Codex from its resulting PATH. Native positive-write,
-outside-workspace denial and protected `.git` denial effects remain required.
+outside-workspace denial and protected `.codex` denial effects remain required.
+Managed container tasks receive an explicit writable root for their own `.git`
+directory while retaining `workspace-write` mode. A linked or symlinked Git
+directory is refused rather than granting access outside the owned task. Host-native
+and SSH execution retain their configured policy without this container grant.
+Container readiness also performs real Git initialization, local identity, clone,
+fetch, branch creation, edit/test, stage, commit, push to a disposable bare remote,
+and exact-commit/content readback, including dirty/untracked preservation on retry.
 The wrapper is trusted project code, can run setup/downloads, and may read project
 files; diagnostics withhold Symphony credential files and native login mounts,
 not arbitrary sensitive content already in project source. Missing/failing setup
@@ -235,7 +242,8 @@ the sandbox.
 `runner doctor` first uses the shared launch integration and selected immutable
 image for a credential-free disposable protected-command check. The exact marker
 `Codex sandbox protected-command checks passed.` means it wrote the intended
-workspace canary and denied outside/protected Git writes for that workflow and
+workspace canary, completed the owned Git workflow, and denied outside/protected
+Codex-metadata writes for that container workflow and
 image. No native login or model request is provided to this first check. It does
 not independently repeat CI's sibling-process and both network-mode probes.
 
@@ -300,7 +308,7 @@ builds always run the current protected-command qualifier.
 
 Run `bash runner/codex-sandbox-smoke.sh IMAGE` to verify the immutable image with
 credential-free disposable storage. The first check uses the actual resolved
-container workflow and tests workspace/outside/`.git` writes. A second check
+container workflow and tests owned Git development plus outside/`.codex` denials. A second check
 verifies that an ordinary sibling's disposable environment and proc-root paths
 cannot be read, sibling signal access is denied, and a controlled TCP endpoint is
 denied with network disabled and reachable when explicitly enabled. Positive

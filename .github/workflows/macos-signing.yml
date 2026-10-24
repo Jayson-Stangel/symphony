@@ -26,8 +26,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha
     runs-on: macos-14
     timeout-minutes: 90
-    # REQUIRED before use: reviewers, prevent self-review, dev-only deployment
-    # branch policy, and disallow bypass. Never store these secrets at repo level.
+    # REQUIRED before use: operator approval (sole-operator self-review allowed),
+    # dev-only deployment and no admin bypass. Never store secrets at repo level.
     environment: macos-signing
     steps:
       - name: Check out the exact approved source

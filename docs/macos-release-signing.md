@@ -53,8 +53,12 @@ authorize a signing run, Apple upload, release publication or stable update.
 
 Before using `.github/workflows/macos-signing.yml`, create the **macos-signing**
 environment in `Jayson-Stangel/symphony` Settings → Environments. Require trusted
-release-owner reviewers, prevent self-review, disable administrator bypass, and
-restrict deployment branches to **dev only**. Confirm these protections are
+release-owner approval, disable administrator bypass, and restrict deployment
+branches to **dev only**. For this sole-operator team, **allow self-review** so
+the operator can initiate the exact candidate run and approve its environment
+deployment. Required environment approval remains mandatory; allowing self-review
+does not authorize automatic credential use or bypass the exact-candidate approval.
+Confirm these protections are
 supported/enforced for this repository's GitHub plan. If they cannot be enforced,
 do not provision the credentials or run the workflow. Keep `dev` protected by
 required review and checks; environment approval must inspect the exact workflow

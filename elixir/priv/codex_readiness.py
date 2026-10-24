@@ -150,8 +150,18 @@ def check(value):
             script = allowed / wrapper[1]
             if not script.is_file() or not contains(allowed, script.resolve()):
                 raise Refusal("sandbox_launch_unavailable")
-        protected = allowed / ".git"
-        protected.mkdir()
+        selected_git = str(workspace / ".git")
+        git_write = selected_git in policy["writableRoots"]
+        if value.get("containerized", False) and not git_write:
+            raise Refusal("sandbox_git_unavailable")
+        protected = allowed / (".codex" if git_write else ".git")
+        protected.mkdir(exist_ok=True)
+        git_metadata = allowed / ".git"
+        git_metadata.mkdir(exist_ok=True)
+        # The disposable repository receives exactly the owned-metadata grant
+        # selected by the managed task policy, relocated from the real workspace.
+        policy["writableRoots"] = [str(git_metadata) if p == selected_git else p
+                                   for p in policy["writableRoots"]]
         # Positive controls distinguish Codex enforcement from ordinary DAC or
         # read-only mounts. Every path is owned disposable data.
         for directory in (allowed, denied, protected):
@@ -167,17 +177,49 @@ def check(value):
                           ("excludeTmpdirEnvVar", "exclude_tmpdir_env_var")):
             args += ["-c", "sandbox_workspace_write." + name + "=" + str(policy[key]).lower()]
         args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(policy["writableRoots"])]
-        payload = """import errno,pathlib,sys
-a,d,g=map(pathlib.Path,sys.argv[1:])
+        payload = """import errno,pathlib,subprocess,sys
+a,d,g=map(pathlib.Path,sys.argv[1:4])
 (a/'allowed').write_text('sandbox-ready')
 for p in (d/'outside',g/'protected'):
     try:p.write_text('escaped')
     except OSError as error:
         if error.errno not in (errno.EACCES,errno.EPERM,errno.EROFS):raise
     else:sys.exit(71)
+if sys.argv[4]!='git-write':
+    (a/'complete').write_text('sandbox-ready')
+    sys.exit(0)
+def git(*args):
+    result=subprocess.run(['git',*args],cwd=a,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if result.returncode:sys.exit(72)
+    return result.stdout.decode().strip()
+git('init','-q')
+git('config','user.name','Symphony readiness')
+git('config','user.email','readiness@example.invalid')
+(a/'tracked').write_text('baseline')
+git('add','tracked')
+git('commit','-qm','baseline')
+git('init','--bare','-q','remote.git')
+git('remote','add','origin',str(a/'remote.git'))
+git('push','-q','origin','HEAD:refs/heads/main')
+git('clone','-q','--branch','main','remote.git','cloned')
+git('fetch','-q','origin')
+git('switch','-qc','codex/readiness')
+(a/'tracked').write_text('candidate')
+assert (a/'tracked').read_text()=='candidate'
+git('add','tracked')
+git('commit','-qm','candidate')
+git('push','-q','origin','HEAD:refs/heads/codex/readiness')
+git('fetch','-q','origin','codex/readiness')
+assert git('rev-parse','HEAD')==git('rev-parse','FETCH_HEAD')
+assert git('--git-dir=remote.git','show','codex/readiness:tracked')=='candidate'
+(a/'tracked').write_text('dirty')
+(a/'untracked').write_text('preserved')
+git('fetch','-q','origin')
+assert (a/'tracked').read_text()=='dirty' and (a/'untracked').read_text()=='preserved'
+(a/'git-complete').write_text('sandbox-ready')
 (a/'complete').write_text('sandbox-ready')
 """
-        args += ["--", sys.executable, "-c", payload, str(allowed), str(denied), str(protected)]
+        args += ["--", sys.executable, "-c", payload, str(allowed), str(denied), str(protected), "git-write" if git_write else "protected-git"]
         reached = denied / "launcher-reached"
         if wrapper:
             # The trampoline is an argv target for exec "$@" wrappers. It
@@ -217,9 +259,10 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
             raise Refusal("sandbox_unqualified_config" if status == 78 else
                           "sandbox_helper_missing" if status == 127 else "sandbox_launch_failed")
         if status != 0:
-            raise Refusal(diagnostic(data) if status > 0 else "sandbox_helper_terminated")
+            raise Refusal("sandbox_git_unavailable" if status == 72 else
+                          diagnostic(data) if status > 0 else "sandbox_helper_terminated")
         if any(not (allowed / p).is_file() or (allowed / p).read_text() != "sandbox-ready"
-               for p in ("allowed", "complete")):
+               for p in (("allowed", "git-complete", "complete") if git_write else ("allowed", "complete"))):
             raise Refusal("sandbox_required_effect_missing")
     return {"ready": True, "code": "sandbox_ready", "protocol": 1}
 
