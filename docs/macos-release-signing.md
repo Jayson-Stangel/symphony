@@ -96,9 +96,35 @@ protected Codex/container, and installed-manager checks. Require the repository'
 applicable full Linux application gate too. Keep the qualified run ID and attempt.
 
 Only after the operator authorizes Apple upload and credential use for that
-exact source/candidate, manually run **Signed macOS distribution candidate** on
-`dev`, setting `approved_revision` to its full SHA and `qualified_run` to that
-successful manual integration run. Approve the matching environment deployment.
+exact source/candidate, manually run **Runner integration** on `dev` with
+`sign_macos=true`, `approved_revision` set to its full SHA and `qualified_run`
+set to that successful manual integration run. Approve the matching
+`macos-signing` environment deployment. Signing mode skips normal qualification,
+helper/package builds and runner-image work; it calls the same-commit
+**Signed macOS distribution candidate** worker with the already-qualified inputs.
+It never qualifies itself or substitutes an earlier source revision.
+
+GitHub requires a manually dispatched workflow to exist on the repository's
+[default branch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+Here the default is `main`, while the new signing worker is deliberately on `dev`.
+Use the existing registered Runner integration entry point rather than attempting
+to dispatch the new worker directly or promoting code to main just to register it.
+The [relative reusable call](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
+resolves the worker from the same approved commit as the caller. Both retain the
+manual dev-only/exact-SHA guard and the worker restricts its caller workflow.
+
+For example, after approval, substitute the actual full SHA and qualified run:
+
+```sh
+gh workflow run runner-integration.yml --repo Jayson-Stangel/symphony --ref dev \
+  -f sign_macos=true -f approved_revision=FULL_DEV_SHA -f qualified_run=QUALIFIED_RUN_ID
+```
+
+Keep the ordinary qualification run separate with `sign_macos=false` (the
+default). A controller-only workflow change still changes the checkout SHA;
+qualify the new exact integrated revision before signing it. Original runner
+components can be reused only when the planner proves their inputs unchanged.
+
 The workflow refuses feature refs, PR events, a moved dev head, a different source,
 failed/foreign runs, expired artifacts, mismatched helper/archive hashes and
 changed original metadata. It downloads original immutable qualification evidence;
