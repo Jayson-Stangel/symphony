@@ -593,7 +593,7 @@ func prepareRunnerImport(_ manifest: [String: Any], provider: String, arch: Stri
     let record = object(object(object(manifest["runners"])[provider])[arch])
     let image = record["image"] as? String ?? ""
     let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? image
-    guard selected == image, matches(image, "^localhost:5000/symphony-(codex|claude)@sha256:[a-f0-9]{64}$"),
+    guard selected == image, matches(image, "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$"),
           let expectedArchive = object(record["qualification"])["archive_sha256"] as? String else { fail("candidate has no supported original loopback graph; use its selected registry distribution") }
     let info = checkedInfo(archive)
     guard info.st_size > 0, UInt64(info.st_size) <= 32 << 30 else { fail("candidate archive size exceeds bound") }
@@ -684,7 +684,7 @@ func prepareRunnerImport(_ manifest: [String: Any], provider: String, arch: Stri
           entries.filter({ $0["image"] as? String == image && $0["image_config"] as? String == record["image_config"] as? String && $0["archive_tag"] as? String == record["archive_tag"] as? String }).count == 1 else { fail("candidate graph index differs from selected original record") }
     let digest = String(image.split(separator: "@").last ?? "")
     let rootPath = "blobs/sha256/" + digest.dropFirst(7)
-    guard hashes[rootPath]?.0 == String(digest.dropFirst(7)) else { fail("candidate graph is missing the selected original manifest") }
+    guard hashes[rootPath]?.0 == String(digest.dropFirst(7)), (hashes[rootPath]?.1 ?? UInt64.max) <= 1024 * 1024 else { fail("candidate graph is missing the selected original manifest") }
     let root = object(try json(read(graph + "/" + rootPath)))
     guard integer(root["schemaVersion"]) == 2,
           ["application/vnd.docker.distribution.manifest.v2+json", "application/vnd.oci.image.manifest.v1+json"].contains(root["mediaType"] as? String ?? ""),
