@@ -62,6 +62,35 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     assert SandboxReadiness.qualified?()
   end
 
+  test "wrapped sessions recheck actual post-hook workspace without replacing the startup receipt" do
+    settings = Config.settings!()
+    wrapped = %{settings | codex: %{settings.codex | command: "bash scripts/with-node.sh codex app-server"}}
+    workspace = Path.join(System.tmp_dir!(), "wrapped-task-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    assert SandboxReadiness.qualified?()
+
+    for code <- ["sandbox_ready", "sandbox_launch_failed"] do
+      result =
+        SandboxReadiness.check_workspace(workspace, wrapped,
+          execute: fn _, args, _ ->
+            input = args |> List.last() |> Jason.decode!()
+            assert input["workspace"] == workspace
+            assert input["launch_root"] == workspace
+            {:ok, canonical} = SymphonyElixir.PathSafety.canonicalize(workspace)
+            assert input["policy"]["writableRoots"] == [canonical]
+            assert input["command"] == wrapped.codex.command
+            {Jason.encode!(%{ready: code == "sandbox_ready", code: code, protocol: 1}), if(code == "sandbox_ready", do: 0, else: 1)}
+          end
+        )
+
+      assert result == if(code == "sandbox_ready", do: :ok, else: {:error, code})
+      assert SandboxReadiness.qualified?()
+    end
+
+    assert :ok = SandboxReadiness.check_workspace(workspace, settings, execute: fn _, _, _ -> flunk("direct launch must retain its existing startup receipt") end)
+  end
+
   test "failed or indeterminate requalification always removes prior success" do
     for {output, status, code} <- [
           {~s({"ready":false,"code":"sandbox_namespace_denied"}), 1, "sandbox_namespace_denied"},

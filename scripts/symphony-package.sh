@@ -40,7 +40,9 @@ Usage:
   symphony init --linear-project SLUG [--local-skill NAME]...
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
-  symphony runner start|stop|status|doctor|logs|drain|resume|recheck
+  symphony runner doctor [--agent codex|claude] [--sandbox-only]
+  symphony runner import --agent codex|claude --archive PATH
+  symphony runner start|stop|status|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]
   symphony environment select --agent codex|claude IMAGE
   symphony environment show [--json]
@@ -67,8 +69,13 @@ package_release_image() {
   [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
   revision=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
   platform=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
+  container_engine_ready "$runtime" || return
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
-    "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; check engine network access and release availability: $image"
+    case "$image" in
+      localhost:*/*|127.0.0.1:*/*|localhost/*|127.0.0.1/*)
+        die "selected candidate $agent image is absent from the cache. Import its matching companion before login: symphony runner import --agent $agent --archive PATH. Repeat after pruning the image; see docs/candidate-runner-provisioning.md" ;;
+    esac
+    "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; engine is reachable. Check registry network access and release availability: $image"
   fi
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'runner source revision does not match selected release'
   [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'runner architecture does not match selected release'
@@ -297,6 +304,7 @@ package_install() (
   (umask 077; mkdir -p "$config_home/projects") || return
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
   case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add this directory to PATH: export PATH="%s:$PATH"\n' "$bin_dir" ;; esac
+  if [ "$package_channel" = candidate ]; then printf 'Candidate image prerequisites: symphony runner import --agent codex (or claude) shows the exact companion to download before native login. See the bundled candidate provisioning guide.\n'; fi
   printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, then symphony auth codex login and symphony run.\n'
 )
 
@@ -328,9 +336,10 @@ package_doctor() {
     fi
   fi
   if "$json"; then
-    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
+    printf '{"mode":"doctor","installation":"packaged","scope":"installation","provider_project_readiness":"untested","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
   else
-    printf 'Symphony %s (%s), packaged %s %s\nReady: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    printf 'Symphony %s (%s), packaged %s %s\nInstallation ready: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    printf 'Readiness scope: installation files, command/skills and runtime CLI. Engine access, image provisioning, project launch/sandbox, native authentication and Git require symphony runner doctor. Tracker access and completed tasks remain untested.\n'
     if [ "$selected" != null ]; then printf 'Selected environment: %s (runtime %s)\n' "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" runtime_revision)"; fi
     "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2
   fi

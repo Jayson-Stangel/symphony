@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -103,7 +104,7 @@ if mode=='denial-fixture':
         self.assertTrue(not state or state.startswith("Z"), "sandbox descendant remained running")
 
     def test_missing_helper(self):
-        self.value["command"] = "/definitely-missing-codex app-server"
+        self.value["command"] = "/definitely-missing/codex app-server"
         with self.assertRaisesRegex(probe.Refusal, "sandbox_helper_missing"):
             probe.check(self.value)
 
@@ -119,9 +120,107 @@ if mode=='denial-fixture':
         with self.assertRaisesRegex(probe.Refusal, "sandbox_unqualified_config"):
             probe.check(self.value)
 
+    def make_wrapper(self, body):
+        self.project = self.root / "project with spaces"
+        self.project.mkdir()
+        wrapper = self.project / "with node.sh"
+        wrapper.write_text("#!/bin/bash\nset -eu\n" + body)
+        self.value["launch_root"] = str(self.project)
+        self.value["command"] = f'bash "with node.sh" "{self.binary}" --config shell_environment_policy.inherit=all app-server'
+        return wrapper
+
+    def test_wrapper_preserves_environment_and_uses_disposable_project(self):
+        self.make_wrapper('export WRAPPER_READY=yes\nprintf setup > setup-result\nexec "$@"\n')
+        self.binary.write_text(self.binary.read_text().replace("mode=pathlib", "assert os.environ.get('WRAPPER_READY')=='yes'\nassert pathlib.Path('setup-result').read_text()=='setup'\nmode=pathlib"))
+        self.assertTrue(self.run_mode("denial-fixture")["ready"])
+        self.assertFalse((self.project / "setup-result").exists())
+
+    def test_snapshot_preserves_internal_links_and_refuses_foreign_links(self):
+        self.make_wrapper('cat internal-link >/dev/null\nexec "$@"\n')
+        (self.project / "data").write_text("project data")
+        link = self.project / "internal-link"
+        link.symlink_to(self.project / "data")
+        self.assertTrue(self.run_mode("denial-fixture")["ready"])
+        link.unlink()
+        link.symlink_to(self.home)
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            self.run_mode("denial-fixture")
+
+    def test_snapshot_excludes_its_own_directory_when_workspace_is_project(self):
+        self.make_wrapper('exec "$@"\n')
+        self.workspace = self.project
+        self.value["workspace"] = str(self.project)
+        self.mode.write_text("denial-fixture")
+        self.assertTrue(probe.check(self.value)["ready"])
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), ["with node.sh"])
+
+    def test_direct_executable_path_with_spaces(self):
+        directory = self.root / "bin with spaces"
+        directory.mkdir()
+        binary = directory / "codex"
+        binary.write_bytes(self.binary.read_bytes())
+        binary.chmod(0o755)
+        self.value["command"] = f'"{binary}" app-server'
+        self.assertTrue(self.run_mode("denial-fixture")["ready"])
+
+    def test_wrapper_setup_failure_is_distinct_from_sandbox_failure(self):
+        wrapper = self.make_wrapper('exit 3\n')
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_failed"):
+            self.run_mode("denial-fixture")
+        wrapper.write_text('exec "$@"\n')
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_namespace_denied"):
+            self.run_mode("namespace")
+
+    def test_wrapper_missing_and_wrong_provider_refuse(self):
+        wrapper = self.make_wrapper('exec "$@"\n')
+        wrapper.unlink()
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            self.run_mode("denial-fixture")
+        self.value["command"] = "claude app-server"
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_unsupported_command"):
+            probe.check(self.value)
+
+    def test_wrapper_cannot_inject_unqualified_native_configuration(self):
+        self.make_wrapper('export NODE_OPTIONS="--require bad.js"\nexec "$@"\n')
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_unqualified_config"):
+            self.run_mode("denial-fixture")
+
+    def test_shell_payloads_are_not_executed(self):
+        payload = self.root / "unrelated-payload"
+        for command in (f"bash -c 'touch {payload}'", f"codex app-server; touch {payload}",
+                        f"bash wrapper.sh codex app-server $(touch {payload})",
+                        "bash ../outside.sh codex app-server", "bash wrapper.sh claude app-server"):
+            with self.subTest(command=command), self.assertRaises(probe.Refusal):
+                probe.check({**self.value, "command": command})
+        self.assertFalse(payload.exists())
+
     def test_generated_command_is_supported(self):
         self.value["command"] = f"{self.binary} --config shell_environment_policy.inherit=all app-server"
         self.assertTrue(self.run_mode("denial-fixture")["ready"])
+
+
+class NativeSmokeFixtureTests(unittest.TestCase):
+    def test_generated_wrapper_preserves_path_and_argument_boundaries(self):
+        source = (PROBE.parents[2] / "runner/codex-sandbox-smoke.sh").read_text()
+        start = source.index('  project="/workspaces/launch project"')
+        stop = source.index('  SYMPHONY_LAUNCH_ROOT=', start)
+        with tempfile.TemporaryDirectory(prefix="wrapper generator ") as directory:
+            project = Path(directory) / "project with spaces"
+            binaries = Path(directory) / "bin"
+            binaries.mkdir()
+            binary = binaries / "codex"
+            binary.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            code = source[start:stop].replace('/workspaces/launch project', str(project))
+            code = code.replace('/tmp/wrapper-WORKFLOW.md', shlex.quote(str(Path(directory) / "WORKFLOW.md")))
+            env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"]}
+            subprocess.run(["sh", "-ceu", code], env=env, check=True, capture_output=True)
+            expected = ["--config", "shell_environment_policy.inherit=all", "sandbox", "argument with spaces"]
+            result = subprocess.run(["bash", str(project / "scripts/with node.sh"), "codex", *expected],
+                                    cwd=project, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(result.stdout), expected)
+            self.assertIn('command: bash "scripts/with node.sh" codex',
+                          (Path(directory) / "WORKFLOW.md").read_text())
 
 
 class BoundaryHarnessTests(unittest.TestCase):

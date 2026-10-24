@@ -22,6 +22,9 @@ else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host
 if [ "$platform" = macos ]; then
   helper_architectures=$(lipo -archs "$bundle/libexec/symphony-host") || { echo 'cannot inspect macOS helper architectures' >&2; exit 1; }
   [ "$helper_architectures" = arm64 ] || { echo 'macOS helper must contain only arm64; universal or other CPU payload refused' >&2; exit 1; }
+  # Validate physical signature integrity before helper execution. The compiler's
+  # ad-hoc signature passes this check; it is not Developer ID/notarization proof.
+  codesign --verify --strict "$bundle/libexec/symphony-host" || { echo 'macOS helper signature integrity check failed; refusing packaging' >&2; exit 1; }
 fi
 "$bundle/libexec/symphony-host" validate-manifest "$manifest"
 python3 "$root/scripts/release/manager_inputs.py" "$manifest" --root "$root"
@@ -50,7 +53,7 @@ else
   revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 fi
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
-[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/codex-seccomp.json scripts/codex-seccomp.LICENSE scripts/codex-apparmor.profile scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/symphony-environment.sh runner/templates docs/team-environments.md scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/codex-seccomp.json scripts/codex-seccomp.LICENSE scripts/codex-apparmor.profile scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/symphony-environment.sh scripts/symphony-runner-import.sh runner/templates docs/team-environments.md docs/macos-install-security.md docs/candidate-runner-provisioning.md scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-platform)" = "$platform" ] || { echo 'helper platform differs from bundle build host' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-architecture)" = "$(uname -m)" ] || { echo 'helper architecture differs from bundle build host' >&2; exit 1; }
@@ -66,11 +69,11 @@ value["package_platform"]=sys.argv[3]
 with open(sys.argv[2],"w") as output: json.dump(value,output,indent=2,sort_keys=True); output.write("\n")
 PYMANIFEST
 printf '%s\n' "$platform" > "$bundle/host-platform"
-cp "$root/scripts/symphony" "$root/scripts/codex-seccomp.json" "$root/scripts/codex-seccomp.LICENSE" "$root/scripts/codex-apparmor.profile" "$root/scripts/symphony-package.sh" "$root/scripts/symphony-environment.sh" "$bundle/scripts/"
+cp "$root/scripts/symphony" "$root/scripts/codex-seccomp.json" "$root/scripts/codex-seccomp.LICENSE" "$root/scripts/codex-apparmor.profile" "$root/scripts/symphony-package.sh" "$root/scripts/symphony-environment.sh" "$root/scripts/symphony-runner-import.sh" "$bundle/scripts/"
 if [ -f "$root/scripts/symphony-package-update.sh" ]; then cp "$root/scripts/symphony-package-update.sh" "$bundle/scripts/"; fi
 mkdir -p "$bundle/runner/templates" "$bundle/docs"
 cp "$root/runner/templates/"*.Dockerfile "$bundle/runner/templates/"
-cp "$root/docs/team-environments.md" "$bundle/docs/"
+cp "$root/docs/team-environments.md" "$root/docs/macos-install-security.md" "$root/docs/candidate-runner-provisioning.md" "$bundle/docs/"
 cp "$root/elixir/WORKFLOW.md" "$bundle/elixir/"
 for skill in commit push pull linear land; do cp -R "$root/.codex/skills/$skill" "$bundle/.codex/skills/"; done
 cat > "$bundle/install.sh" <<'INSTALL'
@@ -84,7 +87,34 @@ case "$(uname -s)/$(uname -m)" in
 esac
 IFS= read -r bundle_platform < "$root/host-platform" || { echo 'symphony: bundle is missing its host platform marker' >&2; exit 1; }
 [ "$host_platform" = "$bundle_platform" ] || { echo 'symphony: bundle platform does not match this host' >&2; exit 1; }
-"$root/libexec/symphony-host" verify-files "$root"
+# Separate executable startup from inventory validation. A signal alone does not
+# establish a Gatekeeper decision; retain the failing stage and exit status.
+helper_execution_failure() {
+  printf 'symphony: installation stopped before activation: native helper %s failed (exit status %s).\n' "$1" "$2" >&2
+  echo 'symphony: executable startup or execution did not complete; this is not proof of a checksum mismatch or a macOS security decision.' >&2
+  if [ "$host_platform" = macos ]; then
+    echo 'symphony: verify the downloaded archive SHA-256 against the trusted candidate/release checksum first.' >&2
+    echo 'symphony: if macOS blocked this verified helper, open System Settings > Privacy & Security and review the specific blocked Symphony executable; use Open Anyway only if you trust that exact download, then retry ./install.sh.' >&2
+    echo 'symphony: if approval is unavailable or execution still fails, retain the macOS alert and exit status and contact the release maintainer. Do not disable Gatekeeper or remove quarantine recursively.' >&2
+  else
+    echo 'symphony: confirm the archive matches this host and download checksum; report the exit status to the release maintainer.' >&2
+  fi
+}
+if "$root/libexec/symphony-host" host-platform >/dev/null; then :
+else
+  status=$?
+  helper_execution_failure startup "$status"
+  exit "$status"
+fi
+if "$root/libexec/symphony-host" verify-files "$root"; then :
+else
+  status=$?
+  case "$status" in
+    126|127|1[3-9][0-9]|2[0-5][0-9]) helper_execution_failure inventory-verification "$status" ;;
+    *) echo 'symphony: bundle inventory verification failed; installation stopped before activation. Download a fresh archive and verify its trusted SHA-256; do not approve or execute a modified payload.' >&2 ;;
+  esac
+  exit "$status"
+fi
 exec "$root/scripts/symphony" install "$@"
 INSTALL
 chmod 755 "$bundle/install.sh" "$bundle/scripts/symphony" "$bundle/libexec/symphony-host"

@@ -414,6 +414,7 @@ func validateRuntimeImage(_ manifest: [String: Any], provider: String, arch: Str
           labels["com.symphony.agent"] as? String == provider,
           labels["com.symphony.inputs.sha256"] as? String == original["input_identity"] as? String,
           labels["com.symphony.protocol"] as? String == "1" else { fail("runtime image differs from original qualified source, platform or inputs") }
+    guard (receipt["RepoDigests"] as? [String])?.contains(reference) == true else { fail("runtime image lacks the selected qualified registry digest") }
     if receipt["Id"] as? String == config { return }
     let digest = String(qualified.split(separator: "@").last ?? "")
     let descriptor = object(receipt["Descriptor"])
@@ -568,10 +569,162 @@ func repository(_ input: String) throws -> (String, String) {
     fail("run this command inside an existing Git repository")
 }
 let args = Array(CommandLine.arguments.dropFirst())
-let arity = ["selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+// Candidate import consumes the original graph archive, never Docker-save/config-ID conversion.
+func streamDigest(_ handle: FileHandle, maximum: UInt64) throws -> (String, UInt64) {
+    var hash = SHA256(), count: UInt64 = 0
+    while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
+        count += UInt64(data.count)
+        guard count <= maximum else { fail("candidate payload exceeds size bound") }
+        hash.update(data: data)
+    }
+    return (hash.finalize().map { String(format: "%02x", $0) }.joined(), count)
+}
+func importRead(_ handle: FileHandle, _ count: Int) throws -> Data {
+    var data = Data()
+    while data.count < count {
+        guard let part = try handle.read(upToCount: count - data.count), !part.isEmpty else { fail("truncated candidate archive") }
+        data.append(part)
+    }
+    return data
+}
+func prepareRunnerImport(_ manifest: [String: Any], provider: String, arch: String, archive: String, destination: String) throws {
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch) else { fail("runner import requires a schema2 candidate and supported provider/platform") }
+    let record = object(object(object(manifest["runners"])[provider])[arch])
+    let image = record["image"] as? String ?? ""
+    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? image
+    guard selected == image, matches(image, "^localhost:5000/symphony-(codex|claude)@sha256:[a-f0-9]{64}$"),
+          let expectedArchive = object(record["qualification"])["archive_sha256"] as? String else { fail("candidate has no supported original loopback graph; use its selected registry distribution") }
+    let info = checkedInfo(archive)
+    guard info.st_size > 0, UInt64(info.st_size) <= 32 << 30 else { fail("candidate archive size exceeds bound") }
+    let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: archive))
+    defer { try? input.close() }
+    guard try streamDigest(input, maximum: 32 << 30).0 == expectedArchive else { fail("candidate archive checksum differs from selected original qualification") }
+    try input.seek(toOffset: 0)
+    _ = checkedInfo(destination, directory: true)
+    guard try FileManager.default.contentsOfDirectory(atPath: destination).isEmpty else { fail("runner import destination must be empty") }
+    let graph = destination + "/graph"
+    try FileManager.default.createDirectory(atPath: graph + "/blobs/sha256", withIntermediateDirectories: true)
+    let gzip = Process(), pipe = Pipe()
+    gzip.executableURL = URL(fileURLWithPath: "/usr/bin/env"); gzip.arguments = ["gzip", "-dc"]
+    gzip.standardInput = input; gzip.standardOutput = pipe; gzip.standardError = FileHandle.nullDevice
+    try gzip.run()
+    defer { if gzip.isRunning { gzip.terminate() }; gzip.waitUntilExit() }
+    let stream = pipe.fileHandleForReading
+    defer { try? stream.close() }
+    var seen = Set<String>(), hashes: [String: (String, UInt64)] = [:], total: UInt64 = 0
+    var extended: String? = nil
+    for number in 0..<16384 {
+        let header = try importRead(stream, 512)
+        if header.allSatisfy({ $0 == 0 }) {
+            guard extended == nil else { fail("dangling candidate archive path header") }
+            var tailCount = 0
+            while let tail = try stream.read(upToCount: 65536), !tail.isEmpty {
+                tailCount += tail.count
+                guard tailCount <= 1024 * 1024, tail.allSatisfy({ $0 == 0 }) else { fail("invalid candidate archive trailer") }
+            }
+            gzip.waitUntilExit()
+            guard gzip.terminationStatus == 0 else { fail("candidate archive decompression failed") }
+            break
+        }
+        guard number < 16383 else { fail("candidate archive member bound exceeded") }
+        func field(_ start: Int, _ length: Int) -> String {
+            String(data: header.subdata(in: start..<(start + length)).prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+        }
+        func octal(_ start: Int, _ length: Int) -> UInt64 {
+            let text = field(start, length).trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty, text.allSatisfy({ "01234567".contains($0) }), let value = UInt64(text, radix: 8) else { fail("invalid candidate archive number") }
+            return value
+        }
+        let expected = octal(148, 8)
+        let actual = header.enumerated().reduce(UInt64(0)) { $0 + ((148..<156).contains($1.offset) ? 32 : UInt64($1.element)) }
+        guard expected == actual else { fail("candidate archive header checksum differs") }
+        let size = octal(124, 12), type = header[156]
+        guard size > 0, size <= 8 << 30 else { fail("invalid candidate archive member size") }
+        var name = field(0, 100), prefix = field(345, 155)
+        if !prefix.isEmpty { name = prefix + "/" + name }
+        if type == 120 { // POSIX path extension: accept only the path key emitted by graph export.
+            guard extended == nil, size <= 4096 else { fail("unsupported candidate archive extension") }
+            let raw = try importRead(stream, Int(size))
+            guard let text = String(data: raw, encoding: .utf8), let separator = text.firstIndex(of: " "),
+                  let length = Int(text[..<separator]), length == raw.count,
+                  text[text.index(after: separator)...].hasPrefix("path="), text.hasSuffix("\n") else { fail("unsupported candidate archive path extension") }
+            extended = String(text[text.index(separator, offsetBy: 6)..<text.index(before: text.endIndex)])
+        } else {
+            guard type == 0 || type == 48 else { fail("candidate archive contains a link or unsupported member") }
+            name = extended ?? name; extended = nil
+            let namespace = "symphony-qualified-graphs/v1/"
+            guard name.hasPrefix(namespace) else { fail("candidate archive contains a foreign namespace") }
+            let relative = String(name.dropFirst(namespace.count))
+            guard relative == "index.json" || matches(relative, "^blobs/sha256/[a-f0-9]{64}$"), seen.insert(relative).inserted,
+                  relative != "index.json" || size <= 1024 * 1024 else { fail("candidate archive has an unknown or duplicate graph member") }
+            total += size
+            guard total <= 32 << 30 else { fail("candidate graph exceeds size bound") }
+            let path = graph + "/" + relative
+            guard FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600]) else { fail("cannot stage candidate graph") }
+            let output = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            var hash = SHA256(), remaining = size
+            while remaining > 0 {
+                let data = try importRead(stream, Int(min(remaining, 1024 * 1024)))
+                try output.write(contentsOf: data); hash.update(data: data); remaining -= UInt64(data.count)
+            }
+            try output.close()
+            let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+            if relative != "index.json" { guard relative == "blobs/sha256/" + digest else { fail("candidate graph blob checksum differs") } }
+            hashes[relative] = (digest, size)
+        }
+        let padding = Int((512 - size % 512) % 512)
+        if padding > 0 { guard try importRead(stream, padding).allSatisfy({ $0 == 0 }) else { fail("invalid candidate archive padding") } }
+    }
+    var after = stat()
+    guard fstat(input.fileDescriptor, &after) == 0, info.st_dev == after.st_dev, info.st_ino == after.st_ino,
+          info.st_size == after.st_size else { fail("candidate archive changed during verification") }
+    let index = object(try json(read(graph + "/index.json")))
+    guard integer(index["schema_version"]) == 1, let entries = index["images"] as? [[String: Any]],
+          entries.filter({ $0["image"] as? String == image && $0["image_config"] as? String == record["image_config"] as? String && $0["archive_tag"] as? String == record["archive_tag"] as? String }).count == 1 else { fail("candidate graph index differs from selected original record") }
+    let digest = String(image.split(separator: "@").last ?? "")
+    let rootPath = "blobs/sha256/" + digest.dropFirst(7)
+    guard hashes[rootPath]?.0 == String(digest.dropFirst(7)) else { fail("candidate graph is missing the selected original manifest") }
+    let root = object(try json(read(graph + "/" + rootPath)))
+    guard integer(root["schemaVersion"]) == 2,
+          ["application/vnd.docker.distribution.manifest.v2+json", "application/vnd.oci.image.manifest.v1+json"].contains(root["mediaType"] as? String ?? ""),
+          let layers = root["layers"] as? [[String: Any]], !layers.isEmpty, layers.count <= 256 else { fail("candidate graph root is not a supported single image") }
+    let config = object(root["config"])
+    guard config["digest"] as? String == record["image_config"] as? String,
+          ["application/vnd.docker.container.image.v1+json", "application/vnd.oci.image.config.v1+json"].contains(config["mediaType"] as? String ?? ""),
+          (integer(config["size"]) ?? Int.max) <= 1024 * 1024 else { fail("candidate graph config differs") }
+    guard layers.allSatisfy({ ["application/vnd.docker.image.rootfs.diff.tar.gzip", "application/vnd.oci.image.layer.v1.tar+gzip"].contains($0["mediaType"] as? String ?? "") }) else { fail("candidate graph has an unsupported layer format") }
+    let descriptors = [config] + layers + [["digest": digest, "size": Int(hashes[rootPath]!.1)]]
+    // Complete closure validation precedes even local registry layout creation.
+    for descriptor in descriptors {
+        guard let identity = descriptor["digest"] as? String, matches(identity, "^sha256:[a-f0-9]{64}$"),
+              let size = integer(descriptor["size"]), size > 0,
+              let observed = hashes["blobs/sha256/" + identity.dropFirst(7)], observed.1 == UInt64(size) else { fail("candidate graph descriptor or compressed blob closure differs") }
+    }
+    let repository = "symphony-" + provider
+    let storage = destination + "/registry/docker/registry/v2"
+    var linked = Set<String>()
+    for descriptor in descriptors {
+        guard let identity = descriptor["digest"] as? String, matches(identity, "^sha256:[a-f0-9]{64}$"),
+              let size = integer(descriptor["size"]), size > 0,
+              let observed = hashes["blobs/sha256/" + identity.dropFirst(7)], observed.1 == UInt64(size) else { fail("candidate graph descriptor or compressed blob closure differs") }
+        let hex = String(identity.dropFirst(7)), blob = storage + "/blobs/sha256/" + hex.prefix(2) + "/" + hex
+        if !linked.insert(identity).inserted { continue }
+        try FileManager.default.createDirectory(atPath: blob, withIntermediateDirectories: true)
+        try FileManager.default.linkItem(atPath: graph + "/blobs/sha256/" + hex, toPath: blob + "/data")
+        let link = storage + "/repositories/" + repository + (identity == digest ? "/_manifests/revisions/sha256/" : "/_layers/sha256/") + hex
+        try FileManager.default.createDirectory(atPath: link, withIntermediateDirectories: true)
+        try Data(identity.utf8).write(to: URL(fileURLWithPath: link + "/link"))
+    }
+    print(image)
+}
+
+let arity = ["prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
+    case "prepare-runner-import":
+        try prepareRunnerImport(validateRelease(args[1]), provider: args[2], arch: args[3], archive: args[4], destination: args[5])
     case "canonical-path":
         var path = URL(fileURLWithPath: args[1]).standardizedFileURL.path
         var suffix: [String] = []
