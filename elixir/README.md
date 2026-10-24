@@ -90,7 +90,8 @@ completed provider task.
 5. Keeps the agent working on the issue until the work is done
 
 Codex uses [App Server mode](https://developers.openai.com/codex/app-server/);
-Claude uses the [native SDK helper](../docs/claude.md).
+Claude uses the [native SDK helper](../docs/claude.md), including its bounded CPU
+and executable build-scratch resource profile.
 
 During agent sessions, the selected tracker adapter may advertise provider-native tools.
 Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves

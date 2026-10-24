@@ -28,15 +28,14 @@ observability:
 No issues exist in this isolated credential-free release qualification.
 WORKFLOW
 chmod 644 "$fixture/WORKFLOW.md"
-launch=(docker run --cap-drop ALL)
+root=$(cd "$(dirname "$0")/../.." && pwd)
+SYMPHONY_HOME="$root" source "$root/scripts/symphony" --help >/dev/null
+launch=(runner_claude_run docker)
 if [ "$provider" = codex ]; then
-  root=$(cd "$(dirname "$0")/../.." && pwd)
-  SYMPHONY_HOME="$root" source "$root/scripts/symphony" --help >/dev/null
-  launch=(runner_codex_run docker)
+  launch=(runner_codex_run docker --read-only --security-opt no-new-privileges --pids-limit 512
+    --tmpfs /tmp:rw,nosuid,nodev,size=128m)
 fi
-"${launch[@]}" -d --name "$name" --network none --read-only \
-  --security-opt no-new-privileges --pids-limit 512 \
-  --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+"${launch[@]}" -d --name "$name" --network none \
   --tmpfs "$home:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
   --tmpfs "/var/lib/symphony:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
   --tmpfs "/workspaces:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \

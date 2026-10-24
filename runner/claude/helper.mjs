@@ -8,13 +8,14 @@ import { readiness, RuntimeError, runtime } from './runtime.mjs';
 import { trackerServer } from './tools.mjs';
 import { processIdentity, signalOwnedGroup, ownedGroupAlive } from './processes.mjs';
 import { skillPlugin } from './skills.mjs';
+import { createBuildTemporary } from './temporary.mjs';
 import { progressDetails } from './progress.mjs';
 
 const ranks = { transient_error: 1, protocol_error: 2, permission_blocked: 3, quota_exhausted: 4, auth_required: 5, policy_blocked: 6 };
 
 export class Helper {
-  constructor({ identity, env, binary, send, makeQuery = query, terminate = () => {}, graceMs = 2000, killMs = 250 }) {
-    Object.assign(this, { identity, env, binary, send, makeQuery, terminate, graceMs, killMs });
+  constructor({ identity, env, binary, send, makeQuery = query, makeTemporary = createBuildTemporary, terminate = () => {}, graceMs = 2000, killMs = 250 }) {
+    Object.assign(this, { identity, env, binary, send, makeQuery, makeTemporary, terminate, graceMs, killMs });
     this.state = 'new';
     this.pendingInput = [];
     this.tools = new Map();
@@ -74,6 +75,8 @@ export class Helper {
     this.startRequest = command.request_id;
     this.config = command.config;
     this.state = 'starting';
+    this.temporary = this.makeTemporary();
+    this.env.TMPDIR = this.temporary.path;
     this.skillPlugin = skillPlugin(command.workspace, command.skills ?? {});
     this.env.SYMPHONY_SKILLS_ROOT = this.skillPlugin.root;
     const server = trackerServer(command.tools, (name, args) => this.callTool(name, args));
@@ -237,7 +240,8 @@ export class Helper {
     for (const child of this.children) signalOwnedGroup(child, 'SIGKILL');
     await new Promise(resolve => setTimeout(resolve, 100));
     if ([...this.children].some(ownedGroupAlive)) { this.terminate(); return; }
-    this.skillPlugin?.cleanup();
+    try { this.temporary?.cleanup(); this.skillPlugin?.cleanup(); }
+    catch { this.terminate(); return; }
     try { this.emit('stopped', request); } finally { this.terminate(); }
   }
 }

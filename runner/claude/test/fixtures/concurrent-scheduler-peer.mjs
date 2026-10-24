@@ -49,5 +49,5 @@ if (process.argv[2] === 'check') {
     close() { this.done = true; clearInterval(this.timer); this.waiter?.({ done: true }); }
   }
   serve({ binary: '/unused-no-inference', env: {}, identity },
-    { makeQuery: options => new WaitingQuery(options), graceMs: 20, killMs: 20 });
+    { makeTemporary: () => ({ path: '/tmp', cleanup() {} }), makeQuery: options => new WaitingQuery(options), graceMs: 20, killMs: 20 });
 }
