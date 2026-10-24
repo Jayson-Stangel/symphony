@@ -498,11 +498,15 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  defp port_identity(port) do
+  # Internal reader seam; session startup always uses the native File.read/1 default.
+  @doc false
+  @spec port_identity(port(), (String.t() -> {:ok, binary()} | {:error, term()})) :: map() | nil
+  def port_identity(port, read_stat \\ &File.read/1) do
     with {:os_pid, pid} <- Port.info(port, :os_pid),
-         {:ok, data} <- File.read("/proc/#{pid}/stat"),
+         {:ok, data} <- read_stat.("/proc/#{pid}/stat"),
          [_, fields] <- Regex.run(~r/^\d+ \(.*\) (.*)$/s, String.trim(data)),
-         start when is_binary(start) <- Enum.at(String.split(fields), 19) do
+         start when is_binary(start) <- Enum.at(String.split(fields), 19),
+         true <- Regex.match?(~r/^\d+$/, start) do
       %{pid: pid, start: start}
     else
       _ -> nil
