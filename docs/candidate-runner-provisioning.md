@@ -18,7 +18,7 @@ substitute another run's similarly named image or label an older image as a new
 build. Follow [macOS security guidance](macos-install-security.md) for downloaded
 Apple Silicon packages, or the normal Linux x86-64 package installation path.
 Configure separate candidate application/configuration/bin/skills paths and a
-runner namespace as described in [packaged installation](packaged-install.md).
+runner namespace as described in [packaged installation](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md).
 
 After installation, before login, display the selected companion identity:
 

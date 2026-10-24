@@ -288,7 +288,10 @@ class AppArmorWorkflowTest(unittest.TestCase):
 
     def test_actual_protected_image_entrypoint_checks_runtime_apply_and_keeps_both_network_modes(self):
         smoke = (ROOT / 'runner/codex-sandbox-smoke.sh').read_text()
-        self.assertLess(smoke.index('AppArmor runtime apply verified'), smoke.index('/opt/symphony/elixir/bin/symphony --check-codex-sandbox'))
+        marker = smoke.index('AppArmor runtime apply verified')
+        calls = [smoke.index('/opt/symphony/elixir/bin/symphony --check-codex-sandbox /tmp/' + name)
+                 for name in ('qualification-WORKFLOW.md', 'wrapper-WORKFLOW.md')]
+        self.assertTrue(all(marker < call for call in calls))
         self.assertIn('runner_codex_run docker --rm', smoke)
         self.assertIn('"$image_id"', smoke)
         boundaries = (ROOT / 'runner/codex-boundaries.py').read_text()

@@ -3,7 +3,7 @@
 Use Apple Silicon macOS 14 or later and the archive and checksum from the same
 trusted release or explicitly selected candidate run. Follow the download,
 SHA-256 verification, extraction and isolated candidate settings in
-[packaged installation](packaged-install.md) before running `./install.sh`.
+[packaged installation](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md) before running `./install.sh`.
 GitHub Actions candidate downloads may arrive as an outer ZIP; extract that ZIP
 first, verify the inner `symphony-VERSION-macos.tar.gz` against its trusted
 checksum, then extract the tar archive into a new directory. A checksum from an
