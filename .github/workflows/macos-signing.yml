@@ -12,6 +12,15 @@ on:
         description: Successful Runner integration manual dev run for that exact SHA
         type: string
         required: true
+    secrets:
+      MACOS_SIGNING_P12_BASE64:
+        required: true
+      MACOS_SIGNING_P12_PASSWORD:
+        required: true
+      MACOS_NOTARY_APPLE_ID:
+        required: true
+      MACOS_NOTARY_APP_PASSWORD:
+        required: true
   workflow_dispatch:
     inputs:
       approved_revision:

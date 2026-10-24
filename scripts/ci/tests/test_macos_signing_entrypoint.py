@@ -66,7 +66,11 @@ class SigningEntrypointTest(unittest.TestCase):
         self.assertIn('uses: ./.github/workflows/macos-signing.yml', caller)
         self.assertIn('approved_revision: ${{ inputs.approved_revision }}', caller)
         self.assertIn('qualified_run: ${{ inputs.qualified_run }}', caller)
-        self.assertNotIn('secrets:', caller)
+        expected_secrets = {'MACOS_SIGNING_P12_BASE64', 'MACOS_SIGNING_P12_PASSWORD',
+                            'MACOS_NOTARY_APPLE_ID', 'MACOS_NOTARY_APP_PASSWORD'}
+        forwarded = re.findall(r'^      ([A-Z0-9_]+): \$\{\{ secrets\.([A-Z0-9_]+) \}\}$', caller, re.M)
+        self.assertEqual(dict(forwarded), {name: name for name in expected_secrets})
+        self.assertNotIn('secrets: inherit', caller)
         self.assertIn('environment: macos-signing', worker)
         self.assertIn('MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}', worker)
         self.assertNotIn('packages: write', caller + worker)
@@ -75,4 +79,8 @@ class SigningEntrypointTest(unittest.TestCase):
         self.assertIn('default: false', signing_input)
         reusable = (ROOT / '.github/workflows/macos-signing.yml').read_text().split('  workflow_dispatch:', 1)[0]
         self.assertIn('workflow_call:', reusable)
-        self.assertEqual(reusable.count('required: true'), 2)
+        self.assertEqual(reusable.count('required: true'), 6)
+        declarations = reusable.split('    secrets:\n', 1)[1]
+        declared = re.findall(r'^      ([A-Z0-9_]+):\n        required: true$', declarations, re.M)
+        self.assertEqual(set(declared), expected_secrets)
+        self.assertEqual(len(declared), 4)

@@ -43,6 +43,12 @@ jobs:
     with:
       approved_revision: ${{ inputs.approved_revision }}
       qualified_run: ${{ inputs.qualified_run }}
+    # Explicit names are required even when values live only in the callee environment.
+    secrets:
+      MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+      MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
   changes:
     name: Classify changes
     if: ${{ !inputs.sign_macos }}
