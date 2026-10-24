@@ -149,6 +149,24 @@ arguments are suppressed; only allowlisted submission/log fields are retained.
 Inspect Apple submission details privately using the recorded submission ID if
 the reduced log is insufficient to diagnose rejection.
 
+`evidence/keychain-diagnostics.json` records fixed stage labels for the search-list
+snapshot, P12 decoding/import, keychain creation/settings/unlock, partition-list
+setup and pinned identity check. Each operation records running/success/failure;
+command failures include only a numeric exit status or a timeout/start-failure
+category. No command arguments, tool output, passwords, account names, keychain
+paths or identity listings enter this receipt. For example,
+`keychain.import-p12` with exit status `44` identifies the failing command, not
+a diagnosis that the password or certificate is wrong.
+
+Cleanup records P12/keychain absence and search-list restoration separately. All
+cleanup steps are attempted even if an earlier step fails. An original setup or
+signing error remains the reported failure when cleanup also fails; inspect the
+receipt for secondary cleanup failures. Evidence-write failure cannot block
+cleanup and prevents a successful readiness result. The existing refusal artifact
+retains this JSON even when no Apple submission receipt exists. A running stage
+without an outcome is incomplete evidence, not success. These diagnostics do not
+authorize a retry or additional credential use.
+
 The implementation signs the staged native helper with the exact certificate,
 hardened runtime, secure timestamp and no added entitlements. Its `signing.json`
 records original qualified helper SHA-256 and signed output identity/hash before

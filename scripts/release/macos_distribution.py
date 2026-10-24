@@ -34,14 +34,70 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def run(*args, timeout=180, env=None):
+class CommandFailure(ValueError):
+    """Only fixed stage labels and numeric process status may leave this boundary."""
+    def __init__(self, stage, outcome, returncode=None):
+        self.outcome = outcome
+        self.returncode = returncode
+        suffix = f' (exit {returncode})' if returncode is not None else ''
+        super().__init__(f'distribution command {outcome}: {stage}{suffix}')
+
+
+def run(*args, timeout=180, env=None, stage=None):
+    label = stage or str(args[0])
     try:
         result = subprocess.run([str(arg) for arg in args], capture_output=True,
                                 text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
-        raise ValueError('distribution command timed out: ' + str(args[0])) from None
-    require(result.returncode == 0, 'distribution command failed: ' + str(args[0]))
+        raise CommandFailure(label, 'timed out') from None
+    except OSError:
+        if stage:
+            raise CommandFailure(label, 'could not start') from None
+        raise
+    if result.returncode != 0:
+        raise CommandFailure(label, 'failed', result.returncode)
     return result.stdout + result.stderr
+
+
+class KeychainDiagnostics:
+    """An allowlisted journal: no argv, output, exception text, identity or paths."""
+    def __init__(self, evidence):
+        self.path = evidence / 'keychain-diagnostics.json' if evidence else None
+        self.operations = []
+        self.write_failed = False
+
+    def operation(self, stage, action):
+        record = {'stage': stage, 'status': 'running'}
+        self.operations.append(record)
+        self.save()
+        try:
+            result = action()
+        except BaseException as error:
+            record['status'] = 'failed'
+            if isinstance(error, CommandFailure):
+                record['outcome'] = error.outcome
+                if error.returncode is not None:
+                    record['exit_status'] = error.returncode
+            elif isinstance(error, (KeyboardInterrupt, SystemExit)):
+                record['outcome'] = 'interrupted'
+            else:
+                record['outcome'] = 'operation refused'
+            self.save()
+            raise
+        record['status'] = 'success'
+        self.save()
+        return result
+
+    def command(self, stage, *args):
+        return self.operation(stage, lambda: run(*args, stage=stage))
+
+    def save(self):
+        if self.path:
+            try:
+                write_json(self.path, {'schema': 1, 'operations': self.operations})
+            except OSError:
+                # Evidence I/O must never prevent credential cleanup or mask its cause.
+                self.write_failed = True
 
 
 def checksum(path):
@@ -65,43 +121,92 @@ def credentials(env):
 
 
 @contextmanager
-def signing_keychain(env, directory):
-    """Never change default keychain, search lists, trust, or an existing keychain."""
+def signing_keychain(env, directory, evidence=None):
+    """Preserve the primary failure and try every owned-resource cleanup step."""
     keychain = directory / 'signing.keychain-db'
     p12 = directory / 'identity.p12'
     password = secrets.token_urlsafe(32)
-    search_list = shlex.split(run('security', 'list-keychains', '-d', 'user'))
+    diagnostics = KeychainDiagnostics(evidence)
+    search_list = None
+    primary_failure = False
+    cleanup_errors = []
     try:
-        try:
-            p12.write_bytes(base64.b64decode(env['MACOS_SIGNING_P12_BASE64'], validate=True))
-        except ValueError:
-            raise ValueError('invalid MACOS_SIGNING_P12_BASE64') from None
-        p12.chmod(0o600)
-        run('security', 'create-keychain', '-p', password, keychain)
-        run('security', 'set-keychain-settings', '-lut', '7200', keychain)
-        run('security', 'unlock-keychain', '-p', password, keychain)
-        run('security', 'import', p12, '-k', keychain, '-P', env['MACOS_SIGNING_P12_PASSWORD'],
-            '-T', '/usr/bin/codesign')
-        run('security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:',
-            '-s', '-k', password, keychain)
-        identities = run('security', 'find-identity', '-v', '-p', 'codesigning', keychain)
+        search_list = shlex.split(diagnostics.command(
+            'keychain.snapshot-search-list', 'security', 'list-keychains', '-d', 'user'))
+
+        def decode_identity():
+            try:
+                p12.write_bytes(base64.b64decode(env['MACOS_SIGNING_P12_BASE64'], validate=True))
+            except ValueError:
+                raise ValueError('invalid MACOS_SIGNING_P12_BASE64') from None
+            p12.chmod(0o600)
+
+        diagnostics.operation('keychain.decode-p12', decode_identity)
+        diagnostics.command('keychain.create', 'security', 'create-keychain', '-p', password, keychain)
+        diagnostics.command('keychain.settings', 'security', 'set-keychain-settings', '-lut', '7200', keychain)
+        diagnostics.command('keychain.unlock', 'security', 'unlock-keychain', '-p', password, keychain)
+        diagnostics.command('keychain.import-p12', 'security', 'import', p12, '-k', keychain,
+                            '-P', env['MACOS_SIGNING_P12_PASSWORD'], '-T', '/usr/bin/codesign')
+        diagnostics.command('keychain.partition-list', 'security', 'set-key-partition-list',
+                            '-S', 'apple-tool:,apple:,codesign:', '-s', '-k', password, keychain)
+        identities = diagnostics.command('keychain.find-identity', 'security', 'find-identity',
+                                         '-v', '-p', 'codesigning', keychain)
         identity = env['MACOS_SIGNING_IDENTITY_SHA1'].upper()
         team = env['MACOS_TEAM_ID']
-        require(re.search(r'\b' + identity + r' "Developer ID Application: [^"\n]+ \('
-                          + team + r'\)"', identities),
-                'expected valid Developer ID Application identity/team missing from temporary keychain')
-        p12.unlink()
+        diagnostics.operation('keychain.match-pinned-identity', lambda: require(
+            re.search(r'\b' + identity + r' "Developer ID Application: [^"\n]+ \('
+                      + team + r'\)"', identities),
+            'expected valid Developer ID Application identity/team missing from temporary keychain'))
+        diagnostics.operation('keychain.remove-import-file', p12.unlink)
         yield keychain
+    except BaseException:
+        primary_failure = True
+        raise
     finally:
-        p12.unlink(missing_ok=True)
-        # Run even when creation/import was interrupted; never name another keychain.
-        try:
+        def cleanup(stage, action):
+            try:
+                diagnostics.operation(stage, action)
+            except BaseException as error:
+                cleanup_errors.append(error)
+
+        cleanup('cleanup.remove-p12', lambda: p12.unlink(missing_ok=True))
+        cleanup('cleanup.verify-p12-absent', lambda: require(not p12.exists(), 'P12 cleanup incomplete'))
+        def delete_keychain():
             if keychain.exists():
-                run('security', 'delete-keychain', keychain)
-        finally:
-            current = shlex.split(run('security', 'list-keychains', '-d', 'user'))
-            if current != search_list:
-                run('security', 'list-keychains', '-d', 'user', '-s', *search_list)
+                run('security', 'delete-keychain', keychain, stage='cleanup.delete-keychain')
+
+        cleanup('cleanup.delete-keychain', delete_keychain)
+        cleanup('cleanup.verify-keychain-absent', lambda: require(
+            not keychain.exists(), 'temporary keychain cleanup incomplete'))
+
+        if search_list is not None:
+            current = {}
+
+            def inspect_search_list():
+                current['value'] = shlex.split(run('security', 'list-keychains', '-d', 'user',
+                                                  stage='cleanup.inspect-search-list'))
+
+            cleanup('cleanup.inspect-search-list', inspect_search_list)
+            # An inspection failure must not prevent restoring the saved snapshot.
+            if current.get('value') != search_list:
+                cleanup('cleanup.restore-search-list', lambda: run(
+                    'security', 'list-keychains', '-d', 'user', '-s', *search_list,
+                    stage='cleanup.restore-search-list'))
+
+            def verify_search_list():
+                restored = shlex.split(diagnostics.command(
+                    'cleanup.read-restored-search-list', 'security', 'list-keychains', '-d', 'user'))
+                require(restored == search_list, 'keychain search list cleanup incomplete')
+
+            cleanup('cleanup.verify-search-list-restored', verify_search_list)
+        if diagnostics.write_failed:
+            cleanup_errors.append(ValueError('keychain diagnostics could not be retained'))
+        if cleanup_errors and not primary_failure:
+            # Never expose arbitrary OS/exception text from cleanup.
+            first = cleanup_errors[0]
+            if isinstance(first, CommandFailure):
+                raise first
+            raise ValueError('keychain cleanup failed; see sanitized keychain diagnostics') from None
 
 
 def sign(path, keychain, env, runtime=True):
@@ -236,7 +341,7 @@ def build(manifest, helper, output, env):
     with tempfile.TemporaryDirectory(prefix='symphony-signing-', dir=env.get('RUNNER_TEMP')) as temporary:
         private = Path(temporary)
         private.chmod(0o700)
-        with signing_keychain(env, private) as keychain:
+        with signing_keychain(env, private, evidence) as keychain:
             package = private / 'packages'
             child_env = dict(env, SYMPHONY_MACOS_KEYCHAIN=str(keychain))
             run('bash', ROOT / 'scripts/release/build-manager-package.sh', manifest, package,
