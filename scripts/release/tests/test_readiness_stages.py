@@ -72,6 +72,20 @@ if auth_codex_check; then echo FALSE_READY; else exit 37; fi
         self.assertNotIn('ready for isolated runners', result.stdout)
         self.assertNotIn('FALSE_READY', result.stdout)
 
+    def test_auth_engine_failure_precedes_team_environment_selection(self):
+        for action in ('auth_codex_login', 'auth_codex_check', 'claude_auth check'):
+            with self.subTest(action=action):
+                result = self.run_shell('''
+packaged_install=true
+repo_root() { printf /unused; }
+container_runtime() { printf fixture_runtime; }
+fixture_runtime() { [ "$1" = info ] && return 29; echo UNEXPECTED >&2; return 90; }
+package_use_project_image() { echo UNEXPECTED_SELECTION >&2; return 90; }
+''' + action)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('container engine unavailable', result.stderr)
+                self.assertNotIn('UNEXPECTED', result.stderr)
+
     def test_sandbox_only_rejects_wrong_provider_before_engine(self):
         result = self.run_shell('''
 container_runtime() { echo UNEXPECTED >&2; }

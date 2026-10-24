@@ -813,8 +813,9 @@ claude_auth() {
   # Credential changes share ownership with runner transitions, including the
   # stopped-source window. Readiness is also called by the lock-owning updater.
   if [ "$action" != check ]; then runner_project_lock "$root"; fi
-  if "$packaged_install"; then package_use_project_image "$root" claude; fi
-  runtime=$(container_runtime); container_engine_ready "$runtime" || return; image=$(runner_image claude)
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
+  if "$packaged_install"; then package_use_project_image "$root" claude || return; fi
+  image=$(runner_image claude)
   volume=$(claude_auth_volume "$root")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     if ! "$packaged_install"; then [ "$action" = login ] || die 'Claude image is missing; provision it with symphony auth claude login first'; fi
@@ -860,8 +861,9 @@ claude_native_profile() { claude_auth check | host_json profile; }
 
 auth_codex_login() {
   local runtime image
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
   if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
-  runtime=$(container_runtime); container_engine_ready "$runtime" || return; image=$(runner_image)
+  image=$(runner_image)
   runner_build_image
   "$runtime" volume create "$codex_auth_volume" >/dev/null
   printf 'Open the displayed URL and complete the Codex device login.\n'
@@ -879,8 +881,9 @@ auth_codex_remove() {
 
 auth_codex_check() {
   local runtime image
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
   if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
-  runtime=$(container_runtime); container_engine_ready "$runtime" || return; image=$(runner_image)
+  image=$(runner_image)
   "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
   if "$packaged_install"; then runner_build_image codex || return; fi
   "$runtime" run --rm \
