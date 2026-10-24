@@ -36,12 +36,14 @@ elif tool=='codesign':
     if '--force' in args:
         with open(args[-1],'ab') as f:f.write(b'-fixture-signature')
     elif '--extract-certificates' in args:
-        pathlib.Path(args[args.index('--extract-certificates')+1]+'0').write_bytes(b'OBVIOUS FAKE CERTIFICATE - NOT A CREDENTIAL')
+        pathlib.Path(args[args.index('--extract-certificates')+1]+'0').write_bytes(
+            b'WRONG FAKE CERTIFICATE' if os.environ.get('PEER_WRONG_CERT') else b'OBVIOUS FAKE CERTIFICATE - NOT A CREDENTIAL')
     elif '--entitlements' not in args and '-d' in args:
         print('Authority=Developer ID Application: Fixture (FAKETEAM00)')
         print('TeamIdentifier='+os.environ.get('PEER_TEAM','FAKETEAM00'))
-        print('Timestamp=FAKE timestamp')
-        print('CodeDirectory v=20500 flags=0x10000(runtime) hashes=1')
+        print('CDHash='+'a'*40)
+        if not os.environ.get('PEER_NO_TIMESTAMP'):print('Timestamp=FAKE timestamp')
+        if not os.environ.get('PEER_NO_RUNTIME'):print('CodeDirectory v=20500 flags=0x10000(runtime) hashes=1')
 elif tool=='hdiutil' and args[0]=='create':pathlib.Path(args[-1]).write_bytes(b'FAKE-DMG')
 elif tool=='ditto':pathlib.Path(args[-1]).write_bytes(b'FAKE-PAYLOAD-ZIP')
 elif tool=='xcrun':
@@ -53,7 +55,7 @@ elif tool=='xcrun':
     elif args[:2]==['notarytool','log']:
         import hashlib
         submitted=pathlib.Path(pathlib.Path(os.environ['PEER_LOG']+'.submission').read_text()).read_bytes()
-        print(json.dumps({'jobId':'11111111-2222-3333-4444-555555555555','status':os.environ.get('PEER_STATUS','Accepted'),'statusCode':0,'sha256':hashlib.sha256(submitted).hexdigest(),'issues':[],
+        print(json.dumps({'jobId':os.environ.get('PEER_LOG_ID','11111111-2222-3333-4444-555555555555'),'status':os.environ.get('PEER_STATUS','Accepted'),'statusCode':0,'sha256':os.environ.get('PEER_LOG_HASH',hashlib.sha256(submitted).hexdigest()),'issues':[],
                           'message':'FAKE-SECRET-MUST-NOT-LEAK','uploadUrl':'PRIVATE URL'}))
     elif args[:2]==['stapler','staple']:
         with open(args[-1],'ab') as f:f.write(b'-stapled')
@@ -155,6 +157,23 @@ class DistributionTest(unittest.TestCase):
         evidence.mkdir(exist_ok=True)
         return dmg, evidence
 
+    def test_wrong_leaf_certificate_missing_timestamp_or_runtime_refuse(self):
+        payload = self.root / 'native'
+        payload.write_bytes(b'fake')
+        for changed, reason in (({'PEER_WRONG_CERT': '1'}, 'certificate differs'),
+                                ({'PEER_NO_TIMESTAMP': '1'}, 'timestamp missing'),
+                                ({'PEER_NO_RUNTIME': '1'}, 'runtime missing')):
+            with patch.dict(os.environ, changed), self.assertRaisesRegex(ValueError, reason):
+                dist.sign(payload, self.root / 'keychain', self.env)
+
+    def test_wrong_apple_submission_or_archive_binding_refuses_before_stapling(self):
+        for changed in ({'PEER_LOG_HASH': '0'*64}, {'PEER_LOG_ID': 'foreign-submission'}):
+            dmg, evidence = self.notary()
+            before = dist.checksum(dmg)
+            with patch.dict(os.environ, changed), self.assertRaisesRegex(ValueError, 'bind submitted archive'):
+                dist.notarize(dmg, self.root / 'keychain', self.env, evidence)
+            self.assertEqual(dist.checksum(dmg), before)
+
     def test_notary_rejection_timeout_stapling_and_assessment_fail_closed(self):
         for status, failure in (('Invalid', ''), ('In Progress', ''), ('Accepted', 'xcrun notarytool submit'),
                                 ('Accepted', 'xcrun notarytool wait'),
@@ -215,8 +234,8 @@ class DistributionTest(unittest.TestCase):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('spctl --assess', ''):
-            output = self.root / ('failed' if failure else 'success')
+        for failure in ('codesign -vvvv', 'spctl --assess', ''):
+            output = self.root / (failure.split()[0] if failure else 'success')
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
                     patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure):
                 uname.return_value.machine = 'arm64'

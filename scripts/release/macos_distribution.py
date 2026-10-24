@@ -115,6 +115,8 @@ def sign(path, keychain, env, runtime=True):
     require('Authority=Developer ID Application:' in details, 'Developer ID authority missing')
     require('TeamIdentifier=' + env['MACOS_TEAM_ID'] + '\n' in details, 'signed payload team differs')
     require(re.search(r'^Timestamp=.+', details, re.M), 'secure timestamp missing')
+    cdhash = re.search(r'^CDHash=([a-f0-9]{40}|[a-f0-9]{64})$', details, re.M)
+    require(cdhash, 'signed code directory hash missing')
     if runtime:
         require(re.search(r'^CodeDirectory .*flags=.*\bruntime\b', details, re.M),
                 'hardened runtime missing')
@@ -128,7 +130,7 @@ def sign(path, keychain, env, runtime=True):
         certificate = Path(str(prefix) + '0').read_bytes()
         require(hashlib.sha1(certificate).hexdigest().upper() == identity,
                 'signed payload certificate differs')
-    return {'sha256': checksum(path), 'certificate_sha1': identity,
+    return {'sha256': checksum(path), 'cdhash': cdhash.group(1), 'certificate_sha1': identity,
             'team_id': env['MACOS_TEAM_ID'], 'hardened_runtime': runtime,
             'secure_timestamp': True}
 
@@ -155,16 +157,14 @@ def sign_payload(bundle, keychain, env):
 
 
 def create_dmg(bundle, destination):
-    """Same installer, same bytes; .command is just the Finder entry point."""
+    """Same installer and Terminal entry point, carried in a mountable image."""
     with tempfile.TemporaryDirectory(prefix='dmg-content-') as temporary:
         content = Path(temporary)
         shutil.copytree(bundle, content / 'Symphony')
-        launcher = content / 'Install Symphony.command'
-        launcher.write_text('#!/bin/bash\nset -euo pipefail\n'
-                            'cd "$(dirname "$0")/Symphony"\nexec ./install.sh "$@"\n')
-        launcher.chmod(0o755)
         (content / 'Read Me.txt').write_text(
-            'Run Install Symphony.command to use the existing per-user installer.\n'
+            'Open Terminal and run the existing per-user installer:\n'
+            '  /bin/bash "/Volumes/Symphony/Symphony/install.sh"\n'
+            'Use the actual mounted volume path if macOS gave it another name.\n'
             'No sudo or host build tools are needed. Docker must be installed separately.\n'
             'After installation, eject this disk. Do not move or modify files within Symphony.\n'
             'Unsigned candidates are not evidence of Apple trust. Verify the distribution receipt.\n')
@@ -257,13 +257,13 @@ def build(manifest, helper, output, env):
             payload_zip = private / 'payload.zip'
             run('ditto', '-c', '-k', '--keepParent', bundle, payload_zip)
             payload_submission = submit(payload_zip, keychain, env, evidence, 'payload')
-            run('spctl', '--assess', '--type', 'execute', '--verbose=4', bundle / 'libexec/symphony-host')
+            run('codesign', '-vvvv', '-R=notarized', '--check-notarization', bundle / 'libexec/symphony-host')
             dmg = private / (archive.name.removesuffix('.tar.gz') + '.dmg')
             create_dmg(bundle, dmg)
             signed_dmg = sign(dmg, keychain, env, runtime=False)
             submission = notarize(dmg, keychain, env, evidence)
             # Notarization covers the identical native code also shipped in tar.gz.
-            run('spctl', '--assess', '--type', 'execute', '--verbose=4', bundle / 'libexec/symphony-host')
+            run('codesign', '-vvvv', '-R=notarized', '--check-notarization', bundle / 'libexec/symphony-host')
             require(checksum(helper) == original, 'original qualified helper was modified')
             distribution = {
                 'status': 'notarized-stapled-assessed', 'source_revision': revision,

@@ -652,7 +652,7 @@ PY
                 self.assertOK(self.helper('verify-files', mount / 'Symphony'))
                 env = self.environment()
                 for attempt in range(2):
-                    self.assertOK(call([mount / 'Install Symphony.command'], env=env))
+                    self.assertOK(call(['/bin/bash', mount / 'Symphony/install.sh'], env=env))
                 self.assertIn('unsigned candidate', (mount / 'Symphony/distribution-status.txt').read_text())
             finally:
                 self.assertOK(call(['hdiutil', 'detach', mount]))

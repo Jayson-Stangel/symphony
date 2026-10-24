@@ -117,8 +117,10 @@ hardened runtime, secure timestamp and no added entitlements. Its `signing.json`
 records original qualified helper SHA-256 and signed output identity/hash before
 the file inventory and tarball are hashed. The original helper remains unchanged.
 Future native payload additions fail until explicitly covered by signing policy.
-The DMG contains that same bundle plus a Finder `.command` launcher calling the
-existing `install.sh`; it adds no installer/updater or privileged service.
+The DMG contains that same bundle and instructions for running its existing
+`install.sh` from Terminal; it adds no installer/updater or privileged service.
+There is no Finder `.command` launcher: Apple documents a
+[Finder document-assessment limitation for command-line tools](https://developer.apple.com/forums/thread/706379).
 
 Following Apple's custom-installer guidance, the signed payload is submitted as
 a temporary ZIP before the outer signed DMG is submitted using `notarytool`.
@@ -128,8 +130,10 @@ timestamp errors, stapling/validation failure, or Gatekeeper assessment failure
 refuse readiness. A timeout can leave an Apple submission processing, but cannot
 produce a ready artifact; inspect its ID privately before authorizing another run.
 Each submission ID is recorded before its separate wait starts. The DMG is
-stapled, validated, and assessed with `spctl` for opening; the helper
-is also assessed for execution. No security bypass is used.
+stapled, validated, and assessed with `spctl` for opening. Following
+[Apple's testing guidance](https://developer.apple.com/forums/thread/130560),
+the bare helper is checked using `codesign -vvvv -R=notarized --check-notarization`.
+No security bypass is used.
 
 Only success uploads a `macos-notarized-candidate-SHA-RUN-ATTEMPT` Actions artifact:
 
