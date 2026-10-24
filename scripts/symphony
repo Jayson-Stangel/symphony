@@ -1756,6 +1756,7 @@ runner_codex_sandbox_ready() {
   case "$output" in
     *sandbox_unsupported_command*) printf '%s\n' 'Project launch configuration unsupported. Use direct codex [arguments] app-server or bash scripts/WRAPPER.sh codex [arguments] app-server; shell pipelines, expansions and unrelated commands are refused. Preserve required project setup in the wrapper.' >&2 ;;
     *sandbox_launch*|*sandbox_wrapper*|*sandbox_helper_missing*) printf '%s\n' 'Project launch environment failed. Check the configured wrapper exists, its setup prerequisites and its Codex executable. Retry the unchanged workflow after correcting project setup.' >&2 ;;
+    *sandbox_git_unavailable*) printf '%s\n' 'Protected Git workflow failed. The effective task policy must permit owned Git metadata writes; check the selected environment and runtime policy. No listener was started.' >&2 ;;
     *sandbox_unsupported_policy*) printf '%s\n' 'Project sandbox policy is unsupported; inspect the configured workspace-write policy.' >&2 ;;
     *sandbox_timeout*) printf '%s\n' 'Protected readiness timed out. Check project wrapper setup/download prerequisites and engine health before retrying.' >&2 ;;
     *) printf '%s\n' 'Protected sandbox execution failed. Inspect the reported sandbox stage and selected environment security/runtime compatibility; no image was replaced. Configuration failures do not require rebuilding an image.' >&2 ;;

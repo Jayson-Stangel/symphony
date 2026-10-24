@@ -37,6 +37,7 @@ if mode in ('namespace','proc'):
     sys.exit(1)
 if mode=='signal':os.kill(os.getpid(),signal.SIGKILL)
 if mode=='zero':sys.exit(0)
+if mode=='git-failure':sys.exit(72)
 if mode=='timeout':
     import subprocess
     child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])
@@ -48,7 +49,7 @@ if mode=='denial-fixture':
     source=args[2]
     sys.argv=['-c',*args[3:]]
     original=pathlib.Path.write_text
-    denied=[pathlib.Path(p) for p in sys.argv[-2:]]
+    denied=[pathlib.Path(p) for p in sys.argv[2:4]]
     def write(p,*a,**kw):
         if any(root in p.parents for root in denied):raise PermissionError(errno.EACCES,'fixture denial')
         return original(p,*a,**kw)
@@ -72,6 +73,28 @@ if mode=='denial-fixture':
 
     def test_success_fixture_requires_both_effects_and_denials(self):
         self.assertTrue(self.run_mode("denial-fixture")["ready"])
+
+    def test_owned_git_grant_qualifies_real_git_workflow_and_preserves_other_denials(self):
+        self.value['containerized'] = True
+        with self.assertRaisesRegex(probe.Refusal, 'sandbox_git_unavailable'):
+            self.run_mode('denial-fixture')
+        self.value['policy']['writableRoots'] = [str(self.workspace / '.git')]
+        self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        with self.assertRaisesRegex(probe.Refusal, 'sandbox_git_unavailable'):
+            self.run_mode('git-failure')
+        with self.assertRaisesRegex(probe.Refusal, 'sandbox_policy_enforcement_failed'):
+            self.run_mode('permissive')
+
+    def test_container_wrapper_with_existing_project_skills_runs_git_in_disposable_copy(self):
+        self.make_wrapper('exec "$@"\n')
+        skills = self.project / '.codex' / 'skills'
+        skills.mkdir(parents=True)
+        (skills / 'fixture.txt').write_text('preserve source')
+        self.value['containerized'] = True
+        self.value['policy']['writableRoots'] = [str(self.workspace / '.git')]
+        self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        self.assertEqual((skills / 'fixture.txt').read_text(), 'preserve source')
+        self.assertFalse((self.project / '.git').exists())
 
     def test_zero_exit_without_effects_is_not_ready(self):
         with self.assertRaisesRegex(probe.Refusal, "sandbox_required_effect_missing"):
@@ -221,6 +244,23 @@ class NativeSmokeFixtureTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), expected)
             self.assertIn('command: bash "scripts/with node.sh" codex',
                           (Path(directory) / "WORKFLOW.md").read_text())
+
+
+class GitHarnessTests(unittest.TestCase):
+    def test_interleaved_notifications_and_buffered_response_are_consumed(self):
+        harness_spec = importlib.util.spec_from_file_location("git_harness", PROBE.parents[2] / "runner/codex-git-workflow.py")
+        harness = importlib.util.module_from_spec(harness_spec)
+        harness_spec.loader.exec_module(harness)
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'{"method":"notification"}\n{"id":1,"result":{"exitCode":0}}\n{"id":2,"result":{}}\n')
+            with os.fdopen(read_fd, 'rb', buffering=0) as stream:
+                buffer = bytearray()
+                self.assertEqual(harness.read_response(stream, buffer, 1, timeout=1), {'exitCode': 0})
+                # The fd has no new data; the second response is already buffered.
+                self.assertEqual(harness.read_response(stream, buffer, 2, timeout=1), {})
+        finally:
+            os.close(write_fd)
 
 
 class BoundaryHarnessTests(unittest.TestCase):

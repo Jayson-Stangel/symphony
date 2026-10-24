@@ -4,7 +4,9 @@ Codex listener startup performs a bounded, credential-free protected-command
 check before starting the application. `symphony runner doctor` and candidate
 update preflight use the same check in disposable storage, before draining an
 existing runner. The check writes an owned workspace canary and requires denial
-outside the effective writable roots and inside the canary workspace's `.git`.
+outside the effective writable roots and inside the canary workspace's protected
+metadata (`.codex` in managed containers; `.git` for unchanged native policy).
+Managed containers must also complete the full owned Git workflow described below.
 A version, app-server handshake, direct Git command or zero exit alone cannot pass.
 
 The adapter supports direct `codex app-server` commands and argv-preserving
@@ -65,6 +67,14 @@ For installation and a first project, use [getting started](../docs/getting-star
 For container lifecycle and stable updates, use [operations](../docs/operations.md).
 This guide covers implementation behavior, configuration, native development,
 and testing. Symphony is engineering preview software for trusted environments.
+
+Managed container `workspaceWrite` task policies explicitly allow writes to the
+owned task's `.git` directory. Native/SSH policies remain unchanged. Container
+readiness proves clone/fetch/branch/edit/test/commit/push/readback against a
+disposable local remote while preserving outside-workspace and `.codex` denials.
+An external/symlinked Git directory refuses qualification; no full-access fallback
+is used. Local-remote Git proof does not establish GitHub authentication or a
+completed provider task.
 
 ## Screenshot
 

@@ -52,3 +52,10 @@ fi
 runner_codex_run docker --rm \
   --volume "$root/runner/codex-boundaries.py:/qualification.py:ro" \
   --entrypoint /usr/bin/timeout "$image_id" 40 python3 /qualification.py
+
+# Git must work through the native app-server command API, not docker-exec Git.
+# This uses no model, account, host project or native login volume.
+runner_codex_run docker --rm \
+  --volume /workspaces --volume /var/lib/symphony \
+  --volume "$root/runner/codex-git-workflow.py:/git-qualification.py:ro" \
+  --entrypoint /usr/bin/timeout "$image_id" 90 python3 /git-qualification.py

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Config do
   Runtime configuration loaded from `WORKFLOW.md`.
   """
 
-  alias SymphonyElixir.{Config.Schema, Tracker}
+  alias SymphonyElixir.{Config.Schema, PathSafety, Tracker}
   alias SymphonyElixir.{Workflow, WorkflowStore}
 
   @default_prompt_template """
@@ -182,8 +182,11 @@ defmodule SymphonyElixir.Config do
   @spec resolve_codex_runtime_settings(Schema.t(), Path.t() | nil, keyword()) ::
           {:ok, codex_runtime_settings()} | {:error, term()}
   def resolve_codex_runtime_settings(settings, workspace, opts) do
+    root = local_workspace_root(settings)
+
     with {:ok, turn_sandbox_policy} <-
-           Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+           Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts),
+         {:ok, turn_sandbox_policy} <- container_git_policy(turn_sandbox_policy, workspace || root, root, opts) do
       {:ok,
        %{
          model: settings.codex.model,
@@ -192,6 +195,37 @@ defmodule SymphonyElixir.Config do
          thread_sandbox: settings.codex.thread_sandbox,
          turn_sandbox_policy: turn_sandbox_policy
        }}
+    end
+  end
+
+  # Codex protects .git beneath writable roots unless that exact metadata
+  # directory is explicitly writable. Only managed container workspaces receive
+  # this grant; host/SSH policies and other protected metadata remain unchanged.
+  defp container_git_policy(%{"type" => "workspaceWrite"} = policy, workspace, root, opts) do
+    if System.get_env("SYMPHONY_CONTAINERIZED") == "1" and not Keyword.get(opts, :remote, false) do
+      with true <- is_binary(workspace),
+           {:ok, canonical} <- PathSafety.canonicalize(workspace),
+           {:ok, owned_root} <- PathSafety.canonicalize(root),
+           true <- canonical == owned_root or String.starts_with?(canonical, owned_root <> "/"),
+           git <- Path.join(canonical, ".git"),
+           true <- owned_git_directory?(git) do
+        roots = Map.get(policy, "writableRoots", [])
+        {:ok, Map.put(policy, "writableRoots", Enum.uniq(roots ++ [git]))}
+      else
+        _ -> {:error, {:unsafe_turn_sandbox_policy, :unowned_git_metadata}}
+      end
+    else
+      {:ok, policy}
+    end
+  end
+
+  defp container_git_policy(policy, _workspace, _root, _opts), do: {:ok, policy}
+
+  defp owned_git_directory?(git) do
+    case File.lstat(git) do
+      {:ok, %File.Stat{type: :directory}} -> true
+      {:error, :enoent} -> true
+      _ -> false
     end
   end
 
