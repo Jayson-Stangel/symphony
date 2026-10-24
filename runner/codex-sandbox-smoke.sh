@@ -6,11 +6,18 @@ image_id=$(docker image inspect --format '{{.Id}}' "$image")
 [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
 root=$(cd "$(dirname "$0")/.." && pwd)
 SYMPHONY_HOME="$root" source "$root/scripts/symphony" --help >/dev/null
+apparmor=$(codex_apparmor_profile docker)
+printf 'Protected qualification: image=%s apparmor=%s seccomp=%s\n' "$image_id" "$apparmor" "$(codex_seccomp_id)"
 # Anonymous volumes have the same destinations as the listener; --rm removes
 # them. No project data, native auth, environment file or host home is mounted.
 # Use the listener network settings so the native helper owns its restrictions.
-if ! runner_codex_run docker --rm --env SYMPHONY_CONTAINERIZED=1 --volume /workspaces --volume /var/lib/symphony \
+if ! runner_codex_run docker --rm --env SYMPHONY_CONTAINERIZED=1 --env "SYMPHONY_QUALIFICATION_APPARMOR=$apparmor" --volume /workspaces --volume /var/lib/symphony \
   --entrypoint /usr/bin/timeout "$image_id" 25 sh -ceu '
+  if [ "$SYMPHONY_QUALIFICATION_APPARMOR" != none ]; then
+    actual=$(cat /proc/self/attr/current) || { echo "AppArmor runtime context is unreadable" >&2; exit 1; }
+    [ "$actual" = "$SYMPHONY_QUALIFICATION_APPARMOR (enforce)" ] || { echo "Shipped AppArmor profile was not applied by the selected runtime" >&2; exit 1; }
+    printf "AppArmor runtime apply verified: %s\n" "$actual"
+  fi
   printf "%s\n" "---" "tracker:" "  kind: memory" "workspace:" "  root: /workspaces" "---" > /tmp/qualification-WORKFLOW.md
   exec /opt/symphony/elixir/bin/symphony --check-codex-sandbox /tmp/qualification-WORKFLOW.md
 '; then
