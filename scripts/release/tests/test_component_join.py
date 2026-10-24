@@ -1,9 +1,12 @@
 import copy
 import json
+import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import component_join
@@ -63,3 +66,70 @@ class ComponentJoinTest(unittest.TestCase):
             raise ValueError('payload expired')
         with self.assertRaisesRegex(ValueError, 'expired'):
             component_join.join(self.plan, self.root, 'a'*40, expired)
+
+
+class ComponentJoinEntrypointTest(unittest.TestCase):
+    """Actual argparse/controller/assembly with synthetic external origin receipts."""
+    def test_normal_schema2_cli_assembles_exact_current_and_mixed_component_records(self):
+        from runner_inputs import identity
+        import manager_version
+        source = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix='component-join-cli-') as folder:
+            root = Path(folder) / 'checkout'
+            subprocess.run(['git', 'clone', '--shared', '--quiet', str(source), str(root)], check=True)
+            revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+            records = root / 'native-records'; records.mkdir()
+            plan = {'planning_complete': True, 'manager_source_revision': revision, 'components': {}}
+            originals = {}
+            for provider in ('codex', 'claude'):
+                plan['components'][provider] = {}
+                for architecture in ('arm64', 'x86_64'):
+                    original = record(provider, architecture)
+                    original['source_revision'] = revision
+                    original['input_identity'] = identity(root, provider, architecture)['input_identity']
+                    original['qualification'].update(source_revision=revision, controller_revision=revision,
+                                                     input_identity=original['input_identity'])
+                    originals[provider, architecture] = original
+                    (records / f'{provider}-{architecture}.json').write_text(json.dumps(original))
+                    plan['components'][provider][architecture] = {
+                        'action': 'build', 'input_identity': original['input_identity']}
+            plan_path = root / 'selected-plan.json'
+            verified = []
+            def external_origin(original, **kwargs):
+                self.assertEqual(original, originals[original['provider'], original['architecture']])
+                self.assertEqual(kwargs, {'candidate_run': 123})
+                verified.append(copy.deepcopy(original))
+                return {'scope': 'SYNTHETIC immutable native origin control', 'image': original['image']}
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                for mode in ('all-build', 'mixed-reuse'):
+                    with self.subTest(mode=mode):
+                        if mode == 'mixed-reuse':
+                            for architecture in ('arm64', 'x86_64'):
+                                original = originals['codex', architecture]
+                                original['source_revision'] = 'b' * 40
+                                original['qualification']['source_revision'] = 'b' * 40
+                                plan['components']['codex'][architecture].update(action='reuse', record=original,
+                                    origin={'scope': 'SYNTHETIC immutable native origin control', 'image': original['image']})
+                        plan_path.write_text(json.dumps(plan))
+                        output = root / mode
+                        verified.clear()
+                        argv = ['component_join.py', '--plan', str(plan_path), '--records', str(records),
+                                '--output', str(output), '--schema', '2']
+                        with patch.object(sys, 'argv', argv), patch.dict(os.environ,
+                                GITHUB_SHA=revision, GITHUB_RUN_ID='123', GITHUB_EVENT_NAME='workflow_dispatch'), \
+                                patch.object(component_join, 'verify_origin', side_effect=external_origin):
+                            component_join.main()
+                        self.assertEqual(len(verified), 8, 'both join and schema2 assembly verify all four origins')
+                        manifest = json.loads((output / 'release.json').read_text())
+                        self.assertEqual(manifest['schema_version'], 2)
+                        self.assertEqual(manifest['version'], manager_version.read(root))
+                        self.assertEqual(manifest['source_revision'], revision)
+                        self.assertEqual(json.loads((output / 'component-plan.json').read_text()), plan)
+                        for (provider, architecture), original in originals.items():
+                            self.assertEqual(json.loads((output / f'{provider}-{architecture}.json').read_text()), original)
+                            self.assertEqual(manifest['runners'][provider][architecture],
+                                             {k: v for k, v in original.items() if k not in ('provider', 'architecture')})
+            finally:
+                os.chdir(previous)

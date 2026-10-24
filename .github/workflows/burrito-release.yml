@@ -4,6 +4,10 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      baseline_run:
+        description: Exact explicitly authorized original native-record run for nonpublishing manual composition
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -64,6 +68,7 @@ jobs:
     if: ${{ !inputs.controller_only && !inputs.engine_only }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      baseline_run: ${{ inputs.baseline_run }}
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
       previous_artifact_run: ${{ inputs.previous_artifact_run }}

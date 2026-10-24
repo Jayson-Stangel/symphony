@@ -76,7 +76,7 @@ on:
         description: Candidate schema (1 bridge with same-source runners, 2 independent components)
         type: choice
         options: ['1', '2']
-        default: '1'
+        default: '2'
       retain_diagnostic:
         description: Preserve this explicitly requested diagnostic run across new commits
         type: boolean
@@ -223,6 +223,11 @@ jobs:
           test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input_identity"])' "$RUNNER_TEMP/component-inputs.json")" = "$EXPECTED_IDENTITY"
       - name: Configure native cache for actual current and prior source builds
         uses: ./.github/actions/configure-runner-cache
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        if: matrix.provider == 'codex'
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Build exact native runner candidates and verify digest pulls
         id: native-build
         env:
@@ -268,6 +273,18 @@ jobs:
         with:
           name: runner-native-cleanup-${{ matrix.provider }}-${{ matrix.architecture }}
           path: dist/*.registry-state.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-candidate-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
 
@@ -475,6 +492,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        if: matrix.provider == 'codex'
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Prepare isolated registry and evidence
         id: registry
         run: |
@@ -559,6 +581,19 @@ jobs:
         run: |
           test "$(docker inspect --format '{{index .Config.Labels "com.symphony.cache-probe"}}' "$REGISTRY_ID")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker rm -f "$REGISTRY_ID"
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-cache-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/codex-apparmor-*.log
+          if-no-files-found: error
+          retention-days: 30
+
   packaged-candidate:
     name: Build candidate package (${{ matrix.platform }})
     if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages }}
@@ -740,6 +775,10 @@ jobs:
           if [ -n "$LEGACY_ARTIFACT_RUN" ]; then
             python3 scripts/release/previous-package-subject.py --run-id "$LEGACY_ARTIFACT_RUN" --packages packages --images runners --evidence evidence --selection legacy
           fi
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
         env:
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
@@ -764,6 +803,18 @@ jobs:
         with:
           name: ubuntu26-package-lifecycle-${{ github.sha }}
           path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-installed-lifecycle
+          path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
 
@@ -802,6 +853,10 @@ jobs:
           merge-multiple: true
           run-id: ${{ inputs.diagnostic_artifact_run }}
           github-token: ${{ github.token }}
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Diagnose actual Ubuntu lifecycle using selected real artifacts
         env:
           PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
@@ -813,6 +868,18 @@ jobs:
         with:
           name: diagnostic-only-ubuntu26-${{ github.sha }}-${{ inputs.diagnostic_artifact_run }}
           path: evidence/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-lifecycle-diagnostic
+          path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
 
@@ -1152,6 +1219,11 @@ jobs:
           run-id: ${{ inputs.transfer_replay_run || github.run_id }}
           name: transfer-replay-${{ matrix.provider }}-${{ matrix.architecture }}
           path: replay
+      - name: Prepare shipped Codex AppArmor on disposable host
+        id: codex-apparmor
+        if: matrix.provider == 'codex'
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
       - name: Real checksum, Docker load and model-free runtime proof
         env:
           PROVIDER: ${{ matrix.provider }}
@@ -1167,3 +1239,15 @@ jobs:
           name: transfer-runtime-${{ matrix.provider }}-${{ matrix.architecture }}
           path: evidence/**
           if-no-files-found: warn
+      - name: Remove only CI-owned Codex AppArmor policy
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        shell: bash
+        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+      - name: Retain disposable host policy diagnostics
+        if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-apparmor-transfer-replay-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/codex-apparmor-*.log
+          if-no-files-found: error
+          retention-days: 30

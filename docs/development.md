@@ -9,6 +9,29 @@ Prerequisites: Docker running, Git, Bash, curl and Python 3. Native Claude login
 is interactive. The container builds its own pinned runtime; host Symphony setup
 and global command/skill installation are unnecessary.
 
+## Disposable CI Codex host preparation
+
+Native image and installed-package CI consumers explicitly run
+`scripts/ci/prepare-codex-apparmor.sh prepare` before protected Codex qualification,
+then run its cleanup with `always()`. This administrator operation is limited to
+GitHub-hosted Linux with a verified local selected Docker daemon. It checks the
+shipped profile checksum/name, kernel/LSM and per-thread AppArmor interface before
+loading a new profile in enforce mode. It installs the parser only after those
+checks, and refuses a preexisting named policy of unknown provenance. Cleanup
+removes only the invocation-owned profile; prepare/cleanup logs are retained even
+when qualification fails. Explicit Bash pipefail preserves failures through log
+capture.
+
+An advertised AppArmor capability, a loaded policy name and successful runtime
+application are distinct evidence. Protected qualification records the immutable
+image ID and security policy identities and verifies the applied profile inside
+the actual container before executing the existing workspace/process/network
+effect checks. This is credential-free proof on native Linux x86-64 and ARM64
+container runners, separate from supported Linux x86-64/macOS ARM64 manager hosts.
+No-AppArmor Docker hosts retain the shipped selection behavior. Product launchers
+do not install host policy; this CI preparation does not change a stable host or
+qualify authenticated inference.
+
 ## Create the workspace
 
 Choose a new directory; do not overwrite an existing checkout. Replace the remote
@@ -561,3 +584,22 @@ renames/deletions, stale bases and missing history. It also executes the require
 wrapper guard from an empty workspace and checks failure/cancellation propagation.
 These are isolated event-replay results, not claims that GitHub-hosted jobs ran.
 Pure documentation changes run lightweight classification and PR metadata validation; CI regression suites, workflow lint and application setup/build/tests are intentionally omitted.
+
+### Current manager release policy
+
+The normal `burrito-release.yml` caller reads `scripts/release/release-schema`
+through portable preflight and forwards it to component planning. Policy 2 builds
+changed component inputs and preserves verified original identities for unchanged
+inputs. `scripts/release/manager-version` selects the fresh manager release
+(currently 0.0.5); `elixir/mix.exs` remains the independent engine version.
+Tag mismatch and completed release targets refuse before expensive fanout;
+publication also checks again and retains the production environment gate.
+Explicit schema1 diagnostics retain their pinned finite-transition restrictions.
+
+Full nonpublishing proof uses a reviewed feature/integration ref, with
+`retain_diagnostic=true`, `engine_only=false`, and `controller_only=false`.
+Record the exact source, both manager archive identities, all four original
+component records and immutable image digests, manifests/checksums, native helper
+qualifications and cleanup. The default full candidate omits prior-package
+update/rollback and legacy migration when no prior artifact is selected; report
+those omissions rather than inferring their success from archive assembly.

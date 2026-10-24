@@ -22,6 +22,10 @@ operator-run acceptance; credential-free CI never claims they were performed.
   install Docker or change socket ownership. Ordinary runtime utilities are Bash,
   curl with CA certificates, tar/gzip, coreutils, sed, grep, awk, find and diff/cmp;
   Ubuntu's `sha256sum` verifies downloads. Docker handles all runner tooling.
+- Before the first Codex start on an AppArmor-enabled Docker daemon, have its
+  administrator [prepare the shipped policy on that daemon's host](#codex-on-apparmor-docker-hosts).
+  The installer does not load host policy. A remote daemon needs preparation on
+  its own Linux host; a no-AppArmor Docker Desktop/macOS daemon does not.
 - Prepare an existing target project checkout with an explicit `origin` remote
   that the worker can clone and push to. Preparing that checkout is separate from
   installing Symphony; the packaged manager reads its identity without host Git.
@@ -96,6 +100,32 @@ manager and bundled skills. The global command and managed skill links go throug
 that release. Rerunning the same unmodified version verifies its inventory.
 Existing user-owned command paths or skill links are refused before activation;
 a source installation is not repointed or migrated automatically.
+
+## Codex on AppArmor Docker hosts
+
+Before starting Codex, follow the [source-free policy preparation and readiness
+recipe](codex-docker-sandbox.md#apparmor-hosts) if the **selected Docker daemon**
+advertises AppArmor. A working Docker CLI, an installed package, and a listed
+profile name do not establish protected-command readiness. The administrator
+must review, integrity-check and explicitly load the exact shipped policy on the
+daemon host; Symphony does not perform that administrator action.
+
+The verified extracted bundle contains `scripts/codex-apparmor.profile`. After a
+default installation it is under
+`~/.local/share/symphony/current/scripts/codex-apparmor.profile`, resolving into
+`releases/VERSION-STORAGE_REVISION`; use the chosen application directory if you
+installed with `--app-dir` or a namespace. Pin that physical release directory
+before checking its inventory and policy. Do not edit installed release files.
+The detailed recipe covers tools/imports, an existing profile, reboot persistence,
+actual protected checks, and troubleshooting without weakening the sandbox.
+
+These public [installation instructions](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md)
+and [sandbox guide](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/codex-docker-sandbox.md)
+are the documentation entrypoint for a downloaded release; reading them requires
+no source checkout. The archive ships the policy and its checksum inventory, not
+these two web guides or the disposable CI preparation helper. Use guidance for
+the release you verified; do not treat unmerged development documentation as a
+published release or a fresh installation qualification.
 
 ## Team-owned environments
 

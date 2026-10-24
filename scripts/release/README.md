@@ -30,6 +30,17 @@ bundles support only x86-64. Both Linux container architectures remain required.
 
 ## Candidate qualification without publication
 
+Disposable GitHub-hosted native qualification explicitly prepares the shipped
+Codex AppArmor profile using `scripts/ci/prepare-codex-apparmor.sh`, with local
+daemon/host, checksum, kernel/LSM and loaded-enforce checks before protected tests.
+The same preparation covers fresh installed-manager/lifecycle and transfer replay
+hosts, with owned-policy cleanup and retained nonsecret diagnostics on failure.
+Actual image qualification verifies runtime application before the existing
+protected workspace, process and network tests; a version/browser handshake or
+profile load alone cannot pass qualification. No-AppArmor hosts keep their
+existing shipped selection. General managers never install host policy silently.
+
+
 Run `runner-release` manually. It builds both providers on native ARM64 and AMD64
 Linux hosts, temporarily pushes each image to a loopback-only disposable registry,
 removes the selected local image, pulls the exact distribution digest and runs
@@ -569,14 +580,27 @@ negative fixture are cleanup-owned diagnostics, never new reusable baselines.
 
 The committed `scripts/release/release-schema` selects the production manager
 format independently of both the manager version and engine `mix.exs` version.
-It starts at 1 so the normal protected tag path can publish an actual strict
-schema1 bridge. Shared preflight validates the policy and exports it to Burrito's
-runner caller; publication rejects a format that differs from that committed
-policy. First publish and install an approved bridge version through the ordinary
-stable release path; a candidate-only bridge cannot migrate stable installations.
-Only a later, separately versioned manager release changes `manager-version` and this policy
-to 2, outside every runner Docker input closure. Engine version and original
-runner labels remain their actual original values.
+The current policy is 2: normal releases select independent current-source
+components, building changed inputs and retaining verified original identities for
+unchanged inputs. Manager version 0.0.5 is a fresh identity after published
+v0.0.4; the engine retains its separate version. Shared preflight validates the
+policy and exports it to Burrito's runner caller; publication rejects a format
+that differs from that committed policy. Tag preflight checks the manager tag
+and refuses completed release targets before native or image fanout. Completed
+v0.0.4 is never overwritten. The explicit schema1 diagnostic path retains its
+strict finite-transition authority; it cannot qualify arbitrary changed inputs.
+These manager-only policy files remain outside runner Docker input closures.
+Legacy installed-package decoding and selected-environment compatibility remain
+supported; a new candidate does not claim an installed bridge/migration lifecycle.
+Engine version and original runner labels remain their actual original values.
+
+For full nonpublishing composition, dispatch `burrito-release.yml` at the exact
+reviewed feature/integration SHA with `retain_diagnostic=true` and both
+`engine_only` and `controller_only` false. Require both supported manager archives,
+all four native component records, manifests/checksums and helper qualification.
+An explicit direct runner schema override alone does not prove normal caller
+selection. With no prior package requested, the two-source and three-package
+installed migration lifecycles are omitted and must be reported separately.
 
 Manual full candidates may select `previous_artifact_run` from an actual successful
 current-manager package run. Cheap common qualification first checks that exact
@@ -713,3 +737,13 @@ This path performs no image build, retrieval, export, upload or requalification.
 An explicitly requested optional reference-image build still computes its actual
 Docker input closure and must qualify changed images normally. It cannot use
 protocol compatibility to claim current source was baked into an old image.
+
+A manual full Burrito candidate may set `baseline_run` to an explicitly selected
+original native-record run when continuing composition after a downstream
+controller failure. The reusable producer permits this only for manual events
+and independently revalidates the successful original native jobs, exact input
+closures, source/image identities and live immutable payloads. Unchanged inputs
+retain those original identities and do not rebuild images. This does not turn
+the earlier failed full run into success or qualify old images at the new source;
+the new manager/helper/package composition must pass at its own exact revision.
+The production tag caller supplies no manual baseline override.

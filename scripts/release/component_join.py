@@ -94,7 +94,7 @@ def main():
             write_release(core,output)
         else:
             artifacts.assemble(SimpleNamespace(records=files, schema_version=args.schema,
-                               version=manager_version.read(), revision=revision, channel='candidate',
+                               version=manager_version.read('.'), revision=revision, channel='candidate',
                                component_selections=__import__('finite_transition').selections_from_plan(plan),
                                bundle=None, platform_bundles=True, output=str(output / 'release.json')), verifier=verify)
         (output/'component-plan.json').write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')

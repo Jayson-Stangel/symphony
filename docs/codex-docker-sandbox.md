@@ -59,25 +59,176 @@ fresh proc mount remains denied; the pinned bundled helper uses its qualified
 fallback with Docker's proc masks intact. This exposes additional kernel mount
 code and requires the same effect checks as the seccomp extension.
 
-An administrator must review and add the profile on the **selected Docker daemon
-host** before starting or qualifying a Codex runner there:
+### Identify the daemon host
+
+Before the first Codex start, an administrator must prepare the **selected Docker
+daemon host** if that daemon advertises AppArmor. From the CLI machine, use the
+same runtime executable and Docker context/`DOCKER_CONTEXT`/`DOCKER_HOST` settings
+as Symphony. For Docker, the reduced diagnostic is:
 
 ```sh
-sudo apparmor_parser -a -W /path/to/reviewed/scripts/codex-apparmor.profile
+runtime=${SYMPHONY_CONTAINER_RUNTIME:-docker}
+"$runtime" info --format 'Daemon={{.Name}} Kernel={{.KernelVersion}} Security={{json .SecurityOptions}}'
 ```
 
-The fixed profile name is `symphony-codex-candidate-b6261d4c613296dd`. Its source
-SHA-256 is `2eddb013e3503591aaac8e583e6dca093290287713c8aa0869b2d4458fa594aa`.
-It is derived from the same pinned Moby revision as the seccomp policy; its
-license is included as `scripts/codex-seccomp.LICENSE`. It assumes ABI 3.0,
-standard AppArmor imports, and an unconfined Docker daemon. Host imports and the
-kernel-loaded policy are administrator-controlled inputs: the source checksum
-cannot prove the contents of a loaded profile. Do not reuse this name for changed
-rules, replace an existing profile, or unload profiles needed by running projects
-or rollback. Use a new versioned name for future rule changes.
+Look for `name=apparmor` in the security options. Establish which machine owns
+that daemon before using administrator commands; do not infer it from the CLI
+machine's OS or hostname. Inspect connection settings privately and do not paste
+credential-bearing endpoint URLs into logs. For a remote daemon, perform the
+Linux preparation below on its host, not on the CLI machine. A macOS client can
+select a remote AppArmor daemon. No-AppArmor daemons, including the qualified
+LinuxKit Docker Desktop configuration, need no AppArmor installation/load step;
+they still require the shipped seccomp and protected-readiness checks.
 
-Symphony never invokes sudo, loads policy, changes docker-default, or restarts the
-daemon. A missing profile causes Docker to refuse launch. Daemon-info errors,
+This does not expand supported manager hosts: macOS ARM64 and Ubuntu 26.04 x86-64
+remain supported; Linux AMD64 and ARM64 are separate required container targets.
+
+### Locate and verify the source-free policy
+
+Start with an archive verified against its release metadata as described in
+[packaged installation](packaged-install.md). In Bash on the package's supported
+manager host, use its actual application directory and resolve `current` once:
+
+```sh
+app_home="$HOME/.local/share/symphony" # replace for --app-dir or a namespace
+release_dir=$(cd "$app_home/current" && pwd -P)
+# Before installation, instead set release_dir to the absolute verified extraction root.
+"$release_dir/libexec/symphony-host" verify-files "$release_dir"
+policy="$release_dir/scripts/codex-apparmor.profile"
+profile_name=symphony-codex-candidate-b6261d4c613296dd
+expected=2eddb013e3503591aaac8e583e6dca093290287713c8aa0869b2d4458fa594aa
+actual=$("$release_dir/libexec/symphony-host" sha256 "$policy")
+test "$actual" = "$expected"
+grep -F -- "profile $profile_name " "$policy"
+sed -n '1,160p' "$policy" # administrator reviews the rules before loading
+```
+
+Stop on any failed command or mismatch. The profile is in both supported host
+archives; neither a Symphony source checkout nor the CI helper is needed.
+Installed releases are immutable: do not edit the policy or change a pinned
+checksum to accept other rules. These name/hash values describe this shipped
+recipe; a later versioned policy requires its matching verified release guidance.
+The license is `scripts/codex-seccomp.LICENSE` in the same bundle.
+
+For a remote daemon, securely transfer only the reviewed policy to an
+administrator-controlled path on that host. There set `policy` to the transferred
+file's absolute path, and set `profile_name` and `expected` to the values above.
+Recheck its bytes there before loading (Ubuntu provides `sha256sum`):
+
+```sh
+printf '%s  %s\n' "$expected" "$policy" | sha256sum --check -
+```
+
+Do not run a macOS bundle helper on a Linux daemon host. The inventory and hash
+bind the shipped source bytes, not the contents of an already-loaded kernel
+profile or the host's administrator-controlled imports.
+
+### Explicit administrator preparation on that Linux host
+
+The daemon host needs an AppArmor-capable kernel with AppArmor active, mounted
+securityfs, a compatible `apparmor_parser`, ABI 3.0 and the standard
+`/etc/apparmor.d/abi/3.0`, `tunables/global` and `abstractions/base` imports.
+The policy assumes an unconfined Docker daemon and the qualified Linux
+user/mount/PID namespace behavior. An Ubuntu administrator can install missing
+parser/import tools with `sudo apt-get update` followed by
+`sudo apt-get install --no-install-recommends apparmor`. This is a separate
+administrator decision, not a Symphony installer or runtime action.
+
+Check the actual daemon host, stopping if any prerequisite is unavailable:
+
+```sh
+cat /sys/module/apparmor/parameters/enabled # must be Y
+sudo cat /sys/kernel/security/lsm # must include apparmor
+stat /proc/thread-self/attr/apparmor/exec
+sudo test -r /etc/apparmor.d/abi/3.0
+sudo test -r /etc/apparmor.d/tunables/global
+sudo test -r /etc/apparmor.d/abstractions/base
+loaded_profiles=$(sudo cat /sys/kernel/security/apparmor/profiles) || exit 1
+printf '%s\n' "$loaded_profiles" | grep -F -- "$profile_name ("
+```
+
+A matching line means the name already exists: **do not add, replace or unload
+it** unless administrator records independently establish the exact source/import
+provenance. A known matching policy must pass the enforce-list verification
+below without loading again; a complain-mode listing is a blocker. An unknown
+profile requires administrator investigation; neither the name
+nor an on-disk checksum proves the loaded contents. No match is expected for a
+new profile only when the inventory read succeeded; an inspection/access error
+is a blocker, not evidence of absence.
+
+Only for an absent name, after reviewing and verifying the file on this host:
+
+```sh
+sudo apparmor_parser --add "$policy"
+```
+
+For both a newly added policy and an existing known matching policy, verify:
+
+```sh
+sudo grep -Fx -- "$profile_name (enforce)" /sys/kernel/security/apparmor/profiles
+```
+
+Stop on parser errors, missing imports or a missing enforce line. Never use
+`--replace` to overwrite unknown policy, change `docker-default`, disable
+AppArmor/seccomp, run a privileged container, or bypass the protected check.
+The [Ubuntu parser manual](https://manpages.ubuntu.com/manpages/noble/man8/apparmor_parser.8.html)
+describes `--add` and its refusal when a name already exists.
+
+This loads policy into the **current kernel for this boot**; it does not install
+the file for reboot persistence. The versioned package path is not an automatic
+boot-policy directory. Persistence is separate administrator-managed host setup:
+use the distribution's AppArmor policy/service management (normally
+`/etc/apparmor.d/` on Ubuntu), retaining the exact reviewed file and imports.
+After reboot, verify the enforce listing and protected readiness again.
+Do not overwrite an existing persistent policy file or unload profiles needed by
+running projects, retained environments or rollback. Keep old versioned profiles
+until their consumers are retired. A future changed recipe needs a new versioned
+name. See [Ubuntu's AppArmor administration guide](https://documentation.ubuntu.com/server/how-to/security/apparmor/index.html)
+for distribution policy management; Symphony does not configure boot persistence.
+
+### Verify protected readiness, then distinguish authentication
+
+Back on the CLI machine, from the intended initialized project checkout with its
+reviewed `WORKFLOW.md` and selected compatible Codex environment:
+
+```sh
+symphony --version
+symphony doctor --json
+symphony runner doctor --agent codex
+```
+
+`doctor` checks installation/inventory and runtime executable availability
+(plus selected environment validation when applicable); it does **not** qualify
+the sandbox.
+`runner doctor` first uses the shared launch integration and selected immutable
+image for a credential-free disposable protected-command check. The exact marker
+`Codex sandbox protected-command checks passed.` means it wrote the intended
+workspace canary and denied outside/protected Git writes for that workflow and
+image. No native login or model request is provided to this first check. It does
+not independently repeat CI's sibling-process and both network-mode probes.
+
+The command then checks native authentication and isolated Git. Without a login,
+it can fail after the protected-check marker; that is not full doctor success or
+provider readiness. No marker means no protected success. A complete doctor pass
+still does not prove authenticated inference, tracker/repository access or a
+real issue-to-PR run. Login and any live provider task require their own operator
+authority; they are not needed to inspect the policy or its credential-free gate.
+
+### Troubleshooting without weakening isolation
+
+| Symptom | Check and action |
+|---|---|
+| Docker cannot apply the named profile | Confirm the selected daemon host and inspect its loaded inventory. Load only the reviewed matching policy there if absent. Advertising AppArmor is insufficient. |
+| Missing/corrupt file, wrong name or hash | Reverify the matching release archive and inventory. Stop; do not edit immutable files or substitute a checksum/name. |
+| Parser/import/LSM or per-thread interface failure | Have the host administrator establish compatible kernel/LSM/securityfs/parser/import prerequisites. An error mentioning `attr/apparmor/exec` alone does not establish which prerequisite failed. |
+| A same-name policy is already loaded | Preserve it and establish provenance. Do not replace or unload an unknown policy or one required by active/rollback consumers. |
+| Policy loaded, protected check still fails | Retain the refusal; inspect `sandbox_not_ready`, selected immutable image compatibility, workflow policy, workspace/TMPDIR paths, mount/storage behavior and host kernel/runtime diagnostics. A listed profile is not execution proof. |
+| Protected marker succeeds, auth check fails | Treat policy success and native login as separate results. Do not claim whole-doctor readiness or start a listener merely to test the policy. |
+
+The ordinary installed manager never invokes sudo, loads policy, changes
+`docker-default`, or restarts the daemon. Explicit disposable CI preparation is
+a separate qualification action, not a persistent-host setup command. A missing
+profile causes Docker to refuse launch. Daemon-info errors,
 empty output, malformed security options, or profile-integrity errors also refuse
 execution. The immutable runtime label includes the AppArmor name and source
 checksum, so reuse and interrupted transition recovery reject a different recipe.
