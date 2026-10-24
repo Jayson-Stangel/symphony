@@ -76,7 +76,7 @@ on:
         description: Candidate schema (1 bridge with same-source runners, 2 independent components)
         type: choice
         options: ['1', '2']
-        default: '1'
+        default: '2'
       retain_diagnostic:
         description: Preserve this explicitly requested diagnostic run across new commits
         type: boolean
