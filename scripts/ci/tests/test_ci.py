@@ -215,7 +215,9 @@ class WorkflowContracts(unittest.TestCase):
         for name,job in [('make-all','make-all'),('package-checks','package-qualification'),('runner-integration','chromium')]:
             text=(ROOT/'.github/workflows'/(name+'.yml')).read_text()
             self.assertIn('  '+job+':',text)
-            self.assertIn('if: ${{ always() }}',text)
+            wrapper_guard = ('if: ${{ !inputs.sign_macos && (always()) }}'
+                             if name == 'runner-integration' else 'if: ${{ always() }}')
+            self.assertIn(wrapper_guard,text)
             self.assertIn('test "$RESULT" = success',text)
             self.assertNotIn('\n    paths:',text)
         text=(ROOT/'.github/workflows/package-checks.yml').read_text()

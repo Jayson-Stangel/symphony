@@ -2,6 +2,16 @@ name: Signed macOS distribution candidate
 # Never called by a PR, tag, or release producer. This uploads Actions candidate
 # artifacts only; production publication remains a separate approval boundary.
 on:
+  workflow_call:
+    inputs:
+      approved_revision:
+        description: Exact reviewed dev SHA authorized for Apple upload and credential use
+        type: string
+        required: true
+      qualified_run:
+        description: Successful Runner integration manual dev run for that exact SHA
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       approved_revision:
@@ -23,7 +33,11 @@ concurrency:
 jobs:
   sign:
     name: Sign approved macOS candidate
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.repository == 'Jayson-Stangel/symphony' &&
+      github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha &&
+      (github.workflow_ref == format('{0}/.github/workflows/runner-integration.yml@refs/heads/dev', github.repository) ||
+       github.workflow_ref == format('{0}/.github/workflows/macos-signing.yml@refs/heads/dev', github.repository))
     runs-on: macos-14
     timeout-minutes: 90
     # REQUIRED before use: operator approval (sole-operator self-review allowed),
