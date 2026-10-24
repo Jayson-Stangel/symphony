@@ -633,6 +633,33 @@ PY
         self.assertNotIn("build", (self.root / "docker.calls").read_text())
         self.assertOK(call([command, "--version"], env=env))
 
+    if sys.platform == 'darwin':
+        def test_unsigned_native_dmg_mount_inventory_install_retry_and_eject(self):
+            """Real native construction/installation; no signing or Apple trust claim."""
+            import plistlib
+            bundle = self.bundle()
+            dmg = self.root / 'unsigned.dmg'
+            self.assertIn('UNSIGNED DMG', self.assertOK(call([
+                sys.executable, ROOT / 'scripts/release/macos_distribution.py',
+                'unsigned-dmg', bundle, dmg])))
+            self.assertOK(call(['hdiutil', 'verify', dmg]))
+            mounted = plistlib.loads(self.assertOK(call([
+                'hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', dmg])).encode())
+            volumes = [entry for entry in mounted['system-entities'] if 'mount-point' in entry]
+            self.assertEqual(len(volumes), 1)
+            mount = Path(volumes[0]['mount-point'])
+            try:
+                self.assertOK(self.helper('verify-files', mount / 'Symphony'))
+                env = self.environment()
+                for attempt in range(2):
+                    self.assertOK(call(['/bin/bash', mount / 'Symphony/install.sh'], env=env))
+                self.assertIn('unsigned candidate', (mount / 'Symphony/distribution-status.txt').read_text())
+            finally:
+                self.assertOK(call(['hdiutil', 'detach', mount]))
+            command = self.root / 'bin/symphony'
+            self.assertIn('"installation":"packaged"', self.assertOK(call([command, '--version'], env=env)))
+            self.assertIn('"ready":true', self.assertOK(call([command, 'doctor', '--json'], env=env)))
+
     def test_conflict_and_corrupt_install_do_not_activate(self):
         bundle = self.bundle(); env = self.environment()
         command = self.root / "bin/symphony"; command.parent.mkdir(); command.write_text("owned")

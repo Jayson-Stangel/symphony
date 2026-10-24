@@ -1,0 +1,74 @@
+name: Signed macOS distribution candidate
+# Never called by a PR, tag, or release producer. This uploads Actions candidate
+# artifacts only; production publication remains a separate approval boundary.
+on:
+  workflow_dispatch:
+    inputs:
+      approved_revision:
+        description: Exact reviewed dev SHA authorized for Apple upload and credential use
+        type: string
+        required: true
+      qualified_run:
+        description: Successful Runner integration manual dev run for that exact SHA
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+concurrency:
+  group: macos-signing
+  cancel-in-progress: false
+jobs:
+  sign:
+    name: Sign approved macOS candidate
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha
+    runs-on: macos-14
+    timeout-minutes: 90
+    # REQUIRED before use: operator approval (sole-operator self-review allowed),
+    # dev-only deployment and no admin bypass. Never store secrets at repo level.
+    environment: macos-signing
+    steps:
+      - name: Check out the exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require successful original qualification and retrieve exact inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFIED_RUN: ${{ inputs.qualified_run }}
+        run: |
+          python3 scripts/release/macos_signing_inputs.py "$QUALIFIED_RUN" "$RUNNER_TEMP/signing-inputs"
+      - name: Sign and submit only this approved candidate to Apple
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+          MACOS_SIGNING_IDENTITY_SHA1: ${{ vars.MACOS_SIGNING_IDENTITY_SHA1 }}
+          MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
+        run: |
+          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/signing-inputs/internal/release.json" "$RUNNER_TEMP/signing-inputs/helper/symphony-host" "$RUNNER_TEMP/signed-candidate" --authorize-apple-upload
+      - name: Preserve Linux bytes and finalize the existing updater metadata contract
+        run: |
+          cp "$RUNNER_TEMP"/signing-inputs/packages/*-linux_x86_64.tar.gz "$RUNNER_TEMP/signed-candidate/"
+          python3 scripts/release/finalize-manager-packages.py "$RUNNER_TEMP/signing-inputs/internal/release.json" "$RUNNER_TEMP/signed-candidate"
+      - name: Retain assessed candidate and original qualification evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-notarized-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/signed-candidate/*
+            ${{ runner.temp }}/signing-inputs/qualification.json
+            ${{ runner.temp }}/signing-inputs/helper/symphony-host.sha256
+          if-no-files-found: error
+      - name: Retain sanitized Apple evidence on refusal
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-signing-refused-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed-candidate/evidence/*.json
+          if-no-files-found: ignore

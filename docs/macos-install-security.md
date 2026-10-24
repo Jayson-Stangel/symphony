@@ -37,13 +37,14 @@ existing command/skill ownership checks and may refuse a foreign path safely.
 
 ## Release acceptance still required
 
-The current compiler produces a linker ad-hoc signed helper. Packaging verifies
-its signature integrity before executing it; this establishes neither Developer
-ID signing nor Apple notarization. The repository currently has no configured
-Developer ID/notarization credential flow. Adding such a flow requires the
-release owner's signing identity and Apple notarization access, followed by
-qualification of the exact final archive. Do not re-sign a distributed helper
-without rebuilding its inventory and archive/checksum through the release flow.
+Ordinary credential-free packages retain the compiler's linker ad-hoc signature.
+Packaging verifies integrity before execution; this establishes neither Developer
+ID signing nor Apple notarization. The opt-in
+[Developer ID and DMG workflow](macos-release-signing.md) requires the release
+owner's protected credentials and approval for the exact candidate's Apple upload.
+Only its successful distribution receipt identifies a notarized artifact. Do not
+re-sign a distributed helper without rebuilding its inventory/archive/checksum.
+Unsigned candidate checks remain available and do not prove Apple trust.
 
 Inspection on October 24, 2026 of the reported candidate from the shared download
 found quarantine on the downloaded archive and extracted helper. On macOS 27.0.1

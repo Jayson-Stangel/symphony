@@ -48,6 +48,18 @@ engine-startup error. Other engines may use their own executable/context; set
 
 ## Download, verify and install
 
+When the selected release actually includes a notarized DMG, download
+`symphony-VERSION-macos.dmg` and its `macos-distribution.json`/`SHA256SUMS` from
+that same trusted release. Compare the DMG's `shasum -a 256` with its final hash,
+open the disk image, then run its existing installer from Terminal:
+`/bin/bash "/Volumes/Symphony/Symphony/install.sh"`. Use the actual mounted volume
+path if macOS gives it another name. Eject the disk after installation. Only a successful
+`notarized-stapled-assessed` receipt for those exact bytes establishes that the
+release tooling passed Apple checks; ordinary candidates are explicitly unsigned.
+No new stable notarized release is implied by this documentation. The installed
+updater continues to use tar.gz archives. See
+[signing setup and acceptance](macos-release-signing.md) for remaining owner steps.
+
 From one completed stable release, download `symphony-VERSION-macos.tar.gz` and
 its accompanying `release.json`. Replace `VERSION` below with that same release's
 version. Verify the archive's printed SHA256 against `bundle.sha256` in the

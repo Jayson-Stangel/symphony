@@ -118,6 +118,15 @@ fi
 exec "$root/scripts/symphony" install "$@"
 INSTALL
 chmod 755 "$bundle/install.sh" "$bundle/scripts/symphony" "$bundle/libexec/symphony-host"
+# Only the opt-in distribution controller supplies an isolated keychain. Sign
+# the staged copy, preserving qualified input bytes, before inventory/archive
+# hashing. The ordinary path remains credential-free and explicitly unsigned.
+if [ -n "${SYMPHONY_MACOS_KEYCHAIN:-}" ]; then
+  [ "$platform" = macos ] || { echo 'macOS signing requested on another platform' >&2; exit 1; }
+  python3 "$root/scripts/release/macos_distribution.py" sign-payload "$bundle"
+else
+  printf '%s\n' 'unsigned candidate; compiler ad-hoc signatures are not Developer ID or notarization' > "$bundle/distribution-status.txt"
+fi
 (cd "$bundle" && find . -type f ! -name files.sha256 -print | LC_ALL=C sort | while IFS= read -r path; do printf '%s  %s\n' "$("$bundle/libexec/symphony-host" sha256 "$path")" "$path"; done > files.sha256)
 "$bundle/libexec/symphony-host" verify-files "$bundle"
 filename=$("$bundle/libexec/symphony-host" get "$manifest" "$field.filename")
