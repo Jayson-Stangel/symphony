@@ -180,7 +180,7 @@ def consumer_selection(path):
         return {'application'}, 'application source, tests, dependency or toolchain input'
     if path in ('scripts/symphony', 'scripts/symphony-package.sh', 'scripts/symphony-package-update.sh'):
         return PACKAGES | {'application', 'fixtures'}, 'installed manager launch/update and native process input'
-    if path == 'scripts/symphony-environment.sh':
+    if path in ('scripts/symphony-environment.sh', 'scripts/symphony-runner-import.sh'):
         return PACKAGES | {'application'}, 'installed environment input'
     if path.startswith('scripts/package/linux/') or path == 'scripts/release/build-linux-host-helper.sh':
         return {'portable', 'package_linux'}, 'Linux helper source, SDK or build input'

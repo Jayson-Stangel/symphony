@@ -7,13 +7,21 @@ existing runner. The check writes an owned workspace canary and requires denial
 outside the effective writable roots and inside the canary workspace's `.git`.
 A version, app-server handshake, direct Git command or zero exit alone cannot pass.
 
-The first adapter supports direct `codex app-server` commands (including the
-generated `--config shell_environment_policy.inherit=all` option), local workers,
-`workspace-write` threads, and `workspaceWrite` turns with full read access.
-Unknown policy fields, other shell wrappers, remote workers, injected native
-runtime options, or native `config.toml`/managed requirements fail closed because
-their equivalence has not been qualified. Credentials are neither copied nor
-mounted into diagnostic containers. Claude retains its native readiness check.
+The adapter supports direct `codex app-server` commands and argv-preserving
+`bash scripts/with-node.sh codex app-server` project wrappers (including quoted
+paths and the generated `--config shell_environment_policy.inherit=all` option).
+Wrappers execute their setup in a disposable project copy, then the actual
+Codex executable is resolved in their effective environment and runs the same
+protected checks. Each wrapped task repeats that check after workspace hooks,
+before app-server launch, so changed setup dependencies cannot reuse startup
+qualification. The supported policy remains local workers, `workspace-write`
+threads, and `workspaceWrite` turns with full read access. Shell operators,
+expansions, unknown arguments/policy fields, escaping symlinks, remote workers,
+injected native runtime options, or native `config.toml`/managed requirements
+fail closed. See [the wrapper contract](../docs/codex-docker-sandbox.md#project-launch-wrappers). Symphony tracker credentials and native login volumes are withheld from
+sandbox-only diagnostics. Trusted project scripts still execute and can read
+project files or download their pinned tools; keep unrelated secrets out of the
+project checkout. Claude retains its native readiness check.
 
 The image's model-free diagnostic is
 `/opt/symphony/elixir/bin/symphony --check-codex-sandbox /path/to/WORKFLOW.md`.

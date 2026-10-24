@@ -11,24 +11,53 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
   @spec check(keyword()) :: :ok | {:error, String.t()}
   def check(opts \\ []) do
     Application.delete_env(:symphony_elixir, @receipt_key)
-    execute = Keyword.get(opts, :execute, &System.cmd/3)
 
     load_settings = if Keyword.get(opts, :credential_free, false), do: &probe_settings/0, else: &Config.settings/0
 
     with {:ok, settings} <- load_settings.(),
          before <- fingerprint(settings),
-         :ok <- if(settings.codex.thread_sandbox == "workspace-write", do: :ok, else: {:error, "sandbox_unsupported_policy"}),
          root <- Config.local_workspace_root(settings),
-         :ok <- File.mkdir_p(root),
-         {:ok, runtime} <- Config.resolve_codex_runtime_settings(settings, root, []),
-         {:ok, python} <- dependency(opts, :python_path, "python3"),
-         {:ok, timeout} <- dependency(opts, :timeout_path, "timeout"),
-         input <- Jason.encode!(%{command: settings.codex.command, workspace: root, policy: runtime.turn_sandbox_policy, remote: settings.worker.ssh_hosts != []}),
-         {data, 0} <- execute.(timeout, ["--kill-after=2", "20", python, "-c", @probe, input], stderr_to_stdout: true),
-         {:ok, %{"ready" => true, "protocol" => 1}} <- Jason.decode(data),
+         :ok <- execute_probe(settings, root, launch_root(), opts),
          {:ok, current} <- load_settings.(),
          true <- before == fingerprint(current) do
       Application.put_env(:symphony_elixir, @receipt_key, before)
+      :ok
+    else
+      {:error, code} when is_binary(code) ->
+        {:error, code}
+
+      _ ->
+        {:error, "sandbox_check_failed"}
+    end
+  rescue
+    _ -> {:error, "sandbox_check_failed"}
+  end
+
+  @doc "Recheck wrapped launches in their post-hook task workspace, off the scheduler."
+  @spec check_workspace(Path.t(), Schema.t(), keyword()) :: :ok | {:error, String.t()}
+  def check_workspace(workspace, settings, opts \\ []) do
+    case OptionParser.split(settings.codex.command) do
+      [shell | _] ->
+        if Path.basename(shell) == "bash", do: execute_probe(settings, workspace, workspace, opts), else: :ok
+
+      _ ->
+        {:error, "sandbox_unsupported_command"}
+    end
+  rescue
+    _ -> {:error, "sandbox_check_failed"}
+  end
+
+  defp execute_probe(settings, workspace, source, opts) do
+    execute = Keyword.get(opts, :execute, &System.cmd/3)
+
+    with :ok <- if(settings.codex.thread_sandbox == "workspace-write", do: :ok, else: {:error, "sandbox_unsupported_policy"}),
+         :ok <- File.mkdir_p(workspace),
+         {:ok, runtime} <- Config.resolve_codex_runtime_settings(settings, workspace, []),
+         {:ok, python} <- dependency(opts, :python_path, "python3"),
+         {:ok, timeout} <- dependency(opts, :timeout_path, "timeout"),
+         input <- Jason.encode!(%{command: settings.codex.command, workspace: workspace, launch_root: source, policy: runtime.turn_sandbox_policy, remote: settings.worker.ssh_hosts != []}),
+         {data, 0} <- execute.(timeout, ["--kill-after=2", "190", python, "-c", @probe, input], stderr_to_stdout: true),
+         {:ok, %{"ready" => true, "protocol" => 1}} <- Jason.decode(data) do
       :ok
     else
       {:error, code} when is_binary(code) ->
@@ -46,8 +75,6 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
       _ ->
         {:error, "sandbox_check_failed"}
     end
-  rescue
-    _ -> {:error, "sandbox_check_failed"}
   end
 
   # Disposable diagnostics receive the workflow but deliberately receive no
@@ -83,13 +110,29 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
   def fingerprint(settings \\ nil) do
     settings = settings || Config.settings!()
     codex = Map.take(settings.codex, [:command, :thread_sandbox, :turn_sandbox_policy])
-    environment = System.get_env() |> Map.take(["PATH", "HOME", "CODEX_HOME", "TMPDIR", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"])
-    executable = settings.codex.command |> String.split() |> List.first() |> System.find_executable()
+    environment = System.get_env() |> Map.take(["PATH", "HOME", "CODEX_HOME", "TMPDIR", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "SYMPHONY_LAUNCH_ROOT"])
+    words = OptionParser.split(settings.codex.command)
+    executable = words |> List.first() |> System.find_executable()
+
+    wrapper =
+      case words do
+        [shell, script | _] ->
+          if Path.basename(shell) == "bash", do: {launch_root(), script, File.read(Path.expand(script, launch_root()))}, else: nil
+
+        _ ->
+          nil
+      end
+
     identity = if executable, do: {executable, file_identity(executable)}, else: nil
     home = System.get_env("CODEX_HOME") || Path.join(System.user_home!(), ".codex")
     configs = Enum.map([Path.join(home, "config.toml"), "/etc/codex/config.toml", "/etc/codex/requirements.toml"], &file_identity/1)
     workflow = SymphonyElixir.Workflow.workflow_file_path() |> Path.expand()
-    :crypto.hash(:sha256, :erlang.term_to_binary({codex, settings.workspace, workflow, settings.worker.ssh_hosts, environment, identity, configs}))
+    :crypto.hash(:sha256, :erlang.term_to_binary({codex, settings.workspace, workflow, settings.worker.ssh_hosts, environment, identity, configs, wrapper}))
+  end
+
+  defp launch_root do
+    System.get_env("SYMPHONY_LAUNCH_ROOT") ||
+      Workflow.workflow_file_path() |> Path.expand() |> Path.dirname()
   end
 
   defp file_identity(path) do

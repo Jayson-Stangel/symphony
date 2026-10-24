@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from runner_import_test import RunnerImportTest
+
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))
 
@@ -31,6 +33,82 @@ def manifest(version="1.2.3", revision=None):
     return dict(schema_version=1, version=version, source_revision=revision, channel="candidate",
         host_architectures=["arm64", "x86_64"], supported_hosts={"macos": ["arm64"], "linux_x86_64": ["x86_64"]}, runners=runners, bundle=bundle,
         bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz", architectures=["x86_64"])))
+
+
+class InstallerLaunchTest(unittest.TestCase):
+    """Execute the shipped installer body with explicit helper process peers.
+
+    These fixtures distinguish shell stages; they do not model Gatekeeper or
+    replace the native archive/inventory/install tests below.
+    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="symphony-installer-launch-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bundle = self.root / "download with spaces"
+        (self.bundle / "libexec").mkdir(parents=True)
+        (self.bundle / "scripts").mkdir()
+        source = (ROOT / "scripts/release/package.sh").read_text()
+        installer = source.split("<<'INSTALL'\n", 1)[1].split("\nINSTALL\n", 1)[0]
+        self.install = self.bundle / "install.sh"
+        self.install.write_text(installer + "\n"); self.install.chmod(0o755)
+        (self.bundle / "host-platform").write_text("macos\n" if sys.platform == "darwin" else "linux_x86_64\n")
+        self.activation = self.root / "activated"
+        manager = self.bundle / "scripts/symphony"
+        manager.write_text('#!/bin/sh\nprintf activated > "$TEST_ACTIVATION"\n')
+        manager.chmod(0o755)
+        self.helper = self.bundle / "libexec/symphony-host"
+        self.env = dict(os.environ, TEST_ACTIVATION=str(self.activation))
+        self.existing = self.root / "existing-command"
+        self.existing.write_text("user-owned-command")
+
+    def peer(self, body):
+        self.helper.write_text("#!/bin/sh\n" + body + "\n")
+        self.helper.chmod(0o755)
+
+    def assertPreserved(self, result, status):
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        self.assertFalse(self.activation.exists())
+        self.assertEqual(self.existing.read_text(), "user-owned-command")
+
+    def test_helper_killed_at_start_refuses_before_inventory_and_can_retry(self):
+        self.peer('kill -KILL $$')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 137)
+        self.assertIn("native helper startup failed (exit status 137)", failed.stderr)
+        self.assertIn("not proof of a checksum mismatch", failed.stderr)
+        if sys.platform == "darwin":
+            self.assertIn("Privacy & Security", failed.stderr)
+            self.assertIn("trusted candidate/release checksum", failed.stderr)
+        # Retry after restoring an executable peer; this represents only the
+        # retry control flow, not actual macOS approval.
+        self.peer('case "$1" in host-platform|verify-files) exit 0 ;; *) exit 99 ;; esac')
+        retried = call([self.install], env=self.env)
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertTrue(self.activation.exists())
+
+    def test_inventory_refusal_is_not_reported_as_security_approval(self):
+        self.peer('case "$1" in host-platform) exit 0 ;; verify-files) echo "bundle checksum mismatch: ./payload" >&2; exit 1 ;; *) exit 99 ;; esac')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 1)
+        self.assertIn("bundle checksum mismatch", failed.stderr)
+        self.assertIn("bundle inventory verification failed", failed.stderr)
+        self.assertNotIn("Open Anyway", failed.stderr)
+
+    def test_verification_interruption_is_not_reported_as_checksum_refusal(self):
+        self.peer('case "$1" in host-platform) exit 0 ;; verify-files) kill -KILL $$ ;; *) exit 99 ;; esac')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 137)
+        self.assertIn("native helper inventory-verification failed (exit status 137)", failed.stderr)
+        self.assertNotIn("bundle inventory verification failed", failed.stderr)
+
+    def test_unlaunchable_helper_refuses_before_activation(self):
+        self.peer('exit 0')
+        self.helper.chmod(0o644)
+        failed = call([self.install], env=self.env)
+        self.assertIn(failed.returncode, (1, 126), failed.stderr)
+        self.assertPreserved(failed, failed.returncode)
+        self.assertIn("native helper startup failed", failed.stderr)
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
@@ -502,6 +580,23 @@ PY
         self.assertFalse(sentinel.exists())
         self.assertFalse(list(output.glob('*.tar.gz')))
         self.assertFalse((self.root/'app').exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "signature integrity guard requires macOS packaging")
+    def test_invalid_helper_signature_refused_before_execution(self):
+        tools = self.root / "signature-tools"; tools.mkdir()
+        for name, body in (("lipo", "printf 'arm64\\n'"), ("codesign", "exit 1")):
+            tool = tools / name
+            tool.write_text("#!/bin/sh\n" + body + "\n"); tool.chmod(0o755)
+        sentinel = self.root / "helper-executed"
+        helper = self.root / "helper-sentinel"
+        helper.write_text('#!/bin/sh\ntouch "$TEST_HELPER_EXECUTED"\nexit 99\n'); helper.chmod(0o755)
+        env = dict(os.environ, PATH=f"{tools}:" + os.environ["PATH"], TEST_HELPER_EXECUTED=str(sentinel))
+        output = self.root / "invalid-signature-output"
+        refused = call([ROOT / "scripts/release/package.sh", self.file, output, helper], env=env)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("macOS helper signature integrity check failed", refused.stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertFalse(list(output.glob("*.tar.gz")))
 
     def test_unsupported_installer_refuses_before_helper_or_activation(self):
         bundle = self.bundle()

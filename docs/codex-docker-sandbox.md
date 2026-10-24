@@ -45,8 +45,40 @@ masks. Codex still creates user/PID namespaces and applies its own restrictions.
 Container mode binds workspace `/workspaces`, server `0.0.0.0`, and noninteractive
 approval. It preserves the configured Codex filesystem/network policy instead of
 forcing full access. The initial readiness adapter supports workspace-write;
-unsupported policies, custom commands, SSH workers and unqualified native config
+unsupported policies, unsupported command forms, SSH workers and unqualified native config
 refuse readiness. Claude's launch and authentication policy are unchanged.
+
+## Project launch wrappers
+
+The protected probe supports `codex app-server`, the existing
+`--config shell_environment_policy.inherit=all` (or `-c`) option, and the same
+commands behind a repository-local Bash pass-through wrapper:
+
+```yaml
+codex:
+  command: bash scripts/with-node.sh codex --config shell_environment_policy.inherit=all app-server
+```
+
+The wrapper must perform its environment setup and execute its supplied argv,
+usually with `exec "$@"`. Quoted arguments and repository paths containing spaces
+are supported. Shell operators, expansions, pipelines, alternate providers and
+unknown options refuse safely. The diagnostic names the launch/configuration
+stage instead of recommending a rebuilt image for an unsupported command.
+
+The project source is mounted read-only at the same path for doctor and listener;
+the probe copies it into disposable writable storage and invokes the actual
+wrapper before resolving Codex from its resulting PATH. Native positive-write,
+outside-workspace denial and protected `.git` denial effects remain required.
+The wrapper is trusted project code, can run setup/downloads, and may read project
+files; diagnostics withhold Symphony credential files and native login mounts,
+not arbitrary sensitive content already in project source. Missing/failing setup
+refuses readiness. The original workflow is preserved.
+
+Wrapped task sessions repeat this same protected check against the actual task
+workspace before app-server launch, so changed sourced scripts and task hooks do
+not inherit a receipt from different project bytes. The cheap scheduler receipt
+still guards admission; a receipt marker alone never replaces protected effects.
+Direct commands retain their existing protected qualification path.
 
 ## AppArmor hosts
 

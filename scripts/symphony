@@ -472,14 +472,15 @@ doctor() {
   fi
 
   if "$json"; then
-    printf '{"mode":"doctor","host":%s,"ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"skills":%s,"git":%s,"mise":%s,"runtime":%s,"container":%s}}\n' \
+    printf '{"mode":"doctor","scope":"installation","provider_project_readiness":"untested","host":%s,"ready":%s,"source_revision":"%s","source_state":"%s","checks":{"source":%s,"launcher":%s,"skills":%s,"git":%s,"mise":%s,"runtime":%s,"container":%s}}\n' \
       "$(bool "$host")" "$(bool "$ready")" "$(source_revision)" "$(source_state)" "$(bool "$source_ok")" "$(bool "$launcher_ok")" \
       "$(bool "$skills_ok")" "$(bool "$git_ok")" "$(bool "$mise_ok")" "$(bool "$runtime_ok")" "$(bool "$container_ok")"
   else
     printf 'Symphony %s (%s)\n' "$(source_revision)" "$(source_state)"
     printf 'host=%s source=%s launcher=%s skills=%s git=%s mise=%s runtime=%s container=%s\n' \
       "$host" "$source_ok" "$launcher_ok" "$skills_ok" "$git_ok" "$mise_ok" "$runtime_ok" "$container_ok"
-    "$ready" && printf 'Ready.\n' || printf 'Not ready. Check the selected container/host prerequisites; run symphony install and symphony setup as needed.\n' >&2
+    printf 'Readiness scope: installation prerequisites. Engine access, exact image, project launch command, sandbox, native authentication and Git readiness require symphony runner doctor. Tracker access and completed tasks remain untested.\n'
+    "$ready" && printf 'Installation ready.\n' || printf 'Not ready. Check the selected container/host prerequisites; run symphony install and symphony setup as needed.\n' >&2
   fi
   "$ready"
 }
@@ -727,6 +728,17 @@ container_runtime() {
   die 'no compatible container runtime found; install Docker, OrbStack, or Podman'
 }
 
+# Check the selected daemon before image operations so socket/context failures
+# do not become misleading registry or authentication errors. Do not print the
+# engine response: contexts may contain private endpoint information.
+container_engine_ready() {
+  local runtime=$1
+  "$runtime" info >/dev/null 2>&1 || {
+    printf '%s\n' 'symphony: container engine unavailable. Start Docker Desktop/OrbStack (macOS) or Docker Engine (Linux), then verify the selected Docker context and socket with docker info. No image pull or login was attempted.' >&2
+    return 1
+  }
+}
+
 runner_id() { printf '%s\n' "$runtime_prefix-$(project_id "$1")"; }
 runner_storage_id() { runner_id "$1"; }
 # A failed migration may leave individually renamed resources. Keep ordinary
@@ -801,8 +813,9 @@ claude_auth() {
   # Credential changes share ownership with runner transitions, including the
   # stopped-source window. Readiness is also called by the lock-owning updater.
   if [ "$action" != check ]; then runner_project_lock "$root"; fi
-  if "$packaged_install"; then package_use_project_image "$root" claude; fi
-  runtime=$(container_runtime); image=$(runner_image claude)
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
+  if "$packaged_install"; then package_use_project_image "$root" claude || return; fi
+  image=$(runner_image claude)
   volume=$(claude_auth_volume "$root")
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
     if ! "$packaged_install"; then [ "$action" = login ] || die 'Claude image is missing; provision it with symphony auth claude login first'; fi
@@ -848,8 +861,9 @@ claude_native_profile() { claude_auth check | host_json profile; }
 
 auth_codex_login() {
   local runtime image
-  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex; fi
-  runtime=$(container_runtime); image=$(runner_image)
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
+  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
+  image=$(runner_image)
   runner_build_image
   "$runtime" volume create "$codex_auth_volume" >/dev/null
   printf 'Open the displayed URL and complete the Codex device login.\n'
@@ -867,13 +881,14 @@ auth_codex_remove() {
 
 auth_codex_check() {
   local runtime image
-  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex; fi
-  runtime=$(container_runtime); image=$(runner_image)
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
+  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
+  image=$(runner_image)
   "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
-  if "$packaged_install"; then runner_build_image codex; fi
+  if "$packaged_install"; then runner_build_image codex || return; fi
   "$runtime" run --rm \
     --volume "$codex_auth_volume:/root/.codex" \
-    --entrypoint codex "$image" login status
+    --entrypoint codex "$image" login status || return
   printf 'Docker-managed Codex session is ready for isolated runners.\n'
 }
 
@@ -1079,6 +1094,8 @@ runner_start() {
     --env-file "$project_env" \
     --env SYMPHONY_CONTAINERIZED=1 \
     --env SYMPHONY_PORT=4010 \
+    --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
+    --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
     --volume "$workflow:/etc/symphony/WORKFLOW.md:ro" \
     --volume "$storage_id-workspaces:/workspaces" \
     --volume "$storage_id-state:/var/lib/symphony" \
@@ -1722,29 +1739,49 @@ runner_stop() {
 }
 
 runner_codex_sandbox_ready() {
-  local root=$1 runtime=$2 image=$3
-  # Same user and Docker security defaults as the Codex listener. Anonymous
-  # storage replaces project data/auth; --rm owns its cleanup. No model request,
-  # native login, host home or project credential is made available to the probe.
-  if ! runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
+  local root=$1 runtime=$2 image=$3 output
+  # The trusted project is read-only; the probe copies it into disposable
+  # storage for wrapper setup. Native login and Symphony credentials are absent.
+  if output=$(runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
+    --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
+    --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
     --volume "$root/WORKFLOW.md:/etc/symphony/WORKFLOW.md:ro" \
     --volume /workspaces --volume /var/lib/symphony \
-    --entrypoint /usr/bin/timeout "$image" --signal=KILL 25 \
-    /opt/symphony/elixir/bin/symphony --check-codex-sandbox /etc/symphony/WORKFLOW.md; then
-    printf '%s\n' 'Codex protected readiness refused. Explicitly select a rebuilt compatible Codex environment before retrying; retained images are never replaced implicitly.' >&2
-    return 1
+    --entrypoint /usr/bin/timeout "$image" --signal=KILL 195 \
+    /opt/symphony/elixir/bin/symphony --check-codex-sandbox /etc/symphony/WORKFLOW.md 2>&1); then
+    printf '%s\n' "$output"
+    return
   fi
+  printf '%s\n' "$output" >&2
+  case "$output" in
+    *sandbox_unsupported_command*) printf '%s\n' 'Project launch configuration unsupported. Use direct codex [arguments] app-server or bash scripts/WRAPPER.sh codex [arguments] app-server; shell pipelines, expansions and unrelated commands are refused. Preserve required project setup in the wrapper.' >&2 ;;
+    *sandbox_launch*|*sandbox_wrapper*|*sandbox_helper_missing*) printf '%s\n' 'Project launch environment failed. Check the configured wrapper exists, its setup prerequisites and its Codex executable. Retry the unchanged workflow after correcting project setup.' >&2 ;;
+    *sandbox_unsupported_policy*) printf '%s\n' 'Project sandbox policy is unsupported; inspect the configured workspace-write policy.' >&2 ;;
+    *sandbox_timeout*) printf '%s\n' 'Protected readiness timed out. Check project wrapper setup/download prerequisites and engine health before retrying.' >&2 ;;
+    *) printf '%s\n' 'Protected sandbox execution failed. Inspect the reported sandbox stage and selected environment security/runtime compatibility; no image was replaced. Configuration failures do not require rebuilding an image.' >&2 ;;
+  esac
+  return 1
 }
 
 runner_doctor() {
-  if "$packaged_install"; then package_use_project_image "$1" "${2:-codex}"; fi
-  local root=$1 agent=${2:-codex} runtime image
+  local root=$1 agent=${2:-codex} sandbox_only=${3:-false} runtime image
   validate_agent "$agent"
-  runtime=$(container_runtime); image=$(runner_image "$agent")
-  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image"; fi
-  if [ "$agent" = claude ]; then claude_auth check
-  else auth_codex_check; fi
-  "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+  if "$sandbox_only" && [ "$agent" != codex ]; then die '--sandbox-only requires --agent codex'; fi
+  runtime=$(container_runtime)
+  container_engine_ready "$runtime" || return
+  printf 'Container engine: ready.\n'
+  if "$packaged_install"; then package_use_project_image "$root" "$agent"; fi
+  image=$(runner_image "$agent")
+  if "$packaged_install" || ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image "$agent" || return; fi
+  printf 'Runner image: available.\n'
+  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image" || return; fi
+  if "$sandbox_only"; then
+    printf 'Protected project launch checks passed. Native authentication, Git preflight, tracker access and model tasks remain untested. No listener or model request was started.\n'
+    return
+  fi
+  if [ "$agent" = claude ]; then claude_auth check || { printf 'Native authentication/policy failed; run symphony auth claude login and retry.\n' >&2; return 1; }
+  else auth_codex_check || { printf 'Native authentication/policy failed; run symphony auth codex login and retry.\n' >&2; return 1; }; fi
+  if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
     --tmpfs /tmp:rw,exec,nosuid,nodev,size=32m --entrypoint sh "$image" -ceu '
     set -eu
     workspace=$(mktemp -d /tmp/symphony-git-preflight.XXXXXX)
@@ -1756,12 +1793,30 @@ runner_doctor() {
     printf ready > "$workspace/READY"
     git -C "$workspace" add READY
     git -C "$workspace" commit -qm preflight
-  '
-  printf 'Native authentication/policy and isolated Git preflight passed. No listener or model request was started.\n'
+  '; then
+    printf 'Isolated Git preflight failed. Check Git support in the selected runner environment.\n' >&2
+    return 1
+  fi
+  printf 'Native authentication/policy and isolated Git preflight passed. No listener or model request was started. Tracker access and completed tasks remain untested.\n'
 }
 
 runner() {
-  local command=${1:-} root agent=codex
+  local command=${1:-} root agent=codex sandbox_only=false archive=
+  if [ "$command" = import ]; then
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --agent|--archive) [ "$#" -ge 2 ] || die "$1 requires a value"; if [ "$1" = --agent ]; then agent=$2; else archive=$2; fi; shift 2 ;;
+        *) die 'Usage: symphony runner import --agent codex|claude --archive PATH' ;;
+      esac
+    done
+    "$packaged_install" || die 'runner import requires an installed candidate package'
+    validate_agent "$agent"
+    . "$symphony_home/scripts/symphony-runner-import.sh"
+    if [ -n "$archive" ]; then package_runner_import "$agent" "$archive"
+    else package_runner_import_info "$agent"; fi
+    return
+  fi
   root=$(repo_root)
   case "$command" in
     start) runner_start "$root" "${2:-4010}" ;;
@@ -1769,8 +1824,14 @@ runner() {
     status) runner_report "$root" ;;
     doctor)
       shift
-      if [ "$#" -gt 0 ]; then [ "$#" = 2 ] && [ "$1" = --agent ] || die 'Usage: symphony runner doctor [--agent codex|claude]'; agent=$2; fi
-      validate_agent "$agent"; runner_doctor "$root" "$agent" ;;
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --agent) [ "$#" -ge 2 ] || die '--agent requires a provider'; agent=$2; shift 2 ;;
+          --sandbox-only) sandbox_only=true; shift ;;
+          *) die 'Usage: symphony runner doctor [--agent codex|claude] [--sandbox-only]' ;;
+        esac
+      done
+      validate_agent "$agent"; runner_doctor "$root" "$agent" "$sandbox_only" ;;
     logs)
       runtime=$(container_runtime)
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'

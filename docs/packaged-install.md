@@ -65,6 +65,12 @@ symphony --version
 symphony doctor
 ```
 
+If the verified macOS helper cannot start, the installer stops before activation
+and reports that stage separately from inventory failure. Follow the
+[macOS security approval and retry guide](macos-install-security.md); a killed
+process alone does not prove Gatekeeper caused it. Keep the archive and inventory
+checks intact. Current ad-hoc signing does not establish notarized-download acceptance.
+
 Installation needs no sudo and does not run `symphony setup` or build an image.
 New macOS archives carry only an ARM64 Apple Silicon helper and select the Linux
 ARM64 runner. Intel macOS host installation is unsupported. Missing artifacts or
@@ -133,6 +139,40 @@ Use `symphony environment select --agent codex IMAGE` from the project checkout
 to pin a compatible team environment before authentication and startup. See
 [team-owned environments](team-environments.md) for requirements, templates,
 explicit changes and update/recovery behavior.
+
+## Readiness stages and smoke checks
+
+`symphony doctor` reports **installation** readiness: installed files, command and
+skills, and availability of the runtime CLI. Its JSON `scope` is `installation`;
+`provider_project_readiness` remains `untested`. This does not prove daemon access,
+image availability, the project command, authentication, tracker access or a completed task.
+
+Before native login, start the selected engine and provision the exact runner
+image. Stable releases pull published immutable digests. Candidates with a
+loopback reference require the [candidate companion import flow](candidate-runner-provisioning.md)
+before login, and again after a cache prune. Missing Docker sockets/contexts stop
+before image pulls; image availability and native login failures are separate stages.
+
+From the existing project checkout with its explicit local `origin` remote and
+unchanged trusted `WORKFLOW.md`, run:
+
+```sh
+symphony runner doctor --agent codex --sandbox-only
+```
+
+This checks the engine, selected image and real protected project launch command.
+It starts no listener, makes no model request, and mounts no native login or
+Symphony tracker credentials. It does execute the trusted project's setup wrapper
+in a disposable copy; setup can download dependencies, and project source may
+contain sensitive files. Review that source first. A direct Codex command needs
+no custom wrapper. Supported wrappers preserve their required setup; see the
+[launch contract](codex-docker-sandbox.md#project-launch-wrappers).
+
+After native login, `symphony runner doctor --agent codex` adds native authentication
+and isolated local Git preflight. The Claude equivalent requires its native login.
+These checks do not establish remote Git authorization, Linear access, dependency
+installation for a real task, listener operation or authenticated inference. Those
+remain separate operator-run acceptance stages.
 
 ## Connect and run a project
 
@@ -244,6 +284,12 @@ export SYMPHONY_SKILLS_DIR="$HOME/.codex/skills-candidate"
 ./install.sh
 export PATH="$SYMPHONY_BIN_DIR:$PATH"
 ```
+
+Before any candidate login, run `symphony runner import --agent codex` (or
+`claude`) to inspect its exact companion identity. Follow the
+[candidate runner guide](candidate-runner-provisioning.md) to download and import
+that original payload when the candidate selects a loopback registry. Do not use
+a config-ID-only `docker load` or an unrecorded restoration script as a substitute.
 
 Candidate validation does not authorize production publication or a stable rollout.
 Use the [development guide](development.md) for source development. Automatic
