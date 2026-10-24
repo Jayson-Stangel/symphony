@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -24,7 +25,8 @@ tool=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 with open(os.environ['PEER_LOG'],'a') as log:log.write(json.dumps([tool,*args])+'\n')
 operation=tool+' '+(' '.join(args[:2]))
-if os.environ.get('PEER_FAIL') and os.environ['PEER_FAIL'] in operation:
+if (os.environ.get('PEER_FAIL') and os.environ['PEER_FAIL'] in operation) or any(
+        failure in operation for failure in json.loads(os.environ.get('PEER_FAILURES','[]'))):
     print('FAKE-SECRET-MUST-NOT-LEAK',file=sys.stderr);sys.exit(44)
 if tool=='security':
     if args[0]=='list-keychains':print('"/original/login.keychain-db"')
@@ -97,7 +99,9 @@ class DistributionTest(unittest.TestCase):
     def keychain(self):
         private = self.root / 'private'
         private.mkdir(exist_ok=True)
-        return dist.signing_keychain(self.env, private)
+        evidence = self.root / 'evidence'
+        evidence.mkdir(exist_ok=True)
+        return dist.signing_keychain(self.env, private, evidence)
 
     def test_wrong_team_import_failure_and_interruption_cleanup(self):
         for failure in ('wrong-team', 'security import', 'interrupt'):
@@ -112,6 +116,129 @@ class DistributionTest(unittest.TestCase):
                 self.assertFalse((self.root / 'private/signing.keychain-db').exists())
         self.assertEqual(len([cmd for cmd in self.commands() if cmd[:2] == ['security', 'delete-keychain']]), 3)
         self.assertFalse(any(cmd[:2] == ['security', 'default-keychain'] for cmd in self.commands()))
+
+    def diagnostics(self):
+        return json.loads((self.root / 'evidence/keychain-diagnostics.json').read_text())['operations']
+
+    def assert_private_diagnostics(self, error=''):
+        text = (self.root / 'evidence/keychain-diagnostics.json').read_text() + str(error)
+        for secret in ('FAKE-SECRET-MUST-NOT-LEAK', 'FAKE password', 'FAKE app password',
+                       'fixture@example.invalid', self.env['MACOS_SIGNING_P12_BASE64'],
+                       str(self.root), IDENTITY, TEAM):
+            self.assertNotIn(secret, text)
+        for operation in self.diagnostics():
+            self.assertLessEqual(set(operation), {'stage', 'status', 'outcome', 'exit_status'})
+
+    def test_each_security_setup_failure_has_exact_stage_and_status(self):
+        cases = [('list-keychains', 'snapshot-search-list'), ('create-keychain', 'create'),
+                 ('set-keychain-settings', 'settings'), ('unlock-keychain', 'unlock'),
+                 ('import', 'import-p12'), ('set-key-partition-list', 'partition-list'),
+                 ('find-identity', 'find-identity')]
+        for command, stage in cases:
+            with self.subTest(stage=stage), patch.dict(os.environ, PEER_FAIL='security ' + command):
+                with self.assertRaisesRegex(ValueError, 'keychain.' + stage) as error:
+                    with self.keychain():
+                        self.fail('failed setup must not yield a signing keychain')
+                record = next(x for x in self.diagnostics() if x['stage'] == 'keychain.' + stage)
+                self.assertEqual(record['exit_status'], 44)
+                self.assertEqual(record['status'], 'failed')
+                self.assert_private_diagnostics(error.exception)
+                self.assertFalse((self.root / 'private/identity.p12').exists())
+                self.assertFalse((self.root / 'private/signing.keychain-db').exists())
+        self.assertTrue(all(cmd[0] == 'security' for cmd in self.commands()))
+
+    def test_primary_error_survives_cleanup_failure_and_all_cleanup_is_attempted(self):
+        with patch.dict(os.environ, PEER_FAILURES=json.dumps(['security import', 'security delete-keychain'])):
+            with self.assertRaisesRegex(ValueError, 'keychain.import-p12') as error:
+                with self.keychain():
+                    self.fail('must not sign')
+        records = {x['stage']: x for x in self.diagnostics()}
+        self.assertEqual(records['cleanup.delete-keychain']['exit_status'], 44)
+        self.assertEqual(records['cleanup.verify-keychain-absent']['status'], 'failed')
+        self.assertEqual(records['cleanup.verify-search-list-restored']['status'], 'success')
+        self.assertEqual(records['cleanup.verify-p12-absent']['status'], 'success')
+        self.assert_private_diagnostics(error.exception)
+
+    def test_cleanup_failure_refuses_success_and_preserves_interruption(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), patch.dict(os.environ, PEER_FAIL='security delete-keychain'):
+                expected = KeyboardInterrupt if interrupted else ValueError
+                with self.assertRaises(expected):
+                    with self.keychain():
+                        if interrupted:
+                            raise KeyboardInterrupt()
+                self.assertEqual(next(x for x in self.diagnostics()
+                                      if x['stage'] == 'cleanup.verify-search-list-restored')['status'], 'success')
+                self.assert_private_diagnostics()
+
+    def test_evidence_io_failure_does_not_block_cleanup_or_mask_primary_error(self):
+        with patch.object(dist, 'write_json', side_effect=OSError('FAKE-SECRET-MUST-NOT-LEAK')):
+            with patch.dict(os.environ, PEER_FAIL='security import'):
+                with self.assertRaisesRegex(ValueError, 'keychain.import-p12') as error:
+                    with self.keychain():
+                        self.fail('must not sign')
+                self.assertNotIn('FAKE-SECRET-MUST-NOT-LEAK', str(error.exception))
+            with self.assertRaisesRegex(ValueError, 'keychain cleanup failed'):
+                with self.keychain():
+                    pass
+        self.assertFalse((self.root / 'private/identity.p12').exists())
+        self.assertFalse((self.root / 'private/signing.keychain-db').exists())
+        self.assertEqual(len([c for c in self.commands() if c[:2] == ['security', 'delete-keychain']]), 2)
+
+    def test_cleanup_inspect_failure_still_restores_and_verifies_saved_search_list(self):
+        real_run = dist.run
+
+        def invoke(*args, **kwargs):
+            if kwargs.get('stage') == 'cleanup.inspect-search-list':
+                raise dist.CommandFailure('cleanup.inspect-search-list', 'failed', 45)
+            return real_run(*args, **kwargs)
+
+        with patch.object(dist, 'run', side_effect=invoke):
+            with self.assertRaisesRegex(ValueError, 'cleanup.inspect-search-list'):
+                with self.keychain():
+                    pass
+        records = {x['stage']: x for x in self.diagnostics()}
+        self.assertEqual(records['cleanup.restore-search-list']['status'], 'success')
+        self.assertEqual(records['cleanup.verify-search-list-restored']['status'], 'success')
+        self.assertTrue(any('-s' in cmd for cmd in self.commands()))
+
+    def test_keychain_stat_failure_does_not_mask_import_or_skip_search_list_cleanup(self):
+        real_exists = Path.exists
+
+        def exists(path):
+            if path.name == 'signing.keychain-db':
+                raise OSError('FAKE-SECRET-MUST-NOT-LEAK')
+            return real_exists(path)
+
+        with patch.object(Path, 'exists', exists), patch.dict(os.environ, PEER_FAIL='security import'):
+            with self.assertRaisesRegex(ValueError, 'keychain.import-p12') as error:
+                with self.keychain():
+                    self.fail('must not sign')
+        records = {x['stage']: x for x in self.diagnostics()}
+        self.assertEqual(records['cleanup.delete-keychain']['status'], 'failed')
+        self.assertEqual(records['cleanup.verify-search-list-restored']['status'], 'success')
+        self.assert_private_diagnostics(error.exception)
+
+    def test_identity_mismatch_has_no_private_identity_output(self):
+        with patch.dict(os.environ, PEER_TEAM='OTHERTEAM0'), self.assertRaisesRegex(ValueError, 'identity/team') as error:
+            with self.keychain():
+                self.fail('must not sign')
+        self.assertEqual(next(x for x in self.diagnostics()
+                              if x['stage'] == 'keychain.match-pinned-identity')['status'], 'failed')
+        self.assert_private_diagnostics(error.exception)
+
+    def test_timeout_and_spawn_failure_diagnostics_suppress_raw_details(self):
+        evidence = self.root / 'evidence'
+        evidence.mkdir()
+        for exception, outcome in ((subprocess.TimeoutExpired(['SECRET-ARGV'], 1, output='FAKE-SECRET-MUST-NOT-LEAK'), 'timed out'),
+                                   (OSError('FAKE-SECRET-MUST-NOT-LEAK'), 'could not start')):
+            journal = dist.KeychainDiagnostics(evidence)
+            with patch.object(dist.subprocess, 'run', side_effect=exception):
+                with self.assertRaisesRegex(ValueError, 'keychain.import-p12') as error:
+                    journal.command('keychain.import-p12', 'security', 'SECRET-ARGV')
+            self.assertEqual(self.diagnostics()[0]['outcome'], outcome)
+            self.assertNotIn('exit_status', self.diagnostics()[0])
+            self.assert_private_diagnostics(error.exception)
 
     def test_native_signature_options_identity_and_staged_copy_binding(self):
         bundle = self.root / 'bundle'
@@ -234,7 +361,7 @@ class DistributionTest(unittest.TestCase):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('codesign -vvvv', 'spctl --assess', ''):
+        for failure in ('codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
                     patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure):
@@ -243,7 +370,9 @@ class DistributionTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         dist.build(manifest, helper, output, self.env)
                     self.assertFalse((output / 'macos-distribution.json').exists())
-                    self.assertFalse(list(output.glob('*.dmg')))
+                    if not failure.startswith('security'):
+                        self.assertFalse(list(output.glob('*.dmg')))
+                    self.assertTrue((output / 'evidence/keychain-diagnostics.json').is_file())
                 else:
                     dist.build(manifest, helper, output, self.env)
                     receipt = json.loads((output / 'macos-distribution.json').read_text())
