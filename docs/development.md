@@ -561,3 +561,22 @@ renames/deletions, stale bases and missing history. It also executes the require
 wrapper guard from an empty workspace and checks failure/cancellation propagation.
 These are isolated event-replay results, not claims that GitHub-hosted jobs ran.
 Pure documentation changes run lightweight classification and PR metadata validation; CI regression suites, workflow lint and application setup/build/tests are intentionally omitted.
+
+### Current manager release policy
+
+The normal `burrito-release.yml` caller reads `scripts/release/release-schema`
+through portable preflight and forwards it to component planning. Policy 2 builds
+changed component inputs and preserves verified original identities for unchanged
+inputs. `scripts/release/manager-version` selects the fresh manager release
+(currently 0.0.5); `elixir/mix.exs` remains the independent engine version.
+Tag mismatch and completed release targets refuse before expensive fanout;
+publication also checks again and retains the production environment gate.
+Explicit schema1 diagnostics retain their pinned finite-transition restrictions.
+
+Full nonpublishing proof uses a reviewed feature/integration ref, with
+`retain_diagnostic=true`, `engine_only=false`, and `controller_only=false`.
+Record the exact source, both manager archive identities, all four original
+component records and immutable image digests, manifests/checksums, native helper
+qualifications and cleanup. The default full candidate omits prior-package
+update/rollback and legacy migration when no prior artifact is selected; report
+those omissions rather than inferring their success from archive assembly.
