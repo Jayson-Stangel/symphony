@@ -89,6 +89,14 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     end
 
     assert :ok = SandboxReadiness.check_workspace(workspace, settings, execute: fn _, _, _ -> flunk("direct launch must retain its existing startup receipt") end)
+
+    empty = %{settings | codex: %{settings.codex | command: ""}}
+    assert {:error, "sandbox_unsupported_command"} = SandboxReadiness.check_workspace(workspace, empty)
+
+    assert {:error, "sandbox_check_failed"} =
+             SandboxReadiness.check_workspace(workspace, wrapped, execute: fn _, _, _ -> raise "worker probe unavailable" end)
+
+    assert SandboxReadiness.qualified?()
   end
 
   test "failed or indeterminate requalification always removes prior success" do
