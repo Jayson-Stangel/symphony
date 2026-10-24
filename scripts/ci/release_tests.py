@@ -32,6 +32,8 @@ PORTABLE = {
     'test_manager_envelope.py',
     'test_manager_protocol.py',
     'test_manager_selected_environment.py',
+    'test_macos_distribution.py',
+    'test_macos_signing_inputs.py',
     'test_native_recovery.py',
     'test_package_lifecycle.py',
     'test_previous_package_subject.py',
