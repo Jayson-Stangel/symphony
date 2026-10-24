@@ -55,7 +55,15 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
          {:ok, runtime} <- Config.resolve_codex_runtime_settings(settings, workspace, []),
          {:ok, python} <- dependency(opts, :python_path, "python3"),
          {:ok, timeout} <- dependency(opts, :timeout_path, "timeout"),
-         input <- Jason.encode!(%{command: settings.codex.command, workspace: workspace, launch_root: source, policy: runtime.turn_sandbox_policy, remote: settings.worker.ssh_hosts != []}),
+         input <-
+           Jason.encode!(%{
+             command: settings.codex.command,
+             workspace: workspace,
+             launch_root: source,
+             policy: runtime.turn_sandbox_policy,
+             containerized: System.get_env("SYMPHONY_CONTAINERIZED") == "1",
+             remote: settings.worker.ssh_hosts != []
+           }),
          {data, 0} <- execute.(timeout, ["--kill-after=2", "190", python, "-c", @probe, input], stderr_to_stdout: true),
          {:ok, %{"ready" => true, "protocol" => 1}} <- Jason.decode(data) do
       :ok
@@ -110,7 +118,10 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
   def fingerprint(settings \\ nil) do
     settings = settings || Config.settings!()
     codex = Map.take(settings.codex, [:command, :thread_sandbox, :turn_sandbox_policy])
-    environment = System.get_env() |> Map.take(["PATH", "HOME", "CODEX_HOME", "TMPDIR", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "SYMPHONY_LAUNCH_ROOT"])
+
+    environment =
+      System.get_env() |> Map.take(["PATH", "HOME", "CODEX_HOME", "TMPDIR", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "SYMPHONY_LAUNCH_ROOT", "SYMPHONY_CONTAINERIZED"])
+
     words = OptionParser.split(settings.codex.command)
     executable = words |> List.first() |> System.find_executable()
 

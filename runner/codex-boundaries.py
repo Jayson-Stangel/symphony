@@ -36,6 +36,7 @@ def protected_checks(pid, port):
     for network in (False, True):
         args = ['codex', 'sandbox', '-c', 'sandbox_mode="workspace-write"',
                 '-c', 'sandbox_workspace_write.network_access=' + str(network).lower(),
+                '-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(['/workspaces/boundaries', '/workspaces/boundaries/.git']),
                 '--', 'python3', '-c', PAYLOAD, str(pid), str(port), str(int(network))]
         result = subprocess.run(args, cwd='/workspaces/boundaries', capture_output=True,
                                 text=True, timeout=15)

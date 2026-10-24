@@ -3,6 +3,64 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
 
   alias SymphonyElixir.Codex.SandboxReadiness
 
+  test "managed container policy grants only owned Git metadata and keeps native policy unchanged" do
+    previous = System.get_env("SYMPHONY_CONTAINERIZED")
+    on_exit(fn -> restore_env("SYMPHONY_CONTAINERIZED", previous) end)
+    settings = Config.settings!()
+    workspace = Path.join(System.tmp_dir!(), "jay721-policy-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    {:ok, workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+    settings = %{settings | workspace: %{settings.workspace | root: workspace}}
+    System.put_env("SYMPHONY_CONTAINERIZED", "1")
+    assert {:ok, runtime} = Config.resolve_codex_runtime_settings(settings, workspace, [])
+    assert runtime.thread_sandbox == "workspace-write"
+    assert runtime.turn_sandbox_policy["writableRoots"] == [workspace, workspace <> "/.git"]
+    assert runtime.turn_sandbox_policy["networkAccess"] == false
+
+    explicit = %{
+      settings
+      | codex: %{
+          settings.codex
+          | turn_sandbox_policy: %{
+              "type" => "workspaceWrite",
+              "networkAccess" => true,
+              "writableRoots" => [workspace]
+            }
+        }
+    }
+
+    assert {:ok, custom} = Config.resolve_codex_runtime_settings(explicit, workspace, [])
+    assert custom.turn_sandbox_policy["networkAccess"] == true
+    assert custom.turn_sandbox_policy["writableRoots"] == [workspace, workspace <> "/.git"]
+
+    assert {:error, {:unsafe_turn_sandbox_policy, :unowned_git_metadata}} =
+             Config.resolve_codex_runtime_settings(settings, "/outside-owned-workspaces", [])
+
+    git = Path.join(workspace, ".git")
+    File.mkdir_p!(git)
+    assert {:ok, _runtime} = Config.resolve_codex_runtime_settings(settings, workspace, [])
+    File.rmdir!(git)
+    File.write!(git, "gitdir: /outside-owned-workspace")
+
+    assert {:error, {:unsafe_turn_sandbox_policy, :unowned_git_metadata}} =
+             Config.resolve_codex_runtime_settings(settings, workspace, [])
+
+    File.rm!(git)
+    File.ln_s!("/outside-owned-workspace", git)
+
+    assert {:error, {:unsafe_turn_sandbox_policy, :unowned_git_metadata}} =
+             Config.resolve_codex_runtime_settings(settings, workspace, [])
+
+    File.rm!(git)
+
+    assert {:ok, remote} = Config.resolve_codex_runtime_settings(settings, workspace, remote: true)
+    assert remote.turn_sandbox_policy["writableRoots"] == [workspace]
+    System.delete_env("SYMPHONY_CONTAINERIZED")
+    assert {:ok, native} = Config.resolve_codex_runtime_settings(settings, workspace, [])
+    assert native.turn_sandbox_policy["writableRoots"] == [workspace]
+  end
+
   test "disposable diagnostics qualify real sandbox settings without tracker credentials" do
     previous = System.get_env("LINEAR_API_KEY")
     System.delete_env("LINEAR_API_KEY")
