@@ -25,7 +25,7 @@ import uuid
 # Only exact native account entrypoints are replaced. This fixture grants no
 # credentials and does not change the real listener's own readiness result.
 CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
-  local action="${@: -1}" storage image actual expected argument auth_like=false
+  local action="${@: -1}" storage image actual expected expected_build argument index auth_like=false
   for argument in "$@"; do
     case "$argument" in *auth.mjs*) auth_like=true ;; esac
   done
@@ -33,8 +33,11 @@ CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
   local -a args=("$@") command=(run --rm)
   [[ "$action" = login || "$action" = check ]] || return 2
   [[ "${@: -2:1}" = /opt/symphony/claude/auth.mjs ]] || return 2
-  if [[ "$action" = login ]]; then command+=(--interactive --tty); storage="${args[5]:-}"
-  else storage="${args[3]:-}"; fi
+  if [[ "$action" = login ]]; then command+=(--interactive --tty); fi
+  storage=''
+  for ((index=0; index<${#args[@]}-1; index++)); do
+    if [[ "${args[index]}" = --name ]]; then storage="${args[index+1]}"; fi
+  done
   [[ -n "${FIXTURE_CLAUDE_STORAGE:-}" && "$storage" = "$FIXTURE_CLAUDE_STORAGE-claude-auth" ]] || return 2
   storage="${storage%-claude-auth}"
   image="${@: -3:1}"
@@ -46,7 +49,17 @@ CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
     "$image" /opt/symphony/claude/auth.mjs "$action")
   printf -v actual '%q ' "$@"
   printf -v expected '%q ' "${command[@]}"
-  [[ "$actual" = "$expected" ]] || return 2
+  # Preserve the exact original-manager auth invocation during rollback as well
+  # as the exact current build-capable profile. Never accept a loose argv match.
+  local -a build=(run --read-only --cap-drop ALL --security-opt no-new-privileges
+    --pids-limit 512 --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m
+    --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g --rm)
+  if [[ "$action" = login ]]; then build+=(--interactive --tty); fi
+  build+=(--name "$storage-claude-auth" --label "com.symphony.storage=$storage"
+    --volume "$storage-claude-auth:/home/claude" --entrypoint /usr/local/bin/node
+    "$image" /opt/symphony/claude/auth.mjs "$action")
+  printf -v expected_build '%q ' "${build[@]}"
+  [[ "$actual" = "$expected" || "$actual" = "$expected_build" ]] || return 2
   if [[ "$action" = check ]]; then
     printf '%s\n' '{"ready":true,"profile":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","model_requests":0,"fixture":"credential-free-native-status"}'
   else

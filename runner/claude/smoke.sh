@@ -3,6 +3,7 @@
 set -euo pipefail
 image=${1:?Usage: runner/claude/smoke.sh IMAGE}
 root=$(cd "$(dirname "$0")/../.." && pwd)
+SYMPHONY_HOME="$root" source "$root/scripts/symphony" --help >/dev/null
 fixture=$(mktemp -d)
 name="symphony-claude-smoke-$(date +%s)-$$"
 cleanup() {
@@ -28,9 +29,7 @@ WORKFLOW
 chmod 644 "$fixture/WORKFLOW.md"
 # The inert value satisfies the entrypoint's Git configuration contract; network
 # isolation and the empty tracker prevent any repository or inference requests.
-docker run -d --name "$name" --network none \
-  --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 \
-  --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+runner_claude_run docker -d --name "$name" --network none \
   --tmpfs /home/claude:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   --tmpfs /var/lib/symphony:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   --tmpfs /workspaces:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \

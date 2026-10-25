@@ -286,6 +286,25 @@ class CredentialFreeClaudeAuth(unittest.TestCase):
                 '--entrypoint', '/usr/local/bin/node', 'localhost:5000/symphony-claude@sha256:' + 'b'*64,
                 '/opt/symphony/claude/auth.mjs', action]
 
+    def build_argv(self, action='check'):
+        original = self.argv(action)
+        suffix = original.index('--volume')
+        return ['run', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                '--pids-limit', '512', '--cpus', '4', '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
+                '--tmpfs', '/var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g',
+                '--rm', *(['--interactive', '--tty'] if action == 'login' else []),
+                '--name', original[original.index('--name') + 1],
+                '--label', original[original.index('--label') + 1], *original[suffix:]]
+
+    def test_current_build_profile_and_original_profile_are_exact_and_credential_free(self):
+        for action in ('login', 'check'):
+            current = self.build_argv(action)
+            self.assertEqual(self.execute(current).returncode, 0)
+            for name, value in (('--cpus', '20'), ('--pids-limit', '4096'),
+                                ('--tmpfs', '/tmp:rw,exec,size=4g')):
+                foreign = current.copy(); foreign[foreign.index(name) + 1] = value
+                self.assertEqual(self.execute(foreign).returncode, 2)
+
     def environment(self):
         return dict(os.environ, SYMPHONY_RUNNER_NAMESPACE='package-fixture',
                     FIXTURE_CLAUDE_STORAGE='symphony-package-fixture-service-0123456789ab',
