@@ -21,17 +21,30 @@ These rules apply to all work in this repository. Also follow directory-specific
   is testing the product, not using it to implement its own repair.
 - Use `Backlog` for planned work and explicit holds. Starting implementation
   requires operator authorization; a Linear state or label alone does not grant
-  it. Keep issue status aligned with actual progress and use the team's existing
-  active or review states when appropriate. Record direct-agent ownership and
-  handoff evidence on the issue so Backlog does not become a store of completed
-  work.
+  it. Use `Todo` for authorized work queued to start and `In Progress` for active
+  implementation and testing. Record direct-agent ownership and handoff evidence
+  on the issue so Backlog does not become a store of completed work.
+- Use `Agent Review` when subagents hand work to the main chat for acceptance
+  review. Use `Rework` when that review returns actionable findings for fixes;
+  return to `Agent Review` with refreshed evidence after addressing them.
+- Use `Human Review` only when an operator decision or approval is actually
+  needed, including a requested unmerged handoff. Identify the exact decision
+  needed. If the operator already authorized the current scope's merge into
+  `dev`, the main chat proceeds from successful `Agent Review` to `Merging`
+  without adding a `Human Review` approval step. Material scope changes or
+  instructions to stop unmerged still require operator assessment.
+- Use `Merging` for accepted work proceeding through an authorized merge into
+  `dev`. Use `Blocked` for an external impediment, with the precise blocker and
+  unblock action recorded. Pending automated checks or agent review are not
+  reasons to request human approval. Do not use the ambiguous `In Review` status
+  for this project; distinguish `Agent Review` from `Human Review` explicitly.
 - Use `Done` as the sole successful completion status for this project. Do not
   use `Integrated` or create a separate completed state for a merge into `dev`.
   Preserve cancellation and duplicate dispositions for work that was not completed.
 - Before marking an implementation issue `Done`, read its current contract,
   verify all acceptance criteria with the required evidence, confirm review and
   validation are satisfied, and observe its PR merged into `dev`. An open PR
-  handed off for operator review remains in a review state. If the operator
+  handed off for operator review remains in `Human Review`. If the operator
   explicitly defines a review-only, research or other non-merge issue, verify
   that issue's authorized endpoint instead; completion never grants merge authority.
 - A merged PR alone does not complete an issue with outstanding required native,
