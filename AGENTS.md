@@ -14,6 +14,7 @@ These rules apply to all work in this repository. Also follow directory-specific
   `elixir/WORKFLOW.md` is a shipped runner workflow. Reuse its useful delivery
   practices (acceptance checklists, validation, feedback sweeps and rework), but
   follow this file for this project's coordination, status and authority rules.
+  This reference does not incorporate that workflow's instructions wholesale.
   Do not import runner-specific tracker routing, labels, worker shutdown rules or
   Symphony-worker-only skills into direct development.
   Explicitly authorized Symphony qualification against a separate target project
@@ -29,9 +30,10 @@ These rules apply to all work in this repository. Also follow directory-specific
   Preserve cancellation and duplicate dispositions for work that was not completed.
 - Before marking an implementation issue `Done`, read its current contract,
   verify all acceptance criteria with the required evidence, confirm review and
-  validation are satisfied, and observe its PR merged into `dev`. If the contract
-  explicitly ends at an open reviewed PR or another non-merge deliverable, verify
-  that authorized endpoint instead; completion never grants merge authority.
+  validation are satisfied, and observe its PR merged into `dev`. An open PR
+  handed off for operator review remains in a review state. If the operator
+  explicitly defines a review-only, research or other non-merge issue, verify
+  that issue's authorized endpoint instead; completion never grants merge authority.
 - A merged PR alone does not complete an issue with outstanding required native,
   installed, authenticated or end-to-end acceptance. Keep those gaps explicit and
   leave the issue unfinished until satisfied or the operator explicitly changes
@@ -69,10 +71,13 @@ These rules apply to all work in this repository. Also follow directory-specific
 - Once acceptance, review and required checks pass, the main chat may merge the
   focused PR into `dev` only within the operator's existing merge authorization.
   If authority is missing or the request requires an unmerged handoff, leave the
-  PR open and present the reviewed result. Neither a subagent verdict nor a
-  `Merging` status supplies operator approval. After an authorized merge, verify
-  the resulting revision and close the Linear issue as `Done` when its contract
-  is complete. Production promotion and stable rollout remain separately gated.
+  PR open and present the reviewed result. A subagent verdict or an unexplained
+  `Merging` status does not supply operator approval. An explicit operator move
+  to `Merging` can communicate approval for the identified current PR and scope
+  targeting `dev`; verify that provenance and honor any narrower instructions.
+  After an authorized merge, verify the resulting revision and close the Linear
+  issue as `Done` when its contract is complete. Production promotion and stable
+  rollout remain separately gated.
 
 ## Explicit approval for production
 
