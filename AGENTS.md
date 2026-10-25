@@ -11,8 +11,11 @@ These rules apply to all work in this repository. Also follow directory-specific
   implementation, review and merge record.
 - Do not dispatch this project's issues through a Symphony listener, add routing
   labels to enable execution, or start a listener to implement repository work.
-  `WORKFLOW.md` files in this repository are product examples or test inputs;
-  they do not define this project's development process or Linear lifecycle.
+  `elixir/WORKFLOW.md` is a shipped runner workflow. Reuse its useful delivery
+  practices (acceptance checklists, validation, feedback sweeps and rework), but
+  follow this file for this project's coordination, status and authority rules.
+  Do not import runner-specific tracker routing, labels, worker shutdown rules or
+  Symphony-worker-only skills into direct development.
   Explicitly authorized Symphony qualification against a separate target project
   is testing the product, not using it to implement its own repair.
 - Use `Backlog` for planned work and explicit holds. Starting implementation
@@ -40,6 +43,36 @@ These rules apply to all work in this repository. Also follow directory-specific
 - `Done` describes completion of the issue's contract, not production promotion,
   release publication or stable installation. Those actions retain their separate
   approval and validation boundaries below.
+
+## Main-chat coordination and subagent delivery
+
+- The main chat owns the operator's request, current Linear contract, scope,
+  acceptance decisions and final handoff. For implementation work, it delegates
+  focused development and testing to subagents, with explicit ownership, base
+  revision, deliverable, required proof and action limits. Use separate worktrees
+  where needed; parallelize independent work without competing writes or duplicate
+  builds and qualification runs. Small documentation or administrative changes
+  may be handled directly without an unnecessary delegation cycle.
+- Subagents implement, test and return a reviewable diff or PR with exact source
+  revisions, commands/results, acceptance evidence and remaining gaps. A subagent
+  completion message is a handoff, not acceptance or merge approval. Subagents
+  must not merge or expand external effects beyond their delegated authority.
+- The main chat reviews the actual diff, current issue, tests, required CI,
+  available review feedback and resulting behavior. It checks the final combined
+  change against the contract rather than accepting a subagent's summary alone.
+  Use an independent review subagent for substantial code or safety-sensitive
+  changes; its findings supplement the main chat's responsibility.
+- Return actionable findings to the owning subagent with concrete expected
+  behavior and proof. Reassess the approach when failures expose a mistaken
+  assumption; do not merely repeat tests until green. After fixes or integration
+  changes, refresh the relevant validation and review against the final head.
+- Once acceptance, review and required checks pass, the main chat may merge the
+  focused PR into `dev` only within the operator's existing merge authorization.
+  If authority is missing or the request requires an unmerged handoff, leave the
+  PR open and present the reviewed result. Neither a subagent verdict nor a
+  `Merging` status supplies operator approval. After an authorized merge, verify
+  the resulting revision and close the Linear issue as `Done` when its contract
+  is complete. Production promotion and stable rollout remain separately gated.
 
 ## Explicit approval for production
 
