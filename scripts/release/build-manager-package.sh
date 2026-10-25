@@ -2,6 +2,9 @@
 # Shared candidate assembly: actual selected source, native helper and existing packer.
 set -euo pipefail
 controller=$(cd "$(dirname "$0")/../.." && pwd)
+source "$controller/scripts/release/package-diagnostics.sh"
+trap 'package_diagnostics_exit "$?" "$package_diagnostics_line"' EXIT
+package_stage assembly.source
 [ "$#" = 5 ] || [ "$#" = 6 ] || { echo 'Usage: build-manager-package.sh MANIFEST OUTPUT PLATFORM SOURCE FULL_SHA [QUALIFIED_HELPER]' >&2; exit 1; }
 manifest=$1; output=$2; platform=$3; source=$4; revision=$5; qualified=${6:-}
 case "$(uname -s)/$(uname -m)/$platform" in
@@ -14,6 +17,7 @@ source=$(cd "$source" && pwd -P)
 manifest=$(cd "$(dirname "$manifest")" && pwd)/$(basename "$manifest")
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
+package_stage assembly.helper
 helper=$qualified
 if [ -z "$helper" ]; then
   helper="$output/symphony-host"
@@ -32,6 +36,7 @@ if [ "$platform" = macos ]; then
 else
   readelf -h "$helper" | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || { echo 'manager helper is not Linux x86-64' >&2; exit 1; }
 fi
+package_stage assembly.package
 bash "$source/scripts/release/package.sh" "$manifest" "$output" "$helper"
 printf 'manager_source_revision=%s\ncontroller_revision=%s\nplatform=%s\n' \
   "$revision" "$(git -C "$controller" rev-parse HEAD)" "$platform" > "$output/package-source.txt"
