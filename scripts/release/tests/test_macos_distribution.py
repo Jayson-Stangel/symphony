@@ -49,8 +49,15 @@ elif tool=='codesign':
             if args[args.index('--keychain')+1] not in entries:
                 print('no identity found FAKE-SECRET-MUST-NOT-LEAK',file=sys.stderr);sys.exit(44)
         with open(args[-1],'ab') as f:f.write(b'-fixture-signature')
-    elif '--extract-certificates' in args:
-        pathlib.Path(args[args.index('--extract-certificates')+1]+'0').write_bytes(
+    elif any(arg.split('=',1)[0]=='--extract-certificates' for arg in args):
+        # codesign's optional prefix is accepted only as --option=value.
+        # A separate prefix is another code path, not an option argument.
+        options=[arg for arg in args if arg.split('=',1)[0]=='--extract-certificates']
+        targets=[arg for arg in args if not arg.startswith('-')]
+        if len(options)!=1 or len(targets)!=1 or not pathlib.Path(targets[0]).is_file():
+            sys.exit(1)
+        prefix=options[0].partition('=')[2] if '=' in options[0] else 'codesign'
+        pathlib.Path(prefix+'0').write_bytes(
             b'WRONG FAKE CERTIFICATE' if os.environ.get('PEER_WRONG_CERT') else b'OBVIOUS FAKE CERTIFICATE - NOT A CREDENTIAL')
     elif '--entitlements' not in args and '-d' in args:
         print('Authority=Developer ID Application: Fixture (FAKETEAM00)')
@@ -340,6 +347,25 @@ class DistributionTest(unittest.TestCase):
         self.assertIn('--timestamp', sign)
         self.assertEqual(sign[sign.index('--options') + 1], 'runtime')
         self.assertNotIn('--deep', sign)
+        extract = next(cmd for cmd in self.commands()
+                       if any(arg.startswith('--extract-certificates=') for arg in cmd))
+        self.assertEqual(len(extract), 4)
+        self.assertEqual(extract[-1], str(helper))
+        prefix = extract[2].partition('=')[2]
+        self.assertFalse(Path(prefix).parent.exists())
+        self.assertEqual(receipt['payloads']['libexec/symphony-host']['certificate_sha1'], IDENTITY)
+
+    def test_certificate_peer_models_optional_prefix_and_code_targets(self):
+        payload = self.root / 'native'
+        payload.write_bytes(b'fake')
+        prefix = self.root / 'certificate with spaces-'
+        with self.assertRaises(dist.CommandFailure):
+            dist.run('codesign', '-d', '--extract-certificates', prefix, payload,
+                     stage='signature.certificate')
+        self.assertFalse(Path(str(prefix) + '0').exists())
+        dist.run('codesign', '-d', '--extract-certificates=' + str(prefix), payload,
+                 stage='signature.certificate')
+        self.assertEqual(Path(str(prefix) + '0').read_bytes(), CERTIFICATE)
 
     def test_signature_failure_never_becomes_receipt(self):
         payload = self.root / 'native'
