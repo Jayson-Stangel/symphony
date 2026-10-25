@@ -61,6 +61,20 @@ These rules apply to all work in this repository. Also follow directory-specific
 
 ## Main-chat coordination and subagent delivery
 
+- Coordination before merging means verifying the impact on the other chat's
+  work and obtaining that chat's explicit clearance, not merely announcing a
+  merge or agreeing on timing. When work shares an integration branch, build
+  inputs, qualification evidence or a release candidate, identify the affected
+  owners and inspect their current source freeze and in-flight operations.
+- Before requesting clearance, present the exact PR/head, proposed base and
+  relevant impact evidence. Check actual consumed files and input identities,
+  artifact reuse, source-bound validation, signing and runtime consequences.
+  Documentation-only CI classification does not establish build-input safety.
+  Resolve uncertainty with the owning chat before merging; silence is not
+  clearance. Record clearance for the verified scope and timing, and obtain
+  renewed clearance if the head, base, affected inputs or other chat's work
+  changes in a way that invalidates that assessment. Operator authorization to
+  coordinate does not waive this requirement or separate production approvals.
 - The main chat owns the operator's request, current Linear contract, scope,
   acceptance decisions and final handoff. For implementation work, it delegates
   focused development and testing to subagents, with explicit ownership, base
