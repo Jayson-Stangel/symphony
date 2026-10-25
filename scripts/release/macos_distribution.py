@@ -169,6 +169,19 @@ def signing_keychain(env, directory, evidence=None):
         diagnostics.command('keychain.create', 'security', 'create-keychain', '-p', password, keychain)
         diagnostics.command('keychain.settings', 'security', 'set-keychain-settings', '-lut', '7200', keychain)
         diagnostics.command('keychain.unlock', 'security', 'unlock-keychain', '-p', password, keychain)
+        # --keychain narrows identity selection, but codesign still requires the
+        # identity keychain on the user's search list (including chain lookup).
+        # Preserve all original entries and restore the exact snapshot in finally.
+        expected_search_list = [str(keychain), *search_list]
+        diagnostics.command('keychain.configure-search-list', 'security', 'list-keychains',
+                            '-d', 'user', '-s', *expected_search_list)
+
+        def verify_search_list_visibility():
+            observed = shlex.split(diagnostics.command(
+                'keychain.read-search-list', 'security', 'list-keychains', '-d', 'user'))
+            require(observed == expected_search_list, 'temporary signing keychain search list differs')
+
+        diagnostics.operation('keychain.verify-search-list', verify_search_list_visibility)
         diagnostics.command('keychain.import-p12', 'security', 'import', p12, '-k', keychain,
                             '-P', env['MACOS_SIGNING_P12_PASSWORD'], '-T', '/usr/bin/codesign')
         diagnostics.command('keychain.partition-list', 'security', 'set-key-partition-list',

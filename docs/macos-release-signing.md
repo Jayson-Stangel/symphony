@@ -150,8 +150,12 @@ Inspect Apple submission details privately using the recorded submission ID if
 the reduced log is insufficient to diagnose rejection.
 
 `evidence/keychain-diagnostics.json` records fixed stage labels for the search-list
-snapshot, P12 decoding/import, keychain creation/settings/unlock, partition-list
-setup and pinned identity check. Each operation records running/success/failure;
+snapshot, temporary search-list setup/readback, P12 decoding/import, keychain
+creation/settings/unlock, partition-list setup and pinned identity check.
+The temporary signing keychain is added ahead of the saved search list before
+import, then verified visible. The explicit pinned-identity selector remains in
+place; the default keychain and trust settings are not changed. Each operation
+records running/success/failure;
 command failures include only a numeric exit status or a timeout/start-failure
 category. No command arguments, tool output, passwords, account names, keychain
 paths or identity listings enter this receipt. For example,
