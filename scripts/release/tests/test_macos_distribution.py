@@ -29,13 +29,25 @@ if (os.environ.get('PEER_FAIL') and os.environ['PEER_FAIL'] in operation) or any
         failure in operation for failure in json.loads(os.environ.get('PEER_FAILURES','[]'))):
     print('FAKE-SECRET-MUST-NOT-LEAK '+os.environ.get('PEER_ERROR', ''),file=sys.stderr);sys.exit(44)
 if tool=='security':
-    if args[0]=='list-keychains':print('"/original/login.keychain-db"')
+    if args[0]=='list-keychains':
+        state=pathlib.Path(os.environ['PEER_LOG']+'.keychains')
+        if '-s' in args:
+            if not os.environ.get('PEER_IGNORE_SEARCH_LIST'):
+                state.write_text(json.dumps(args[args.index('-s')+1:]))
+        else:
+            for entry in json.loads(state.read_text()) if state.exists() else ['/original/login.keychain-db']:
+                print(json.dumps(entry))
     if args[0]=='create-keychain':pathlib.Path(args[-1]).write_text('fake keychain')
     if args[0]=='delete-keychain':pathlib.Path(args[-1]).unlink()
     if args[0]=='find-identity':
         print('1) '+os.environ['MACOS_SIGNING_IDENTITY_SHA1']+' "Developer ID Application: Fixture ('+os.environ.get('PEER_TEAM','FAKETEAM00')+')"')
 elif tool=='codesign':
     if '--force' in args:
+        if os.environ.get('PEER_REQUIRE_SEARCH_LIST'):
+            state=pathlib.Path(os.environ['PEER_LOG']+'.keychains')
+            entries=json.loads(state.read_text()) if state.exists() else ['/original/login.keychain-db']
+            if args[args.index('--keychain')+1] not in entries:
+                print('no identity found FAKE-SECRET-MUST-NOT-LEAK',file=sys.stderr);sys.exit(44)
         with open(args[-1],'ab') as f:f.write(b'-fixture-signature')
     elif '--extract-certificates' in args:
         pathlib.Path(args[args.index('--extract-certificates')+1]+'0').write_bytes(
@@ -102,6 +114,70 @@ class DistributionTest(unittest.TestCase):
         evidence = self.root / 'evidence'
         evidence.mkdir(exist_ok=True)
         return dist.signing_keychain(self.env, private, evidence)
+
+    def test_signing_keychain_is_visible_only_inside_owned_scope(self):
+        helper = self.root / 'helper'
+        helper.write_bytes(b'FAKE HELPER')
+        state = Path(str(self.log) + '.keychains')
+        originals = ['/original/login.keychain-db', '/original/with spaces.keychain-db']
+        state.write_text(json.dumps(originals))
+        with patch.dict(os.environ, PEER_REQUIRE_SEARCH_LIST='1'):
+            # A specific --keychain alone does not satisfy this command peer.
+            with self.assertRaises(dist.CommandFailure):
+                dist.sign(helper, self.root / 'private/signing.keychain-db', self.env)
+            with self.keychain() as keychain:
+                self.assertEqual(json.loads(state.read_text()), [str(keychain), *originals])
+                dist.sign(helper, keychain, self.env)
+        self.assertEqual(json.loads(state.read_text()), originals)
+        self.assertFalse(keychain.exists())
+        self.assertFalse(any(c[:2] == ['security', 'default-keychain'] for c in self.commands()))
+        self.assert_private_diagnostics()
+
+    def test_search_list_setup_failures_refuse_before_signing_and_restore(self):
+        real_run = dist.run
+        for failed in ('keychain.configure-search-list', 'keychain.read-search-list'):
+            def invoke(*args, **kwargs):
+                if kwargs.get('stage') == failed:
+                    # Model partial mutation before failure of the setup command.
+                    if failed == 'keychain.configure-search-list':
+                        real_run(*args, **kwargs)
+                    raise dist.CommandFailure(failed, 'failed', 45)
+                return real_run(*args, **kwargs)
+            with self.subTest(stage=failed), patch.object(dist, 'run', side_effect=invoke):
+                with self.assertRaisesRegex(dist.CommandFailure, failed):
+                    with self.keychain():
+                        self.fail('search-list setup must complete before P12 import/signing')
+            self.assertEqual(json.loads(Path(str(self.log)+'.keychains').read_text()),
+                             ['/original/login.keychain-db'])
+            self.assert_private_diagnostics()
+        self.assertFalse(any(c[0] in ('codesign', 'xcrun') for c in self.commands()))
+
+    def test_search_list_readback_mismatch_refuses_before_import(self):
+        with patch.dict(os.environ, PEER_IGNORE_SEARCH_LIST='1'):
+            with self.assertRaisesRegex(ValueError, 'search list differs'):
+                with self.keychain():
+                    self.fail('search-list readback must match')
+        records = {x['stage']: x for x in self.diagnostics()}
+        self.assertEqual(records['keychain.verify-search-list']['status'], 'failed')
+        self.assertFalse(any(c[0] in ('codesign', 'xcrun') or c[:2] == ['security', 'import']
+                             for c in self.commands()))
+        self.assert_private_diagnostics()
+
+    def test_search_list_restore_failure_refuses_readiness(self):
+        real_run = dist.run
+        def invoke(*args, **kwargs):
+            if kwargs.get('stage') == 'cleanup.restore-search-list':
+                raise dist.CommandFailure('cleanup.restore-search-list', 'failed', 45)
+            return real_run(*args, **kwargs)
+        with patch.object(dist, 'run', side_effect=invoke):
+            with self.assertRaisesRegex(dist.CommandFailure, 'cleanup.restore-search-list'):
+                with self.keychain():
+                    pass
+        records = {x['stage']: x for x in self.diagnostics()}
+        self.assertEqual(records['cleanup.verify-search-list-restored']['status'], 'failed')
+        self.assertEqual(records['cleanup.verify-keychain-absent']['status'], 'success')
+        self.assertEqual(records['cleanup.verify-p12-absent']['status'], 'success')
+        self.assert_private_diagnostics()
 
     def test_wrong_team_import_failure_and_interruption_cleanup(self):
         for failure in ('wrong-team', 'security import', 'interrupt'):
