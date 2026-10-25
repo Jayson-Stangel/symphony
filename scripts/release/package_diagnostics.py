@@ -38,7 +38,7 @@ def record(stage, status, exit_status=None, outcome=None, source_line=None):
             item['source_line'] = source_line
         value['operations'].append(item)
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise ValueError('package diagnostic evidence unavailable') from None
 
 
@@ -69,7 +69,7 @@ def require_complete(path):
         # All signed package stages are mandatory, including each native signing check.
         if value['schema'] != 1 or set(latest) != STAGES or any(s != 'success' for s in latest.values()):
             raise ValueError()
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise ValueError('package diagnostic evidence incomplete') from None
 
 

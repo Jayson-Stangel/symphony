@@ -174,7 +174,9 @@ verification, signature inspection/policy, entitlement, leaf-certificate, native
 inventory and source-revision checks. Shell failures retain only the fixed stage
 and numeric exit status/source line; Python failures retain a fixed outcome category.
 The source line maps to the approved commit’s assembly or package script, so even
-a stage containing several checks can be traced without exposing command text. No
+a stage containing several checks can be traced without exposing command text.
+Line `0` means the source location is unknown; it must not be treated as a
+verified command location. No
 arguments, command output, exception text, paths or identities are recorded.
 Parent and child stages appear separately, so a failed `assembly.package` can be
 traced to the failed package or signature stage. A running stage without a

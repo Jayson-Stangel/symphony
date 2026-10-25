@@ -466,6 +466,13 @@ class DistributionTest(unittest.TestCase):
                 with dist.package_evidence.stage('signature.sign'):
                     raise error
         self.assertIs(caught.exception, error)
+        evidence = self.root / 'malformed-package-evidence.json'
+        with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(evidence)}):
+            with self.assertRaises(dist.CommandFailure) as caught:
+                with dist.package_evidence.stage('signature.sign'):
+                    evidence.write_text('{"schema": 1, "operations": {}}')
+                    raise error
+        self.assertIs(caught.exception, error)
         with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(self.root / 'missing/evidence')}):
             with self.assertRaisesRegex(ValueError, 'evidence unavailable'):
                 with dist.package_evidence.stage('signature.sign'):
