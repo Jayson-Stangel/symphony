@@ -3,7 +3,7 @@
 set -euo pipefail
 controller=$(cd "$(dirname "$0")/../.." && pwd)
 source "$controller/scripts/release/package-diagnostics.sh"
-trap 'package_diagnostics_exit "$?" "$LINENO"' EXIT
+trap 'package_diagnostics_exit "$?" "$package_diagnostics_line"' EXIT
 package_stage assembly.source
 [ "$#" = 5 ] || [ "$#" = 6 ] || { echo 'Usage: build-manager-package.sh MANIFEST OUTPUT PLATFORM SOURCE FULL_SHA [QUALIFIED_HELPER]' >&2; exit 1; }
 manifest=$1; output=$2; platform=$3; source=$4; revision=$5; qualified=${6:-}

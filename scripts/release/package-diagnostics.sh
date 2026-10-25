@@ -26,3 +26,16 @@ package_diagnostics_exit() {
   fi
   return "$status"
 }
+# Capture the numeric location before execution. EXIT's LINENO differs between
+# Bash 3 and Bash 5. Do not overwrite the last command's location on trap entry.
+package_diagnostics_line=0
+if [ -n "${SYMPHONY_MACOS_PACKAGE_DIAGNOSTICS:-}" ]; then
+  trap 'case "$BASH_COMMAND" in package_diagnostics_exit*|package_diagnostics_cleanup*) ;; *) package_diagnostics_line=$LINENO ;; esac' DEBUG
+fi
+package_diagnostics_cleanup() {
+  local status=$1
+  if rm -rf "$stage"; then :
+  elif [ "$status" = 0 ]; then status=1
+  fi
+  package_diagnostics_exit "$status" "$package_diagnostics_line"
+}

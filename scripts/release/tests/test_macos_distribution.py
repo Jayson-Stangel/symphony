@@ -393,10 +393,10 @@ class DistributionTest(unittest.TestCase):
         evidence = self.root / 'package.json'
         script = dist.ROOT / 'scripts/release/package-diagnostics.sh'
         child = self.root / 'child.sh'
-        child.write_text('source "$1"\ntrap \'package_diagnostics_exit "$?" "$LINENO"\' EXIT\n'
+        child.write_text('source "$1"\ntrap \'package_diagnostics_exit "$?" "$package_diagnostics_line"\' EXIT\n'
                          'package_stage package.inputs\necho FAKE-SECRET-MUST-NOT-LEAK >&2\nexit 47\n')
         process = subprocess.run(['bash', '-e', '-c',
-            'source "$1"; trap \'package_diagnostics_exit "$?" "$LINENO"\' EXIT; '
+            'source "$1"; trap \'package_diagnostics_exit "$?" "$package_diagnostics_line"\' EXIT; '
             'package_stage assembly.source; package_stage assembly.package; bash -e "$2" "$1"',
             'fixture', str(script), str(child)], env=dict(self.env, **{dist.package_evidence.VARIABLE: str(evidence)}),
             capture_output=True, text=True)
@@ -410,6 +410,31 @@ class DistributionTest(unittest.TestCase):
         self.assertNotIn(str(self.root), evidence.read_text())
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             dist.package_evidence.require_complete(evidence)
+
+    def test_package_cleanup_preserves_command_line_and_exit_status(self):
+        script = dist.ROOT / 'scripts/release/package-diagnostics.sh'
+        for status in (0, 47):
+            with self.subTest(status=status):
+                stage = self.root / ('owned-' + str(status))
+                stage.mkdir()
+                evidence = self.root / ('cleanup-' + str(status) + '.json')
+                driver = self.root / ('driver-' + str(status) + '.sh')
+                driver.write_text('source "$1"\nstage=$2\n'
+                    'trap \'package_diagnostics_cleanup "$?"\' EXIT\n'
+                    'package_stage package.archive\n'
+                    'echo FAKE-SECRET-MUST-NOT-LEAK > "$stage/private"\n'
+                    'bash -c "exit ' + str(status) + '"\n')
+                process = subprocess.run(['bash', '-e', str(driver), str(script), str(stage)],
+                    env=dict(self.env, **{dist.package_evidence.VARIABLE: str(evidence)}),
+                    capture_output=True, text=True)
+                self.assertEqual(process.returncode, status)
+                self.assertFalse(stage.exists())
+                latest = json.loads(evidence.read_text())['operations'][-1]
+                self.assertEqual(latest['status'], 'failed' if status else 'success')
+                if status:
+                    self.assertEqual(latest['source_line'], 6)
+                    self.assertEqual(latest['exit_status'], status)
+                self.assertNotIn('FAKE-SECRET', evidence.read_text())
 
     def test_payload_command_failure_records_safe_stage_and_status(self):
         evidence = self.root / 'package.json'

@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 source "$root/scripts/release/package-diagnostics.sh"
-trap 'package_diagnostics_exit "$?" "$LINENO"' EXIT
+trap 'package_diagnostics_exit "$?" "$package_diagnostics_line"' EXIT
 package_stage package.helper-integrity
 manifest=${1:?Usage: package.sh MANIFEST OUTPUT_DIR [HOST_HELPER]}
 output=${2:?Usage: package.sh MANIFEST OUTPUT_DIR [HOST_HELPER]}
@@ -16,7 +16,7 @@ esac
 field=bundle
 if [ "$platform" = linux_x86_64 ]; then field=bundles.linux_x86_64; fi
 mkdir -p "$output"
-stage=$(mktemp -d); trap 'status=$?; failed_line=$LINENO; rm -rf "$stage"; package_diagnostics_exit "$status" "$failed_line"' EXIT
+stage=$(mktemp -d); trap 'package_diagnostics_cleanup "$?"' EXIT
 bundle="$stage/bundle"; mkdir -p "$bundle/scripts" "$bundle/libexec" "$bundle/elixir" "$bundle/.codex/skills"
 if [ -n "$helper" ]; then cp "$helper" "$bundle/libexec/symphony-host"
 else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host"; fi
