@@ -3,6 +3,44 @@
 These rules apply to all work in this repository. Also follow directory-specific
 `AGENTS.md` instructions where present.
 
+## Development process and Linear lifecycle
+
+- This project develops Symphony; it does not use Symphony to develop itself.
+  Implementation runs through operator-directed coding-agent chats in isolated
+  development checkouts, with Linear as the work contract and GitHub as the
+  implementation, review and merge record.
+- Do not dispatch this project's issues through a Symphony listener, add routing
+  labels to enable execution, or start a listener to implement repository work.
+  `WORKFLOW.md` files in this repository are product examples or test inputs;
+  they do not define this project's development process or Linear lifecycle.
+  Explicitly authorized Symphony qualification against a separate target project
+  is testing the product, not using it to implement its own repair.
+- Use `Backlog` for planned work and explicit holds. Starting implementation
+  requires operator authorization; a Linear state or label alone does not grant
+  it. Keep issue status aligned with actual progress and use the team's existing
+  active or review states when appropriate. Record direct-agent ownership and
+  handoff evidence on the issue so Backlog does not become a store of completed
+  work.
+- Use `Done` as the sole successful completion status for this project. Do not
+  use `Integrated` or create a separate completed state for a merge into `dev`.
+  Preserve cancellation and duplicate dispositions for work that was not completed.
+- Before marking an implementation issue `Done`, read its current contract,
+  verify all acceptance criteria with the required evidence, confirm review and
+  validation are satisfied, and observe its PR merged into `dev`. If the contract
+  explicitly ends at an open reviewed PR or another non-merge deliverable, verify
+  that authorized endpoint instead; completion never grants merge authority.
+- A merged PR alone does not complete an issue with outstanding required native,
+  installed, authenticated or end-to-end acceptance. Keep those gaps explicit and
+  leave the issue unfinished until satisfied or the operator explicitly changes
+  the contract. Distinguish fixtures, CI, native runtime and installed proof.
+- Record the PR link, exact reviewed/tested revision, merge revision when
+  applicable, and acceptance results before closeout. Read back Linear after a
+  status change. When reconciling stale Backlog issues, check live issue and PR
+  evidence and move only verified completed work to `Done`.
+- `Done` describes completion of the issue's contract, not production promotion,
+  release publication or stable installation. Those actions retain their separate
+  approval and validation boundaries below.
+
 ## Explicit approval for production
 
 - Before merging any promotion into `main` or performing any stable rollout,
