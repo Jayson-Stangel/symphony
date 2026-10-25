@@ -22,4 +22,4 @@ class StartupFailure {
   close() {}
 }
 serve({ binary: '/unused', env: {}, identity: { profile: 'a'.repeat(64) } },
-  { makeQuery: options => new StartupFailure(options) });
+  { makeTemporary: () => ({ path: '/tmp', cleanup() {} }), makeQuery: options => new StartupFailure(options) });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvedEnvironment } from '../runtime.mjs';
+import { approvedEnvironment, buildScratch, isBuildScratchMount } from '../runtime.mjs';
 
 const base = { HOME: '/home/claude', CLAUDE_CONFIG_DIR: '/home/claude/.claude', CLAUDE_CODE_DISABLE_FAST_MODE: '1' };
 const envelope = (names, values = {}, reserved = []) => JSON.stringify({ names, values, reserved });
@@ -24,7 +24,7 @@ test('only explicitly selected tool values join the fixed native environment', (
 test('reserved tool selections fail with a bounded code and no values', () => {
   for (const name of ['HOME', 'PATH', 'LANG', 'TERM', 'CLAUDE_CONFIG_DIR', 'DISABLE_AUTOUPDATER',
     'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'SYMPHONY_GIT_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN',
-    'NODE_OPTIONS', 'NODE_PATH', 'BUN_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'CUSTOM_TRACKER', 'custom_tracker']) {
+    'NODE_OPTIONS', 'NODE_PATH', 'BUN_OPTIONS', 'TMPDIR', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'CUSTOM_TRACKER', 'custom_tracker']) {
     assert.throws(() => approvedEnvironment({ ...base,
       SYMPHONY_TOOL_ENVIRONMENT: envelope([name], { [name]: 'secret-canary' }, ['CUSTOM_TRACKER']) }),
     error => error.message === 'invalid_tool_environment' && !String(error).includes('secret-canary'), name);
@@ -45,4 +45,20 @@ test('the serialized tool envelope is bounded in UTF-8 bytes while small Unicode
   assert.ok(Buffer.byteLength(encoded, 'utf8') > 131_072);
   assert.throws(() => approvedEnvironment({ ...base, SYMPHONY_TOOL_ENVIRONMENT: encoded }),
     error => error.message === 'invalid_tool_environment' && !String(error).includes('界'));
+});
+
+
+test('only coding sessions pin executable scratch, never ambient or project-selected TMPDIR', () => {
+  assert.equal(approvedEnvironment({ ...base, TMPDIR: '/foreign' }).TMPDIR, undefined);
+  assert.equal(approvedEnvironment({ ...base, TMPDIR: '/foreign' }, { coding: true }).TMPDIR, buildScratch);
+  for (const coding of [true, false]) assert.throws(() => approvedEnvironment({ ...base,
+    SYMPHONY_TOOL_ENVIRONMENT: envelope(['TMPDIR'], { TMPDIR: '/foreign' }) }, { coding }), /invalid_tool_environment/);
+});
+
+test('build scratch requires its exact executable tmpfs mount with retained protection flags', () => {
+  const valid = `1 0 0:1 / ${buildScratch} rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=1048576k`;
+  assert.equal(isBuildScratchMount(valid), true);
+  for (const invalid of [valid.replace('rw,nosuid', 'ro,nosuid'), valid.replace('nodev,', 'nodev,noexec,'),
+    valid.replace('nosuid,', ''), valid.replace('nodev,', ''), valid.replace(' - tmpfs ', ' - ext4 '),
+    valid.replace(buildScratch, buildScratch + '-foreign')]) assert.equal(isBuildScratchMount(invalid), false);
 });

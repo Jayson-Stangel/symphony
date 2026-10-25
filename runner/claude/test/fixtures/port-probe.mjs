@@ -96,4 +96,4 @@ class Probe {
 }
 
 helper = serve({ binary: '/credential-free-probe', env: {}, identity: { profile: 'a'.repeat(64), category: 'subscription' } },
-  { makeQuery: options => new Probe(options), graceMs: 0, killMs: 0 });
+  { makeTemporary: () => ({ path: '/tmp', cleanup() {} }), makeQuery: options => new Probe(options), graceMs: 0, killMs: 0 });

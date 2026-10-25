@@ -11,4 +11,4 @@ class Background {
   close() {}
 }
 serve({ binary: '/unused', env: {}, identity: { profile: 'a'.repeat(64) } },
-  { makeQuery: options => new Background(options), graceMs: 20, killMs: 20 });
+  { makeTemporary: () => ({ path: '/tmp', cleanup() {} }), makeQuery: options => new Background(options), graceMs: 20, killMs: 20 });

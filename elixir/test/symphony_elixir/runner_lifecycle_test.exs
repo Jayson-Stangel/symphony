@@ -49,6 +49,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *com.symphony.port*)
             if [ "$(cat "$state.agent")" = '<no value>' ]; then echo '<no value>'; else cat "$state.port"; fi ;;
           *com.symphony.codex.runtime*) cat "$state.codex-runtime" ;;
+          *com.symphony.claude.runtime*) cat "$state.claude-runtime" ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
           *com.symphony.storage*) cat "$state.storage" ;;
@@ -105,6 +106,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.agent=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.agent" ;;
                 com.symphony.port=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.port" ;;
                 com.symphony.codex.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.codex-runtime" ;;
+                com.symphony.claude.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.claude-runtime" ;;
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
             done
@@ -161,7 +163,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
         case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
-        for suffix in '' .agent .port .profile .image .storage .codex-runtime; do
+        for suffix in '' .agent .port .profile .image .storage .codex-runtime .claude-runtime; do
           if [ -f "$from$suffix" ]; then mv "$from$suffix" "$to$suffix"; fi
         done ;;
     esac
@@ -1243,6 +1245,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert calls =~ "--read-only"
     assert calls =~ "--cap-drop\tALL"
     assert calls =~ "--security-opt\tno-new-privileges"
+    assert calls =~ "--pids-limit\t512\t--cpus\t4"
+    assert calls =~ "/tmp:rw,nosuid,nodev,size=512m"
+    assert calls =~ "/var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g"
+    assert calls =~ "com.symphony.claude.runtime=cpu4-pid512-build1g-v1"
     assert calls =~ "127.0.0.1:4111:4010"
     assert calls =~ "-claude-auth:/home/claude"
     assert calls =~ "--env\tSYMPHONY_GIT_TOKEN\t"
@@ -1291,8 +1297,15 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "agent and image mismatches refuse reuse without stopping or replacing work", ctx do
     assert {_, 0} = launch(ctx, "start")
     File.write!(ctx.log, "")
-    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"])
-    assert message =~ "listener agent differs"
+
+    for state <- ["true", "false"] do
+      File.write!(ctx.state, state)
+      assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"])
+      assert message =~ "listener agent differs"
+      assert File.read!(ctx.state) == state
+    end
+
+    File.write!(ctx.state, "true")
     assert {message, 1} = launch_args(ctx, ["run"], [{"FIXTURE_IMAGE_ID", "changed-image"}])
     assert message =~ "listener image differs"
     calls = File.read!(ctx.log)
@@ -1477,6 +1490,51 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute calls =~ "stop\t"
     refute calls =~ "rm\t"
     refute calls =~ "--check-codex-sandbox"
+  end
+
+  test "Claude same-image profile transition recreates the runtime", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    File.write!(ctx.state <> ".claude-runtime", "previous-profile")
+    File.write!(ctx.log, "")
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"])
+    assert message =~ "Runner transition complete"
+    refute message =~ "Previously completed"
+    assert File.read!(ctx.log) =~ "rename\t"
+    assert File.read!(ctx.log) =~ "--detach"
+    assert File.read!(ctx.state <> ".claude-runtime") == "cpu4-pid512-build1g-v1"
+    assert File.read!(ctx.state <> ".backup.claude-runtime") == "previous-profile"
+  end
+
+  test "Claude same-image reuse refuses an unknown resource profile without changing retained work", ctx do
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    File.write!(ctx.state <> ".claude-runtime", "unknown-profile")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"])
+    assert message =~ "Claude runtime profile differs"
+    calls = File.read!(ctx.log)
+    refute calls =~ "stop\t"
+    refute calls =~ "rm\t"
+    refute calls =~ "--detach"
+    assert File.read!(ctx.state <> ".claude-runtime") == "unknown-profile"
+  end
+
+  test "stopped old Claude profile requires updater and failed replacement can roll back", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    File.write!(ctx.state <> ".claude-runtime", "previous-profile")
+    File.write!(ctx.state, "false")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"])
+    assert message =~ "Claude runtime profile differs"
+    refute File.read!(ctx.log) =~ "rm\t"
+    assert File.read!(ctx.state <> ".claude-runtime") == "previous-profile"
+    fail = Path.join(ctx.root, "failed-profile-create")
+    File.write!(fail, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"FIXTURE_FAIL_CREATE_FILE", fail}])
+    assert File.read!(ctx.state <> ".backup.claude-runtime") == "previous-profile"
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"])
+    assert File.read!(ctx.state <> ".claude-runtime") == "previous-profile"
   end
 
   defp launch_args(ctx, args, extra_env \\ []) do

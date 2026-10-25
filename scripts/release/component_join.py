@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import artifacts
-from component_provenance import verify_origin, selection_verifier
+from component_provenance import selection_verifier
 import manager_version
 
 
@@ -66,14 +66,8 @@ def main():
     try:
         revision = os.environ['GITHUB_SHA']
         manual = os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
-        current_run = int(os.environ['GITHUB_RUN_ID'])
         artifacts.require(args.baseline_run is None or manual, 'candidate baseline override requires manual qualification')
-        selected_verifier = selection_verifier(args.baseline_run)
-        def verify(record):
-            run_id = record['qualification'].get('record_origin', {}).get('run_id', record['qualification']['run_id'])
-            if manual and run_id == current_run:
-                return verify_origin(record, candidate_run=current_run)
-            return selected_verifier(record)
+        verify = selection_verifier(args.baseline_run)
         plan = json.loads(Path(args.plan).read_text())
         selected = join(plan, args.records, revision, verify)
         validate_join_checkout('.',plan,selected)

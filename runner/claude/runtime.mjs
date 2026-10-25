@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, lstatSync, statfsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
@@ -10,6 +10,7 @@ export const runtime = Object.freeze({ sdk: dependencies['@anthropic-ai/claude-a
   cli: dependencies['@anthropic-ai/claude-code'], policy: 1, protocol: 1 });
 export const home = '/home/claude';
 export const nativeConfig = `${home}/.claude`;
+export const buildScratch = '/var/tmp/symphony-build';
 
 export class RuntimeError extends Error {
   constructor(code) { super(code); this.name = 'RuntimeError'; }
@@ -21,12 +22,12 @@ export function nativeExecutable() {
   return realpathSync(join(dirname(require.resolve(`${pkg}/package.json`)), 'claude'));
 }
 
-export function approvedEnvironment(source) {
+export function approvedEnvironment(source, { coding = false } = {}) {
   if (source.HOME !== home || source.CLAUDE_CONFIG_DIR !== nativeConfig || source.CLAUDE_CODE_DISABLE_FAST_MODE !== '1') {
     throw new RuntimeError('native_identity_mismatch');
   }
   const env = { HOME: home, CLAUDE_CONFIG_DIR: nativeConfig, CLAUDE_CODE_DISABLE_FAST_MODE: '1',
-    DISABLE_AUTOUPDATER: '1', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'xterm-256color',
+    DISABLE_AUTOUPDATER: '1', ...(coding ? { TMPDIR: buildScratch } : {}), PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'xterm-256color',
     SYMPHONY_SKILLS_ROOT: '/opt/symphony/claude/plugin/skills' };
   // Only the explicitly selected repository credential is available to Git/gh.
   // Ambient tracker credentials are not copied into the coding environment.
@@ -42,7 +43,7 @@ function projectToolEnvironment(encoded, fixed) {
     if (!Array.isArray(names) || names.length > 128 || !Array.isArray(reserved)
       || reserved.some(name => typeof name !== 'string') || !values || typeof values !== 'object' || Array.isArray(values)) throw new Error();
     const blocked = new Set([...Object.keys(fixed), ...reserved, 'GH_TOKEN', 'GITHUB_TOKEN',
-      'NODE_OPTIONS', 'NODE_PATH', 'BUN_OPTIONS'].map(name => name.toUpperCase()));
+      'NODE_OPTIONS', 'NODE_PATH', 'BUN_OPTIONS', 'TMPDIR'].map(name => name.toUpperCase()));
     const tools = [];
     for (const name of names) {
       if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)
@@ -86,6 +87,26 @@ export function isReadOnlyMount(path, mountinfo) {
   return mounts.length > 0 && mounts[0][5].split(',').includes('ro');
 }
 
+export function isBuildScratchMount(mountinfo) {
+  return mountinfo.trim().split('\n').some(line => {
+    const [before, after] = line.split(' - ');
+    const fields = before?.split(' '), filesystem = after?.split(' ')[0];
+    const flags = fields?.[5]?.split(',') ?? [];
+    return fields?.[4] === buildScratch && filesystem === 'tmpfs'
+      && ['rw', 'nosuid', 'nodev'].every(flag => flags.includes(flag)) && !flags.includes('noexec');
+  });
+}
+
+export function validateBuildScratch() {
+  const mounts = readFileSync('/proc/self/mountinfo', 'utf8');
+  try {
+    const scratch = lstatSync(buildScratch), filesystem = statfsSync(buildScratch);
+    if (!scratch.isDirectory() || scratch.isSymbolicLink() || realpathSync(buildScratch) !== buildScratch
+      || scratch.uid !== 11001 || (scratch.mode & 0o777) !== 0o700
+      || filesystem.bsize * filesystem.blocks !== 1_073_741_824 || !isBuildScratchMount(mounts)) throw new Error();
+  } catch { throw new RuntimeError('build_scratch_unavailable'); }
+}
+
 export function validateContainer() {
   if (process.getuid?.() !== 11001) throw new RuntimeError('nonroot_profile_required');
   const status = readFileSync('/proc/self/status', 'utf8');
@@ -96,7 +117,8 @@ export function validateContainer() {
 
 export function readiness({ workspace } = {}) {
   validateContainer();
-  const env = approvedEnvironment(process.env);
+  if (workspace) validateBuildScratch();
+  const env = approvedEnvironment(process.env, { coding: Boolean(workspace) });
   const binary = nativeExecutable();
   const identity = nativeIdentity(binary, env);
   if (workspace && (realpathSync(workspace) !== process.cwd() || !statSync(workspace).isDirectory())) throw new RuntimeError('workspace_identity_mismatch');
