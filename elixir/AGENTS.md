@@ -18,9 +18,7 @@ This directory contains the Elixir agent orchestration service that polls the co
   - If implementation changes meaningfully alter the intended behavior, update the spec in the same
     change where practical so the spec stays current.
 - Prefer adding config access through `SymphonyElixir.Config` instead of ad-hoc env reads.
-- Workspace safety in the Symphony runtime is critical (these are product
-  invariants, not a prohibition on direct coding-agent development in this
-  separate development checkout):
+- Workspace safety is critical:
   - Never run agent turn cwd in source repo.
   - Workspaces must stay under configured workspace root.
 - Orchestrator behavior is stateful and concurrency-sensitive; preserve retry, reconciliation, and cleanup semantics.
@@ -31,10 +29,7 @@ This directory contains the Elixir agent orchestration service that polls the co
 
 ## Tests and Validation
 
-For code changes, run targeted tests while iterating, then run the applicable full
-gates before handoff. Pure human-facing documentation changes follow the root
-`AGENTS.md` documentation-only policy; they do not require `make all`, Mix setup,
-or application test suites.
+Run targeted tests while iterating, then run full gates before handoff.
 
 - Prefer narrow tests that exercise real OTP processes and observable behavior over mock-only or
   broad end-to-end coverage; prove health with a synchronous call or stable effect, not only a PID.
@@ -66,16 +61,7 @@ mix specs.check
 ## PR Requirements
 
 - PR body must follow `../.github/pull_request_template.md` exactly.
-- Validate PR bodies with the dependency-free root validator, including for
-  documentation-only changes:
-
-```bash
-python3 scripts/ci/check_pr_body.py --file /path/to/pr_body.md
-```
-
-Run that command from the repository root. The existing Mix wrapper is an
-alternative when the Elixir environment is already available, not a requirement
-to install a toolchain for documentation:
+- Validate PR body locally when needed:
 
 ```bash
 mix pr_body.check --file /path/to/pr_body.md

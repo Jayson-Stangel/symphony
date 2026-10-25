@@ -191,3 +191,28 @@ PR metadata validation remains required on PR events. Their summaries
 say explicitly when behavioral qualification was intentionally omitted; that is
 not a claim that tests executed. Classification failure fails the required wrapper.
 See `docs/development.md` for the event map and local classifier validation.
+
+## Direct development and validation under `elixir/`
+
+These instructions apply to direct coding-agent development and documentation
+validation under `elixir/`. They take precedence over conflicting generic
+full-gate, toolchain setup, or runtime-only wording in the packaged
+`elixir/AGENTS.md`.
+
+- The workspace safety rules in `elixir/AGENTS.md` describe Symphony runtime
+  product invariants. They do not prohibit direct coding-agent work in an
+  isolated development checkout.
+- Pure human-facing documentation changes follow the root documentation-only
+  validation policy above. They do not require Elixir or application setup,
+  `make all`, or application test suites. Code changes retain targeted tests
+  while iterating and the applicable full required gates before handoff.
+- Validate PR bodies, including documentation-only PRs, from the repository root
+  with the dependency-free validator:
+
+  ```bash
+  python3 scripts/ci/check_pr_body.py --file /path/to/pr_body.md
+  ```
+
+  The existing `mix pr_body.check --file /path/to/pr_body.md` wrapper is optional
+  when the Elixir environment is already available; documentation validation
+  does not require installing that toolchain.
