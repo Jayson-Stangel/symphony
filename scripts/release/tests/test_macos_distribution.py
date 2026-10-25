@@ -347,6 +347,10 @@ class DistributionTest(unittest.TestCase):
             if args[0] == 'git':
                 return '' if 'status' in args else REVISION
             if args[0] == 'bash':
+                diagnostic_path = Path(kwargs['env'][dist.package_evidence.VARIABLE])
+                if failure != 'package evidence':
+                    diagnostic_path.write_text(json.dumps({'schema': 1, 'operations': [
+                        {'stage': label, 'status': 'success'} for label in dist.package_evidence.STAGES]}))
                 output = Path(args[3])
                 output.mkdir()
                 content = self.root / 'packaged'
@@ -361,7 +365,7 @@ class DistributionTest(unittest.TestCase):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
+        for failure in ('package evidence', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
                     patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure):
@@ -373,6 +377,8 @@ class DistributionTest(unittest.TestCase):
                     if not failure.startswith('security'):
                         self.assertFalse(list(output.glob('*.dmg')))
                     self.assertTrue((output / 'evidence/keychain-diagnostics.json').is_file())
+                    if failure == 'package evidence':
+                        self.assertFalse(any(command[0] == 'xcrun' for command in self.commands()))
                 else:
                     dist.build(manifest, helper, output, self.env)
                     receipt = json.loads((output / 'macos-distribution.json').read_text())
@@ -382,6 +388,77 @@ class DistributionTest(unittest.TestCase):
                     self.assertTrue((output / 'symphony-fixture-macos.dmg').read_bytes().endswith(b'-stapled'))
                     self.assertEqual(dist.checksum(helper), original)
             self.assertFalse(list(self.root.glob('symphony-signing-*')))
+
+    def test_package_shell_failure_retains_nested_stage_without_output(self):
+        evidence = self.root / 'package.json'
+        script = dist.ROOT / 'scripts/release/package-diagnostics.sh'
+        child = self.root / 'child.sh'
+        child.write_text('source "$1"\ntrap \'package_diagnostics_exit "$?" "$LINENO"\' EXIT\n'
+                         'package_stage package.inputs\necho FAKE-SECRET-MUST-NOT-LEAK >&2\nexit 47\n')
+        process = subprocess.run(['bash', '-e', '-c',
+            'source "$1"; trap \'package_diagnostics_exit "$?" "$LINENO"\' EXIT; '
+            'package_stage assembly.source; package_stage assembly.package; bash -e "$2" "$1"',
+            'fixture', str(script), str(child)], env=dict(self.env, **{dist.package_evidence.VARIABLE: str(evidence)}),
+            capture_output=True, text=True)
+        self.assertEqual(process.returncode, 47)
+        value = json.loads(evidence.read_text())
+        failed = [v for v in value['operations'] if v['status'] == 'failed']
+        self.assertEqual([(v['stage'], v['exit_status']) for v in failed],
+                         [('package.inputs', 47), ('assembly.package', 47)])
+        self.assertEqual(failed[0]['source_line'], 5)
+        self.assertNotIn('FAKE-SECRET', evidence.read_text())
+        self.assertNotIn(str(self.root), evidence.read_text())
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            dist.package_evidence.require_complete(evidence)
+
+    def test_payload_command_failure_records_safe_stage_and_status(self):
+        evidence = self.root / 'package.json'
+        helper = self.root / 'helper'
+        helper.write_bytes(b'FAKE HELPER')
+        with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(evidence), 'PEER_FAIL': 'codesign --force'}):
+            with self.assertRaisesRegex(dist.CommandFailure, 'signature.sign.*44'):
+                dist.sign(helper, self.root / 'fake-keychain', self.env)
+        failed = json.loads(evidence.read_text())['operations'][-1]
+        self.assertEqual(failed, {'stage': 'signature.sign', 'status': 'failed', 'outcome': 'failed', 'exit_status': 44})
+        self.assertNotIn('FAKE-SECRET', evidence.read_text())
+        self.assertNotIn(IDENTITY, evidence.read_text())
+        self.assertNotIn(str(helper), evidence.read_text())
+
+    def test_payload_policy_failure_is_distinct_from_codesign_failure(self):
+        evidence = self.root / 'package.json'
+        helper = self.root / 'helper'
+        helper.write_bytes(b'FAKE HELPER')
+        with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(evidence), 'PEER_NO_RUNTIME': '1'}):
+            with self.assertRaisesRegex(ValueError, 'hardened runtime missing'):
+                dist.sign(helper, self.root / 'fake-keychain', self.env)
+        failed = json.loads(evidence.read_text())['operations'][-1]
+        self.assertEqual(failed, {'stage': 'signature.policy', 'status': 'failed', 'outcome': 'operation refused'})
+
+    def test_package_evidence_failure_preserves_primary_exception(self):
+        error = dist.CommandFailure('signature.sign', 'timed out')
+        with patch.object(dist.package_evidence, 'record', side_effect=[None, ValueError('fixture write failure')]):
+            with self.assertRaises(dist.CommandFailure) as caught:
+                with dist.package_evidence.stage('signature.sign'):
+                    raise error
+        self.assertIs(caught.exception, error)
+        with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(self.root / 'missing/evidence')}):
+            with self.assertRaisesRegex(ValueError, 'evidence unavailable'):
+                with dist.package_evidence.stage('signature.sign'):
+                    self.fail('must refuse before work when initial receipt cannot be written')
+
+    def test_package_journal_refuses_arbitrary_labels_and_incomplete_success(self):
+        evidence = self.root / 'package.json'
+        with patch.dict(os.environ, {dist.package_evidence.VARIABLE: str(evidence)}):
+            with self.assertRaisesRegex(ValueError, 'invalid package diagnostic label'):
+                dist.package_evidence.record('FAKE-SECRET', 'failed')
+            self.assertFalse(evidence.exists())
+            for label in dist.package_evidence.STAGES:
+                with dist.package_evidence.stage(label):
+                    pass
+            dist.package_evidence.require_complete(evidence)
+            dist.package_evidence.record('signature.sign', 'running')
+            with self.assertRaisesRegex(ValueError, 'incomplete'):
+                dist.package_evidence.require_complete(evidence)
 
     def test_package_signing_precedes_inventory_and_archive(self):
         source = (dist.ROOT / 'scripts/release/package.sh').read_text()

@@ -167,6 +167,26 @@ retains this JSON even when no Apple submission receipt exists. A running stage
 without an outcome is incomplete evidence, not success. These diagnostics do not
 authorize a retry or additional credential use.
 
+`evidence/package-diagnostics.json` records fixed assembly, helper-integrity,
+manifest/input validation, source/metadata, payload-copy, payload-signing, file
+inventory and archive stages. Nested signing records separate signing, physical
+verification, signature inspection/policy, entitlement, leaf-certificate, native
+inventory and source-revision checks. Shell failures retain only the fixed stage
+and numeric exit status/source line; Python failures retain a fixed outcome category.
+The source line maps to the approved commit’s assembly or package script, so even
+a stage containing several checks can be traced without exposing command text. No
+arguments, command output, exception text, paths or identities are recorded.
+Parent and child stages appear separately, so a failed `assembly.package` can be
+traced to the failed package or signature stage. A running stage without a
+terminal result is incomplete (for example, a timeout), never proof of success.
+
+These diagnostics are enabled only by the protected controller, which passes the
+public evidence destination into its packaging subprocess. Ordinary unsigned
+packages do not create evidence. Missing, unwritable or incomplete package
+evidence refuses progression to Apple submission; evidence errors cannot replace
+an existing command failure. The existing refusal artifact retains both JSON
+receipts. These records do not authorize signing, Apple credential use or retries.
+
 The implementation signs the staged native helper with the exact certificate,
 hardened runtime, secure timestamp and no added entitlements. Its `signing.json`
 records original qualified helper SHA-256 and signed output identity/hash before

@@ -21,6 +21,8 @@ import sys
 import tempfile
 import uuid
 
+import package_diagnostics as package_evidence
+
 ROOT = Path(__file__).resolve().parents[2]
 MACHO = {bytes.fromhex(magic) for magic in
          ('feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca')}
@@ -214,24 +216,30 @@ def sign(path, keychain, env, runtime=True):
     args = ['codesign', '--force', '--sign', identity, '--keychain', keychain, '--timestamp']
     if runtime:
         args += ['--options', 'runtime']
-    run(*args, path)
-    run('codesign', '--verify', '--strict', path)
-    details = run('codesign', '-d', '--verbose=4', path)
-    require('Authority=Developer ID Application:' in details, 'Developer ID authority missing')
-    require('TeamIdentifier=' + env['MACOS_TEAM_ID'] + '\n' in details, 'signed payload team differs')
-    require(re.search(r'^Timestamp=.+', details, re.M), 'secure timestamp missing')
-    cdhash = re.search(r'^CDHash=([a-f0-9]{40}|[a-f0-9]{64})$', details, re.M)
-    require(cdhash, 'signed code directory hash missing')
+    with package_evidence.stage('signature.sign'):
+        run(*args, path, stage='signature.sign')
+    with package_evidence.stage('signature.verify'):
+        run('codesign', '--verify', '--strict', path, stage='signature.verify')
+    with package_evidence.stage('signature.inspect'):
+        details = run('codesign', '-d', '--verbose=4', path, stage='signature.inspect')
+    with package_evidence.stage('signature.policy'):
+        require('Authority=Developer ID Application:' in details, 'Developer ID authority missing')
+        require('TeamIdentifier=' + env['MACOS_TEAM_ID'] + '\n' in details, 'signed payload team differs')
+        require(re.search(r'^Timestamp=.+', details, re.M), 'secure timestamp missing')
+        cdhash = re.search(r'^CDHash=([a-f0-9]{40}|[a-f0-9]{64})$', details, re.M)
+        require(cdhash, 'signed code directory hash missing')
+        if runtime:
+            require(re.search(r'^CodeDirectory .*flags=.*\bruntime\b', details, re.M),
+                    'hardened runtime missing')
     if runtime:
-        require(re.search(r'^CodeDirectory .*flags=.*\bruntime\b', details, re.M),
-                'hardened runtime missing')
         # This release needs no entitlements. Reject any unexpected added rights.
-        entitlements = run('codesign', '-d', '--entitlements', ':-', path)
-        require('<key>' not in entitlements, 'unexpected signing entitlements')
+        with package_evidence.stage('signature.entitlements'):
+            entitlements = run('codesign', '-d', '--entitlements', ':-', path, stage='signature.entitlements')
+            require('<key>' not in entitlements, 'unexpected signing entitlements')
     # Bind the actual leaf certificate, not merely a matching display name/team.
-    with tempfile.TemporaryDirectory(prefix='certificate-', dir=Path(keychain).parent) as temporary:
+    with package_evidence.stage('signature.certificate'), tempfile.TemporaryDirectory(prefix='certificate-', dir=Path(keychain).parent) as temporary:
         prefix = Path(temporary) / 'cert'
-        run('codesign', '-d', '--extract-certificates', prefix, path)
+        run('codesign', '-d', '--extract-certificates', prefix, path, stage='signature.certificate')
         certificate = Path(str(prefix) + '0').read_bytes()
         require(hashlib.sha1(certificate).hexdigest().upper() == identity,
                 'signed payload certificate differs')
@@ -241,24 +249,27 @@ def sign(path, keychain, env, runtime=True):
 
 
 def sign_payload(bundle, keychain, env):
-    helper = bundle / 'libexec/symphony-host'
-    original = checksum(helper)
-    natives = []
-    for path in bundle.rglob('*'):
-        if path.is_file():
-            require(not path.is_symlink(), 'symlink in signing payload')
-            with path.open('rb') as source:
-                if source.read(4) in MACHO:
-                    natives.append(path)
-    # Explicit inventory: a future native addition requires deliberate signing policy.
-    require(natives == [helper], 'unexpected native payload inventory')
+    with package_evidence.stage('payload.inventory'):
+        helper = bundle / 'libexec/symphony-host'
+        original = checksum(helper)
+        natives = []
+        for path in bundle.rglob('*'):
+            if path.is_file():
+                require(not path.is_symlink(), 'symlink in signing payload')
+                with path.open('rb') as source:
+                    if source.read(4) in MACHO:
+                        natives.append(path)
+        # Explicit inventory: a future native addition requires deliberate signing policy.
+        require(natives == [helper], 'unexpected native payload inventory')
     signed = sign(helper, keychain, env)
-    revision = run(helper, 'build-revision').strip()
-    require(revision == run('git', '-C', ROOT, 'rev-parse', 'HEAD').strip(),
-            'signed helper source differs')
-    write_json(bundle / 'signing.json', {
-        'status': 'developer-id-signed-not-yet-notarized', 'source_revision': revision,
-        'original_qualified_helper_sha256': original, 'payloads': {'libexec/symphony-host': signed}})
+    with package_evidence.stage('payload.revision'):
+        revision = run(helper, 'build-revision', stage='payload.revision').strip()
+        require(revision == run('git', '-C', ROOT, 'rev-parse', 'HEAD', stage='payload.revision').strip(),
+                'signed helper source differs')
+    with package_evidence.stage('payload.receipt'):
+        write_json(bundle / 'signing.json', {
+            'status': 'developer-id-signed-not-yet-notarized', 'source_revision': revision,
+            'original_qualified_helper_sha256': original, 'payloads': {'libexec/symphony-host': signed}})
 
 
 def create_dmg(bundle, destination):
@@ -343,9 +354,11 @@ def build(manifest, helper, output, env):
         private.chmod(0o700)
         with signing_keychain(env, private, evidence) as keychain:
             package = private / 'packages'
-            child_env = dict(env, SYMPHONY_MACOS_KEYCHAIN=str(keychain))
+            child_env = dict(env, SYMPHONY_MACOS_KEYCHAIN=str(keychain),
+                             SYMPHONY_MACOS_PACKAGE_DIAGNOSTICS=str(evidence / 'package-diagnostics.json'))
             run('bash', ROOT / 'scripts/release/build-manager-package.sh', manifest, package,
-                'macos', ROOT, revision, helper, env=child_env, timeout=600)
+                'macos', ROOT, revision, helper, env=child_env, timeout=600, stage='assembly.package')
+            package_evidence.require_complete(evidence / 'package-diagnostics.json')
             archives = list(package.glob('*.tar.gz'))
             require(len(archives) == 1, 'expected exactly one manager archive')
             archive = archives[0]

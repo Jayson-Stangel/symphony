@@ -2,6 +2,9 @@
 # Credential-free candidate packer. MANIFEST is the JAY-686 release contract.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
+source "$root/scripts/release/package-diagnostics.sh"
+trap 'package_diagnostics_exit "$?" "$LINENO"' EXIT
+package_stage package.helper-integrity
 manifest=${1:?Usage: package.sh MANIFEST OUTPUT_DIR [HOST_HELPER]}
 output=${2:?Usage: package.sh MANIFEST OUTPUT_DIR [HOST_HELPER]}
 helper=${3:-}
@@ -13,7 +16,7 @@ esac
 field=bundle
 if [ "$platform" = linux_x86_64 ]; then field=bundles.linux_x86_64; fi
 mkdir -p "$output"
-stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
+stage=$(mktemp -d); trap 'status=$?; failed_line=$LINENO; rm -rf "$stage"; package_diagnostics_exit "$status" "$failed_line"' EXIT
 bundle="$stage/bundle"; mkdir -p "$bundle/scripts" "$bundle/libexec" "$bundle/elixir" "$bundle/.codex/skills"
 if [ -n "$helper" ]; then cp "$helper" "$bundle/libexec/symphony-host"
 else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host"; fi
@@ -26,6 +29,7 @@ if [ "$platform" = macos ]; then
   # ad-hoc signature passes this check; it is not Developer ID/notarization proof.
   codesign --verify --strict "$bundle/libexec/symphony-host" || { echo 'macOS helper signature integrity check failed; refusing packaging' >&2; exit 1; }
 fi
+package_stage package.inputs
 "$bundle/libexec/symphony-host" validate-manifest "$manifest"
 python3 "$root/scripts/release/manager_inputs.py" "$manifest" --root "$root"
 if "$bundle/libexec/symphony-host" get "$manifest" "$field.sha256" >/dev/null 2>&1; then echo 'packer requires internal manifest without circular bundle checksum' >&2; exit 1; fi
@@ -52,11 +56,13 @@ PYMEASURE
 else
   revision=$("$bundle/libexec/symphony-host" get "$manifest" source_revision)
 fi
+package_stage package.source
 [ "$revision" = "$(git -C "$root" rev-parse HEAD)" ] || { echo 'bundle manifest source differs from checkout HEAD' >&2; exit 1; }
 [ -z "$(git -C "$root" status --porcelain --untracked-files=all -- scripts/symphony scripts/codex-seccomp.json scripts/codex-seccomp.LICENSE scripts/codex-apparmor.profile scripts/symphony-package.sh scripts/symphony-package-update.sh scripts/symphony-environment.sh scripts/symphony-runner-import.sh runner/templates docs/team-environments.md docs/macos-install-security.md docs/candidate-runner-provisioning.md scripts/package/host.swift scripts/package/linux scripts/release/build-linux-host-helper.sh scripts/release/package.sh scripts/release/build-host-helper.sh scripts/release/host-targets.json scripts/release/manager-version scripts/release/manager_version.py scripts/release/manager_envelope.py scripts/release/manager_contract.py scripts/release/manager_inputs.py scripts/release/finite_transition.py scripts/release/manager-transition-policy.json scripts/release/release-schema elixir/WORKFLOW.md .codex/skills)" ] || { echo 'release inputs have uncommitted changes; commit them before packaging' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" build-revision)" = "$revision" ] || { echo 'host helper source differs from selected release' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-platform)" = "$platform" ] || { echo 'helper platform differs from bundle build host' >&2; exit 1; }
 [ "$("$bundle/libexec/symphony-host" host-architecture)" = "$(uname -m)" ] || { echo 'helper architecture differs from bundle build host' >&2; exit 1; }
+package_stage package.metadata
 python3 - "$manifest" "$bundle/release.json" "$platform" "$root/scripts/release/host-targets.json" <<'PYMANIFEST'
 import json,sys
 value=json.load(open(sys.argv[1]))
@@ -69,6 +75,7 @@ value["package_platform"]=sys.argv[3]
 with open(sys.argv[2],"w") as output: json.dump(value,output,indent=2,sort_keys=True); output.write("\n")
 PYMANIFEST
 printf '%s\n' "$platform" > "$bundle/host-platform"
+package_stage package.copy
 cp "$root/scripts/symphony" "$root/scripts/codex-seccomp.json" "$root/scripts/codex-seccomp.LICENSE" "$root/scripts/codex-apparmor.profile" "$root/scripts/symphony-package.sh" "$root/scripts/symphony-environment.sh" "$root/scripts/symphony-runner-import.sh" "$bundle/scripts/"
 if [ -f "$root/scripts/symphony-package-update.sh" ]; then cp "$root/scripts/symphony-package-update.sh" "$bundle/scripts/"; fi
 mkdir -p "$bundle/runner/templates" "$bundle/docs"
@@ -121,14 +128,17 @@ chmod 755 "$bundle/install.sh" "$bundle/scripts/symphony" "$bundle/libexec/symph
 # Only the opt-in distribution controller supplies an isolated keychain. Sign
 # the staged copy, preserving qualified input bytes, before inventory/archive
 # hashing. The ordinary path remains credential-free and explicitly unsigned.
+package_stage package.payload-signing
 if [ -n "${SYMPHONY_MACOS_KEYCHAIN:-}" ]; then
   [ "$platform" = macos ] || { echo 'macOS signing requested on another platform' >&2; exit 1; }
   python3 "$root/scripts/release/macos_distribution.py" sign-payload "$bundle"
 else
   printf '%s\n' 'unsigned candidate; compiler ad-hoc signatures are not Developer ID or notarization' > "$bundle/distribution-status.txt"
 fi
+package_stage package.inventory
 (cd "$bundle" && find . -type f ! -name files.sha256 -print | LC_ALL=C sort | while IFS= read -r path; do printf '%s  %s\n' "$("$bundle/libexec/symphony-host" sha256 "$path")" "$path"; done > files.sha256)
 "$bundle/libexec/symphony-host" verify-files "$bundle"
+package_stage package.archive
 filename=$("$bundle/libexec/symphony-host" get "$manifest" "$field.filename")
 tar -C "$bundle" -czf "$output/$filename" .
 printf '%s  %s\n' "$("$bundle/libexec/symphony-host" sha256 "$output/$filename")" "$output/$filename"
