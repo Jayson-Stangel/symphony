@@ -14,7 +14,12 @@ STAGES = frozenset(('assembly.source', 'assembly.helper', 'assembly.package',
     'signature.certificate'))
 
 
-def record(stage, status, exit_status=None, outcome=None, source_line=None):
+REASONS = frozenset(('certificate-chain', 'certificate-trust', 'certificate-expired',
+    'interaction-denied', 'identity-unavailable', 'timestamp-unavailable',
+    'timestamp-missing', 'security-internal', 'unclassified'))
+
+
+def record(stage, status, exit_status=None, outcome=None, source_line=None, reason=None):
     if stage not in STAGES or status not in ('running', 'success', 'failed'):
         raise ValueError('invalid package diagnostic label')
     if exit_status is not None and type(exit_status) is not int:
@@ -23,6 +28,8 @@ def record(stage, status, exit_status=None, outcome=None, source_line=None):
         raise ValueError('invalid package diagnostic source line')
     if outcome not in (None, 'failed', 'timed out', 'could not start', 'operation refused', 'interrupted'):
         raise ValueError('invalid package diagnostic outcome')
+    if reason is not None and (reason not in REASONS or stage != 'signature.sign' or status != 'failed'):
+        raise ValueError('invalid package diagnostic reason')
     target = os.environ.get(VARIABLE)
     if not target:
         return
@@ -36,6 +43,8 @@ def record(stage, status, exit_status=None, outcome=None, source_line=None):
             item['outcome'] = outcome
         if source_line is not None:
             item['source_line'] = source_line
+        if reason is not None:
+            item['reason'] = reason
         value['operations'].append(item)
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -51,7 +60,8 @@ def stage(label):
         # Preserve the primary failure even if the evidence destination fails too.
         outcome = getattr(error, 'outcome', 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'operation refused')
         try:
-            record(label, 'failed', getattr(error, 'returncode', None), outcome)
+            record(label, 'failed', getattr(error, 'returncode', None), outcome,
+                   reason=getattr(error, 'reason', None))
         except ValueError:
             pass
         raise
