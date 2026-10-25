@@ -274,7 +274,7 @@ def sign(path, keychain, env, runtime=True):
     # Bind the actual leaf certificate, not merely a matching display name/team.
     with package_evidence.stage('signature.certificate'), tempfile.TemporaryDirectory(prefix='certificate-', dir=Path(keychain).parent) as temporary:
         prefix = Path(temporary) / 'cert'
-        run('codesign', '-d', '--extract-certificates', prefix, path, stage='signature.certificate')
+        run('codesign', '-d', '--extract-certificates=' + str(prefix), path, stage='signature.certificate')
         certificate = Path(str(prefix) + '0').read_bytes()
         require(hashlib.sha1(certificate).hexdigest().upper() == identity,
                 'signed payload certificate differs')
