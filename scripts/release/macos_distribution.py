@@ -37,12 +37,33 @@ def require(condition, message):
 
 
 class CommandFailure(ValueError):
-    """Only fixed stage labels and numeric process status may leave this boundary."""
-    def __init__(self, stage, outcome, returncode=None):
+    """Only fixed labels, reasons and numeric process status leave this boundary."""
+    def __init__(self, stage, outcome, returncode=None, reason=None):
         self.outcome = outcome
         self.returncode = returncode
+        self.reason = reason
         suffix = f' (exit {returncode})' if returncode is not None else ''
         super().__init__(f'distribution command {outcome}: {stage}{suffix}')
+
+
+def codesign_failure_reason(output):
+    """Reduce private command output to a fixed category; never retain excerpts."""
+    # Prefer specific evidence over the generic Security framework error.
+    for token, reason in (
+        ('unable to build chain to self-signed root', 'certificate-chain'),
+        ('CSSMERR_TP_NOT_TRUSTED', 'certificate-trust'),
+        ('CSSMERR_TP_CERT_EXPIRED', 'certificate-expired'),
+        ('User interaction is not allowed', 'interaction-denied'),
+        ('errSecInteractionNotAllowed', 'interaction-denied'),
+        ('The specified item could not be found in the keychain', 'identity-unavailable'),
+        ('no identity found', 'identity-unavailable'),
+        ('The timestamp service is not available', 'timestamp-unavailable'),
+        ('A timestamp was expected but was not found', 'timestamp-missing'),
+        ('errSecInternalComponent', 'security-internal'),
+    ):
+        if token.casefold() in output.casefold():
+            return reason
+    return 'unclassified'
 
 
 def run(*args, timeout=180, env=None, stage=None):
@@ -57,7 +78,8 @@ def run(*args, timeout=180, env=None, stage=None):
             raise CommandFailure(label, 'could not start') from None
         raise
     if result.returncode != 0:
-        raise CommandFailure(label, 'failed', result.returncode)
+        reason = codesign_failure_reason(result.stdout + result.stderr) if stage == 'signature.sign' else None
+        raise CommandFailure(label, 'failed', result.returncode, reason)
     return result.stdout + result.stderr
 
 

@@ -173,6 +173,11 @@ inventory and archive stages. Nested signing records separate signing, physical
 verification, signature inspection/policy, entitlement, leaf-certificate, native
 inventory and source-revision checks. Shell failures retain only the fixed stage
 and numeric exit status/source line; Python failures retain a fixed outcome category.
+Failed `signature.sign` operations also retain one fixed reason: certificate chain,
+trust or expiry; denied interaction; unavailable identity; unavailable or missing
+timestamp; generic Security framework error; or unclassified. Classification scans
+command output in memory and discards it. A category is a diagnostic clue, not
+proof of its underlying cause; unknown output remains unclassified.
 The source line maps to the approved commit’s assembly or package script, so even
 a stage containing several checks can be traced without exposing command text.
 Line `0` means the source location is unknown; it must not be treated as a

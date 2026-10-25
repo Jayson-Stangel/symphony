@@ -27,7 +27,7 @@ with open(os.environ['PEER_LOG'],'a') as log:log.write(json.dumps([tool,*args])+
 operation=tool+' '+(' '.join(args[:2]))
 if (os.environ.get('PEER_FAIL') and os.environ['PEER_FAIL'] in operation) or any(
         failure in operation for failure in json.loads(os.environ.get('PEER_FAILURES','[]'))):
-    print('FAKE-SECRET-MUST-NOT-LEAK',file=sys.stderr);sys.exit(44)
+    print('FAKE-SECRET-MUST-NOT-LEAK '+os.environ.get('PEER_ERROR', ''),file=sys.stderr);sys.exit(44)
 if tool=='security':
     if args[0]=='list-keychains':print('"/original/login.keychain-db"')
     if args[0]=='create-keychain':pathlib.Path(args[-1]).write_text('fake keychain')
@@ -444,10 +444,44 @@ class DistributionTest(unittest.TestCase):
             with self.assertRaisesRegex(dist.CommandFailure, 'signature.sign.*44'):
                 dist.sign(helper, self.root / 'fake-keychain', self.env)
         failed = json.loads(evidence.read_text())['operations'][-1]
-        self.assertEqual(failed, {'stage': 'signature.sign', 'status': 'failed', 'outcome': 'failed', 'exit_status': 44})
+        self.assertEqual(failed, {'stage': 'signature.sign', 'status': 'failed', 'outcome': 'failed', 'exit_status': 44, 'reason': 'unclassified'})
         self.assertNotIn('FAKE-SECRET', evidence.read_text())
         self.assertNotIn(IDENTITY, evidence.read_text())
         self.assertNotIn(str(helper), evidence.read_text())
+
+    def test_codesign_error_categories_discard_private_output(self):
+        evidence = self.root / 'reason.json'
+        helper = self.root / 'private-helper'
+        helper.write_bytes(b'FAKE HELPER')
+        cases = (
+            ('unable to build chain to self-signed root; errSecInternalComponent', 'certificate-chain'),
+            ('CSSMERR_TP_NOT_TRUSTED', 'certificate-trust'),
+            ('CSSMERR_TP_CERT_EXPIRED', 'certificate-expired'),
+            ('User interaction is not allowed', 'interaction-denied'),
+            ('errSecInteractionNotAllowed', 'interaction-denied'),
+            ('The specified item could not be found in the keychain', 'identity-unavailable'),
+            ('no identity found', 'identity-unavailable'),
+            ('The timestamp service is not available', 'timestamp-unavailable'),
+            ('A timestamp was expected but was not found', 'timestamp-missing'),
+            ('errSecInternalComponent', 'security-internal'),
+            ('unexpected private error', 'unclassified'),
+        )
+        for output, reason in cases:
+            with self.subTest(reason=reason), patch.dict(os.environ, {
+                    dist.package_evidence.VARIABLE: str(evidence),
+                    'PEER_FAIL': 'codesign --force',
+                    'PEER_ERROR': output + ' /private/secret user@example.invalid ' + IDENTITY}):
+                with self.assertRaises(dist.CommandFailure) as caught:
+                    dist.sign(helper, self.root / 'private-keychain', self.env)
+                failed = json.loads(evidence.read_text())['operations'][-1]
+                self.assertEqual(failed['reason'], reason)
+                public = evidence.read_text() + str(caught.exception)
+                for private in ('FAKE-SECRET', output, '/private/secret', 'user@example.invalid', IDENTITY, str(helper)):
+                    self.assertNotIn(private, public)
+        with self.assertRaisesRegex(ValueError, 'invalid package diagnostic reason'):
+            dist.package_evidence.record('signature.sign', 'failed', reason='FAKE-SECRET')
+        with self.assertRaisesRegex(ValueError, 'invalid package diagnostic reason'):
+            dist.package_evidence.record('package.copy', 'failed', reason='unclassified')
 
     def test_payload_policy_failure_is_distinct_from_codesign_failure(self):
         evidence = self.root / 'package.json'
