@@ -84,7 +84,7 @@ def main():
     if args.kind == 'portable':
         subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'scripts/ci/tests'), '-v'], check=True)
         for filename in ('scripts/symphony', 'scripts/symphony-package.sh',
-                         'scripts/symphony-package-update.sh', 'scripts/symphony-runner-import.sh', 'scripts/release/package.sh',
+                         'scripts/symphony-package-update.sh', 'scripts/symphony-runner-import.sh', 'scripts/symphony-runner-provision.sh', 'scripts/release/package.sh',
                          'scripts/release/build-host-helper.sh'):
             subprocess.run(['bash', '-n', str(ROOT / filename)], check=True)
         for filename in ['elixir/WORKFLOW.md', 'scripts/package/host.swift'] + [

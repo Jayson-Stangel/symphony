@@ -19,6 +19,7 @@ class ManagerSelectedEnvironment(unittest.TestCase):
 package_helper() { test "$1" = owned-file && test -f "$2" && test ! -L "$2"; }
 runner_env_file() { printf '%s\\n' "$METADATA"; }
 selected_environment_image() { printf '%s' "$SELECTED"; return "$STATUS"; }
+package_ensure_candidate_image() { :; }
 package_image() { printf 'release-%s\\n' "$1"; }
 die() { echo "$*" >&2; exit 42; }
 ''' + FUNCTIONS + '\npackage_transition_image /project "$AGENT"\n'
