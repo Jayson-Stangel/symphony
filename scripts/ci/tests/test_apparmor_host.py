@@ -125,6 +125,38 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
     def calls(self):return [json.loads(v) for v in (self.root/'calls').read_text().splitlines()]
     def destination(self):return self.root/'etc/apparmor.d'/PROFILE
 
+    def test_snapshot_selection_diagnoses_absent_policy_before_export_or_store(self):
+        launcher = (ROOT / 'scripts/symphony').read_text()
+        selection = 'codex_config_select() {' + launcher.split('codex_config_select() {', 1)[1].split('\ncodex_config_require() {', 1)[0]
+        doctor = 'runner_doctor() {' + launcher.split('runner_doctor() {', 1)[1].split('\nrunner() {', 1)[0]
+        original = self.driver.read_text()
+        for name in ('native-auth', 'native-settings', 'runner-state'):
+            (self.root / name).write_text('preserved-' + name)
+        for invocation in ('codex_config_select /unused docker fixture-image',
+                           'if codex_config_select /unused docker fixture-image; then exit 88; else exit 1; fi',
+                           'codex_config_select /unused docker fixture-image | cat',
+                           'runner_doctor /unused codex true',
+                           'if runner_doctor /unused codex true; then exit 88; else exit 1; fi'):
+            with self.subTest(invocation=invocation):
+                driver = original.replace('if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"; fi',
+                    selection + '\n' + doctor + '\ncodex_auth_volume=fixture-auth\npackaged_install=false\n'
+                    'container_engine_ready() { return 0; }\nvalidate_agent() { return 0; }\n'
+                    'runner_image() { printf fixture-image; }\n'
+                    'runner_codex_sandbox_ready() { printf called > \"$FIXTURE/unexpected-protected\"; return 91; }\n'
+                    'codex_config_store_root() { printf called > "$FIXTURE/unexpected-store"; printf "%s" "$FIXTURE/store"; }\n'
+                    'runner_codex_run() { printf called > "$FIXTURE/unexpected-export"; return 89; }\n'
+                    'codex_config_store() { cat >/dev/null; return 90; }\n'
+                    + invocation)
+                self.driver.write_text(driver)
+                output = self.run_command(success=False)
+                self.assertIn('AppArmor [absent]', output)
+                self.assertIn('Run symphony runner apparmor', output)
+                self.assertFalse((self.root / 'unexpected-store').exists())
+                self.assertFalse((self.root / 'unexpected-export').exists())
+                self.assertFalse((self.root / 'unexpected-protected').exists())
+                for name in ('native-auth', 'native-settings', 'runner-state'):
+                    self.assertEqual((self.root / name).read_text(), 'preserved-' + name)
+
     def test_plan_is_source_free_read_only_and_exact(self):
         output=self.run_command()
         self.assertIn('--apply --daemon-id daemon-id',output)

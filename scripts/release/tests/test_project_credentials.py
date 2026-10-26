@@ -201,6 +201,7 @@ runner_storage_id() { printf fixture-storage; }
 fixture_runtime() {
   case "$1" in
     image) printf fixture-image ;;
+    info) printf '%s\\n' 'name=seccomp,profile=builtin' ;;
     run) case " $* " in *' --entrypoint /usr/bin/stat '*) id -u ;; *) return 94 ;; esac ;;
   esac
 }

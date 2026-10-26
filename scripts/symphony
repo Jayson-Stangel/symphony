@@ -1165,8 +1165,11 @@ codex_runtime_profile_id() {
 # Manager-selected immutable settings. Project/ambient selectors are never used.
 codex_config_profile() { printf '%s' trust-ro-v2; }
 codex_config_store_root() {
-  mkdir -p "$runner_home"
-  printf '%s/%s-codex-config' "$(cd "$runner_home" && pwd -P)" "$(runner_storage_id "$1")"
+  local directory storage
+  mkdir -p "$runner_home" || return
+  directory=$(cd "$runner_home" && pwd -P) || return
+  storage=$(runner_storage_id "$1") || return
+  printf '%s/%s-codex-config' "$directory" "$storage"
 }
 codex_config_store() {
   if "$packaged_install"; then package_helper codex-config-store "$@"
@@ -1175,7 +1178,9 @@ codex_config_store() {
 codex_config_clear() { codex_config_sha=; codex_config_owner=; codex_config_file=; codex_config_image=; }
 codex_config_select() {
   local root=$1 runtime=$2 image=$3 digest owner store
-  store=$(codex_config_store_root "$root")
+  # Host preparation must precede the first protected snapshot exporter.
+  apparmor_doctor "$runtime" || return
+  store=$(codex_config_store_root "$root") || return
   # The exporter opens only bounded native settings. No credentials are copied
   # or passed through project configuration; native login remains read-only.
   local auth_mount=(--volume /root/.codex)
@@ -1454,7 +1459,7 @@ runner_start() {
   if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
   if [ "$agent" = codex ]; then
     if [ "$authority" != update ]; then
-      if [ "$state" = missing ]; then codex_config_select "$root" "$runtime" "$image_id"
+      if [ "$state" = missing ]; then codex_config_select "$root" "$runtime" "$image_id" || return
       else
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = codex ] || die 'listener agent differs; transition through symphony update --agent'
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
@@ -1833,8 +1838,8 @@ runner_refresh_pending() {
       IFS=$'\t' read -r stage_marker stage_image stage_sha stage_owner <<< "$stage_record"
       if [ "$stage_image" = "$replacement" ]; then
         codex_config_record_load "$root" "$replacement" "$journal/image.next"
-      else codex_config_select "$root" "$runtime" "$replacement"; fi
-    else codex_config_select "$root" "$runtime" "$replacement"; fi
+      else codex_config_select "$root" "$runtime" "$replacement" || return; fi
+    else codex_config_select "$root" "$runtime" "$replacement" || return; fi
   fi
   runner_doctor "$root" "$agent"
   [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
@@ -2042,7 +2047,7 @@ runner_transition() (
     export SYMPHONY_RUNNER_IMAGE="$candidate"
     # A new update intent captures current native trust even when image stays
     # unchanged. Pending intents instead retain their exact journal tuple.
-    if [ "$agent" = codex ]; then codex_config_select "$root" "$runtime" "$candidate"; fi
+    if [ "$agent" = codex ]; then codex_config_select "$root" "$runtime" "$candidate" || return; fi
     runner_doctor "$root" "$agent"
     local journal_tmp
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
@@ -2243,7 +2248,7 @@ runner_doctor() {
   if "$packaged_install" || ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image "$agent" || return; fi
   printf 'Runner image: available.\n'
   if [ "$agent" = codex ]; then
-    if [ "${codex_config_image:-}" != "$image" ]; then codex_config_select "$root" "$runtime" "$image"; fi
+    if [ "${codex_config_image:-}" != "$image" ]; then codex_config_select "$root" "$runtime" "$image" || return; fi
     runner_codex_sandbox_ready "$root" "$runtime" "$image" || return
   fi
   if "$sandbox_only"; then

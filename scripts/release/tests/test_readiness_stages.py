@@ -86,6 +86,20 @@ runner_codex_sandbox_ready /unused fixture_runtime fixture_image
         self.assertIn('immutable Codex settings verification failed', result.stderr)
         self.assertNotIn('UNEXPECTED_PROTECTED_COMMAND', result.stderr)
 
+    def test_snapshot_storage_failure_stops_before_export_in_conditional_context(self):
+        result = self.run_shell('''
+apparmor_doctor() { return 0; }
+printf preserve > "$config_home/not-a-directory"
+runner_home="$config_home/not-a-directory/runners"
+runner_codex_run() { echo UNEXPECTED_EXPORT >&2; return 90; }
+codex_config_store() { echo UNEXPECTED_STORE >&2; return 91; }
+if codex_config_select /unused fixture_runtime fixture_image; then exit 92; else exit 1; fi
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Not a directory', result.stderr)
+        self.assertNotIn('UNEXPECTED_EXPORT', result.stderr)
+        self.assertNotIn('UNEXPECTED_STORE', result.stderr)
+
     def test_failed_native_login_status_cannot_report_ready_in_conditional(self):
         result = self.run_shell('''
 container_runtime() { printf fixture_runtime; }
