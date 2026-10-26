@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real owned-process regressions for the credential-free npm qualification helper."""
+# Hosted routing probe: the process ownership regressions remain unchanged.
 import json
 import os
 from pathlib import Path

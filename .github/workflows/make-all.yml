@@ -94,7 +94,8 @@ jobs:
         run: python3 scripts/ci/release_tests.py codex-config
       - name: Npm configuration semantics
         if: needs.changes.outputs.npm == 'true'
-        run: python3 runner/test_npm_cache.py
+        run: |
+          python3 runner/test_npm_cache.py
       - name: Require ready application qualification
         env:
           APPLICATION: ${{ needs.changes.outputs.application }}
