@@ -57,7 +57,10 @@ jobs:
 
       - name: Codex protected-command failure regressions
         if: needs.changes.outputs.application != 'false'
-        run: python3 runner/test_codex_readiness.py
+        run: |
+          python3 runner/test_codex_readiness.py
+          python3 scripts/ci/release_tests.py codex-config
+          python3 runner/test_npm_cache.py
 
       - name: Cache deps and build
         if: needs.changes.outputs.application != 'false'

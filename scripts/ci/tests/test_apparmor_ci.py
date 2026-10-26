@@ -64,7 +64,7 @@ class AppArmorPreparationTest(unittest.TestCase):
         self.root = Path(self.folder.name)
         scripts = self.root / 'scripts'
         (scripts / 'ci').mkdir(parents=True)
-        for name in ('symphony', 'symphony-environment.sh', 'codex-apparmor.profile', 'codex-seccomp.json'):
+        for name in ('symphony', 'symphony-environment.sh', 'symphony-apparmor.sh', 'codex-apparmor.profile', 'codex-seccomp.json'):
             shutil.copy2(ROOT / 'scripts' / name, scripts / name)
         self.helper = scripts / 'ci/prepare-codex-apparmor.sh'
         shutil.copy2(ROOT / 'scripts/ci/prepare-codex-apparmor.sh', self.helper)

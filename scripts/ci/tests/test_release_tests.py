@@ -5,6 +5,7 @@ import tempfile
 import os
 import subprocess
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('release_tests', Path(__file__).parents[1] / 'release_tests.py')
 RELEASE = importlib.util.module_from_spec(SPEC)
@@ -31,6 +32,51 @@ class ReleasePreflightTest(unittest.TestCase):
 
     def test_portable_metadata_suite_runs(self):
         self.assertTrue(self.execute('portable', 'test_artifacts.py', '    def test_policy(self): self.assertTrue(True)\n'))
+
+
+class CodexConfigContractsTest(unittest.TestCase):
+    def test_missing_contract_file_refuses_instead_of_empty_discovery(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(RELEASE, 'ROOT', Path(directory)), \
+                patch.object(RELEASE.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'missing Codex config contract'):
+                RELEASE.codex_config_contracts()
+        command.assert_not_called()
+
+    def test_old_python_refuses_without_starting_or_skipping_contracts(self):
+        with patch.object(RELEASE.sys, 'version_info', (3, 10)), patch.object(RELEASE.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'Python 3.11'):
+                RELEASE.codex_config_contracts()
+        command.assert_not_called()
+
+    def test_portable_and_fixed_selection_share_contracts_without_native_builds(self):
+        for kind in ('portable', 'codex-config'):
+            with self.subTest(kind=kind), patch.object(RELEASE.sys, 'argv', ['release_tests.py', kind]), \
+                    patch.object(RELEASE, 'codex_config_contracts') as contracts, \
+                    patch.object(RELEASE.subprocess, 'run'), patch.object(RELEASE, 'run', return_value=True) as fixtures:
+                with self.assertRaises(SystemExit) as result:
+                    RELEASE.main()
+                self.assertEqual(result.exception.code, 0)
+                contracts.assert_called_once_with()
+                if kind == 'codex-config':
+                    fixtures.assert_not_called()
+                else:
+                    fixtures.assert_called_once_with('portable', RELEASE.ROOT / 'scripts/release/tests')
+
+    def test_contract_failure_stops_manual_portable_before_release_qualification(self):
+        with patch.object(RELEASE.sys, 'argv', ['release_tests.py', 'portable']), \
+                patch.object(RELEASE, 'codex_config_contracts', side_effect=subprocess.CalledProcessError(1, 'contract')), \
+                patch.object(RELEASE, 'run') as fixtures:
+            with self.assertRaises(subprocess.CalledProcessError): RELEASE.main()
+        fixtures.assert_not_called()
+
+    def test_required_application_step_uses_the_same_fixed_contract_selection(self):
+        text = (RELEASE.ROOT / '.github/workflows/make-all.yml').read_text()
+        block = text.split('      - name: Codex protected-command failure regressions\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("needs.changes.outputs.application != 'false'", block)
+        self.assertIn('python3 runner/test_codex_readiness.py', block)
+        self.assertIn('python3 scripts/ci/release_tests.py codex-config', block)
+        portable = (RELEASE.ROOT / '.github/workflows/release-preflight.yml').read_text()
+        self.assertIn('python3 scripts/ci/release_tests.py portable', portable)
 
 
 class WorkflowGuardTest(unittest.TestCase):

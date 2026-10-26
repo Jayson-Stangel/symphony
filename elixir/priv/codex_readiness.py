@@ -4,6 +4,8 @@ Input is a resolved Symphony policy, never shell text to execute. Output is a
 fixed diagnostic code; native output is deliberately not forwarded.
 """
 import json
+import hashlib
+import stat
 import os
 import shlex
 from pathlib import Path
@@ -32,6 +34,35 @@ def diagnostic(data):
     if b"proc" in data and (b"mount" in data or b"Operation not permitted" in data):
         return "sandbox_proc_setup_failed"
     return "sandbox_helper_failed"
+
+
+def launch_receipt(data, expected_image_chain, wrapped):
+    """Decode a bounded guard receipt without ever forwarding child output."""
+    if not data:
+        raise Refusal("sandbox_wrapper_failed" if wrapped else "sandbox_launch_failed")
+    if len(data) > 16384:
+        raise Refusal("sandbox_launch_receipt_invalid")
+    try:
+        chain = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    if not isinstance(chain, dict):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    if "error" in chain:
+        code = chain["error"]
+        if (set(chain) != {"error"} or type(code) is not str or code not in
+                ("sandbox_unqualified_config", "sandbox_unsupported_command",
+                 "sandbox_toolchain_unqualified", "sandbox_launch_failed")):
+            raise Refusal("sandbox_launch_receipt_invalid")
+        raise Refusal(code)
+    node = chain.get("node")
+    if ({k: v for k, v in chain.items() if k != "node"} != expected_image_chain or
+            not isinstance(node, dict) or set(node) != {"path", "sha256"} or
+            not isinstance(node["path"], str) or not Path(node["path"]).is_absolute() or
+            not isinstance(node["sha256"], str) or len(node["sha256"]) != 64 or
+            any(c not in "0123456789abcdef" for c in node["sha256"])):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    return chain
 
 
 def launch_command(value):
@@ -88,11 +119,34 @@ def copy_project(source, target):
                 if not contains(source, resolved) or contains(target, resolved):
                     raise Refusal("sandbox_launch_unavailable")
                 links.append((path.relative_to(source), resolved.relative_to(source)))
-    shutil.copytree(source, target, dirs_exist_ok=True, ignore=ignored, symlinks=True)
+    # This is the helper's newly-created empty temporary root, never a task
+    # directory. copytree copies source directory metadata too; keep the private
+    # destination boundary even when an ordinary read-only source uses 0775.
+    descriptor = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        if (target.resolve() != target or not stat.S_ISDIR(before.st_mode) or
+                before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) != 0o700 or
+                any(target.iterdir())):
+            raise Refusal("sandbox_launch_unavailable")
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True, ignore=ignored, symlinks=True)
+        finally:
+            opened = os.fstat(descriptor)
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_uid)
+            if identity(opened) != identity(before):
+                raise Refusal("sandbox_launch_unavailable")
+            os.fchmod(descriptor, 0o700)
+            current = target.lstat()
+            if not stat.S_ISDIR(current.st_mode) or identity(current) != identity(before):
+                raise Refusal("sandbox_launch_unavailable")
+    finally:
+        os.close(descriptor)
     for link, destination in links:
         copied = target / link
         copied.unlink()
         copied.symlink_to(os.path.relpath(target / destination, copied.parent))
+
 
 
 def check(value):
@@ -122,12 +176,21 @@ def check(value):
     # supported interface. auth.json is neither opened nor copied.
     launch_root = Path(value.get("launch_root", workspace)).resolve()
     for parent in [workspace, *workspace.parents, launch_root, *launch_root.parents]:
-        if (parent / ".codex/config.toml").exists():
+        if os.path.lexists(parent / ".codex/config.toml"):
             raise Refusal("sandbox_unqualified_config")
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-    if any(p.exists() for p in (codex_home / "config.toml", Path("/etc/codex/config.toml"),
-                               Path("/etc/codex/requirements.toml"))):
-        raise Refusal("sandbox_unqualified_config")
+    if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
+        retained_context = attest_context(value)
+        retained_config = retained_context["config_bytes"]
+        try:
+            value["expected_image_chain"] = image_chain(retained_context["executable"])
+        except Refusal:
+            raise Refusal("sandbox_toolchain_unqualified")
+    else:
+        if any(os.path.lexists(p) for p in (codex_home / "config.toml", Path("/etc/codex/config.toml"),
+                                           Path("/etc/codex/requirements.toml"))):
+            raise Refusal("sandbox_unqualified_config")
+        retained_config = None
     if not policy["excludeSlashTmp"]:
         roots.append(Path("/tmp").resolve())
     if not policy["excludeTmpdirEnvVar"] and os.environ.get("TMPDIR"):
@@ -141,8 +204,8 @@ def check(value):
         raise Refusal("sandbox_no_denial_target")
     with tempfile.TemporaryDirectory(prefix=".symphony-sandbox-", dir=workspace) as allowed, \
             tempfile.TemporaryDirectory(prefix=".symphony-sandbox-", dir=outside_parent) as denied:
-        allowed = Path(allowed)
-        denied = Path(denied)
+        allowed = Path(allowed).resolve()
+        denied = Path(denied).resolve()
         if wrapper:
             # Never mutate the source checkout. The trusted setup script runs in
             # a disposable project copy under the real effective writable root.
@@ -170,6 +233,9 @@ def check(value):
             control.unlink()
         home = denied / "home"
         home.mkdir()
+        if retained_config is not None:
+            (home / "config.toml").write_bytes(retained_config)
+            (home / "config.toml").chmod(0o600)
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "TMPDIR", "LANG", "LC_ALL")}
         env.update(HOME=str(home), CODEX_HOME=str(home))
         args = [executable, *options, "sandbox", "-c", 'sandbox_mode="workspace-write"']
@@ -219,7 +285,7 @@ assert (a/'tracked').read_text()=='dirty' and (a/'untracked').read_text()=='pres
 (a/'git-complete').write_text('sandbox-ready')
 (a/'complete').write_text('sandbox-ready')
 """
-        args += ["--", sys.executable, "-c", payload, str(allowed), str(denied), str(protected), "git-write" if git_write else "protected-git"]
+        args += ["--", sys.executable, "-I", "-c", payload, str(allowed), str(denied), str(protected), "git-write" if git_write else "protected-git"]
         reached = denied / "launcher-reached"
         if wrapper:
             # The trampoline is an argv target for exec "$@" wrappers. It
@@ -227,35 +293,82 @@ assert (a/'tracked').read_text()=='dirty' and (a/'untracked').read_text()=='pres
             # that environment for the actual sandbox. Its marker is diagnostic
             # only: the native positive and negative effects still decide readiness.
             trampoline = allowed / ".symphony-launch.py"
-            trampoline.write_text("""import os,pathlib,shutil,sys
+            trampoline.write_text("""import os,pathlib,shutil,sys,hashlib,stat
 if any(os.environ.get(k) for k in ('NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH','DYLD_INSERT_LIBRARIES')):
     sys.exit(78)
 home=pathlib.Path(os.environ.get('CODEX_HOME',str(pathlib.Path.home()/'.codex')))
-if (home/'config.toml').exists():sys.exit(78)
+if home.resolve()!=pathlib.Path(EXPECTED_HOME) or home.is_symlink():sys.exit(78)
+config=home/'config.toml'
+if EXPECTED_CONFIG is None:
+    if os.path.lexists(config):sys.exit(78)
+else:
+    info=config.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_nlink!=1 or info.st_mode&0o022 or info.st_size>65536:sys.exit(78)
+    descriptor=os.open(config,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(descriptor,'rb') as stream:
+        opened=os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev,opened.st_ino)!=(info.st_dev,info.st_ino):sys.exit(78)
+        raw=stream.read(65537)
+    if len(raw)>65536 or hashlib.sha256(raw).hexdigest()!=EXPECTED_CONFIG:sys.exit(78)
+for ancestor in (pathlib.Path.cwd(),*pathlib.Path.cwd().parents):
+    if os.path.lexists(ancestor/'.codex/config.toml'):sys.exit(78)
 exe=shutil.which(sys.argv[2])
 if not exe:sys.exit(127)
 pathlib.Path(sys.argv[1]).write_text('reached')
 os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
-""")
-            args = [wrapper[0], str(script), sys.executable, str(trampoline), str(reached), *args]
-        with tempfile.TemporaryFile() as output:
-            child = subprocess.Popen(args, cwd=allowed, env=env, stdout=output, stderr=output, start_new_session=True)
-            try:
-                status = child.wait(timeout=180 if wrapper else 15)
-            except subprocess.TimeoutExpired:
-                raise Refusal("sandbox_timeout")
-            finally:
-                # Kill descendants even if the immediate helper exited first.
+""".replace("EXPECTED_HOME", repr(str(home))).replace("EXPECTED_CONFIG", repr(hashlib.sha256(retained_config).hexdigest() if retained_config is not None else None)))
+            if value.get("snapshot_profile") not in ("trust-ro-v1", "trust-ro-v2"):
+                args = [wrapper[0], str(script), sys.executable, "-I", str(trampoline), str(reached), *args]
+        read_fd = write_fd = None
+        launch_chain = None
+        if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
+            read_fd, write_fd = os.pipe()
+            probe_value = {k: v for k, v in value.items() if k != "launch_program"}
+            probe_value.update(operation="probe", workspace=str(allowed), launch_root=str(allowed),
+                               expected_home=str(home), expected_codex_home=str(home),
+                               expected_native_environment={}, expected_snapshot_uid=os.getuid(), receipt_fd=write_fd)
+            prefix = [wrapper[0], str(script)] if wrapper else []
+            args = [*prefix, sys.executable, "-I", "-c", value["launch_program"],
+                    json.dumps(probe_value), *args]
+        try:
+            with tempfile.TemporaryFile() as output:
                 try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                child.wait()
-            output.seek(0)
-            data = output.read(65536)
-        if (denied / "outside").exists() or (protected / "protected").exists():
-            raise Refusal("sandbox_policy_enforcement_failed")
-        if wrapper and not reached.exists():
+                    child = subprocess.Popen(args, cwd=allowed, env=env, stdout=output, stderr=output,
+                                             pass_fds=(write_fd,) if write_fd is not None else (), start_new_session=True)
+                except OSError:
+                    raise Refusal("sandbox_wrapper_failed" if wrapper else "sandbox_launch_failed")
+                if write_fd is not None:
+                    os.close(write_fd)
+                    write_fd = None
+                try:
+                    status = child.wait(timeout=180 if wrapper else 15)
+                except subprocess.TimeoutExpired:
+                    raise Refusal("sandbox_timeout")
+                finally:
+                    # Kill descendants even if the immediate helper exited first.
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    child.wait()
+                output.seek(0)
+                data = output.read(65536)
+            if (denied / "outside").exists() or (protected / "protected").exists():
+                raise Refusal("sandbox_policy_enforcement_failed")
+            if read_fd is not None:
+                try:
+                    chain_data = os.read(read_fd, 16385)
+                    launch_chain = launch_receipt(chain_data, value["expected_image_chain"], bool(wrapper))
+                except OSError:
+                    raise Refusal("sandbox_launch_receipt_invalid")
+                finally:
+                    os.close(read_fd)
+                    read_fd = None
+        finally:
+            for fd in (read_fd, write_fd):
+                if fd is not None:
+                    os.close(fd)
+        if wrapper and value.get("snapshot_profile") not in ("trust-ro-v1", "trust-ro-v2") and not reached.exists():
             raise Refusal("sandbox_unqualified_config" if status == 78 else
                           "sandbox_helper_missing" if status == 127 else "sandbox_launch_failed")
         if status != 0:
@@ -264,7 +377,38 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
         if any(not (allowed / p).is_file() or (allowed / p).read_text() != "sandbox-ready"
                for p in (("allowed", "git-complete", "complete") if git_write else ("allowed", "complete"))):
             raise Refusal("sandbox_required_effect_missing")
-    return {"ready": True, "code": "sandbox_ready", "protocol": 1}
+        if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
+            launch_chain = rebase_project_node(launch_chain, allowed, workspace)
+    result = {"ready": True, "code": "sandbox_ready", "protocol": 1}
+    if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
+        result["launch_chain"] = launch_chain
+    return result
+
+
+def rebase_project_node(chain, copied_workspace, actual_workspace):
+    """Relocate only a successful probe's project-local Node byte identity.
+
+    This is not proof the task path itself ran in the probe. The actual guard
+    independently resolves and hashes that path after the real wrapper setup.
+    Image frontend/native/package and global Node paths are never relocated.
+    """
+    if not isinstance(chain, dict) or not isinstance(chain.get("node"), dict):
+        raise Refusal("sandbox_unqualified_config")
+    node = chain["node"]
+    if set(node) != {"path", "sha256"} or not isinstance(node["path"], str):
+        raise Refusal("sandbox_unqualified_config")
+    source = Path(node["path"])
+    copied = Path(copied_workspace)
+    actual = Path(actual_workspace)
+    if (not source.is_absolute() or source.resolve(strict=True) != source or
+            copied.resolve(strict=True) != copied or actual.resolve(strict=True) != actual):
+        raise Refusal("sandbox_unqualified_config")
+    if copied not in source.parents:
+        return chain
+    destination = actual / source.relative_to(copied)
+    if destination.resolve() != destination or copied == actual or copied in actual.parents or destination == copied or copied in destination.parents:
+        raise Refusal("sandbox_unqualified_config")
+    return {**chain, "node": {**node, "path": str(destination)}}
 
 
 def main():

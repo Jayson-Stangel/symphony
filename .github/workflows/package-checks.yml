@@ -130,6 +130,7 @@ jobs:
           python3 scripts/package/test-selected-image.py -v
           python3 scripts/package/test-environment.py -v
           python3 scripts/package/test-manager-protocol.py -v
+          python3 -B -m unittest discover -s scripts/package/tests -p test_codex_config_store.py -v
       - name: Execute artifact in clean Ubuntu 26.04 without build tools
         if: matrix.platform == 'linux_x86_64' && needs.changes.outputs.package_linux == 'true'
         env:
