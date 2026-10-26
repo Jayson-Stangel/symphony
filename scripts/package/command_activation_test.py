@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -98,15 +99,18 @@ printf '%s\n' "$SYMPHONY_APP_HOME" "$SYMPHONY_BIN_DIR/symphony" "$SYMPHONY_CONFI
         self.assertFalse((self.home / ".zshrc").exists())
         line = '. "$TEST_APP/activate.sh"\n'
         (self.home / ".bashrc").write_text(line)
-        result = subprocess.run(["/bin/bash", "--rcfile", str(self.home / ".bashrc"), "-ic", "symphony"],
-                                env=self.env, text=True, capture_output=True)
-        self.assertEqual(self.assert_ok(result).strip(), "candidate")
+        (self.home / ".bash_profile").write_text('. "$HOME/.bashrc"\n')
+        command = 'symphony; printf "%s\\n" "$SYMPHONY_RUNNER_NAMESPACE" "$SYMPHONY_CONFIG_HOME"'
+        for flags in ("-ic", "-lic"):
+            result = subprocess.run(["/bin/bash", flags, command], env=self.env, text=True, capture_output=True)
+            self.assertEqual(self.assert_ok(result).splitlines(), ["candidate", "candidate-test", str(self.root / "private config")])
         zsh = shutil.which("zsh")
         if zsh:
             (self.home / ".zshrc").write_text(line)
-            result = subprocess.run([zsh, "-ic", "symphony"], env=dict(self.env, ZDOTDIR=str(self.home)),
-                                    text=True, capture_output=True)
-            self.assertEqual(self.assert_ok(result).strip(), "candidate")
+            for flags in ("-ic", "-lic"):
+                result = subprocess.run([zsh, flags, command], env=dict(self.env, ZDOTDIR=str(self.home)),
+                                        text=True, capture_output=True)
+                self.assertEqual(self.assert_ok(result).splitlines(), ["candidate", "candidate-test", str(self.root / "private config")])
 
     def test_snapshot_retains_only_explicit_install_and_engine_context(self):
         env = dict(self.env, DOCKER_CONTEXT="test-context", DOCKER_CONFIG=str(self.root / "docker config"),
@@ -206,6 +210,21 @@ class PackageCommandActivationMixin:
                 self.assertEqual(command.read_text(), "#!/bin/sh\necho foreign-command\n")
                 self.assertFalse((Path(env["HOME"]) / ".zshrc").exists())
                 self.assertFalse((Path(env["HOME"]) / ".bashrc").exists())
+                # Model an explicit user profile opt-in, then launch a genuinely
+                # fresh login shell without install-time Symphony/Docker vars.
+                home = Path(env["HOME"])
+                (home / ".bashrc").write_text("source " + shlex.quote(str(app / "activate.sh")) + "\n")
+                (home / ".bash_profile").write_text('. "$HOME/.bashrc"\n')
+                fresh_env = {k: v for k, v in env.items() if not k.startswith(("SYMPHONY_", "DOCKER_"))}
+                result = subprocess.run(["/bin/bash", "-lic", "symphony --version; symphony doctor"],
+                                        env=fresh_env, text=True, capture_output=True)
+                out = self.assertOK(result)
+                self.assertIn('"installation":"packaged"', out)
+                self.assertIn("Installed command: " + str(bin_dir / "symphony"), out)
+                self.assertIn("Namespace: package-fixture", out)
+                self.assertNotIn("Command activation required", out)
+                (home / ".bashrc").unlink()
+                (home / ".bash_profile").unlink()
                 self.assertOK(subprocess.run([str(bundle / "install.sh")], env=env, text=True, capture_output=True))
 
     def test_native_installer_preserves_foreign_activation_before_activation(self):
