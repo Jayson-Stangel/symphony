@@ -65,12 +65,24 @@ Run project commands from the target repository, rather than the Symphony source
 
 ```bash
 cd /path/to/my-service
-symphony init --linear-project YOUR_LINEAR_PROJECT_SLUG
+symphony init --linear-project YOUR_LINEAR_PROJECT_SLUG --agent codex
+# For Claude, use --agent claude instead.
 ```
 
 Use the slug from your Linear project's URL. Initialization creates `WORKFLOW.md`
 from the supplied operating contract and prints the path to a private credential
 file outside the repository. Existing workflows and credential files are preserved.
+
+`--agent codex|claude` selects the initialization instructions; it does not start
+or switch a runner or change the workflow. Without it, init follows a retained
+team environment, runner metadata or observed runner provider, then defaults to
+Codex for a new project. The provider remains a startup choice: pass the same
+`--agent` to `run` or the installed updater. To resume an initialized project,
+rerun init with its Linear slug and desired `--agent`; existing workflow,
+credentials and deliberate skill overrides are preserved. Read the printed
+intended provider, stored desired image and observed runner separately. If they
+differ, follow the explicit compatible-image selection and updater instructions
+before authentication; see [provider transitions](packaged-install.md#choose-or-change-the-provider).
 
 Review and commit `WORKFLOW.md` as repository policy. Before starting a listener:
 
@@ -124,7 +136,7 @@ For the default Codex runner, run these commands from the initialized repository
 symphony auth codex login
 symphony auth codex check
 symphony runner doctor --agent codex
-symphony run --port 4010
+symphony run --agent codex --port 4010
 ```
 
 The first login prepares the runner image and stores the native session in a

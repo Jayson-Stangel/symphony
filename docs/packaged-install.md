@@ -350,6 +350,62 @@ Linux container and universal-helper evidence remains historical; it does not
 expand the current two-host policy. An Intel walkthrough was operator-deferred.
 OrbStack execution was not part of that fresh-user qualification.
 
+## Choose or change the provider
+
+From the project repository, choose `symphony init --linear-project SLUG --agent codex`
+or `--agent claude`. New projects default to Codex when the flag is omitted.
+Init reports the intended provider, stored desired provider/image and observed
+runner provider separately. The flag requests guidance; it does not persist a
+new provider, replace a team image, authenticate, start work or switch a listener.
+Repeat init with the same slug and explicit provider to resume setup safely.
+
+A retained team selection takes precedence over retained runner metadata for the
+desired image. An existing listener can still use a different provider until the
+installed updater transitions it. A manager-only update does not switch that
+listener. Resolve unknown, invalid or incompatible selections explicitly; do not
+interpret a requested init provider as an applied change.
+
+When changing from either provider to the other, wait for active work to finish.
+Use the commands below, replacing `claude` with `codex` for the reverse direction:
+
+```sh
+symphony init --linear-project SLUG --agent claude
+symphony environment show
+# If the retained desired environment uses the other provider, explicitly select
+# the intended locally available, verified compatible release or team image:
+symphony environment select --agent claude IMAGE
+symphony auth claude check
+# If native login is required, release the old listener through the updater:
+# symphony update --pause-runner
+# symphony auth claude login
+# symphony auth claude check
+symphony runner doctor --agent claude
+symphony update --agent claude
+```
+
+`IMAGE` is a real compatible image reference, not a literal placeholder. Obtain
+it through the supported provisioning or team image path; selection validates it
+and does not silently substitute a release default. Preserve deliberate team
+extensions when choosing it. If the desired environment already matches and is
+valid, keep it and omit selection. If inspection or selection refuses, resolve
+that refusal before authentication/doctor rather than bypassing it.
+
+Check retained native authentication before asking for login again. A running
+Claude listener holds its auth volume even when idle or dispatch-drained, so
+`auth claude login` refuses until the installed updater pauses the listener with
+`update --pause-runner`. If the check succeeds, skip pause/login and continue to
+doctor and the provider transition. For an isolated source development namespace,
+add `--development-runner` to updater commands as described in the development guide.
+
+The installed updater owns the idle prior runner transition, retaining shared
+workspace/state and both provider auth stores. Never create a second listener or
+manually kill/replace the old container. After a successful transition, resume
+with `symphony run --agent claude`; use `symphony runner resume` if you deliberately
+drained dispatch. Keep native auth credentials out of the project env file.
+An unobserved runner means absent **or** engine unavailable, not proof that no
+listener exists. Restore engine access and inspect `symphony runner status` before
+starting when that state is uncertain.
+
 ## Updating a packaged installation
 
 Use the installed command from an initialized project. Ordinary `update` changes

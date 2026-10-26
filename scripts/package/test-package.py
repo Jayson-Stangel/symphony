@@ -615,6 +615,47 @@ PY
                 self.assertFalse((self.root/'bin/symphony').exists())
                 self.assertEqual(canary.read_bytes(), b'keep data\x00')
 
+    def test_source_free_init_provider_choice_and_retained_transition_guidance(self):
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = self.root / "bin/symphony"
+        repo = self.root / "provider-project"; repo.mkdir(); (repo / ".git").mkdir()
+        (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/provider.git\n')
+        for provider in ("codex", "claude"):
+            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", provider], cwd=repo, env=env))
+            self.assertIn("auth " + provider + " login", output)
+            self.assertIn("run --agent " + provider, output)
+        credentials = next((self.root / "config/projects").glob("*.env"))
+        workflow = repo / "WORKFLOW.md"
+        before = (credentials.read_bytes(), workflow.read_bytes())
+        directory = self.root / "config/runners/environments"; directory.mkdir(parents=True, mode=0o700)
+        selection = directory / (credentials.stem + ".json")
+        docker = self.root / "tools/docker"
+        docker.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_DOCKER_CALLS"\n'
+            'case "$*" in *State.Status*) echo running ;; *com.symphony.agent*) echo "$ACTUAL" ;; *) exit 97 ;; esac\n')
+        for old, new in (("claude", "codex"), ("codex", "claude")):
+            selection.write_text(json.dumps(dict(schema_version=1, provider=old,
+                image_id="sha256:" + "a" * 64, reference="team:retained",
+                runtime_revision="b" * 40, platform="linux/amd64", protocol=1)))
+            selection.chmod(0o600)
+            retained = selection.read_bytes()
+            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", new],
+                cwd=repo, env=dict(env, ACTUAL=old)))
+            self.assertIn("Stored desired provider: " + old, output)
+            self.assertIn("Actual runner provider: " + old, output)
+            self.assertIn("environment select --agent " + new + " IMAGE", output)
+            self.assertIn("symphony update --agent " + new, output)
+            self.assertLess(output.index("auth " + new + " check"), output.index("update --pause-runner"))
+            self.assertLess(output.index("update --pause-runner"), output.index("auth " + new + " login"))
+            self.assertEqual(selection.read_bytes(), retained)
+            self.assertEqual((credentials.read_bytes(), workflow.read_bytes()), before)
+            refused = call([command, "init", "--linear-project", "fixture"], cwd=repo, env=dict(env, ACTUAL=old))
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("unavailable or incompatible", refused.stdout)
+            self.assertNotIn("auth " + old + " login", refused.stdout)
+        operations = (self.root / "docker.calls").read_text().splitlines()
+        self.assertTrue(all(line.startswith("inspect ") or line.startswith("image inspect ") for line in operations))
+
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
