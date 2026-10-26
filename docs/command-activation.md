@@ -23,7 +23,9 @@ path above or another installation's file. You do not need to locate a release's
 
 Activation selects the installed bin directory, clears the shell command cache,
 unsets a development `SYMPHONY_HOME` override, and restores that installation's
-application, bin, configuration, skills, runner storage and namespace settings.
+application, bin, configuration, skills and namespace settings. An explicit
+`SYMPHONY_RUNNER_HOME` override is retained; otherwise runner storage continues
+to follow the selected configuration, including a later `--config-dir` option.
 It also restores explicit Docker runtime/context/host/config overrides selected
 at install time; otherwise the Docker CLI's current context applies. It does not
 copy account credentials, log in, start a listener or change Docker contexts.

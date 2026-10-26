@@ -29,7 +29,7 @@ class CommandActivationTest(unittest.TestCase):
             command.write_text('#!/bin/sh\nprintf "%s\\n" ' + label + '\n')
             command.chmod(0o755)
         self.env = dict(os.environ, HOME=str(self.home), PATH=f"{self.stable}:{self.bin}:/usr/bin:/bin",
-                        TEST_APP=str(self.app), TEST_BIN=str(self.bin), TEST_ROOT=str(self.root))
+                        TEST_APP=str(self.app), TEST_BIN=str(self.bin), TEST_ROOT=str(self.root), TEST_SOURCE=str(ROOT))
         for key in list(self.env):
             if key.startswith(("SYMPHONY_", "DOCKER_")):
                 self.env.pop(key)
@@ -44,7 +44,7 @@ package_app_home=$TEST_APP
 bin_dir=$TEST_BIN
 config_home="$TEST_ROOT/private config"
 skills_dir="$TEST_ROOT/skills"
-runner_home="$TEST_ROOT/separate runners"
+runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
 runner_namespace=candidate-test
 symphony_home="$TEST_APP/releases/fixture"
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -82,15 +82,44 @@ symphony
 hash symphony
 . "$TEST_APP/activate.sh"
 symphony
-printf '%s\n' "$SYMPHONY_APP_HOME" "$SYMPHONY_BIN_DIR/symphony" "$SYMPHONY_CONFIG_HOME" "$SYMPHONY_SKILLS_DIR" "$SYMPHONY_RUNNER_HOME" "$SYMPHONY_RUNNER_NAMESPACE"
-[ -z "${SYMPHONY_HOME+x}" ] && [ -z "${DOCKER_CONTEXT+x}" ]
+printf '%s\n' "$SYMPHONY_APP_HOME" "$SYMPHONY_BIN_DIR/symphony" "$SYMPHONY_CONFIG_HOME" "$SYMPHONY_SKILLS_DIR" "${SYMPHONY_RUNNER_HOME:-$SYMPHONY_CONFIG_HOME/runners}" "$SYMPHONY_RUNNER_NAMESPACE"
+[ -z "${SYMPHONY_HOME+x}" ] && [ -z "${DOCKER_CONTEXT+x}" ] && [ -z "${SYMPHONY_RUNNER_HOME+x}" ]
 '''
                 result = subprocess.run([shell, "-c", script], env=env, text=True, capture_output=True)
                 out = self.assert_ok(result).splitlines()
                 self.assertEqual(out, ["stable", "candidate", str(self.app), str(self.bin / "symphony"),
                                       str(self.root / "private config"), str(self.root / "skills"),
-                                      str(self.root / "separate runners"), "candidate-test"])
+                                      str(self.root / "private config/runners"), "candidate-test"])
         self.assertEqual((self.stable / "symphony").read_text(), '#!/bin/sh\nprintf "%s\\n" stable\n')
+
+    def test_activated_update_config_selection_preserves_explicit_storage_only(self):
+        for override in (None, "", str(self.root / "explicit runners")):
+            with self.subTest(override=override):
+                install_env = dict(self.env)
+                if override is not None:
+                    install_env["SYMPHONY_RUNNER_HOME"] = override
+                self.generate(install_env)
+                # Use the real launcher resolver and packaged update parser,
+                # stopping at the lock boundary before any update side effects.
+                script = r"""
+set -eu
+. "$TEST_APP/activate.sh"
+. "$TEST_SOURCE/scripts/symphony" --help >/dev/null
+. "$TEST_SOURCE/scripts/symphony-package-update.sh"
+package_update_lock() { printf '%s\n' "$runner_home"; return 73; }
+if package_update --config-dir "$TEST_ROOT/selected config"; then
+  exit 99
+else
+  [ "$?" = 73 ]
+fi
+"""
+                # Also prove activation clears a stale override inherited by
+                # the consuming shell when installation selected the default.
+                consume_env = dict(self.env, SYMPHONY_RUNNER_HOME="/stale/other-runners")
+                result = subprocess.run(["/bin/bash", "-c", script], env=consume_env,
+                                        text=True, capture_output=True)
+                expected = override or str(self.root / "selected config/runners")
+                self.assertEqual(self.assert_ok(result).strip(), expected)
 
     def test_fresh_interactive_shell_uses_explicit_profile_opt_in(self):
         self.generate()
@@ -209,8 +238,10 @@ class PackageCommandActivationMixin:
                 self.assertIn("Namespace: package-fixture", out)
                 self.assertNotIn("Command activation required", out)
                 next_config = self.root / "other config"
-                result = subprocess.run([str(bin_dir / "symphony"), "doctor", "--config-dir", str(next_config)],
-                                        env=env, text=True, capture_output=True)
+                result = subprocess.run(["/bin/bash", "-c",
+                                         '. "$TEST_ACTIVATION"; symphony doctor --config-dir "$1"',
+                                         "activation-test", str(next_config)],
+                                        env=activated_env, text=True, capture_output=True)
                 self.assertIn("Runner storage: " + str(next_config / "runners"), self.assertOK(result))
                 self.assertEqual(command.read_text(), "#!/bin/sh\necho foreign-command\n")
                 self.assertFalse((Path(env["HOME"]) / ".zshrc").exists())
@@ -231,6 +262,24 @@ class PackageCommandActivationMixin:
                 (home / ".bashrc").unlink()
                 (home / ".bash_profile").unlink()
                 self.assertOK(subprocess.run([str(bundle / "install.sh")], env=env, text=True, capture_output=True))
+
+    def test_native_activated_doctor_preserves_explicit_runner_storage(self):
+        bundle = self.bundle()
+        env = self.environment()
+        explicit = self.root / "explicit runner storage"
+        env["SYMPHONY_RUNNER_HOME"] = str(explicit)
+        self.assertOK(subprocess.run([str(bundle / "install.sh")], env=env, text=True, capture_output=True))
+        app = Path(env["SYMPHONY_APP_HOME"])
+        activated_env = dict(env, TEST_ACTIVATION=str(app / "activate.sh"),
+                             SYMPHONY_RUNNER_HOME="/stale/other-runners")
+        next_config = self.root / "other config"
+        result = subprocess.run(["/bin/bash", "-c",
+                                 '. "$TEST_ACTIVATION"; symphony doctor --config-dir "$1"',
+                                 "activation-test", str(next_config)],
+                                env=activated_env, text=True, capture_output=True)
+        out = self.assertOK(result)
+        self.assertIn("Configuration: " + str(next_config), out)
+        self.assertIn("Runner storage: " + str(explicit), out)
 
     def test_native_installer_preserves_foreign_activation_before_activation(self):
         bundle = self.bundle()

@@ -268,7 +268,13 @@ package_shell_environment() {
   printf 'export SYMPHONY_BIN_DIR=%q\n' "$bin_dir"
   printf 'export SYMPHONY_CONFIG_HOME=%q\n' "$config_home"
   printf 'export SYMPHONY_SKILLS_DIR=%q\n' "$skills_dir"
-  printf 'export SYMPHONY_RUNNER_HOME=%q\n' "$runner_home"
+  # Preserve the override's provenance: a derived default must continue to
+  # follow --config-dir in later doctor/update commands after activation.
+  if [ -n "${SYMPHONY_RUNNER_HOME:-}" ]; then
+    printf 'export SYMPHONY_RUNNER_HOME=%q\n' "$runner_home"
+  else
+    printf 'unset SYMPHONY_RUNNER_HOME\n'
+  fi
   printf 'export SYMPHONY_RUNNER_NAMESPACE=%q\n' "$runner_namespace"
   # Only explicit engine selections are retained; never serialize credentials or
   # the rest of the installing process's environment into a sourced file.
