@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -37,7 +38,20 @@ elif n=='docker':
 elif n=='systemctl':
  if a[0]=='show':
   if '--property=Requires' in a or '--property=After' in a:print('' if o.get('override_guard') else 'apparmor.service')
-  elif '--property=ExecStartPre' in a: print(str(r/'bin/apparmor_parser')+' --replace --skip-cache '+str(r/'etc/apparmor.d/symphony-codex-candidate-b6261d4c613296dd'))
+  elif '--property=ExecStartPre' in a:
+   parser=str(r/'bin/apparmor_parser'); destination=str(r/'etc/apparmor.d/symphony-codex-candidate-b6261d4c613296dd')
+   path=parser; argv=parser+' --replace --skip-cache '+destination; ignore='no'
+   if o.get('ignored_guard'):ignore='yes'
+   if o.get('echoed_guard'):path='/usr/bin/echo'; argv=path+' '+argv
+   if o.get('wrong_destination'):argv+='.other'
+   if o.get('spoofed_metadata'):
+    argv+=' ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'; ignore='yes'
+   metadata=' ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
+   record='{ path='+path+' ; argv[]='+argv+' ; ignore_errors='+ignore+metadata
+   if o.get('unrelated_precommand'):
+    print('{ path=/sbin/modprobe ; argv[]=/sbin/modprobe -va overlay ; ignore_errors=yes'+metadata)
+   print(record)
+   if o.get('duplicate_guard'):print(record)
   else:print('not-found' if o.get('missing_service') else 'loaded')
  elif o.get('systemctl_failure'):sys.exit(9)
 elif n=='flock':pass
@@ -61,7 +75,7 @@ class HostPreparationTest(unittest.TestCase):
         self.options = {}
         self.bin = self.root/'bin'; self.bin.mkdir()
         for name in ('bash','python3','cut','grep','cmp','cp','install','mkdir','mktemp','rm','dirname'):
-            (self.bin/name).symlink_to(shutil.which(name))
+            (self.bin/name).symlink_to(sys.executable if name=='python3' else shutil.which(name))
         for name in ('uname','hostname','id','cat','stat','sha256sum','docker','systemctl','flock','apparmor_parser'):
             p=self.bin/name; p.write_text(FAKE); p.chmod(0o755)
         for path, value in {
@@ -201,6 +215,18 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
     def test_overridden_effective_boot_guard_refused(self):
         self.options['override_guard']=True
         self.assertIn('[persistence]',self.apply(success=False))
+
+    def test_effective_guard_requires_exact_execution_and_fatal_failure(self):
+        for option in ('ignored_guard','echoed_guard','wrong_destination','spoofed_metadata','duplicate_guard'):
+            with self.subTest(option=option):
+                self.options={option:True}
+                self.assertIn('[persistence]',self.apply(success=False))
+        self.assertFalse(any(v[0]=='apparmor_parser' and '--replace' in v for v in self.calls()))
+
+    def test_unrelated_daemon_precommands_preserve_exact_boot_guard(self):
+        self.options['unrelated_precommand']=True
+        self.assertIn('exact owned policy loaded',self.apply())
+        self.assertIn('following protected command',self.run_command('doctor'))
 
     def test_non_enforcing_load_and_absent_doctor_are_distinct(self):
         self.assertIn('[absent]',self.run_command('doctor',success=False))

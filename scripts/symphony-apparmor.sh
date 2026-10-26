@@ -63,13 +63,28 @@ apparmor_paths() {
 }
 
 apparmor_verify_boot_guard() {
-  local value
+  local value record prefix metadata matches=0
+  local status_pattern='^start_time=\[[^][;{}]*\] ; stop_time=\[[^][;{}]*\] ; pid=[0-9]+ ; code=[A-Za-z_()]+ ; status=-?[0-9]+(/[A-Za-z0-9_+-]+)? \}$'
   value=$(systemctl show docker.service --property=Requires --value) || return 1
   case " $value " in *' apparmor.service '*) ;; *) return 1 ;; esac
   value=$(systemctl show docker.service --property=After --value) || return 1
   case " $value " in *' apparmor.service '*) ;; *) return 1 ;; esac
   value=$(systemctl show docker.service --property=ExecStartPre --value) || return 1
-  case "$value" in *"$aa_parser --replace --skip-cache $aa_destination"*) ;; *) return 1 ;; esac
+  # systemctl show prints one normalized execution record per line. Match the
+  # actual executable, complete argv and failure handling in that same record;
+  # an echoed command, destination suffix or ignored failure is not a guard.
+  # Keep unrelated daemon pre-commands, such as Docker's modprobe invocation.
+  prefix="{ path=$aa_parser ; argv[]=$aa_parser --replace --skip-cache $aa_destination ; ignore_errors=no ; "
+  while IFS= read -r record; do
+    case "$record" in
+      "$prefix"*)
+        metadata=${record#"$prefix"}
+        # Reject extra fields/delimiters smuggled into a displayed argv value.
+        [[ "$metadata" =~ $status_pattern ]] || return 1
+        matches=$((matches + 1)) ;;
+    esac
+  done <<< "$value"
+  [ "$matches" = 1 ]
 }
 
 apparmor_receipt() { printf 'symphony-apparmor-v1\n%s\n%s\n' "$aa_profile" "$(codex_apparmor_id)"; }
