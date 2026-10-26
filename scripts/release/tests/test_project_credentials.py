@@ -141,6 +141,51 @@ package_use_project_image() { echo UNEXPECTED_IMAGE >&2; return 90; }
                     self.assertIn('LINEAR_API_KEY, GH_TOKEN or GITHUB_TOKEN', result.stderr)
                     self.assertNotIn('UNEXPECTED', result.stdout + result.stderr)
 
+    def test_candidate_acquisition_uses_shared_credential_source_without_values_in_arguments(self):
+        for exported in ({}, {'GITHUB_TOKEN': 'environment_canary'}):
+            with self.subTest(source='environment' if exported else 'project-file'):
+                result = self.shell(r'''
+. "$1/scripts/symphony-runner-provision.sh"
+# Only remote acquisition/native extraction/import are peers; credential
+# selection runs the actual composed project_credentials_read function.
+mkdir -p "$root/scripts"
+cat > "$root/scripts/symphony-runner-import.sh" <<'IMPORT'
+package_runner_import() {
+  [ "$(cat "$2")" = verified-graph-fixture ] || return 81
+  printf imported > "$TEST_IMPORTED"
+}
+IMPORT
+package_helper() {
+  case "$1" in
+    release-get) case "$3" in *.image) printf 'localhost:5000/symphony-codex@sha256:%064d' 0 ;; *.artifact_id) printf 123 ;; *) return 82 ;; esac ;;
+    validate-candidate-artifact) printf 1024 ;;
+    extract-candidate-artifact) printf verified-graph-fixture > "$6" ;;
+    *) return 83 ;;
+  esac
+}
+curl() {
+  local config output= arg
+  IFS= read -r config
+  [ "$config" = "header = \"Authorization: Bearer $EXPECTED_GIT\"" ] || return 84
+  for arg in "$@"; do case "$arg" in *canary*) return 85 ;; esac; done
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --output ]; then output=$2; break; fi
+    shift
+  done
+  [ -n "$output" ] || return 86
+  printf synthetic-transport > "$output"
+}
+package_arch=arm64; package_channel=candidate
+symphony_home=$root
+export TEST_IMPORTED="$root/imported" TMPDIR="$root"
+package_runner_provision codex
+[ "$(cat "$TEST_IMPORTED")" = imported ]
+[ -z "$(find "$root" -name 'symphony-runner-download.*' -print)" ]
+''', 'GH_TOKEN=file_canary\n',
+                    dict(exported, EXPECTED_GIT='environment_canary' if exported else 'file_canary'))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('canary', result.stdout + result.stderr)
+
     def test_configured_startup_for_both_providers_passes_effective_credentials_by_name(self):
         for provider in ('codex', 'claude'):
             for file in (True, False):
