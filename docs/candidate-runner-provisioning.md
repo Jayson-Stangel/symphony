@@ -40,8 +40,8 @@ and claim it has the selected identity.
 
 Prerequisites are a running local Docker engine (Docker Desktop/OrbStack on
 macOS, Docker Engine on Linux), the `registry:3` Docker image from Docker Hub,
-free local port 5000, and disk space for the downloaded archive, its extracted
-compressed graph, and Docker's stored image. Provision the registry prerequisite
+local daemon host-network support, and disk space for the downloaded archive,
+its extracted compressed graph, and Docker's stored image. Provision the registry prerequisite
 through your normal Docker image access policy:
 
 ```sh
@@ -55,16 +55,33 @@ filename/provider for Claude. Paths with spaces are supported when quoted.
 The installed native helper verifies the archive checksum against the selected
 package's original qualification, validates graph membership and every selected
 manifest/config/compressed-layer digest, and stages a private read-only registry
-layout. The launcher starts one uniquely named, ownership-labelled registry,
-pulls the selected original digest, verifies runtime identity and removes only
-that registry and its temporary files. It starts no listener and does not select
-or replace a project's retained/team-owned environment. No host Python, Node,
+layout. The launcher starts one uniquely named, ownership-labelled registry
+in the local Docker daemon's network namespace. Both its transfer and debug
+listeners bind only IPv4 loopback with kernel-allocated ports. It publishes no
+host port and never needs exclusive use of port 5000, including on Docker
+Desktop. Each concurrent import owns its own container and endpoints; startup
+allocation failures have at most three attempts and readiness has a bounded wait.
+The launcher pulls the exact original manifest digest through that temporary
+endpoint, verifies runtime identity and removes only that registry and its
+temporary files after success, failure or interruption. It does not start a
+Symphony listener or select or replace a project's retained/team-owned environment. No host Python, Node,
 Swift compiler, agent CLI or image build is required.
 
+Docker records the transfer repository in `RepoDigests`. A private atomic receipt
+under the candidate application's `runner-imports/` directory remembers the
+allocated loopback reference for subsequent login and doctor commands. The
+native helper accepts relocation only for an original loopback candidate, with
+the same provider repository and exact original manifest digest. Config,
+compressed-layer, source, input and platform checks remain required; a matching
+Docker config ID alone cannot authorize an import. Production registry selection
+is unchanged. Import information always prints the original companion identity,
+and reimport after pruning uses that original metadata.
+
 The importer refuses remote Docker contexts because a local bind mount must
-refer to the verified graph. An occupied port, missing/corrupt archive, unsupported
-manifest, mismatched platform/provider or lost ownership fails without replacing
-another service or weakening verification. Resolve the reported prerequisite and
+refer to the verified graph. Missing host-network support or unsafe Docker
+bind-mount access is actionable as a local engine prerequisite. A missing/corrupt
+archive, unsupported manifest, mismatched platform/provider or lost ownership
+fails without replacing another service or weakening verification. Resolve the reported prerequisite and
 retry. If cleanup cannot confirm ownership, its diagnostic retains the exact
 staging path for investigation. Never remove resources by a broad name filter.
 
@@ -77,8 +94,8 @@ symphony auth codex check
 symphony runner doctor --agent codex
 ```
 
-Repeat import with the same original companion if Docker later prunes the exact
-digest. The local registry is temporary and is not expected to remain running
+For manual recovery after Docker prunes the exact digest, repeat import with
+the same original companion. The local registry is temporary and is not expected to remain running
 between commands. General doctor, provider authentication, project sandbox/Git
 readiness, listener startup and a completed authenticated task are separate
 acceptance stages.
@@ -93,8 +110,14 @@ flow does not authorize registry publication, version tags, production promotion
 or stable rollout.
 
 Fixture tests cover cold/pruned import orchestration, path quoting, checksum and
-graph refusal, Docker-context precedence, occupied-port cleanup and immutable
-runtime verification. Native helper preparation has also been exercised against
+graph refusal, Docker-context precedence, bounded allocation recovery, interruption
+cleanup and immutable runtime verification. The opt-in native Docker regression
+(`SYMPHONY_TEST_DOCKER_IMPORT=1`) imports a synthetic original graph concurrently
+while an unrelated real host listener occupies port 5000, verifies it remains
+available, rejects a corrupt archive and checks owned registry cleanup. This runs
+in the ordinary Linux native package PR job and can run locally on macOS with
+Docker Desktop. Synthetic graph transfer is separate from real-provider or
+fresh-account downloaded-package qualification. Native helper preparation has also been exercised against
 the original October 24 Apple Silicon candidate graph, preserving digest
 `sha256:e75f2deb748f5d3021645d78e47870a54ad288a6879d952f39f25cd24e9ac0a5`.
 That proves archive/graph preparation only. Fresh-account downloaded-package
