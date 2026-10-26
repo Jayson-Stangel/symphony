@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 
+from codex_config_fixture import EMPTY_SNAPSHOT
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -24,7 +26,7 @@ class ProjectCredentials(unittest.TestCase):
             env.update(SYMPHONY_HOME=str(ROOT), SYMPHONY_CONFIG_HOME=str(Path(temp) / 'config'),
                        SYMPHONY_RUNNER_HOME=str(Path(temp) / 'runners'),
                        SYMPHONY_RUNNER_NAMESPACE='credential-fixture', SYMPHONY_SKILLS_DIR=str(Path(temp) / 'skills'),
-                       FIXTURE_CREDENTIALS=credentials)
+                       FIXTURE_CREDENTIALS=credentials, FIXTURE_EMPTY_SNAPSHOT=EMPTY_SNAPSHOT)
             env.update(exported or {})
             setup = '''source "$1/scripts/symphony" --help >/dev/null
 root=$PWD
@@ -151,7 +153,12 @@ codex_runtime_profile_id() { printf fixture-profile; }
 runner_status() { printf missing; }
 runner_image() { printf fixture-image; }
 runner_storage_id() { printf fixture-storage; }
-fixture_runtime() { case "$1" in image) printf fixture-image ;; esac; }
+fixture_runtime() {
+  case "$1" in
+    image) printf fixture-image ;;
+    run) case " $* " in *' --entrypoint /usr/bin/stat '*) id -u ;; *) return 94 ;; esac ;;
+  esac
+}
 ensure_claude_auth_volume() { :; }
 claude_image_ready() { :; }
 claude_native_profile() { printf fixture-native-profile; }
@@ -163,7 +170,16 @@ fixture_launch() {
   case " $* " in *canary*) return 93 ;; esac
   printf checked > "$root/launch-checked"
 }
-runner_codex_run() { fixture_launch "$@"; }
+runner_codex_run() {
+  case " $* " in
+    *' --codex-config-snapshot '*) printf '%s\\n' "$FIXTURE_EMPTY_SNAPSHOT" ;;
+    *)
+      codex_config_require "$root" fixture-image
+      [ "$(cat "$codex_config_file")" = '' ] || return 95
+      case " $* " in *"source=$codex_config_file,target=/root/.codex/config.toml,readonly"*) : ;; *) return 96 ;; esac
+      fixture_launch "$@" ;;
+  esac
+}
 runner_claude_run() { fixture_launch "$@"; }
 runner_start "$root" 4010 "$FIXTURE_PROVIDER"
 [ "$(cat "$root/launch-checked")" = checked ]
