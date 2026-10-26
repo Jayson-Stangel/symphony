@@ -57,15 +57,18 @@ See the packaged installation guide for isolated candidate storage and namespace
 USAGE
 }
 
-package_image() {
+package_manifest_image() {
   local image
   image=$(package_helper release-get "$symphony_home/release.json" "distribution.${1:-codex}.$package_arch" 2>/dev/null) || image=
   if [ -n "$image" ]; then printf '%s\n' "$image"
   else package_helper release-get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; fi
 }
+package_image() {
+  package_helper resolve-runner-import "$symphony_home/release.json" "${1:-codex}" "$package_arch" "$package_app_home"
+}
 package_release_image() {
   local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
-  [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
+  package_helper validate-runner-reference "$symphony_home/release.json" "$agent" "$package_arch" "$image" >/dev/null || die 'runner image is outside the selected release manifest'
   [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
   revision=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
   platform=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
