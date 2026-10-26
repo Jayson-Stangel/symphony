@@ -396,6 +396,7 @@ package_doctor() {
       *) die "unknown doctor option: $1" ;;
     esac
   done
+  resolve_runner_home
   (container_runtime) >/dev/null 2>&1 || ready=false
   [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$package_app_home/current/scripts/symphony" ] || ready=false
   global_skills_ready || ready=false

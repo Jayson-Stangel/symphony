@@ -199,6 +199,10 @@ class PackageCommandActivationMixin:
                 self.assertIn("PATH command (fresh lookup): " + str(bin_dir / "symphony"), out)
                 self.assertIn("Namespace: package-fixture", out)
                 self.assertNotIn("Command activation required", out)
+                next_config = self.root / "other config"
+                result = subprocess.run([str(bin_dir / "symphony"), "doctor", "--config-dir", str(next_config)],
+                                        env=env, text=True, capture_output=True)
+                self.assertIn("Runner storage: " + str(next_config / "runners"), self.assertOK(result))
                 self.assertEqual(command.read_text(), "#!/bin/sh\necho foreign-command\n")
                 self.assertFalse((Path(env["HOME"]) / ".zshrc").exists())
                 self.assertFalse((Path(env["HOME"]) / ".bashrc").exists())
