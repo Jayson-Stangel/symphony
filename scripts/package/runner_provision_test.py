@@ -16,6 +16,10 @@ from runner_import_test import RunnerImportTest, HELPER, ROOT, digest
 
 class RunnerProvisionTest(RunnerImportTest):
     # Inherit native graph setup, not the importer's behavioral tests.
+    def setUp(self):
+        super().setUp()
+        self.arch = getattr(self, 'arch', 'arm64')
+
     def make_zip(self, *, compression=zipfile.ZIP_STORED, name=None, zip64=False):
         self.payload = self.root / 'artifact.zip'
         name = name or self.record['qualification']['archive_filename']
@@ -45,7 +49,7 @@ class RunnerProvisionTest(RunnerImportTest):
         self.api_path.write_text(json.dumps(self.api))
 
     def native(self, op, *args):
-        return subprocess.run([HELPER, op, self.metadata, 'codex', 'arm64', *args], text=True, capture_output=True)
+        return subprocess.run([HELPER, op, self.metadata, 'codex', self.arch, *args], text=True, capture_output=True)
 
     def test_exact_metadata_and_zip64_stored_member(self):
         for wide in (False, True):
@@ -123,16 +127,16 @@ package_helper() { "$TEST_HELPER" "$@"; }
 repo_root() { printf '%s\n' "$TEST_ROOT"; }
 project_id() { printf project; }
 config_home=$TEST_ROOT
-package_image() { "$TEST_HELPER" release-get "$symphony_home/release.json" runners.codex.arm64.image; }
+package_image() { "$TEST_HELPER" release-get "$symphony_home/release.json" "runners.codex.$package_arch.image"; }
 container_runtime() { printf runtime; }
 container_engine_ready() { return 0; }
 runtime() { [ "$TEST_CACHED" = true ]; }
-package_channel=candidate; package_arch=arm64
+package_channel=candidate; package_arch=$TEST_ARCH
 source "$TEST_SOURCE"
 package_ensure_candidate_image codex
 ''')
         env = dict(os.environ, PATH=str(self.root)+os.pathsep+os.environ['PATH'], TEST_ROOT=str(self.root),
-                   TEST_HELPER=str(HELPER), TEST_SOURCE=str(ROOT/'scripts/symphony-runner-provision.sh'),
+                   TEST_HELPER=str(HELPER), TEST_ARCH=self.arch, TEST_SOURCE=str(ROOT/'scripts/symphony-runner-provision.sh'),
                    TEST_ARCHIVE=str(self.archive), TEST_IMPORTED=str(self.root/'imported'),
                    TEST_REQUESTS=str(self.root/'requests'), TEST_FAIL=fail, TEST_CACHED=str(cached).lower(),
                    symphony_home=str(self.root), TMPDIR=str(self.root))

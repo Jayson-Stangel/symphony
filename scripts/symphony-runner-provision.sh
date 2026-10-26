@@ -2,7 +2,7 @@
 package_runner_provision() (
   set -euo pipefail
   set +x
-  local agent=${1:?provider required} image proof root credentials token artifact temporary size
+  local agent=${1:?provider required} image root credentials token artifact temporary size
   image=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.image")
   case "$package_channel/$image" in "candidate/localhost:5000/symphony-$agent@sha256:"*) ;; *) die 'automatic companion acquisition requires an original candidate graph' ;; esac
   root=$(repo_root)
@@ -37,9 +37,11 @@ package_runner_provision() (
   trap 'exit 130' INT
   trap 'exit 143' TERM
   candidate_request() {
+    local progress=(--silent)
+    if [ "$1" = /zip ]; then progress=(--progress-bar); fi
     # curl drops Authorization on cross-host redirects; never use --location-trusted.
     printf 'header = "Authorization: Bearer %s"\n' "$token" |
-      curl -q --config - --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+      curl -q --config - --fail "${progress[@]}" --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 20 --max-time 7200 --retry 2 --retry-delay 1 \
         --header 'Accept: application/vnd.github+json' --header 'X-GitHub-Api-Version: 2022-11-28' \
         --max-filesize "$2" --output "$3" "https://api.github.com/repos/Jayson-Stangel/symphony/actions/artifacts/$artifact$1"
