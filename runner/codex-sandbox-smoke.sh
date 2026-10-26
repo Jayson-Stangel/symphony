@@ -59,3 +59,9 @@ runner_codex_run docker --rm \
   --volume /workspaces --volume /var/lib/symphony \
   --volume "$root/runner/codex-git-workflow.py:/git-qualification.py:ro" \
   --entrypoint /usr/bin/timeout "$image_id" 90 python3 /git-qualification.py
+
+# Cold npm effects through native command/exec, with synthetic protected home.
+runner_codex_run docker --rm \
+  --volume /workspaces --volume /var/lib/symphony \
+  --volume "$root/runner:/qualification:ro" \
+  --entrypoint /usr/bin/timeout "$image_id" 180 python3 /qualification/test_npm_cache.py --protected
