@@ -447,3 +447,11 @@ that the old updater avoids downloading a wrong-architecture artifact. Apple
 Silicon upgrade/rollback acceptance requires execution through the installed old
 updater with real source-bound old/new ARM helpers; fixture metadata is not image
 lifecycle or authenticated inference evidence.
+
+### npm cache readiness
+
+For packaged Codex Node projects, see the [task npm cache contract](team-environments.md#npm-cache-in-packaged-codex-tasks).
+The maintained image defaults to a disposable project `.npm-cache` while preserving
+explicit npm configuration. Check `npm config get cache` and `npm cache verify`
+inside the actual protected task shell. An old selected image requires a rebuilt
+team environment; installation readiness alone does not prove cold project setup.

@@ -90,6 +90,46 @@ docker run --rm --network none --read-only --entrypoint /bin/bash team/project:r
 This verifies tool discovery in the agent's shell environment; the installed
 selector and authenticated repository task remain separate acceptance checks.
 
+## npm cache in packaged Codex tasks
+
+The maintained Codex reference image supplies a global npm default:
+`cache=${PWD}/.npm-cache`. npm expands the current shell directory when it loads
+configuration. Setup hooks, ordinary `npm install` / `npm ci`, login shells and
+nested checkouts can therefore restore cold dependencies inside their writable
+project without changing protected native `HOME` or `CODEX_HOME`. npm lifecycle
+children inherit npm's effective cache, which can remain the parent's project
+cache after changing directories. No launch export or per-command cache flag is
+required. Teams still own dependency setup and registry/network configuration.
+
+This is npm's global configuration, below user and project `.npmrc`, environment
+and command-line choices in [npm's configuration precedence](https://docs.npmjs.com/cli/v11/using-npm/config/).
+Both `npm_config_cache` and `NPM_CONFIG_CACHE` retain npm's native semantics,
+including lowercase lifecycle variables. A team image may replace the global
+setting deliberately. A custom `NPM_CONFIG_GLOBALCONFIG`, npm prefix/toolchain,
+or shell profile that removes or replaces this configuration must supply its own
+writable cache. Host-native sessions and the Claude image keep their existing
+npm configuration. Rebuild and select the team image to consume a new reference;
+a manager-only update cannot retrofit this default into an old image.
+
+From the actual task shell, `npm config get cache` reports the effective path.
+`npm cache verify` exercises that destination before expensive dependency setup.
+An explicit inaccessible cache fails with npm's original path and error (for
+example `EROFS` or `EACCES`); Symphony does not silently redirect it. Choose a
+project-owned path in the team's configuration. Do not make native home/auth
+writable, mount a host cache, or grant extra sandbox roots. A symlink outside the
+allowed project does not grant write access through the protected sandbox.
+
+The cache is disposable and retained only with its owning workspace. npm creates
+it lazily and recreates a pruned cache on the next install; removal of the whole
+workspace removes its cache. Do not delete unrelated project data. Add
+`.npm-cache/` to the project's ignore rules if needed. Global package installation
+still needs a team-owned image/toolchain; this default grants no global writes.
+An install-only doctor pass is not project readiness: verify cold dependency
+restoration, build and tests through actual protected task commands. Earlier
+source308/image88e proof used an explicit cache workaround; it does not qualify
+this default. Final assembled-image and real issue-to-PR qualification remain
+separate evidence.
+
 ## Evidence boundaries
 
 Supported host policy remains macOS ARM64 and Linux x86-64, with Linux ARM64 and
