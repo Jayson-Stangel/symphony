@@ -144,11 +144,12 @@ printf '%s\n' "$SYMPHONY_APP_HOME" "$SYMPHONY_BIN_DIR/symphony" "$SYMPHONY_CONFI
 
     def test_existing_unmanaged_activation_file_and_symlink_are_preserved(self):
         activation = self.app / "activate.sh"
-        activation.write_text("user-owned-data\n")
-        refused = self.bash("package_shell_activation_write")
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("refusing to replace existing shell activation file", refused.stderr)
-        self.assertEqual(activation.read_text(), "user-owned-data\n")
+        for original in ("user-owned-data\n", "", "no trailing newline"):
+            activation.write_text(original)
+            refused = self.bash("package_shell_activation_write")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("refusing to replace existing shell activation file", refused.stderr)
+            self.assertEqual(activation.read_text(), original)
         activation.unlink()
         activation.symlink_to(self.stable / "symphony")
         self.assertNotEqual(self.bash("package_shell_activation_write").returncode, 0)

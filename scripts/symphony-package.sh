@@ -255,7 +255,7 @@ package_shell_activation_preflight() {
   local activation="$package_app_home/activate.sh" header
   if [ -e "$activation" ] || [ -L "$activation" ]; then
     package_helper owned-file "$activation" || return
-    IFS= read -r header < "$activation" || return
+    IFS= read -r header < "$activation" || header=
     [ "$header" = '# Symphony shell activation v1' ] || die "refusing to replace existing shell activation file: $activation"
   fi
 }
