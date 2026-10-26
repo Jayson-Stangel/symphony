@@ -25,6 +25,7 @@ on:
         type: string
         required: false
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [dev, main]
 concurrency:
@@ -40,6 +41,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.portable == 'true' && inputs.portable_revision == ''
     uses: ./.github/workflows/release-preflight.yml
+    with:
+      ordinary: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
   qualification:
     name: Validate preflight inputs
     needs: [changes, portable]
@@ -89,14 +92,14 @@ jobs:
   host-policy:
     name: Select native hosts
     needs: changes
-    if: needs.changes.outputs.native == 'true'
+    if: needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true'
     uses: ./.github/workflows/host-policy.yml
     with:
       platform: ${{ needs.changes.outputs.native_platform }}
   native-host-package:
     name: Native helpers and fixtures (${{ matrix.platform }})
     needs: [changes, qualification, host-policy]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
@@ -203,9 +206,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y lsof
       - name: Run native process and updater fixtures in the helper allocation
         if: needs.changes.outputs.fixtures == 'true'
+        env:
+          ORDINARY: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
         run: |
           uname -sm
-          python3 scripts/ci/release_tests.py native
+          if [ "$ORDINARY" = true ]; then
+            python3 scripts/ci/release_tests.py process
+          else
+            python3 scripts/ci/release_tests.py native
+          fi
 
   package-qualification:
     name: Package qualification
@@ -225,9 +234,10 @@ jobs:
           FIXTURES: ${{ needs.changes.outputs.fixtures }}
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
           PLATFORM: ${{ needs.changes.outputs.native_platform }}
+          READY: ${{ needs.changes.outputs.ready }}
         run: |
           test "$RESULT" = success
-          for flag in "$CODE" "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES" "$NATIVE_REQUIRED"; do
+          for flag in "$CODE" "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES" "$NATIVE_REQUIRED" "$READY"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done
           expected_native=false; expected_platform=all
@@ -243,6 +253,10 @@ jobs:
           test "$PLATFORM" = "$expected_platform"
           if [ "$CODE" = false ]; then
             test "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = false/false/false/false
+          fi
+          if [ "$NATIVE_REQUIRED" = true ] && [ "$READY" = false ]; then
+            echo 'Draft PR: affected native qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
       - name: Require every requested native and package-input qualification
         env:
@@ -265,7 +279,7 @@ jobs:
           esac
       - name: Bind complete successful qualification to the exact source
         id: qualified
-        if: needs.changes.outputs.portable == 'true' && needs.changes.outputs.package_macos == 'true' && needs.changes.outputs.package_linux == 'true' && needs.changes.outputs.fixtures == 'true'
+        if: github.event_name != 'pull_request' && (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && needs.changes.outputs.portable == 'true' && needs.changes.outputs.package_macos == 'true' && needs.changes.outputs.package_linux == 'true' && needs.changes.outputs.fixtures == 'true'
 
         run: echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
@@ -277,12 +291,14 @@ jobs:
           LINUX: ${{ needs.changes.outputs.package_linux }}
           FIXTURES: ${{ needs.changes.outputs.fixtures }}
           QUALIFIED_REVISION: ${{ steps.qualified.outputs.revision }}
+          ORDINARY: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
         run: |
           test "$RESULT" = success
           for flag in "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done
-          if [ "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = true/true/true/true ]; then
+          case "${ORDINARY:-false}" in true|false) ;; *) exit 1 ;; esac
+          if [ "${ORDINARY:-false}" != true ] && [ "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = true/true/true/true ]; then
             test "$QUALIFIED_REVISION" = "$GITHUB_SHA"
           else
             test -z "$QUALIFIED_REVISION"

@@ -108,9 +108,9 @@ class BrowserRouting(unittest.TestCase):
                     'scripts/release/runner-cache-policy.sh', 'runner/node-smoke.sh',
                     '.github/workflows/runner-integration.yml',
                     '.github/workflows/change-classification.yml',
-                    'scripts/ci/classify_changes.py', 'scripts/ci/tests/test_browser_scope.py',
+                    'scripts/ci/classify_changes.py',
                 ]
-                for path in ['elixir/lib/app.ex', 'docs/guide.md'] + relevant:
+                for path in ['elixir/lib/app.ex', 'docs/guide.md', 'scripts/ci/tests/test_browser_routing.py'] + relevant:
                     content = recipe.replace('RUN npm ci', 'RUN npm ci --ignore-scripts') if path == 'runner/Dockerfile' else 'fixture'
                     head = commit(path, content)
                     event = {'before': previous, 'after': head}
@@ -158,7 +158,7 @@ class BrowserRouting(unittest.TestCase):
         for result in ('success', 'failure', 'cancelled', 'skipped', ''):
             for code in ('true', 'false', '', 'invalid'):
                 for browser in ('true', 'false', '', 'invalid'):
-                    actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser))
+                    actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser, READY='true'))
                     valid = code in ('true', 'false') and browser in ('true', 'false') and (code == 'true' or browser == 'false')
                     self.assertEqual(actual.returncode == 0, result == 'success' and valid)
         self.assertIn('smoke-image.sh symphony-browser-codex codex', text)
@@ -182,7 +182,7 @@ class BrowserRouting(unittest.TestCase):
                          GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)),
                 capture_output=True, check=True)
             outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
-            self.assertEqual(outputs, dict(code='true', policy='true', browser='true', native='true', native_platform='all',
+            self.assertEqual(outputs, dict(code='true', policy='true', browser='true', ready='true', native='true', native_platform='all',
                                           **{key: 'true' for key in classifier.COMPONENTS}))
             self.assertIn('Browser qualification required: **true**', summary.read_text())
 
@@ -235,11 +235,11 @@ class WorkflowContracts(unittest.TestCase):
         guard='\n'.join(line[10:] for line in guard.splitlines() if line.strip())
         with tempfile.TemporaryDirectory() as folder:
             for result,code,expected in [('success','false',0),('success','true',0),('failure','false',1),('cancelled','false',1),('skipped','false',1),('success','',1)]:
-                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code,POLICY='true'))
+                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code,POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped'))
                 self.assertEqual(command.returncode==0,expected==0,(result,code))
             for policy in ('', 'invalid', 'false'):
                 refused=subprocess.run(['bash','-e','-c',guard],cwd=folder,
-                    env=dict(os.environ,RESULT='success',CODE='true',POLICY=policy),capture_output=True)
+                    env=dict(os.environ,RESULT='success',CODE='true',POLICY=policy,READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped'),capture_output=True)
                 self.assertNotEqual(refused.returncode,0)
             summary=Path(folder)/'summary'
             command='echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"'
@@ -247,7 +247,7 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('not executed',summary.read_text())
             # A real failing behavioral command must remain failing: wrappers do
             # not use continue-on-error or a trailing blanket green step.
-            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true',POLICY='true'),capture_output=True,text=True)
+            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true',POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped'),capture_output=True,text=True)
             self.assertNotEqual(failure.returncode,0)
             self.assertNotIn('unreachable',failure.stdout)
 

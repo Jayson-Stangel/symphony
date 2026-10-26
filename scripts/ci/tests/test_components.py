@@ -49,7 +49,7 @@ def env_for(flags):
     return dict(RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
                 MACOS=macos, LINUX=linux, FIXTURES=fixtures, NATIVE_REQUIRED=str(native).lower(),
                 PLATFORM=platform, PORTABLE='success', PACKAGE='success' if native else 'skipped',
-                GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
+                READY='true', GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
 
 
 class Consumers(unittest.TestCase):
@@ -63,10 +63,10 @@ class Consumers(unittest.TestCase):
             'runner/browser/package-lock.json': {'portable'},
             'scripts/package/linux/Package.resolved': {'portable', 'package_linux'},
             'scripts/package/host.swift': {'portable', 'package_macos', 'package_linux'},
-            'scripts/symphony-apparmor.sh': {'portable', 'package_macos', 'package_linux', 'application'},
-            'scripts/symphony-runner-import.sh': {'portable', 'package_macos', 'package_linux', 'application'},
+            'scripts/symphony-apparmor.sh': {'portable', 'package_macos', 'package_linux', 'application', 'contracts'},
+            'scripts/symphony-runner-import.sh': {'portable', 'package_macos', 'package_linux', 'application', 'contracts'},
             'scripts/package/runner_import_test.py': {'portable', 'package_macos', 'package_linux'},
-            'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures'},
+            'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures', 'contracts', 'codex_config'},
             '.codex/skills/land/SKILL.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'elixir/WORKFLOW.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'runner/claude/runtime.mjs': {'application'},
@@ -146,7 +146,7 @@ class Consumers(unittest.TestCase):
         self.assertIn('"$RUNNER_TEMP/actionlint"', text)
         # Application setup follows its component; policy and workflow checks omit pure prose.
         for step in text.split('      - name: Set up mise tools', 1)[1].split('      - name: Application qualification omission', 1)[0].split('      - '):
-            self.assertIn("if: needs.changes.outputs.application != 'false'", step)
+            self.assertIn("if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'", step)
 
     def test_native_allocations_follow_transitive_inputs(self):
         text = workflow('package-checks')
@@ -157,7 +157,7 @@ class Consumers(unittest.TestCase):
             route = classifier.decisions([path])
             values = {'needs.changes.outputs.native': str(route['native']).lower(),
                       'needs.changes.result': 'success', 'needs.qualification.result': 'success',
-                      'needs.host-policy.result': 'success'}
+                      'needs.host-policy.result': 'success', 'needs.changes.outputs.ready': 'true'}
             self.assertEqual(expression(condition, values), route['native'], path)
             for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result'):
                 for status in ('failure', 'cancelled', 'skipped', ''):

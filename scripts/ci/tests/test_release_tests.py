@@ -71,10 +71,10 @@ class CodexConfigContractsTest(unittest.TestCase):
 
     def test_required_application_step_uses_the_same_fixed_contract_selection(self):
         text = (RELEASE.ROOT / '.github/workflows/make-all.yml').read_text()
-        block = text.split('      - name: Codex protected-command failure regressions\n', 1)[1].split('      - name:', 1)[0]
-        self.assertIn("needs.changes.outputs.application != 'false'", block)
-        self.assertIn('python3 runner/test_codex_readiness.py', block)
+        block = text.split('      - name: Codex file and mount policy regressions\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("needs.changes.outputs.codex_config == 'true'", block)
         self.assertIn('python3 scripts/ci/release_tests.py codex-config', block)
+        self.assertIn("if: needs.changes.outputs.readiness == 'true'\n        run: python3 runner/test_codex_readiness.py", text)
         portable = (RELEASE.ROOT / '.github/workflows/release-preflight.yml').read_text()
         self.assertIn('python3 scripts/ci/release_tests.py portable', portable)
 

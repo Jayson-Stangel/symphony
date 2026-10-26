@@ -49,11 +49,17 @@ PORTABLE = {
     'test_runner_inputs.py',
     'test_runner_reuse.py',
 }
+CONTRACTS = {'test_codex_doctor_lock.py', 'test_project_credentials.py', 'test_readiness_stages.py'}
 
 
 def run(kind, directory):
-    modules = sorted(p for p in directory.glob('test_*.py')
-                     if (p.name in PORTABLE) == (kind == 'portable'))
+    def selected(path):
+        if kind == 'contracts':
+            return path.name in CONTRACTS
+        if kind == 'process':
+            return path.name not in PORTABLE | CONTRACTS
+        return (path.name in PORTABLE) == (kind == 'portable')
+    modules = sorted(p for p in directory.glob('test_*.py') if selected(p))
     if not modules:
         raise ValueError('no release qualification suites selected')
     suite = unittest.TestSuite()
@@ -96,7 +102,7 @@ def codex_config_contracts():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('kind', choices=('portable', 'native', 'codex-config'))
+    parser.add_argument('kind', choices=('portable', 'native', 'codex-config', 'contracts', 'process', 'release-policy'))
     args = parser.parse_args()
     if args.kind in ('portable', 'codex-config'):
         try:
@@ -105,8 +111,15 @@ def main():
             parser.error(str(error))
     if args.kind == 'codex-config':
         raise SystemExit(0)
-    if args.kind == 'portable':
-        subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'scripts/ci/tests'), '-v'], check=True)
+    if args.kind == 'contracts':
+        for filename in CONTRACTS:
+            if not (ROOT / 'scripts/release/tests' / filename).is_file():
+                parser.error('missing launcher contract: ' + filename)
+    if args.kind in ('portable', 'release-policy'):
+        # Ordinary policy runs have separate selected fast-family executors.
+        # Manual preflight keeps the complete historical portable coverage.
+        if args.kind == 'portable':
+            subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'scripts/ci/tests'), '-v'], check=True)
         for filename in ('scripts/symphony', 'scripts/symphony-package.sh',
                          'scripts/symphony-package-update.sh', 'scripts/symphony-apparmor.sh', 'scripts/symphony-runner-import.sh', 'scripts/symphony-runner-provision.sh', 'scripts/release/package.sh',
                          'scripts/release/build-host-helper.sh'):
@@ -115,7 +128,8 @@ def main():
                 f'.codex/skills/{skill}/SKILL.md' for skill in ('commit', 'push', 'pull', 'linear', 'land')]:
             if not (ROOT / filename).is_file():
                 parser.error('missing package input: ' + filename)
-    raise SystemExit(0 if run(args.kind, ROOT / 'scripts/release/tests') else 1)
+    kind = 'portable' if args.kind == 'release-policy' else args.kind
+    raise SystemExit(0 if run(kind, ROOT / 'scripts/release/tests') else 1)
 
 
 if __name__ == '__main__':
