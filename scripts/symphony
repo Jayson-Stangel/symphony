@@ -1419,21 +1419,23 @@ PYDIRECTORY
 }
 
 runner_project_lock() {
-  local root=$1 path
-  path=$(runner_resource_lock_path "$(runner_id "$root")")
+  local root=$1 id name path
+  id=$(project_id "$root") || return
+  name=$(runner_id "$root") || return
+  path=$(runner_resource_lock_path "$name") || return
   if [ -n "${runner_resource_lock_path:-}" ]; then
     [ "$runner_resource_lock_path" = "$path" ] || die 'updater already holds a different runner lock'
     return
   fi
   [ ! -L "$path" ] || die 'unsafe runner lock'
   [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe runner lock'
-  exec 6>>"$path"
-  updater_file_lock "$path" 6
-  runner_resource_lock_path=$path
-  mkdir -p "$runner_home"
+  exec 6>>"$path" || return
+  updater_file_lock "$path" 6 || return
+  mkdir -p "$runner_home" || return
   # Preserve exclusion with older updaters using the configuration-local lock.
   # Always acquire the resource lock first, then this compatibility lock.
-  runner_transition_lock "$runner_home/$(project_id "$root").transition.lock"
+  runner_transition_lock "$runner_home/$id.transition.lock" || return
+  runner_resource_lock_path=$path
 }
 
 # Keep the original lock pathname as a permanent regular inode. Older launchers
@@ -1451,7 +1453,7 @@ runner_transition_lock() {
     if "$packaged_install"; then package_helper legacy-lock "$path"; return; fi
     # Only a proven-dead legacy directory can retire. Directory-relative unlink
     # cannot remove the owner of a replacement directory acquired by old code.
-    python3 - "$path" <<'PYLEGACY'
+    python3 - "$path" <<'PYLEGACY' || return
 import os, stat, sys
 
 def refuse(message):
@@ -1497,8 +1499,8 @@ PYLEGACY
   [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe updater lock'
   # If an old updater's mkdir wins first, opening the directory fails. If this
   # O_CREAT wins first, its permanent regular file makes the old mkdir fail.
-  exec 9>>"$path"
-  updater_file_lock "$path" 9
+  exec 9>>"$path" || return
+  updater_file_lock "$path" 9 || return
   runner_lock_path=$path
 }
 
@@ -2030,6 +2032,9 @@ runner_doctor() {
   if "$sandbox_only" && [ "$agent" != codex ]; then die '--sandbox-only requires --agent codex'; fi
   runtime=$(container_runtime)
   container_engine_ready "$runtime" || return
+  # Snapshot publication and verification share the runner's project owner.
+  # Nested updater calls reuse their already-held resource/transition locks.
+  if [ "$agent" = codex ]; then runner_project_lock "$root" || return; fi
   printf 'Container engine: ready.\n'
   if "$packaged_install"; then package_use_project_image "$root" "$agent"; fi
   image=$(runner_image "$agent")
