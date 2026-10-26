@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
+from codex_config_fixture import EMPTY_SNAPSHOT, PIN_SETTINGS
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -13,8 +15,8 @@ class ReadinessStages(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='symphony-stages-') as temporary:
             env = dict(os.environ, SYMPHONY_HOME=str(ROOT), SYMPHONY_RUNNER_NAMESPACE='readiness-fixture',
                        SYMPHONY_CONFIG_HOME=temporary, SYMPHONY_SKILLS_DIR=temporary,
-                       SYMPHONY_BIN_DIR=temporary)
-            return subprocess.run(['bash', '-c', 'source "$1/scripts/symphony" --help >/dev/null\n' + body,
+                       SYMPHONY_BIN_DIR=temporary, FIXTURE_EMPTY_SNAPSHOT=EMPTY_SNAPSHOT)
+            return subprocess.run(['bash', '-c', 'source "$1/scripts/symphony" --help >/dev/null\n' + PIN_SETTINGS + body,
                                    'readiness-test', str(ROOT)], env=env, capture_output=True, text=True)
 
     def test_engine_failure_stops_before_image_or_login(self):
@@ -34,7 +36,8 @@ runner_doctor /unused codex
         result = self.run_shell('''
 container_runtime() { printf fixture_runtime; }
 fixture_runtime() { case "$1" in info|image) return 0 ;; *) echo UNEXPECTED >&2; return 90 ;; esac; }
-runner_codex_sandbox_ready() { echo protected-command-checked; }
+fixture_pin_codex_settings /unused "$(runner_image codex)"
+runner_codex_sandbox_ready() { codex_config_require "$1" "$3"; echo protected-command-checked; }
 auth_codex_check() { echo UNEXPECTED >&2; return 90; }
 runner_doctor /unused codex true
 ''')
@@ -45,7 +48,11 @@ runner_doctor /unused codex true
 
     def test_unsupported_command_remediation_does_not_recommend_rebuild(self):
         result = self.run_shell('''
+# This test reaches the protected-command diagnosis through a valid daemon
+# security selection; host-preparation behavior has its own dedicated suite.
+fixture_runtime() { [ "$1" = info ] && printf '%s\\n' 'name=seccomp,profile=builtin'; }
 runner_codex_run() { echo 'Codex sandbox not ready: sandbox_unsupported_command'; return 1; }
+fixture_pin_codex_settings /unused fixture_image
 runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 ''')
         self.assertNotEqual(result.returncode, 0)
@@ -55,12 +62,28 @@ runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 
     def test_launch_failure_is_project_setup_stage(self):
         result = self.run_shell('''
+# This test reaches the protected-command diagnosis through a valid daemon
+# security selection; host-preparation behavior has its own dedicated suite.
+fixture_runtime() { [ "$1" = info ] && printf '%s\\n' 'name=seccomp,profile=builtin'; }
 runner_codex_run() { echo 'Codex sandbox not ready: sandbox_launch_failed'; return 1; }
+fixture_pin_codex_settings /unused fixture_image
 runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 ''')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Project launch environment failed', result.stderr)
         self.assertNotIn('rebuilt', result.stderr)
+
+    def test_corrupt_pinned_settings_refuse_before_protected_command(self):
+        result = self.run_shell('''
+fixture_runtime() { [ "$1" = info ] && printf '%s\\n' 'name=seccomp,profile=builtin'; }
+runner_codex_run() { echo UNEXPECTED_PROTECTED_COMMAND >&2; return 90; }
+fixture_pin_codex_settings /unused fixture_image
+printf corrupt > "$codex_config_file"
+runner_codex_sandbox_ready /unused fixture_runtime fixture_image
+''')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('immutable Codex settings verification failed', result.stderr)
+        self.assertNotIn('UNEXPECTED_PROTECTED_COMMAND', result.stderr)
 
     def test_failed_native_login_status_cannot_report_ready_in_conditional(self):
         result = self.run_shell('''
