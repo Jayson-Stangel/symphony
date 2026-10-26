@@ -77,10 +77,34 @@ def run(kind, directory):
     return result.wasSuccessful() and result.testsRun > 0 and not result.skipped
 
 
+def codex_config_contracts():
+    """Cheap file/mount-policy fixtures; no native helper or provider startup."""
+    for filename in ('codex_config_boundary_test.py', 'codex_config_snapshot_test.py'):
+        if not (ROOT / 'elixir/test' / filename).is_file():
+            raise ValueError('missing Codex config contract: ' + filename)
+    if sys.version_info < (3, 11):
+        raise ValueError('Codex config contracts require Python 3.11+ with tomllib')
+    try:
+        import tomllib
+    except ImportError as error:
+        raise ValueError('Codex config contracts require Python 3.11+ with tomllib') from error
+    print(json.dumps({'kind': 'codex-config', 'python': sys.version.split()[0],
+                      'executable': sys.executable}), flush=True)
+    subprocess.run([sys.executable, '-B', '-m', 'unittest', 'discover',
+                    '-s', str(ROOT / 'elixir/test'), '-p', 'codex_config*_test.py', '-v'], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('kind', choices=('portable', 'native'))
+    parser.add_argument('kind', choices=('portable', 'native', 'codex-config'))
     args = parser.parse_args()
+    if args.kind in ('portable', 'codex-config'):
+        try:
+            codex_config_contracts()
+        except ValueError as error:
+            parser.error(str(error))
+    if args.kind == 'codex-config':
+        raise SystemExit(0)
     if args.kind == 'portable':
         subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'scripts/ci/tests'), '-v'], check=True)
         for filename in ('scripts/symphony', 'scripts/symphony-package.sh',

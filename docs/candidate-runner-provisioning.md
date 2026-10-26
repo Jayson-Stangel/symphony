@@ -123,3 +123,35 @@ the original October 24 Apple Silicon candidate graph, preserving digest
 That proves archive/graph preparation only. Fresh-account downloaded-package
 security acceptance, an actual Docker cold/pruned import, provider login and
 unchanged Melody project readiness still require their own recorded evidence.
+
+## Managed Codex settings
+
+The candidate accepts native trust entries for owned managed workspaces and
+retains the original native configuration and login storage. Each managed
+listener uses a separate immutable trust snapshot at the normal configuration
+path. Explicit native configuration edits while that listener is running are
+unsupported; unknown settings, hooks, rules and unqualified launch environments
+refuse startup. Authentication storage remains writable at its original path.
+
+Fresh packaged installs and transitions from the current Claude runner are the
+supported validation paths. An incompatible older Codex listener cannot be
+transitioned in place to either provider with this candidate: the updater refuses
+before publishing a transition journal, draining work or stopping the listener. Recovery and
+migration for older Codex installations are deferred. Plan a fresh installation
+separately; this refusal does not delete the existing installation, native login,
+workspaces or configuration. Compatible current-profile updates retain their
+qualified image/settings tuple through retry and rollback.
+
+Protected launch diagnostics distinguish native configuration refusals from
+project setup failures. `sandbox_unqualified_config` retains its config/security
+meaning; preserve the native file and inspect unsupported settings or policy
+inputs. `sandbox_wrapper_failed` means the trusted wrapper/bootstrap exited
+before a valid guard receipt. Check the project's setup prerequisites.
+`sandbox_toolchain_unqualified` means the actual post-wrapper executable closure
+was refused, including missing Node, unsafe ownership/permissions, architecture
+or changed bytes. Recreate an obsolete project toolchain through its supported
+setup rather than changing shared directory ownership or removing native login
+or configuration. `sandbox_launch_receipt_invalid` means the guard receipt could
+not be verified; inspect the trusted wrapper and retry. These failures remain
+closed and do not require rebuilding the runner image. Diagnostics withhold
+native child output because it may contain credentials.
