@@ -48,7 +48,7 @@ defmodule SymphonyElixir.ProjectIdentityTest do
           assert {_, 0} = launch(ctx, repo, ["init", "--linear-project", "project-#{index}"])
           id = identity(ctx, repo)
           credentials = Path.join(ctx.root, "config/projects/#{id}.env")
-          File.write!(credentials, "GH_TOKEN=sentinel-#{index}\n")
+          File.write!(credentials, "GH_TOKEN=sentinel-#{index}\nLINEAR_API_KEY=linear-fixture\n")
           assert {_, 0} = launch(ctx, repo, ["run", "--agent", agent, "--port", "#{4010 + index}"])
           data = container(ctx, "#{ctx.prefix}-#{id}")
           assert data["credentials"] == credentials
@@ -88,8 +88,9 @@ defmodule SymphonyElixir.ProjectIdentityTest do
   test "migration retains credential bytes, stopped old runner and exact storage", ctx do
     repo = hd(ctx.repos)
     {id, old, name} = legacy!(ctx, repo)
-    # Authentication and disposable preflight do not mutate the retained runner.
-    assert {_, 0} = launch(ctx, repo, ["runner", "doctor"])
+    # Preflight never adopts legacy credentials before explicit migration.
+    assert {preflight, 1} = launch(ctx, repo, ["runner", "doctor"])
+    assert preflight =~ "Missing required credentials: LINEAR_API_KEY, GH_TOKEN or GITHUB_TOKEN"
     credentials = File.read!(Path.join(ctx.root, "config/projects/service.env"))
     assert {message, 0} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     assert message =~ "identity migrated"
@@ -138,10 +139,10 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     {id, old, name} = legacy!(ctx, repo)
     legacy = Path.join(ctx.root, "config/projects/service.env")
     target = Path.join(ctx.root, "config/projects/#{id}.env")
-    File.write!(target, "GH_TOKEN=foreign\n")
+    File.write!(target, "GH_TOKEN=foreign\nLINEAR_API_KEY=linear-fixture\n")
     assert {message, 1} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     assert message =~ "mixed legacy"
-    assert File.read!(target) == "GH_TOKEN=foreign\n"
+    assert File.read!(target) == "GH_TOKEN=foreign\nLINEAR_API_KEY=linear-fixture\n"
     assert File.exists?(legacy)
     File.rm!(target)
     data = container(ctx, old)
@@ -168,11 +169,11 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     File.write!(Path.join(two, "WORKFLOW.md"), "preexisting workflow")
     assert {_, 0} = launch(ctx, two, ["init", "--linear-project", "independent"])
     id = identity(ctx, two)
-    File.write!(Path.join(ctx.root, "config/projects/#{id}.env"), "GH_TOKEN=second-project\n")
+    File.write!(Path.join(ctx.root, "config/projects/#{id}.env"), "GH_TOKEN=second-project\nLINEAR_API_KEY=linear-fixture\n")
     assert {_, 0} = launch(ctx, two, ["run", "--port", "4011"])
     assert container(ctx, old) == original
     assert container(ctx, "#{ctx.prefix}-#{id}")["storage"] != original["storage"]
-    assert File.read!(Path.join(ctx.root, "config/projects/service.env")) == "GH_TOKEN=legacy-fixture\n"
+    assert File.read!(Path.join(ctx.root, "config/projects/service.env")) == "GH_TOKEN=legacy-fixture\nLINEAR_API_KEY=linear-fixture\n"
   end
 
   test "backup-only interrupted transition migrates and rolls back", ctx do
@@ -261,7 +262,7 @@ defmodule SymphonyElixir.ProjectIdentityTest do
   test "unproven basename credentials are never automatically adopted", ctx do
     repo = hd(ctx.repos)
     File.mkdir_p!(Path.join(ctx.root, "config/projects"))
-    File.write!(Path.join(ctx.root, "config/projects/service.env"), "GH_TOKEN=unproven\n")
+    File.write!(Path.join(ctx.root, "config/projects/service.env"), "GH_TOKEN=unproven\nLINEAR_API_KEY=linear-fixture\n")
     assert {message, 1} = launch(ctx, repo, ["update", "--development-runner", "--migrate-project-identity"])
     assert message =~ "no owned retained runner"
     # A new same-basename repository is independent, even with legacy config present.
@@ -279,7 +280,7 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     assert {_, 0} = launch(ctx, repo, ["init", "--linear-project", "legacy"])
     id = identity(ctx, repo)
     name = "#{ctx.prefix}-#{id}"
-    File.write!(Path.join(ctx.root, "config/projects/#{id}.env"), "GH_TOKEN=legacy-fixture\n")
+    File.write!(Path.join(ctx.root, "config/projects/#{id}.env"), "GH_TOKEN=legacy-fixture\nLINEAR_API_KEY=linear-fixture\n")
     assert {_, 0} = launch(ctx, repo, ["run"])
     assert {_, 0} = launch(ctx, repo, ["runner", "stop"])
     old = "#{ctx.prefix}-service"
