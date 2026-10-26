@@ -257,6 +257,189 @@ runner_doctor "$FIXTURE_PROJECT" codex true
                 self.assertNotIn('UNEXPECTED_IDENTITY', result.stderr)
                 self.assertNotIn('UNEXPECTED_AUTH', result.stderr)
 
+class CodexStoreParent(unittest.TestCase):
+    """Python contracts always run; an explicit native helper adds packaged parity."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='symphony-store-parent-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
+        subprocess.run(['git', '-C', str(self.repo), 'remote', 'add', 'origin',
+                        'https://github.com/example/' + self.root.name + '.git'], check=True)
+        self.backends = [('development', False)]
+        if os.environ.get('SYMPHONY_TEST_HOST_HELPER'):
+            self.backends.append(('packaged', True))
+        self.calls = {
+            'store': 'codex_config_store_root "$FIXTURE_REPO" >/dev/null',
+            'lock': 'runner_project_lock "$FIXTURE_REPO"',
+            'start': 'package_use_project_image() { :; }; runner_require_identity() { exit 47; }; runner_start "$FIXTURE_REPO"',
+            'migration': 'container_runtime() { printf false; }; runner_resource_lock_path() { exit 47; }; runner_migrate_identity "$FIXTURE_REPO"',
+            'transition': 'container_runtime() { printf false; }; runner_require_identity() { exit 47; }; runner_transition "$FIXTURE_REPO" claude',
+        }
+
+    def script(self, body):
+        return ['bash', '-euc', r'''
+umask 002
+source "$SYMPHONY_HOME/scripts/symphony" --help >/dev/null
+if [ "$FIXTURE_PACKAGED" = 1 ]; then
+  packaged_install=true
+  package_helper() { "$FIXTURE_NATIVE_HELPER" "$@"; }
+fi
+''' + body]
+
+    def environment(self, case, packaged, **extra):
+        case.mkdir(exist_ok=True)
+        env = dict(os.environ, SYMPHONY_HOME=str(ROOT), SYMPHONY_CONFIG_HOME=str(case / 'config'),
+                    SYMPHONY_RUNNER_HOME=str(case / 'runners'), FIXTURE_REPO=str(self.repo),
+                    SYMPHONY_RUNNER_NAMESPACE='parent-' + hashlib.sha256(str(case).encode()).hexdigest()[:12],
+                    FIXTURE_PACKAGED='1' if packaged else '0', FIXTURE_NATIVE_HELPER=os.environ.get('SYMPHONY_TEST_HOST_HELPER', ''),
+                    FIXTURE_EMPTY_SNAPSHOT=EMPTY_SNAPSHOT)
+        env.update(extra)
+        return env
+
+    def invoke(self, case, packaged, body, **extra):
+        return subprocess.run(self.script(body), env=self.environment(case, packaged, **extra),
+                              capture_output=True, text=True, timeout=10)
+
+    def write_snapshot(self, case, packaged):
+        result = self.invoke(case, packaged, r'''
+store=$(codex_config_store_root "$FIXTURE_REPO")
+printf '%s' "$FIXTURE_EMPTY_SNAPSHOT" | codex_config_store write "$store"
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        digest = hashlib.sha256(b'').hexdigest()
+        self.assertEqual(result.stdout.strip(), digest)
+        stores = list((case / 'runners').glob('*-codex-config'))
+        self.assertEqual(len(stores), 1)
+        self.assertEqual({p.name for p in stores[0].iterdir()}, {digest})
+        artifact = stores[0] / digest
+        self.assertEqual((artifact / 'config.toml').read_bytes(), b'')
+        self.assertEqual({p.name for p in artifact.iterdir()}, {'config.toml', 'receipt.json'})
+        for directory in (stores[0], artifact):
+            self.assertEqual(directory.stat().st_mode & 0o7777, 0o700)
+        for file in artifact.iterdir():
+            self.assertEqual(file.stat().st_mode & 0o7777, 0o600)
+
+    def test_all_first_creators_ignore_ambient_group_writable_umask(self):
+        for backend, packaged in self.backends:
+            for route, call in self.calls.items():
+                with self.subTest(backend=backend, route=route):
+                    case = self.root / (backend + '-' + route)
+                    result = self.invoke(case, packaged, call)
+                    self.assertEqual(result.returncode, 47 if route in ('start', 'migration', 'transition') else 0,
+                                     result.stdout + result.stderr)
+                    self.assertEqual((case / 'runners').stat().st_mode & 0o7777, 0o700)
+                    self.write_snapshot(case, packaged)
+
+    def test_unsafe_existing_runner_home_refuses_every_route_unchanged(self):
+        calls = dict(self.calls)
+        boundary = 'runner_require_identity() { printf unexpected > "$FIXTURE_EFFECT"; exit 47; }; '
+        for route in ('pause', 'stop', 'rollback'):
+            calls[route] = boundary + 'runner_' + route + ' "$FIXTURE_REPO"'
+        calls['control'] = boundary + 'repo_root() { printf %s "$FIXTURE_REPO"; }; runner drain'
+        calls['auth'] = ('repo_root() { printf %s "$FIXTURE_REPO"; }; '
+                         'container_runtime() { printf unexpected > "$FIXTURE_EFFECT"; exit 47; }; claude_auth login')
+        for backend, packaged in self.backends:
+            for route, call in calls.items():
+                with self.subTest(backend=backend, route=route):
+                    case = self.root / (backend + '-' + route)
+                    case.mkdir(); home = case / 'runners'; home.mkdir(); home.chmod(0o775)
+                    canary = home / 'user-canary'; canary.write_bytes(b'preserve')
+                    before = (home.stat().st_ino, home.stat().st_mode, home.stat().st_uid, canary.read_bytes())
+                    result = self.invoke(case, packaged, 'if { ' + call + '; }; then exit 99; else exit 37; fi',
+                                         FIXTURE_EFFECT=str(case / 'unexpected-effect'))
+                    self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+                    self.assertFalse((case / 'unexpected-effect').exists())
+                    self.assertEqual((home.stat().st_ino, home.stat().st_mode, home.stat().st_uid, canary.read_bytes()), before)
+                    self.assertEqual({p.name for p in home.iterdir()}, {'user-canary'})
+
+    def test_safe_existing_parent_is_preserved_and_umask_is_scoped(self):
+        for backend, packaged in self.backends:
+            with self.subTest(backend=backend):
+                case = self.root / backend; case.mkdir(); home = case / 'runners'; home.mkdir(); home.chmod(0o755)
+                inode = home.stat().st_ino
+                result = self.invoke(case, packaged, 'before=$(umask); runner_prepare_home; [ "$(umask)" = "$before" ]')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.write_snapshot(case, packaged)
+                self.assertEqual(home.stat().st_ino, inode)
+                self.assertEqual(home.stat().st_mode & 0o7777, 0o755)
+
+    def test_leaf_links_files_and_foreign_owned_directories_are_not_adopted(self):
+        for backend, packaged in self.backends:
+            for kind in ('link', 'dangling-link', 'file', 'foreign-owner'):
+                with self.subTest(backend=backend, kind=kind):
+                    case = self.root / (backend + '-' + kind); case.mkdir(); home = case / 'runners'
+                    if kind == 'foreign-owner':
+                        home = Path('/var/empty' if Path('/var/empty').exists() else '/')
+                        if home.lstat().st_uid == os.geteuid():
+                            continue  # Root-run fixture cannot establish actual foreign ownership.
+                    elif kind in ('link', 'dangling-link'):
+                        target = case / 'target'
+                        if kind == 'link': target.mkdir(); (target / 'canary').write_bytes(b'preserve')
+                        home.symlink_to(target)
+                    else:
+                        home.write_bytes(b'preserve')
+                    before = (home.lstat().st_ino, home.lstat().st_mode, home.lstat().st_uid)
+                    result = self.invoke(case, packaged, 'codex_config_store_root "$FIXTURE_REPO"',
+                                         SYMPHONY_RUNNER_HOME=str(home))
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual((home.lstat().st_ino, home.lstat().st_mode, home.lstat().st_uid), before)
+                    if kind == 'link': self.assertEqual((target / 'canary').read_bytes(), b'preserve')
+                    if kind == 'file': self.assertEqual(home.read_bytes(), b'preserve')
+
+    def test_unsafe_mkdir_rival_is_refused_without_chmod_or_child_creation(self):
+        for backend, packaged in self.backends:
+            with self.subTest(backend=backend):
+                case = self.root / backend
+                result = self.invoke(case, packaged, r'''
+mkdir() {
+  (umask 002; command mkdir "$runner_home"; printf peer > "$runner_home/peer-canary")
+  command mkdir "$@"
+}
+if runner_prepare_home; then exit 99; else exit 37; fi
+''')
+                self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+                home = case / 'runners'
+                self.assertEqual(home.stat().st_mode & 0o7777, 0o775)
+                self.assertEqual({p.name for p in home.iterdir()}, {'peer-canary'})
+                self.assertEqual((home / 'peer-canary').read_bytes(), b'peer')
+
+    def test_parallel_legitimate_first_creators_both_validate_private_storage(self):
+        for backend, packaged in self.backends:
+            with self.subTest(backend=backend):
+                case = self.root / backend; case.mkdir(); release = case / 'release'; processes = []
+                body = r'''
+mkdir() {
+  touch "$FIXTURE_READY"
+  for attempt in $(seq 1 500); do [ ! -e "$FIXTURE_RELEASE" ] || break; sleep .01; done
+  [ -e "$FIXTURE_RELEASE" ] || return 92
+  command mkdir "$@"
+}
+runner_prepare_home
+'''
+                try:
+                    for index in range(2):
+                        env = self.environment(case, packaged, FIXTURE_READY=str(case / str(index)), FIXTURE_RELEASE=str(release))
+                        processes.append(subprocess.Popen(self.script(body), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                    deadline = time.monotonic() + 5
+                    while not all((case / str(index)).exists() for index in range(2)):
+                        self.assertTrue(all(process.poll() is None for process in processes))
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.01)
+                    release.touch()
+                    for process in processes:
+                        output, error = process.communicate(timeout=5)
+                        self.assertEqual(process.returncode, 0, output + error)
+                finally:
+                    release.touch()
+                    for process in processes:
+                        if process.poll() is None: process.kill(); process.communicate()
+                self.assertEqual((case / 'runners').stat().st_mode & 0o7777, 0o700)
+                self.assertEqual(list((case / 'runners').iterdir()), [])
+                self.write_snapshot(case, packaged)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1768,6 +1768,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       package_helper() {
         case "$1" in
           lock-directory) return 0 ;;
+          selection-storage-directory)
+            python3 - "$2" <<'PYSTORAGE'
+      import os, stat, sys
+      info = os.lstat(sys.argv[1])
+      if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+          sys.exit(1)
+      PYSTORAGE
+            ;;
           sha256) shasum -a 256 "$2" | cut -d ' ' -f 1 ;;
           codex-config-store) shift; python3 -I "$symphony_home/scripts/codex-config-store.py" "$@" ;;
           *) return 1 ;;
