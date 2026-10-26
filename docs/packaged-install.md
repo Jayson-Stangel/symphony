@@ -186,6 +186,14 @@ These checks do not establish remote Git authorization, Linear access, dependenc
 installation for a real task, listener operation or authenticated inference. Those
 remain separate operator-run acceptance stages.
 
+## Select the installed command
+
+After installation, run the exact `source` command printed by the installer to
+select its executable and saved installation context in the current terminal.
+For fresh shells and conflicting stable/source commands, see
+[command activation](command-activation.md). The installer does not edit shell
+profiles or replace another installation's command/skill links.
+
 ## Connect and run a project
 
 Follow [project initialization](getting-started.md#initialize-a-repository) from

@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 from runner_import_test import RunnerImportTest
+from command_activation_test import CommandActivationTest, PackageCommandActivationMixin
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))
@@ -112,7 +113,7 @@ class InstallerLaunchTest(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
-class PackageTest(unittest.TestCase):
+class PackageTest(PackageCommandActivationMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not HELPER.is_file():
