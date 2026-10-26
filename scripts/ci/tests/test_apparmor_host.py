@@ -131,7 +131,8 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         doctor = 'runner_doctor() {' + launcher.split('runner_doctor() {', 1)[1].split('\nrunner() {', 1)[0]
         # Admission now holds the actual project and compatibility leases.
         # Only identity/path discovery is redirected to this disposable host.
-        locks = ('updater_file_lock() {' + launcher.split('updater_file_lock() {', 1)[1].split('\nsource_update_lock() {', 1)[0] +
+        locks = ('runner_prepare_home() {' + launcher.split('runner_prepare_home() {', 1)[1].split('\ncodex_config_store_root() {', 1)[0] + '\n' +
+                 'updater_file_lock() {' + launcher.split('updater_file_lock() {', 1)[1].split('\nsource_update_lock() {', 1)[0] +
                  'runner_project_lock() {' + launcher.split('runner_project_lock() {', 1)[1].split('\n# Keep the original lock pathname', 1)[0] +
                  'runner_transition_lock() {' + launcher.split('runner_transition_lock() {', 1)[1].split('\nrunner_resume_when_ready() {', 1)[0])
         original = self.driver.read_text()
