@@ -19,6 +19,7 @@ class ReadinessStages(unittest.TestCase):
 
     def test_engine_failure_stops_before_image_or_login(self):
         result = self.run_shell('''
+project_credentials_require() { return 0; }
 container_runtime() { printf fixture_runtime; }
 fixture_runtime() { [ "$1" = info ] && return 29; echo UNEXPECTED >&2; return 90; }
 runner_build_image() { echo UNEXPECTED >&2; }

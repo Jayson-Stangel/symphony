@@ -201,6 +201,17 @@ Edit the exact private credentials-file path printed by `init`, adding
 is `~/.config/symphony`; `SYMPHONY_CONFIG_HOME` and a runner namespace can change it.
 A file in another configuration root will not be used. Keep credentials outside
 Git and chat. Repeated `init` preserves existing workflows, overrides and credentials.
+Use literal, unquoted `KEY=value` assignments; the launcher loads them automatically,
+without `source` or `eval`. Nonempty exported credentials override file credentials;
+`GH_TOKEN` precedes `GITHUB_TOKEN` within each source. Both names are supported.
+See [credential scope and source selection](getting-started.md#configure-credentials).
+Run `symphony project doctor` or `symphony project doctor --json` before login:
+it reports all missing names, the effective private file and source types without
+printing secrets or starting a listener/model request. This works in headless Linux
+and custom candidate namespaces: run it with the same installation, configuration
+root and namespace you intend to start. Native provider auth and artifact-download
+access are separate. Configured names do not prove remote permissions or successful
+work; use the provider auth check and runner doctor before startup.
 
 Before starting a listener, review the workflow's tracker project, active states,
 hooks and validation commands. Require a label assigned only to the disposable

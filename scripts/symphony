@@ -564,6 +564,120 @@ use_global_skill() {
   printf 'Global skill restored: %s\nLocal override backed up: %s\n' "$(global_skill_path "$skill")" "$backup"
 }
 
+# Project credentials use literal dotenv assignments, never shell evaluation. Only
+# these three names are read; native provider stores and host gh are independent.
+project_credentials_read() {
+  local root=$1 line key value file_linear='' file_gh='' file_github=''
+  credential_file="$config_home/projects/$(project_id "$root").env"
+  credential_linear=${LINEAR_API_KEY:-}
+  credential_git=${GH_TOKEN:-${GITHUB_TOKEN:-}}
+  credential_linear_source=missing; credential_git_source=missing
+  credential_git_name='GH_TOKEN or GITHUB_TOKEN'
+  [ -z "$credential_linear" ] || credential_linear_source=environment
+  if [ -n "${GH_TOKEN:-}" ]; then credential_git_name=GH_TOKEN; credential_git_source=environment
+  elif [ -n "${GITHUB_TOKEN:-}" ]; then credential_git_name=GITHUB_TOKEN; credential_git_source=environment; fi
+  if [ -r "$credential_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line%$'\r'}
+      case "$line" in
+        LINEAR_API_KEY=*|GH_TOKEN=*|GITHUB_TOKEN=*)
+          key=${line%%=*}; value=${line#*=}
+          case "$key" in
+            LINEAR_API_KEY) file_linear=$value ;;
+            GH_TOKEN) file_gh=$value ;;
+            GITHUB_TOKEN) file_github=$value ;;
+          esac ;;
+      esac
+    done <"$credential_file"
+  fi
+  if [ -z "$credential_linear" ] && [ -n "$file_linear" ]; then credential_linear=$file_linear; credential_linear_source=project-file; fi
+  if [ -z "$credential_git" ]; then
+    if [ -n "$file_gh" ]; then credential_git=$file_gh; credential_git_name=GH_TOKEN; credential_git_source=project-file
+    elif [ -n "$file_github" ]; then credential_git=$file_github; credential_git_name=GITHUB_TOKEN; credential_git_source=project-file; fi
+  fi
+  # Recognize only init's standard binding. Custom YAML/tracker configuration
+  # remains the application's responsibility; never guess its required secrets.
+  credential_tracker=custom-unchecked
+  if [ ! -f "$root/WORKFLOW.md" ] || awk '
+    /^---$/ { delimiters++; next }
+    delimiters != 1 { next }
+    /^tracker:[[:space:]]*$/ { tracker=1; provider=0; next }
+    /^[^[:space:]]/ { tracker=0; provider=0 }
+    tracker && /^  kind: linear[[:space:]]*$/ { linear=1 }
+    tracker && /^  provider:[[:space:]]*$/ { provider=1; next }
+    tracker && /^  [^[:space:]]/ { provider=0 }
+    tracker && provider && /^    api_key: \$LINEAR_API_KEY[[:space:]]*$/ { standard=1 }
+    END { exit !(linear && standard) }
+  ' "$root/WORKFLOW.md"; then
+    credential_tracker=default-linear
+  fi
+  credential_missing=''
+  if [ "$credential_tracker" = default-linear ] && [ -z "$credential_linear" ]; then credential_missing=LINEAR_API_KEY; fi
+  [ -n "$credential_git" ] || credential_missing="${credential_missing:+$credential_missing, }GH_TOKEN or GITHUB_TOKEN"
+}
+
+credential_json_string() {
+  local value=$1
+  value=${value//\\/\\\\}; value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}; value=${value//$'\r'/\\r}; value=${value//$'\t'/\\t}
+  printf '"%s"' "$value"
+}
+
+project_credentials_report() {
+  local root=$1 json=${2:-false}
+  project_credentials_read "$root"
+  if "$json"; then
+    printf '{"ready":%s,"file":%s,"tracker_configuration":"%s","linear_source":"%s","git_source":"%s","git_name":"%s","missing":%s,"native_authentication":"untested","tracker_access":"untested","repository_access":"untested"}' \
+      "$([ -z "$credential_missing" ] && printf true || printf false)" "$(credential_json_string "$credential_file")" \
+      "$credential_tracker" "$credential_linear_source" "$credential_git_source" "$credential_git_name" "$(credential_json_string "$credential_missing")"
+  else
+    printf 'Installation: %s; configuration root: %s; runner namespace: %s\n' "$symphony_home" "$config_home" "${runner_namespace:-default}"
+    printf 'Project credential file (automatically loaded): %s\n' "$credential_file"
+    printf 'Credential sources: nonempty exported environment first, then literal KEY=value in this file (no source/eval required). GH_TOKEN precedes GITHUB_TOKEN within each source.\n'
+    printf 'Standard Linear setup requires: LINEAR_API_KEY (selected Linear project); GH_TOKEN or GITHUB_TOKEN (managed repository Contents and Pull requests read/write; Workflows for workflow edits, Issues for issue operations; Actions read only for automatic candidate artifact acquisition).\n'
+    if [ "$credential_tracker" = custom-unchecked ]; then printf 'Custom tracker configuration: unchecked. Review WORKFLOW.md credential bindings; application validation still applies.\n'; fi
+    printf 'Configured sources: LINEAR_API_KEY=%s; %s=%s.\n' "$credential_linear_source" "$credential_git_name" "$credential_git_source"
+    if [ -n "$credential_missing" ]; then
+      printf 'Missing required credentials: %s\n' "$credential_missing"
+      printf 'Next: edit the private file above or export these names in this terminal, then run symphony project doctor. Keep values out of Git, logs and chat.\n'
+    else
+      printf 'Checked credential names are configured; remote permissions and tracker/repository access remain untested.\n'
+    fi
+    printf 'Native Codex/Claude login is separate: use symphony auth PROVIDER check, then symphony runner doctor --agent PROVIDER before listener startup. Artifact-download access (including host gh login) does not configure project credentials.\n'
+  fi
+  [ -z "$credential_missing" ]
+}
+
+project_credentials_require() {
+  project_credentials_read "$1"
+  if [ -n "$credential_missing" ]; then
+    project_credentials_report "$1" >&2 || true
+    return 1
+  fi
+}
+
+# Preserve custom literal project assignments for source/host execution too.
+# Values are data, not shell; nonempty exported environment takes precedence.
+project_environment_export() {
+  local line key value inherited=' '
+  [ -r "$credential_file" ] || return 0
+  while IFS= read -r key; do
+    [ -z "${!key:-}" ] || inherited="$inherited$key "
+  done < <(compgen -e)
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in *=*) ;; *) continue ;; esac
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+    case "$inherited" in *" $key "*) continue ;; esac
+    export "$key=$value"
+  done <"$credential_file"
+}
+
+project_credentials_export() {
+  export LINEAR_API_KEY="$credential_linear" GH_TOKEN="$credential_git" GITHUB_TOKEN="$credential_git"
+}
+
 init() {
   local slug='' root id remote workflow env_file skill runtime
   local -a local_skills
@@ -594,9 +708,12 @@ init() {
     printf 'Legacy basename credentials preserved without reuse. Review and copy only this repository’s intended values to %s.\n' "$env_file"
   fi
   if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
+# Automatically loaded literal KEY=value; do not use shell commands or quotes.
+# Nonempty exported credentials take precedence. Keep this file private.
 # Linear: Settings → Security & access → Personal API keys
 LINEAR_API_KEY=
-# GitHub: fine-grained, repository-scoped token. See `symphony --help`.
+# GitHub: repository-scoped Contents/Pull requests read/write.
+# GH_TOKEN or GITHUB_TOKEN; native provider login and artifact access are separate.
 GH_TOKEN=
 EOF
 ); fi
@@ -642,6 +759,7 @@ EOF
   if [ "${#local_skills[@]}" -gt 0 ]; then
     for skill in "${local_skills[@]}"; do create_local_override "$root" "$skill"; done
   fi
+  project_credentials_report "$root" || true
   printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\nNext: fill credentials, authenticate the isolated runtime with symphony auth codex login, then run symphony run\n' "$workflow" "$env_file"
 }
 
@@ -675,12 +793,13 @@ project_doctor() {
   if [ -f "$workflow" ] && grep -Eq '(`(linear|commit|push|pull|land)`|\.codex/skills/(commit|push|pull|linear|land))' "$workflow"; then legacy_refs=true; fi
 
   if "$json"; then
-    printf '{"mode":"project-doctor","workflow":%s,"credentials":%s,"global_skills":%s,"legacy_manifest":%s,"legacy_skill_count":%s,"local_override_count":%s,"legacy_workflow_references":%s,"legacy_wrapper":%s}\n' \
+    printf '{"mode":"project-doctor","workflow":%s,"credentials":%s,"global_skills":%s,"legacy_manifest":%s,"legacy_skill_count":%s,"local_override_count":%s,"legacy_workflow_references":%s,"legacy_wrapper":%s,"project_credentials":%s}\n' \
       "$(bool "$( [ -f "$workflow" ] && printf true || printf false )")" \
       "$(bool "$( [ -f "$env_file" ] && printf true || printf false )")" \
       "$(bool "$( global_skills_ready && printf true || printf false )")" \
       "$(bool "$( [ -f "$legacy_manifest" ] && printf true || printf false )")" \
-      "$legacy_count" "$override_count" "$(bool "$legacy_refs")" "$(bool "$wrapper")"
+      "$legacy_count" "$override_count" "$(bool "$legacy_refs")" "$(bool "$wrapper")" \
+      "$(project_credentials_report "$root" true || true)"
     return
   fi
 
@@ -688,6 +807,7 @@ project_doctor() {
     "$root" "$([ -f "$workflow" ] && printf present || printf missing)" \
     "$([ -f "$env_file" ] && printf present || printf missing)" \
     "$(global_skills_ready && printf ready || printf missing)"
+  project_credentials_report "$root" || true
   printf 'Legacy copied skills: %s\nLocal namespaced overrides: %s\nLegacy skill manifest: %s\nLegacy wrapper: %s\nLegacy workflow references: %s\n' \
     "$legacy_count" "$override_count" "$([ -f "$legacy_manifest" ] && printf present || printf absent)" "$wrapper" "$legacy_refs"
   if [ "$legacy_count" -gt 0 ]; then
@@ -995,9 +1115,11 @@ runner_claude_run() {
 runner_start() {
   local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
   validate_agent "$agent"
-  if "$packaged_install" && [ "$authority" != update ]; then package_use_project_image "$root" "$agent"; fi
   runner_project_lock "$root"
   runner_require_identity "$root"
+  project_credentials_require "$root" || return
+  project_credentials_export
+  if "$packaged_install" && [ "$authority" != update ]; then package_use_project_image "$root" "$agent"; fi
   case "$port" in ''|*[!0-9]*) die 'port must be an integer between 1 and 65535' ;; esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'port must be between 1 and 65535'
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
@@ -1006,8 +1128,8 @@ runner_start() {
   env_file="$runner_home/$id.env"; image=$(runner_image "$agent"); workflow="$root/WORKFLOW.md"
   storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
-  [ -r "$project_env" ] || die "missing credentials file: $project_env (legacy installation: symphony update --migrate-project-identity)"
-  git_token=$(unset GH_TOKEN GITHUB_TOKEN; set -a; . "$project_env"; printf '%s' "${GH_TOKEN:-${GITHUB_TOKEN:-}}")
+  git_token=$credential_git
+  [ -r "$project_env" ] || project_env=/dev/null
   if [ "$agent" = codex ]; then
     "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
   else
@@ -1015,7 +1137,6 @@ runner_start() {
     "$runtime" volume inspect "$auth_volume" >/dev/null 2>&1 || die 'no project-scoped Claude session; run: symphony auth claude login'
     ensure_claude_auth_volume "$root" "$runtime" "$auth_volume"
   fi
-  [ -n "$git_token" ] || die 'missing GITHUB_TOKEN or GH_TOKEN for the isolated runner'
 
   if "$packaged_install"; then runner_build_image "$agent"; fi
   state=$(runner_status "$root")
@@ -1089,7 +1210,7 @@ runner_start() {
       --label com.symphony.agent=claude --label "com.symphony.profile=$profile" \
       --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
       --publish "127.0.0.1:$port:4010" \
-      --env-file "$project_env" --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
+      --env-file "$project_env" --env LINEAR_API_KEY --env GH_TOKEN --env GITHUB_TOKEN --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
       --mount "type=bind,source=$workflow,target=/etc/symphony/WORKFLOW.md,readonly" \
       --volume "$storage_id-workspaces:/workspaces" --volume "$storage_id-state:/var/lib/symphony" \
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
@@ -1101,7 +1222,7 @@ runner_start() {
     --label "com.symphony.codex.runtime=$expected_runtime" \
     --label com.symphony.agent=codex --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
     --publish "127.0.0.1:$port:4010" \
-    --env-file "$project_env" \
+    --env-file "$project_env" --env LINEAR_API_KEY --env GH_TOKEN --env GITHUB_TOKEN \
     --env SYMPHONY_CONTAINERIZED=1 \
     --env SYMPHONY_PORT=4010 \
     --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
@@ -1783,6 +1904,7 @@ runner_doctor() {
   local root=$1 agent=${2:-codex} sandbox_only=${3:-false} runtime image
   validate_agent "$agent"
   if "$sandbox_only" && [ "$agent" != codex ]; then die '--sandbox-only requires --agent codex'; fi
+  if ! "$sandbox_only"; then project_credentials_require "$root" || return; fi
   runtime=$(container_runtime)
   container_engine_ready "$runtime" || return
   printf 'Container engine: ready.\n'
@@ -1884,15 +2006,16 @@ run() {
   if "$host" && [ "$agent" = claude ]; then die 'Claude host/SSH execution is unsupported; use the isolated runner'; fi
   root=$(repo_root); id=$(project_id "$root")
   env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
-  [ -r "$env_file" ] || die "missing credentials file: $env_file (legacy installation: symphony update --migrate-project-identity)"
   [ -f "$workflow" ] || die "missing workflow: $workflow"
   if ! "$host"; then
     runner_start "$root" "$port" "$agent"
     runner_report "$root"
     return
   fi
+  project_credentials_read "$root"
   runtime_ready || die 'host runtime is not ready; run symphony setup'
-  set -a; . "$env_file"; set +a
+  project_environment_export
+  project_credentials_export
   runtime="$symphony_home/elixir/bin/symphony"
   exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
     --i-understand-that-this-will-be-running-without-the-usual-guardrails --agent codex --port "$port" "$workflow" "$@"
