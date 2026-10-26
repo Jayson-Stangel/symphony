@@ -63,6 +63,7 @@ class Consumers(unittest.TestCase):
             'runner/browser/package-lock.json': {'portable'},
             'scripts/package/linux/Package.resolved': {'portable', 'package_linux'},
             'scripts/package/host.swift': {'portable', 'package_macos', 'package_linux'},
+            'scripts/symphony-apparmor.sh': {'portable', 'package_macos', 'package_linux', 'application'},
             'scripts/symphony-runner-import.sh': {'portable', 'package_macos', 'package_linux', 'application'},
             'scripts/package/runner_import_test.py': {'portable', 'package_macos', 'package_linux'},
             'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures'},

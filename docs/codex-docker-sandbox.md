@@ -89,6 +89,57 @@ Direct commands retain their existing protected qualification path.
 
 ## AppArmor hosts
 
+### Supported packaged preparation
+
+Run `symphony runner apparmor` using the verified installed package before the
+first Codex start. This prints the selected daemon name/ID, exact profile digest,
+destination and privileged effects. Review the shipped policy and package
+inventory, then explicitly run the printed physical-package command as root:
+`/path/to/release/scripts/symphony runner apparmor --apply --daemon-id ID`.
+Use the same local Docker context when elevating; a changed daemon ID is refused.
+Symphony never invokes sudo or installs distribution prerequisites automatically.
+
+Supported preparation targets rootful Linux Docker at `/var/run/docker.sock`,
+with matching daemon/host names, systemd `docker.service` and `apparmor.service`.
+Remote or custom daemons receive a safe handoff: transfer the verified Linux
+package to the reported daemon host and review/apply there with its local Docker
+context. Controller policy is never substituted for remote host policy. Daemons
+that do not advertise AppArmor require no preparation, including the supported
+Docker Desktop/macOS path. Claude launch is unchanged.
+
+The administrator command checks the shipped digest and parsed profile name,
+active kernel/LSM/per-thread interface, parser/imports and root-owned destinations.
+Unknown existing files or loaded names without an owned receipt, links, changed
+owned files and disable/complain overrides are refused. It stages and rechecks
+policy bytes before privileged loading. A successful repeat reestablishes the
+exact owned kernel policy, rather than trusting only a loaded name or disk hash.
+Operational failures retain owned files for an explicit retry; no policy is
+unloaded, and no existing runner is stopped or replaced.
+
+The exact versioned policy persists under `/etc/apparmor.d/`, alongside a hidden
+ownership receipt. A versioned `/etc/systemd/system/docker.service.d/` drop-in
+requires/orders AppArmor before Docker and loads the exact policy with
+`ExecStartPre=... apparmor_parser --replace --skip-cache ...`. Failure prevents
+Docker startup. Preparation enables AppArmor and reloads systemd unit metadata;
+it never restarts Docker. Old versioned guards/policies remain for active projects
+and rollback; removal is a separate administrator decision. Unsupported service
+layouts require administrator investigation rather than a bypass.
+
+After preparation run `symphony runner doctor --agent codex --sandbox-only` from
+the project as its ordinary user. Doctor distinguishes daemon identity, missing
+kernel/tools/imports, absent enforcement, integrity/ownership conflicts and
+protected-command failure. A host setup result does not establish authentication
+or model delivery. If kernel inventory is unreadable to the user, administrator
+inspection is required; the command does not silently elevate.
+
+An actual reboot of the newly prepared isolated Linux host remains required
+qualification: record package/policy/daemon IDs, boot ID change, first protected
+Codex check and unchanged auth/workspace sentinels, without manual loading or
+restart. Fixture boot-guard assertions and the prior manually prepared Forge
+reboot are not fresh-install proof for this command.
+
+### Administrator reference and manual diagnostics
+
 Docker's default AppArmor profile denies all mounts, including the helper's
 namespaced staging mounts. The shipped Docker-derived policy replaces that
 blanket denial with exact mount flags, tmpfs/devpts types, staging paths, and two
@@ -223,7 +274,8 @@ Do not overwrite an existing persistent policy file or unload profiles needed by
 running projects, retained environments or rollback. Keep old versioned profiles
 until their consumers are retired. A future changed recipe needs a new versioned
 name. See [Ubuntu's AppArmor administration guide](https://documentation.ubuntu.com/server/how-to/security/apparmor/index.html)
-for distribution policy management; Symphony does not configure boot persistence.
+for distribution policy management. The supported explicit `runner apparmor`
+preparation above configures persistence; this manual reference does not.
 
 ### Verify protected readiness, then distinguish authentication
 
@@ -265,7 +317,9 @@ authority; they are not needed to inspect the policy or its credential-free gate
 | Policy loaded, protected check still fails | Retain the refusal; inspect `sandbox_not_ready`, selected immutable image compatibility, workflow policy, workspace/TMPDIR paths, mount/storage behavior and host kernel/runtime diagnostics. A listed profile is not execution proof. |
 | Protected marker succeeds, auth check fails | Treat policy success and native login as separate results. Do not claim whole-doctor readiness or start a listener merely to test the policy. |
 
-The ordinary installed manager never invokes sudo, loads policy, changes
+Ordinary installation and launch never invoke sudo or load host policy. Only
+the explicitly authorized administrator `runner apparmor --apply` command changes
+host policy and boot ordering. Ordinary launch never changes
 `docker-default`, or restarts the daemon. Explicit disposable CI preparation is
 a separate qualification action, not a persistent-host setup command. A missing
 profile causes Docker to refuse launch. Daemon-info errors,
