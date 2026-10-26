@@ -13,10 +13,11 @@ ROOT = Path(__file__).resolve().parents[3]
 class ReadinessStages(unittest.TestCase):
     def run_shell(self, body):
         with tempfile.TemporaryDirectory(prefix='symphony-stages-') as temporary:
-            env = dict(os.environ, SYMPHONY_HOME=str(ROOT), SYMPHONY_RUNNER_NAMESPACE='readiness-fixture',
+            env = dict(os.environ, SYMPHONY_HOME=str(ROOT), SYMPHONY_RUNNER_NAMESPACE='readiness-' + Path(temporary).name[-8:].replace('_', '-'),
                        SYMPHONY_CONFIG_HOME=temporary, SYMPHONY_SKILLS_DIR=temporary,
                        SYMPHONY_BIN_DIR=temporary, FIXTURE_EMPTY_SNAPSHOT=EMPTY_SNAPSHOT)
-            return subprocess.run(['bash', '-c', 'source "$1/scripts/symphony" --help >/dev/null\n' + PIN_SETTINGS + body,
+            return subprocess.run(['bash', '-c', 'source "$1/scripts/symphony" --help >/dev/null\n' +
+                                   'project_id() { printf fixture-project; }\n' + PIN_SETTINGS + body,
                                    'readiness-test', str(ROOT)], env=env, capture_output=True, text=True)
 
     def test_engine_failure_stops_before_image_or_login(self):

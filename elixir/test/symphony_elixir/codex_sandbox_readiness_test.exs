@@ -255,6 +255,65 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     assert SandboxReadiness.qualified?()
   end
 
+  test "direct launch qualification invalidates on symlink target replacement, retargeting and removal" do
+    names = ["SYMPHONY_CONTAINERIZED", "SYMPHONY_CODEX_CONFIG_PROFILE", "CODEX_HOME"]
+    previous = Map.new(names, &{&1, System.get_env(&1)})
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
+    System.delete_env("SYMPHONY_CONTAINERIZED")
+    System.delete_env("SYMPHONY_CODEX_CONFIG_PROFILE")
+    directory = Path.join(System.tmp_dir!(), "direct-codex-link-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf(directory) end)
+    System.put_env("CODEX_HOME", Path.join(directory, "native-home"))
+    target = Path.join(directory, "native-codex")
+    executable = Path.join(directory, "codex")
+    File.write!(target, "#!/bin/sh\nexit 0\n")
+    File.chmod!(target, 0o700)
+    File.ln_s!(target, executable)
+    command = executable <> " app-server"
+    write_workflow_file!(Workflow.workflow_file_path(), codex_command: command)
+
+    qualify = fn ->
+      assert :ok =
+               SandboxReadiness.check(
+                 python_path: "fixture-python",
+                 timeout_path: "fixture-timeout",
+                 execute: fn _, args, _ ->
+                   assert args |> List.last() |> Jason.decode!() |> Map.fetch!("command") == command
+                   {~s({"ready":true,"protocol":1}), 0}
+                 end
+               )
+
+      assert SandboxReadiness.qualified?()
+    end
+
+    qualify.()
+    {:ok, link_before} = File.lstat(executable)
+    replacement = Path.join(directory, "replacement")
+    File.write!(replacement, "#!/bin/sh\nexit 1\n")
+    File.chmod!(replacement, 0o700)
+    File.rename!(replacement, target)
+    assert File.read_link!(executable) == target
+    {:ok, link_after} = File.lstat(executable)
+    assert Map.take(link_after, [:inode, :size, :mtime, :ctime, :mode]) == Map.take(link_before, [:inode, :size, :mtime, :ctime, :mode])
+    refute SandboxReadiness.qualified?()
+
+    other_target = Path.join(directory, "other-codex")
+    File.ln!(target, other_target)
+    qualify.()
+    {:ok, target_before} = File.stat(executable)
+    File.rm!(executable)
+    File.ln_s!(other_target, executable)
+    {:ok, target_after} = File.stat(executable)
+    assert Map.take(target_after, [:inode, :size, :mtime, :ctime, :mode]) == Map.take(target_before, [:inode, :size, :mtime, :ctime, :mode])
+    refute SandboxReadiness.qualified?()
+
+    qualify.()
+    File.rm!(other_target)
+    assert File.read_link!(executable) == other_target
+    refute SandboxReadiness.qualified?()
+  end
+
   test "wrapped sessions recheck actual post-hook workspace without replacing the startup receipt" do
     settings = Config.settings!()
     wrapped = %{settings | codex: %{settings.codex | command: "bash scripts/with-node.sh codex app-server"}}

@@ -299,10 +299,12 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
   end
 
   defp file_identity(path) do
-    case File.lstat(path, time: :posix) do
+    # Track both the selected entry and the resolved file: a symlink can remain
+    # unchanged while its executable target is replaced after qualification.
+    Enum.map([File.lstat(path, time: :posix), File.stat(path, time: :posix)], fn
       {:ok, stat} -> Map.take(stat, [:type, :size, :mtime, :ctime, :inode, :mode])
       error -> error
-    end
+    end)
   end
 
   defp local_config?(workspace) do
