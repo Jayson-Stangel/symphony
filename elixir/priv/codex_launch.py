@@ -37,13 +37,16 @@ def launch_main():
             raise Refusal("sandbox_unsupported_command")
         context = attest_context(value, require_snapshot=operation != "probe")
         executable = context["executable"]
-        if str(Path(shutil.which(args[0]) or args[0]).resolve()) != executable:
-            raise Refusal("sandbox_unqualified_config")
+        try:
+            if str(Path(shutil.which(args[0]) or args[0]).resolve()) != executable:
+                raise Refusal("sandbox_toolchain_unqualified")
+        except (OSError, RuntimeError, ValueError, TypeError):
+            raise Refusal("sandbox_toolchain_unqualified")
         chain = attest_runtime_chain(value, executable, require_launch_chain=operation != "probe")
         if operation == "probe":
             write_launch_receipt(value, chain)
         elif chain != value.get("expected_launch_chain"):
-            raise Refusal("sandbox_unqualified_config")
+            raise Refusal("sandbox_toolchain_unqualified")
         # Preserve the official frontend's package/environment semantics while
         # making interpreter selection explicit after trusted wrapper setup.
         if chain["node"] is None:

@@ -371,15 +371,47 @@ class ConfigBoundaryTest(unittest.TestCase):
                 with self.assertRaisesRegex(boundary.Refusal, "^sandbox_unqualified_config$"):
                     self.attest()
 
-    def test_executable_substitution_bytes_mode_and_resolution_refuse(self):
+    def test_executable_substitution_bytes_mode_and_resolution_report_toolchain_stage(self):
         self.exe.write_bytes(b"changed")
-        with self.assertRaises(boundary.Refusal): self.attest()
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"): self.attest()
         self.value["expected_executable_sha256"] = digest(b"changed")
         self.exe.chmod(0o666)
-        with self.assertRaises(boundary.Refusal): self.attest()
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"): self.attest()
         self.exe.chmod(0o755)
         self.value["expected_executable"] = str(self.root / "different-codex")
-        with self.assertRaises(boundary.Refusal): self.attest()
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"): self.attest()
+
+    def test_missing_or_foreign_owned_frontend_reports_toolchain_stage(self):
+        with patch.dict(os.environ, {"PATH": str(self.root / "missing-bin")}):
+            with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"):
+                self.attest()
+        original_stat = Path.stat
+
+        def foreign_stat(path, *args, **kwargs):
+            info = original_stat(path, *args, **kwargs)
+            if path == self.exe:
+                fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+                fields["st_uid"] = os.getuid() + 1
+                return SimpleNamespace(**fields)
+            return info
+
+        # The bounded descriptor read still executes on the real ordinary file;
+        # substitute only the final frontend ownership observation.
+        with patch.object(Path, "stat", foreign_stat):
+            with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"):
+                self.attest()
+
+    def test_malformed_expected_executable_metadata_and_config_remain_config_refusals(self):
+        for key, value in (("expected_executable", "relative/codex"),
+                           ("expected_executable_sha256", "not-a-digest")):
+            previous = self.value[key]
+            self.value[key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(boundary.Refusal, "^sandbox_unqualified_config$"):
+                self.attest()
+            self.value[key] = previous
+        self.config.write_bytes(b"unqualified-config")
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_unqualified_config$"):
+            self.attest()
 
     def test_native_and_each_project_policy_surface_refuses_even_broken_links(self):
         targets = [self.native / name for name in ("hooks.json", "rules")]
@@ -638,6 +670,31 @@ class LaunchReceiptTest(unittest.TestCase):
         raw, stderr = self.run_failure(boundary.Refusal("sandbox_toolchain_unqualified"), operation="exec")
         self.assertEqual(raw, b"")
         self.assertIn("sandbox_toolchain_unqualified", stderr)
+
+    def test_frontend_argument_substitution_reports_toolchain_error_receipt(self):
+        read_fd, write_fd = os.pipe()
+        value = {"operation": "probe", "receipt_fd": write_fd}
+        self.launch["attest_context"] = lambda *args, **kwargs: {"executable": "/qualified/codex"}
+        self.launch["attest_runtime_chain"] = lambda *args, **kwargs: self.fail("substituted frontend reached runtime chain")
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["-c", json.dumps(value), "/substituted/codex", "app-server"]), patch.object(sys, "stderr", output):
+            self.assertEqual(self.launch["launch_main"](), 78)
+        try:
+            self.assertEqual(json.loads(os.read(read_fd, 16385)), {"error": "sandbox_toolchain_unqualified"})
+        finally:
+            os.close(read_fd)
+        self.assertEqual(output.getvalue(), "symphony: sandbox_toolchain_unqualified before native launch\n")
+
+    def test_actual_launch_chain_substitution_reports_toolchain_without_exec(self):
+        executable = str(Path(sys.executable).resolve())
+        value = {"operation": "exec", "expected_launch_chain": {"node": "expected"}}
+        self.launch["attest_context"] = lambda *args, **kwargs: {"executable": executable}
+        self.launch["attest_runtime_chain"] = lambda *args, **kwargs: {"node": "substituted"}
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["-c", json.dumps(value), executable, "app-server"]), \
+                patch.object(sys, "stderr", output), patch.object(os, "execve", side_effect=AssertionError("must refuse before exec")):
+            self.assertEqual(self.launch["launch_main"](), 78)
+        self.assertEqual(output.getvalue(), "symphony: sandbox_toolchain_unqualified before native launch\n")
 
     def test_success_receipt_retains_existing_raw_chain_schema(self):
         read_fd, write_fd = os.pipe()

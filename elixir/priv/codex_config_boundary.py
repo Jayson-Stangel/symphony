@@ -414,16 +414,20 @@ def attest_context(value, require_snapshot=True):
         config = read_regular(config_path, MAX_CONFIG_BYTES, snapshot_uid)
         validate_config_bytes(config, managed_workspace, value["expected_snapshot_sha256"])
         executable = _absolute(value["expected_executable"])
-        selected = shutil.which("codex")
-        if selected is None or Path(selected).resolve(strict=True) != executable:
-            refuse()
-        if executable.resolve(strict=True) != executable or not os.access(executable, os.X_OK):
-            refuse()
-        binary = read_regular(executable, MAX_EXECUTABLE_BYTES)
-        if executable.stat().st_uid not in (0, os.getuid()):
-            refuse()
-        if hashlib.sha256(binary).hexdigest() != _digest(value["expected_executable_sha256"]):
-            refuse()
+        executable_sha256 = _digest(value["expected_executable_sha256"])
+        try:
+            selected = shutil.which("codex")
+            if selected is None or Path(selected).resolve(strict=True) != executable:
+                refuse()
+            if executable.resolve(strict=True) != executable or not os.access(executable, os.X_OK):
+                refuse()
+            binary = read_regular(executable, MAX_EXECUTABLE_BYTES)
+            if executable.stat().st_uid not in (0, os.getuid()):
+                refuse()
+            if hashlib.sha256(binary).hexdigest() != executable_sha256:
+                refuse()
+        except (Refusal, OSError, RuntimeError, ValueError, KeyError, TypeError):
+            raise Refusal("sandbox_toolchain_unqualified")
         return {"config_bytes": config, "executable": str(executable)}
     except (OSError, RuntimeError, ValueError, KeyError, TypeError):
         refuse()
