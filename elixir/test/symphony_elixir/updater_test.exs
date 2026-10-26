@@ -507,6 +507,9 @@ defmodule SymphonyElixir.UpdaterTest do
     container_runtime() { printf false; }
     runner_status() { printf true; }
     runner_owned() { :; }
+    # This source-lock fixture models an already-qualified retained source;
+    # lifecycle tests own real engine/provider/configuration preflight behavior.
+    codex_config_migration_preflight() { :; }
     runner_is_legacy() { return 1; }
     runner_update_port() { printf 4010; }
     runner_build_image() {
