@@ -653,6 +653,9 @@ PY
     def test_source_free_init_provider_choice_and_retained_transition_guidance(self):
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
+        # The installer may inspect Docker context for activation diagnostics.
+        # Measure init's inspect-only contract from the end of installation.
+        (self.root / "docker.calls").write_text("")
         command = self.root / "bin/symphony"
         repo = self.root / "provider-project"; repo.mkdir(); (repo / ".git").mkdir()
         (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/provider.git\n')
