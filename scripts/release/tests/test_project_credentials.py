@@ -1,4 +1,5 @@
 """Credential selection through the real launcher; only synthetic secrets/runtime peers."""
+# Hosted routing probe: later ready pushes retain real launcher contract execution.
 import json
 import os
 from pathlib import Path
