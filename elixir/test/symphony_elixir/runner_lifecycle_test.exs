@@ -112,7 +112,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
               [ "$count" -lt 2 ] || touch "$FIXTURE_TAG_CHANGED_FILE"
             fi
             case "$*" in *sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd*) echo sandbox_namespace_denied; exit 1 ;; esac
-            [ "${FIXTURE_SANDBOX_FAIL:-false}" != true ] || { echo sandbox_namespace_denied; exit 1; } ;;
+            [ "${FIXTURE_SANDBOX_FAIL:-false}" != true ] || { printf '%s\\n' "${FIXTURE_SANDBOX_CODE:-sandbox_namespace_denied}"; exit 1; } ;;
           *--detach*)
             python3 - "$FIXTURE_STATE.inspect" "$@" <<'INSPECTPY'
     import json,sys
@@ -393,46 +393,30 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
   end
 
-  test "legacy listeners require explicit updater pause for Claude and refuse deferred Codex migration", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
+  test "legacy Codex refuses every new provider transition before mutation while running or stopped", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".agent", "<no value>")
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    File.write!(metadata, "SYMPHONY_RUNNER_PORT=4010\n")
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
+    original_inspect = File.read!(ctx.state <> ".inspect")
 
-    for agent <- ["claude", "codex"] do
-      assert {_, 0} = launch_args(ctx, ["run"], env)
-      File.write!(ctx.state <> ".agent", "<no value>")
-      File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-      curl = Path.join(ctx.root, "curl")
-      File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
-      File.chmod!(curl, 0o755)
-      env = env ++ [{"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    for state <- ["true\n", "false\n"], agent <- ["claude", "codex"] do
+      File.write!(ctx.state, state)
       File.write!(ctx.log, "")
-      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
-      assert message =~ if(agent == "claude", do: "use symphony update --pause-runner", else: "fresh packaged install")
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      assert message =~ "fresh packaged install"
+      assert File.read!(ctx.state) == state
+      assert File.read!(ctx.state <> ".agent") == "<no value>"
+      assert File.read!(ctx.state <> ".inspect") == original_inspect
+      assert File.read!(metadata) == "SYMPHONY_RUNNER_PORT=4010\n"
+      assert File.read!(credentials) == original_credentials
       refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
-      refute File.read!(ctx.log) =~ "stop\t"
-      refute File.read!(ctx.log) =~ "rename\t"
-      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
-      assert message =~ "Legacy listener has no drain API"
 
-      if agent == "claude" do
-        assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
-        assert message =~ "Runner transition complete: #{agent}"
-        assert File.read!(ctx.state <> ".agent") == agent
-      else
-        File.write!(ctx.log, "")
-        assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
-        assert message =~ "fresh packaged install"
-        assert String.trim(File.read!(ctx.state)) == "false"
-        assert File.read!(ctx.state <> ".agent") == "<no value>"
-        refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
-        refute File.read!(ctx.log) =~ "rename\t"
-        refute File.read!(ctx.log) =~ "--detach"
+      for operation <- ["stop\t", "rename\t", "build\t", "--codex-config-snapshot", "--check-codex-sandbox", "--detach", "volume\trm"] do
+        refute File.read!(ctx.log) =~ operation
       end
-
-      refute File.read!(ctx.log) =~ "volume\trm"
-      # Reset the disposable fixture through its supported stop operation.
-      assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-      File.rm!(ctx.state)
-      File.rm!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     end
   end
 
@@ -503,12 +487,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(Path.join(journal, "image")) == record
   end
 
-  test "failed migration refuses incompatible legacy rollback and preserves both containers", ctx do
+  test "pre-existing pending transition refuses incompatible legacy rollback and preserves both containers", ctx do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
-    File.write!(ctx.state <> ".agent", "<no value>")
-    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
     curl = Path.join(ctx.root, "curl")
 
     File.write!(curl, """
@@ -525,6 +507,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.chmod!(curl, 0o755)
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "candidate is not ready"
+    # Model a transition retained by an older manager. New intents now refuse
+    # incompatible sources before mutation; pending old-install recovery stays deferred.
+    File.write!(ctx.state <> ".backup.agent", "<no value>")
     File.write!(Path.join(ctx.root, "curl-calls"), "")
     File.write!(ctx.log, "")
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
@@ -1459,11 +1444,13 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "legacy Codex rollback refuses before removing the working candidate", ctx do
     assert {_, 0} = launch_args(ctx, ["run"])
     ready_curl!(ctx)
-    File.write!(ctx.state <> ".codex-runtime", "old-profile")
     fault = Path.join(ctx.root, "create-fault")
     File.write!(fault, "")
     assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"FIXTURE_FAIL_CREATE_FILE", fault}])
     assert File.exists?(ctx.state <> ".backup")
+    # Already-pending old-install recovery remains refused. New transitions
+    # cannot create this incompatible rollback source.
+    File.write!(ctx.state <> ".backup.codex-runtime", "old-profile")
     File.write!(ctx.log, "")
     assert {output, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"])
     assert output =~ "rollback refused before stopping candidate"
@@ -1496,17 +1483,29 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.read!(ctx.log) =~ "--detach"
   end
 
-  test "older Codex migration refuses before journal preflight build or shutdown", ctx do
+  test "older Codex migration refuses either target before journal preflight build or shutdown", ctx do
     assert {_, 0} = launch_args(ctx, ["run"])
     File.write!(ctx.state <> ".codex-runtime", "old-runtime-profile")
-    File.write!(ctx.log, "")
-    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"])
-    assert message =~ "before journal or listener shutdown"
-    assert String.trim(File.read!(ctx.state)) == "true"
-    refute File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    original_metadata = File.read!(metadata)
+    original_inspect = File.read!(ctx.state <> ".inspect")
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
 
-    for operation <- ["stop\t", "rename\t", "build\t", "--codex-config-snapshot", "--check-codex-sandbox", "--detach"] do
-      refute File.read!(ctx.log) =~ operation
+    for agent <- ["codex", "claude"] do
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      assert message =~ "before journal or listener shutdown"
+      assert String.trim(File.read!(ctx.state)) == "true"
+      assert File.read!(ctx.state <> ".codex-runtime") == "old-runtime-profile"
+      assert File.read!(ctx.state <> ".inspect") == original_inspect
+      assert File.read!(metadata) == original_metadata
+      assert File.read!(credentials) == original_credentials
+      refute File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+
+      for operation <- ["stop\t", "rename\t", "build\t", "--codex-config-snapshot", "--check-codex-sandbox", "--detach", "volume\trm"] do
+        refute File.read!(ctx.log) =~ operation
+      end
     end
   end
 
@@ -1676,6 +1675,35 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert check =~ "--volume\t/workspaces"
       assert check =~ "SYMPHONY_CONTAINERIZED=1"
       assert check =~ "seccomp="
+    end
+  end
+
+  test "doctor reports launch stage remedies without authentication startup or image rebuild", ctx do
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
+    workflow = Path.join(ctx.repo, "WORKFLOW.md")
+    original_workflow = File.read!(workflow)
+
+    for {code, stage} <- [
+          {"sandbox_toolchain_unqualified", "Project toolchain refused after wrapper setup"},
+          {"sandbox_wrapper_failed", "Project wrapper/bootstrap failed before protected launch"},
+          {"sandbox_launch_receipt_invalid", "Project launch receipt was invalid"}
+        ] do
+      File.write!(ctx.log, "")
+      assert {output, 1} = launch_args(ctx, ["runner", "doctor"], [{"FIXTURE_SANDBOX_FAIL", "true"}, {"FIXTURE_SANDBOX_CODE", code}])
+      assert output =~ code
+      assert output =~ stage
+      assert output =~ "retry"
+      refute String.downcase(output) =~ "rebuild"
+      refute File.exists?(ctx.state)
+      assert File.read!(credentials) == original_credentials
+      assert File.read!(workflow) == original_workflow
+      calls = File.read!(ctx.log)
+      assert calls =~ "--check-codex-sandbox"
+
+      for operation <- ["login\tstatus", "--detach", "build\t", "git-preflight", "auth.mjs", "volume\trm"] do
+        refute calls =~ operation
+      end
     end
   end
 

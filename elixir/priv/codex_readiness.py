@@ -36,6 +36,35 @@ def diagnostic(data):
     return "sandbox_helper_failed"
 
 
+def launch_receipt(data, expected_image_chain, wrapped):
+    """Decode a bounded guard receipt without ever forwarding child output."""
+    if not data:
+        raise Refusal("sandbox_wrapper_failed" if wrapped else "sandbox_launch_failed")
+    if len(data) > 16384:
+        raise Refusal("sandbox_launch_receipt_invalid")
+    try:
+        chain = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    if not isinstance(chain, dict):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    if "error" in chain:
+        code = chain["error"]
+        if (set(chain) != {"error"} or type(code) is not str or code not in
+                ("sandbox_unqualified_config", "sandbox_unsupported_command",
+                 "sandbox_toolchain_unqualified", "sandbox_launch_failed")):
+            raise Refusal("sandbox_launch_receipt_invalid")
+        raise Refusal(code)
+    node = chain.get("node")
+    if ({k: v for k, v in chain.items() if k != "node"} != expected_image_chain or
+            not isinstance(node, dict) or set(node) != {"path", "sha256"} or
+            not isinstance(node["path"], str) or not Path(node["path"]).is_absolute() or
+            not isinstance(node["sha256"], str) or len(node["sha256"]) != 64 or
+            any(c not in "0123456789abcdef" for c in node["sha256"])):
+        raise Refusal("sandbox_launch_receipt_invalid")
+    return chain
+
+
 def launch_command(value):
     # This is a finite argv interface, not a shell interpreter. In particular,
     # expansions/operators are refused even when a shell might quote them.
@@ -153,7 +182,10 @@ def check(value):
     if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
         retained_context = attest_context(value)
         retained_config = retained_context["config_bytes"]
-        value["expected_image_chain"] = image_chain(retained_context["executable"])
+        try:
+            value["expected_image_chain"] = image_chain(retained_context["executable"])
+        except Refusal:
+            raise Refusal("sandbox_toolchain_unqualified")
     else:
         if any(os.path.lexists(p) for p in (codex_home / "config.toml", Path("/etc/codex/config.toml"),
                                            Path("/etc/codex/requirements.toml"))):
@@ -300,8 +332,11 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
                     json.dumps(probe_value), *args]
         try:
             with tempfile.TemporaryFile() as output:
-                child = subprocess.Popen(args, cwd=allowed, env=env, stdout=output, stderr=output,
-                                         pass_fds=(write_fd,) if write_fd is not None else (), start_new_session=True)
+                try:
+                    child = subprocess.Popen(args, cwd=allowed, env=env, stdout=output, stderr=output,
+                                             pass_fds=(write_fd,) if write_fd is not None else (), start_new_session=True)
+                except OSError:
+                    raise Refusal("sandbox_wrapper_failed" if wrapper else "sandbox_launch_failed")
                 if write_fd is not None:
                     os.close(write_fd)
                     write_fd = None
@@ -318,16 +353,14 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
                     child.wait()
                 output.seek(0)
                 data = output.read(65536)
+            if (denied / "outside").exists() or (protected / "protected").exists():
+                raise Refusal("sandbox_policy_enforcement_failed")
             if read_fd is not None:
                 try:
                     chain_data = os.read(read_fd, 16385)
-                    if len(chain_data) > 16384:
-                        raise Refusal("sandbox_unqualified_config")
-                    launch_chain = json.loads(chain_data)
-                    if not isinstance(launch_chain, dict):
-                        raise Refusal("sandbox_unqualified_config")
-                except (ValueError, OSError):
-                    raise Refusal("sandbox_unqualified_config")
+                    launch_chain = launch_receipt(chain_data, value["expected_image_chain"], bool(wrapper))
+                except OSError:
+                    raise Refusal("sandbox_launch_receipt_invalid")
                 finally:
                     os.close(read_fd)
                     read_fd = None
@@ -335,8 +368,6 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
             for fd in (read_fd, write_fd):
                 if fd is not None:
                     os.close(fd)
-        if (denied / "outside").exists() or (protected / "protected").exists():
-            raise Refusal("sandbox_policy_enforcement_failed")
         if wrapper and value.get("snapshot_profile") not in ("trust-ro-v1", "trust-ro-v2") and not reached.exists():
             raise Refusal("sandbox_unqualified_config" if status == 78 else
                           "sandbox_helper_missing" if status == 127 else "sandbox_launch_failed")

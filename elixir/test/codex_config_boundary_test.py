@@ -3,8 +3,12 @@ import hashlib
 import base64
 import zlib
 import importlib.util
+import io
+import json
+import sys
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import stat
 import tempfile
 import unittest
@@ -473,6 +477,42 @@ class NpmLaunchChainTest(unittest.TestCase):
         with self.assertRaises(boundary.Refusal):
             boundary.attest_runtime_chain(value, str(self.frontend))
 
+    def test_foreign_owned_node_reports_toolchain_stage_without_relaxing_guard(self):
+        value = {"expected_image_chain": boundary.image_chain(str(self.frontend))}
+        original_fstat = boundary.os.fstat
+        original_lstat = Path.lstat
+        node_inode = self.node.stat().st_ino
+
+        def foreign(info):
+            if info.st_ino == node_inode:
+                # Preserve every identity field, changing ownership consistently
+                # at both path and descriptor reads; the owner check must refuse.
+                fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+                fields["st_uid"] = os.getuid() + 1
+                return SimpleNamespace(**fields)
+            return info
+
+        def foreign_lstat(path, *args, **kwargs):
+            return foreign(original_lstat(path, *args, **kwargs))
+
+        with patch.object(boundary.os, "fstat", side_effect=lambda fd: foreign(original_fstat(fd))), \
+                patch.object(Path, "lstat", foreign_lstat):
+            with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"):
+                boundary.attest_runtime_chain(value, str(self.frontend), False)
+
+    def test_missing_unsafe_and_changed_nodes_report_toolchain_stage(self):
+        value = {"expected_image_chain": boundary.image_chain(str(self.frontend))}
+        value["expected_launch_chain"] = boundary.attest_runtime_chain(value, str(self.frontend), False)
+        self.node.chmod(0o777)
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"):
+            boundary.attest_runtime_chain(value, str(self.frontend))
+        self.node.unlink()
+        with self.assertRaisesRegex(boundary.Refusal, "^sandbox_toolchain_unqualified$"):
+            boundary.attest_runtime_chain(value, str(self.frontend))
+        with patch.dict(os.environ, {"NODE_OPTIONS": "--secret-value"}):
+            with self.assertRaisesRegex(boundary.Refusal, "^sandbox_unqualified_config$"):
+                boundary.attest_runtime_chain(value, str(self.frontend))
+
     def test_relocated_project_node_still_requires_actual_path_and_bytes(self):
         spec = importlib.util.spec_from_file_location("readiness_relocation", Path(__file__).resolve().parents[1] / "priv/codex_readiness.py")
         readiness = importlib.util.module_from_spec(spec); spec.loader.exec_module(readiness)
@@ -559,6 +599,54 @@ class NpmLaunchChainTest(unittest.TestCase):
         self.native.write_bytes(b"#!/bin/sh\nexit 0\n")
         with self.assertRaises(boundary.Refusal):
             boundary.image_chain(str(self.native))
+
+
+class LaunchReceiptTest(unittest.TestCase):
+    def setUp(self):
+        self.launch = dict(boundary.__dict__)
+        source = SOURCE.with_name("codex_launch.py").read_text()
+        exec(compile(source, str(SOURCE.with_name("codex_launch.py")), "exec"), self.launch)
+
+    def run_failure(self, error, operation="probe"):
+        read_fd, write_fd = os.pipe()
+        value = {"operation": operation, "receipt_fd": write_fd}
+        self.launch["attest_context"] = lambda *args, **kwargs: (_ for _ in ()).throw(error)
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["-c", json.dumps(value), "codex", "app-server"]), patch.object(sys, "stderr", output):
+            self.assertEqual(self.launch["launch_main"](), 78)
+        if operation != "probe":
+            os.close(write_fd)
+        try:
+            receipt = os.read(read_fd, 16385)
+        finally:
+            os.close(read_fd)
+        return receipt, output.getvalue()
+
+    def test_guard_error_receipt_preserves_config_and_toolchain_stage(self):
+        for code in ("sandbox_unqualified_config", "sandbox_toolchain_unqualified"):
+            with self.subTest(code=code):
+                raw, stderr = self.run_failure(boundary.Refusal(code))
+                self.assertEqual(json.loads(raw), {"error": code})
+                self.assertEqual(stderr, "symphony: " + code + " before native launch\n")
+
+    def test_unexpected_exception_never_leaks_child_or_secret_details(self):
+        raw, stderr = self.run_failure(RuntimeError("secret-child-output"))
+        self.assertEqual(json.loads(raw), {"error": "sandbox_launch_failed"})
+        self.assertNotIn("secret", stderr)
+
+    def test_actual_exec_refusal_writes_no_probe_receipt(self):
+        raw, stderr = self.run_failure(boundary.Refusal("sandbox_toolchain_unqualified"), operation="exec")
+        self.assertEqual(raw, b"")
+        self.assertIn("sandbox_toolchain_unqualified", stderr)
+
+    def test_success_receipt_retains_existing_raw_chain_schema(self):
+        read_fd, write_fd = os.pipe()
+        chain = {"profile": "codex-npm-linux-v1", "node": {"path": "/node", "sha256": "a" * 64}}
+        self.launch["write_launch_receipt"]({"receipt_fd": write_fd}, chain)
+        try:
+            self.assertEqual(json.loads(os.read(read_fd, 16385)), chain)
+        finally:
+            os.close(read_fd)
 
 
 if __name__ == "__main__":

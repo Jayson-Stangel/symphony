@@ -305,6 +305,72 @@ if mode=='denial-fixture':
         with self.assertRaisesRegex(probe.Refusal, "sandbox_namespace_denied"):
             self.run_mode("namespace")
 
+    def snapshot_fixture(self, program):
+        # Outer mount/image attestation is fixture input. The real child process,
+        # wrapper, private inherited FD, receipt parser and cleanup still run.
+        self.value.update(snapshot_profile="trust-ro-v2", launch_program=program)
+        context = patch.object(probe, "attest_context", return_value={"config_bytes": b"", "executable": str(self.binary)}, create=True)
+        image = patch.object(probe, "image_chain", return_value={"profile": "fixture"}, create=True)
+        context.start(); image.start()
+        self.addCleanup(context.stop); self.addCleanup(image.stop)
+
+    def test_retained_wrapper_failure_without_guard_receipt_has_bootstrap_stage(self):
+        wrapper = self.make_wrapper('printf "secret-child-output" >&2\nexit 78\n')
+        self.snapshot_fixture("raise RuntimeError('guard must not run')")
+        with self.assertRaisesRegex(probe.Refusal, "^sandbox_wrapper_failed$"):
+            self.run_mode("denial-fixture")
+        wrapper.write_text('exit 0\n')
+        with self.assertRaisesRegex(probe.Refusal, "^sandbox_wrapper_failed$"):
+            self.run_mode("denial-fixture")
+
+    def test_retained_success_receipt_keeps_existing_chain_and_effect_checks(self):
+        self.make_wrapper('exec "$@"\n')
+        program = ("import json,os,sys; value=json.loads(sys.argv[1]); "
+                   "chain={**value['expected_image_chain'],'node':{'path':os.path.realpath(sys.executable),'sha256':'a'*64}}; "
+                   "os.write(value['receipt_fd'],json.dumps(chain).encode()); os.close(value['receipt_fd']); "
+                   "os.execv(sys.argv[2],sys.argv[2:])")
+        self.snapshot_fixture(program)
+        result = self.run_mode("denial-fixture")
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["launch_chain"]["profile"], "fixture")
+        self.assertEqual(result["launch_chain"]["node"]["sha256"], "a" * 64)
+        with self.assertRaisesRegex(probe.Refusal, "^sandbox_policy_enforcement_failed$"):
+            self.run_mode("permissive")
+
+    def test_retained_guard_error_receipt_distinguishes_config_from_toolchain(self):
+        self.make_wrapper('exec "$@"\n')
+        self.snapshot_fixture("")
+        for code in ("sandbox_unqualified_config", "sandbox_toolchain_unqualified", "sandbox_launch_failed"):
+            self.value["launch_program"] = ("import json,os,sys; value=json.loads(sys.argv[1]); "
+                "os.write(value['receipt_fd'], " + repr(json.dumps({"error": code}).encode()) + "); "
+                "print('secret-child-output',file=sys.stderr); sys.exit(78)")
+            with self.subTest(code=code), self.assertRaisesRegex(probe.Refusal, "^" + code + "$"):
+                self.run_mode("denial-fixture")
+
+    def test_retained_invalid_receipts_never_become_config_refusals_or_readiness(self):
+        self.snapshot_fixture("")
+        for receipt in (b"{", b"[]", b"{}", b"x" * 16385,
+                        b'{"error":"secret-child-output"}',
+                        b'{"error":"sandbox_unqualified_config","extra":"secret"}'):
+            # Bound writes to avoid filling the pipe; oversized input is fed at
+            # its reader boundary separately below.
+            if len(receipt) > 16384:
+                with self.assertRaisesRegex(probe.Refusal, "^sandbox_launch_receipt_invalid$"):
+                    probe.launch_receipt(receipt, {"profile": "fixture"}, False)
+            else:
+                self.value["launch_program"] = ("import json,os,sys; "
+                    "os.write(json.loads(sys.argv[1])['receipt_fd'], " + repr(receipt) + ")")
+                with self.subTest(receipt=receipt), self.assertRaisesRegex(probe.Refusal, "^sandbox_launch_receipt_invalid$"):
+                    self.run_mode("denial-fixture")
+
+    def test_missing_direct_receipt_and_process_spawn_failure_identify_launch_stage(self):
+        self.snapshot_fixture("")
+        with self.assertRaisesRegex(probe.Refusal, "^sandbox_launch_failed$"):
+            self.run_mode("denial-fixture")
+        with patch.object(probe.subprocess, "Popen", side_effect=OSError("secret-child-output")):
+            with self.assertRaisesRegex(probe.Refusal, "^sandbox_launch_failed$"):
+                self.run_mode("denial-fixture")
+
     def test_wrapper_missing_and_wrong_provider_refuse(self):
         wrapper = self.make_wrapper('exec "$@"\n')
         wrapper.unlink()

@@ -356,9 +356,9 @@ def image_chain(executable):
 
 def attest_runtime_chain(value, executable, require_launch_chain=True):
     """Probe may capture Node; actual launch must match the successful probe."""
+    if any(os.environ.get(name) for name in INJECTION_VARIABLES):
+        refuse()
     try:
-        if any(os.environ.get(name) for name in INJECTION_VARIABLES):
-            refuse()
         image = image_chain(executable)
         if image != value.get("expected_image_chain"):
             refuse()
@@ -375,8 +375,10 @@ def attest_runtime_chain(value, executable, require_launch_chain=True):
             if chain != expected:
                 refuse()
         return chain
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError):
-        refuse()
+    except (Refusal, OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError):
+        # Keep the same closure checks, but identify the post-wrapper toolchain
+        # stage rather than blaming retained trust configuration.
+        raise Refusal("sandbox_toolchain_unqualified")
 
 
 def attest_context(value, require_snapshot=True):
