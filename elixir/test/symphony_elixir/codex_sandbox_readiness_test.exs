@@ -39,6 +39,46 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     assert Enum.take(argv, -2) == ["codex", "app-server"]
   end
 
+  test "bound launch input hashes native provider environment without retaining secret values" do
+    native = %{
+      "CODEX_JAY740_SENTINEL" => "synthetic-codex-secret",
+      "OPENAI_JAY740_SENTINEL" => "synthetic-openai-secret",
+      "AZURE_OPENAI_JAY740_SENTINEL" => "synthetic-azure-secret"
+    }
+
+    names = Map.keys(native) ++ ["SYMPHONY_CONTAINERIZED", "SYMPHONY_CODEX_CONFIG_PROFILE", "CODEX_HOME", "JAY740_UNRELATED_SENTINEL"]
+    previous = Map.new(names, &{&1, System.get_env(&1)})
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
+    directory = Path.join(System.tmp_dir!(), "native-environment-chain-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf(directory) end)
+    executable = Path.join(directory, "codex")
+    File.write!(executable, "#!/bin/sh\nexit 0\n")
+    File.chmod!(executable, 0o700)
+    System.put_env(native)
+    System.put_env("CODEX_HOME", Path.join(directory, "native-home"))
+    System.put_env("JAY740_UNRELATED_SENTINEL", "synthetic-unrelated-secret")
+    System.put_env("SYMPHONY_CONTAINERIZED", "1")
+    System.put_env("SYMPHONY_CODEX_CONFIG_PROFILE", "trust-ro-v2")
+    settings = Config.settings!()
+    settings = %{settings | codex: %{settings.codex | command: executable <> " app-server"}}
+    chain = %{"node" => %{"path" => "/qualified/node"}}
+    assert {:ok, command} = SandboxReadiness.bound_command("original", directory, settings, chain)
+    {json, 0} = System.cmd("python3", ["-I", "-c", "import json,shlex,sys; print(json.dumps(shlex.split(sys.argv[1])))", command])
+    input = json |> Jason.decode!() |> Enum.at(4) |> Jason.decode!()
+    environment = input["expected_native_environment"]
+
+    for {name, value} <- native do
+      assert environment[name] == Base.encode16(:crypto.hash(:sha256, value), case: :lower)
+      refute command =~ value
+    end
+
+    refute Map.has_key?(environment, "CODEX_HOME")
+    refute Map.has_key?(environment, "JAY740_UNRELATED_SENTINEL")
+    refute command =~ "synthetic-unrelated-secret"
+    assert input["expected_codex_home"] == Path.join(directory, "native-home")
+  end
+
   test "managed qualification requires a session chain and binds only a resolvable launcher" do
     names = ["SYMPHONY_CONTAINERIZED", "SYMPHONY_CODEX_CONFIG_PROFILE", "SYMPHONY_CODEX_CONFIG_SHA256", "SYMPHONY_CODEX_CONFIG_OWNER", "PATH"]
     previous = Map.new(names, &{&1, System.get_env(&1)})
