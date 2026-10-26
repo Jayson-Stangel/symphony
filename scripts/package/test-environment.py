@@ -171,5 +171,94 @@ package_selected_image_compatible() {{ [ -z "${{INCOMPATIBLE:-}}" ] || die incom
         self.assertIn("Manager: " + "c" * 40, result.stdout)
 
 
+
+class InitProviderGuidanceTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="symphony-init-provider-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "project"
+        self.repo.mkdir()
+        self.env = dict(os.environ, HOME=str(self.root / "home"),
+            GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+            SYMPHONY_HOME=str(ROOT), SYMPHONY_CONFIG_HOME=str(self.root / "config"),
+            SYMPHONY_SKILLS_DIR=str(self.root / "skills"), SYMPHONY_RUNNER_HOME=str(self.root / "runners"),
+            SYMPHONY_RUNNER_NAMESPACE="init-fixture")
+        for args in (["init", "-q"], ["remote", "add", "origin", "https://github.com/fixture/init.git"]):
+            subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True)
+        for skill in ("commit", "push", "pull", "linear", "land"):
+            target = self.root / "skills" / ("symphony-" + skill)
+            target.parent.mkdir(exist_ok=True)
+            target.symlink_to(ROOT / ".codex/skills" / skill)
+        self.runtime = self.root / "runtime"
+        self.runtime.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$HOME/../operations"\n'
+            'case "$*" in *State.Status*) [ -n "${ACTUAL:-}" ] || exit 1; echo running ;; '
+            '*com.symphony.agent*) echo "$ACTUAL" ;; *) exit 99 ;; esac\n')
+        self.runtime.chmod(0o700)
+        self.env["SYMPHONY_CONTAINER_RUNTIME"] = str(self.runtime)
+        (self.root / "home").mkdir()
+
+    def cli(self, *args, **env):
+        return subprocess.run([ROOT / "scripts/symphony", *args], cwd=self.repo,
+            env=dict(self.env, **env), text=True, capture_output=True)
+
+    def init(self, *args, **env):
+        return self.cli("init", "--linear-project", "fixture", *args, **env)
+
+    def metadata(self, provider):
+        files = list((self.root / "config/projects").glob("*.env"))
+        file = self.root / "runners" / files[0].name
+        file.parent.mkdir(exist_ok=True)
+        file.write_text(f"SYMPHONY_RUNNER_AGENT={provider}\nSYMPHONY_RUNNER_IMAGE_ID=sha256:retained\n")
+        return file
+
+    def test_new_project_default_and_explicit_provider_guidance(self):
+        for args, provider in (((), "codex"), (("--agent", "claude"), "claude")):
+            with self.subTest(provider=provider):
+                result = self.init(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for command in (f"auth {provider} login", f"auth {provider} check",
+                        f"runner doctor --agent {provider}", f"run --agent {provider}"):
+                    self.assertIn(command, result.stdout)
+                self.assertNotIn("auth " + ("codex" if provider == "claude" else "claude"), result.stdout)
+        self.assertTrue(all(line.startswith("inspect ") for line in (self.root / "operations").read_text().splitlines()))
+
+    def test_both_provider_transition_instructions_preserve_all_project_state(self):
+        self.assertEqual(self.init().returncode, 0)
+        workflow = self.repo / "WORKFLOW.md"
+        workflow.write_text(workflow.read_text() + "\nuser policy\n")
+        credentials = next((self.root / "config/projects").glob("*.env"))
+        credentials.write_text("LINEAR_API_KEY=private-fixture\nGH_TOKEN=private-fixture\n")
+        override = self.repo / ".codex/skills/custom/SKILL.md"
+        override.parent.mkdir(parents=True); override.write_text("deliberate override")
+        for old, new in (("codex", "claude"), ("claude", "codex")):
+            metadata = self.metadata(old)
+            before = {p: p.read_bytes() for p in (workflow, credentials, override, metadata)}
+            result = self.init("--agent", new, ACTUAL=old)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Intended provider: " + new, result.stdout)
+            self.assertIn("Stored desired provider: " + old, result.stdout)
+            self.assertIn("Actual runner provider: " + old, result.stdout)
+            self.assertIn("symphony update --agent " + new, result.stdout)
+            self.assertEqual(before, {p: p.read_bytes() for p in before})
+            self.assertNotIn("private-fixture", result.stdout + result.stderr)
+            retained = self.init(ACTUAL=old)
+            self.assertIn("Intended provider: " + old, retained.stdout)
+        self.assertTrue(all(line.startswith("inspect ") for line in (self.root / "operations").read_text().splitlines()))
+
+    def test_invalid_duplicate_and_missing_provider_refuse_before_init(self):
+        for args in (("--agent", "unknown"), ("--agent",), ("--agent", "codex", "--agent", "claude")):
+            self.assertNotEqual(self.init(*args).returncode, 0)
+        self.assertFalse((self.repo / "WORKFLOW.md").exists())
+
+    def test_unknown_retained_provider_refuses_guidance_without_auth(self):
+        self.init()
+        self.metadata("unknown")
+        result = self.init("--agent", "claude")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("resolve unknown retained", result.stdout)
+        self.assertNotIn("auth claude login", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,7 @@ package_usage() {
 Usage:
   symphony --version
   symphony doctor [--json]
-  symphony init --linear-project SLUG [--local-skill NAME]...
+  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
@@ -53,7 +53,11 @@ agent toolchain is needed. From an existing project checkout, initialize it, edi
 the printed private credentials file, authenticate the native container login,
 and run. Runner images are pulled by immutable release digest; they never build
 locally. Use the installed updater for release changes and runner recovery.
-See the packaged installation guide for isolated candidate storage and namespaces.
+init --agent codex|claude requests setup guidance; it never switches a runner.
+Without --agent, retained state wins, then new projects default to Codex.
+Repeat init to resume setup. Resolve a conflicting retained image with explicit
+compatible environment selection before auth/doctor; update --agent owns the
+existing runner transition. See the packaged installation guide for details.
 USAGE
 }
 
@@ -305,7 +309,7 @@ package_install() (
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
   case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add this directory to PATH: export PATH="%s:$PATH"\n' "$bin_dir" ;; esac
   if [ "$package_channel" = candidate ]; then printf 'Candidate image prerequisites: symphony runner import --agent codex (or claude) shows the exact companion to download before native login. See the bundled candidate provisioning guide.\n'; fi
-  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, then symphony auth codex login and symphony run.\n'
+  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
 )
 
 package_doctor() {

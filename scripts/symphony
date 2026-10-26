@@ -210,7 +210,7 @@ Usage:
   symphony setup [--install-prerequisites]
   symphony doctor [--host] [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony init --linear-project SLUG [--local-skill NAME]...
+  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony skill override NAME
   symphony skill migrate-local NAME
   symphony skill use-global NAME
@@ -240,6 +240,11 @@ isolates Docker container names, images, workspace/state and native auth volumes
 `update --development-runner --agent ...` transitions only that namespace using
 the current checkout; it does not fetch main, install links or run host setup.
 See docs/development.md. Leave the namespace unset for the stable installation.
+
+`init --agent codex|claude` requests provider-specific setup guidance. It preserves
+retained environment/runner choices; `run --agent` chooses startup state and
+`update --agent` owns an existing runner transition. Rerun init to resume setup.
+Omitting --agent follows retained state, then defaults to Codex for new projects.
 
 Credentials created by init are stored outside the repository at:
   $SYMPHONY_CONFIG_HOME/projects/<repository-identity>.env
@@ -564,15 +569,84 @@ use_global_skill() {
   printf 'Global skill restored: %s\nLocal override backed up: %s\n' "$(global_skill_path "$skill")" "$backup"
 }
 
+# Read-only onboarding advice. Provider selection remains startup/updater state;
+# init never writes runner metadata or replaces a deliberate environment image.
+init_provider_guidance() {
+  local root=$1 requested=$2 agent desired='' image='' metadata selection runtime actual='' state='' retained=false blocked=false
+  metadata=$(runner_env_file "$root")
+  if [ -e "$metadata" ]; then
+    retained=true
+    desired=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")
+    image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
+    case "$desired" in codex|claude) ;; *) blocked=true ;; esac
+  fi
+  if "$packaged_install"; then
+    selection=$(environment_selection_file "$root")
+    if [ -e "$selection" ] || [ -L "$selection" ]; then
+      if (environment_selection_read "$selection") >/dev/null 2>&1; then
+        desired=$(package_helper get "$selection" provider)
+        image=$(package_helper get "$selection" image_id)
+        case "$desired" in codex|claude) ;; *) blocked=true ;; esac
+      else
+        printf 'Desired environment: invalid retained selection; inspect symphony environment show.\n'
+        blocked=true
+      fi
+    fi
+  fi
+  if runtime=$(container_runtime 2>/dev/null); then
+    if state=$("$runtime" inspect --format '{{.State.Status}}' "$(runner_id "$root")" 2>/dev/null) && [ -n "$state" ]; then
+      retained=true
+      actual=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$(runner_id "$root")" 2>/dev/null || true)
+      case "$actual" in codex|claude) ;; *) blocked=true; actual=unknown ;; esac
+    fi
+  fi
+  agent=${requested:-${desired:-${actual:-codex}}}
+  case "$agent" in codex|claude) ;; *) agent=unknown; blocked=true ;; esac
+  printf 'Intended provider: %s\n' "$agent"
+  if [ "$agent" = unknown ]; then image=${image:-unknown}; fi
+  printf 'Stored desired provider: %s\nStored desired image: %s\n' "${desired:-release default ($agent)}" "${image:-$(runner_image "$agent")}"
+  printf 'Actual runner provider: %s (state: %s)\n' "${actual:-unobserved}" "${state:-absent or engine unavailable}"
+  printf 'Init preserves workflow, credentials, overrides and runner state. Use init --agent codex|claude to request guidance; run/update --agent chooses startup state.\n'
+  if "$blocked"; then
+    printf 'Next: resolve unknown retained provider/selection explicitly before authentication or startup; init did not change it.\n'
+    return 1
+  fi
+  if [ -n "$desired" ] && [ "$desired" != "$agent" ]; then
+    if "$packaged_install"; then
+      printf 'Before authentication, explicitly select a verified compatible image: symphony environment select --agent %s IMAGE\n' "$agent"
+      printf 'IMAGE must be the intended local provider-compatible release or team image. Inspect symphony environment show; init retained the existing choice.\n'
+    else
+      printf 'Before authentication, verify any SYMPHONY_RUNNER_IMAGE override is compatible with %s.\n' "$agent"
+    fi
+  elif "$packaged_install" && [ -n "${selection:-}" ] && { [ -e "$selection" ] || [ -L "$selection" ]; }; then
+    if ! (runtime=$(container_runtime); selected_environment_validate_record "$runtime" "$selection") >/dev/null 2>&1; then
+      printf 'Next: retained environment is unavailable or incompatible; inspect symphony environment show and explicitly select a verified compatible image before authentication.\n'
+      return 1
+    fi
+  fi
+  printf 'Next: fill the printed credentials file, then symphony auth %s login\n' "$agent"
+  printf 'Then: symphony auth %s check; symphony runner doctor --agent %s\n' "$agent" "$agent"
+  if "$retained"; then
+    printf 'Existing runner: wait for idle; use symphony update --agent %s for the installed lifecycle transition. Never start a second listener.\n' "$agent"
+    printf 'To resume after the transition: symphony run --agent %s (and symphony runner resume if deliberately drained).\n' "$agent"
+  else
+    printf 'Start when ready to dispatch: symphony run --agent %s\n' "$agent"
+  fi
+}
+
 init() {
-  local slug='' root id remote workflow env_file skill runtime
+  local slug='' root id remote workflow env_file skill runtime agent='' agent_seen=false
   local -a local_skills
   local_skills=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --linear-project) [ "$#" -ge 2 ] || die '--linear-project requires a slug'; slug=$2; shift 2 ;;
+      --agent)
+        [ "$#" -ge 2 ] || die '--agent requires codex or claude'
+        ! "$agent_seen" || die '--agent may be specified only once'
+        agent=$2; validate_agent "$agent"; agent_seen=true; shift 2 ;;
       --local-skill) [ "$#" -ge 2 ] || die '--local-skill requires a name'; local_skills+=("$2"); shift 2 ;;
-      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--local-skill NAME]...\n'; return ;;
+      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...\n'; return ;;
       *) die "unknown init option: $1" ;;
     esac
   done
@@ -642,7 +716,8 @@ EOF
   if [ "${#local_skills[@]}" -gt 0 ]; then
     for skill in "${local_skills[@]}"; do create_local_override "$root" "$skill"; done
   fi
-  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\nNext: fill credentials, authenticate the isolated runtime with symphony auth codex login, then run symphony run\n' "$workflow" "$env_file"
+  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\n' "$workflow" "$env_file"
+  init_provider_guidance "$root" "$agent"
 }
 
 skill() {
