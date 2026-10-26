@@ -34,7 +34,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
     esac
     case "$1" in
+      context) printf 'ssh://fixture-daemon\\n' ;;
       info)
+        case "${!#}" in
+          '{{.ID}}') printf 'fixture-daemon-id\\n'; exit 0 ;;
+          '{{.Name}}') printf 'fixture-daemon-host\\n'; exit 0 ;;
+        esac
         [ "${FIXTURE_INFO_FAIL:-false}" != true ] || exit 1
         [ "${FIXTURE_SECURITY_EMPTY:-false}" != true ] || exit 0
         printf '%s\\n' "${FIXTURE_SECURITY_OPTIONS-name=seccomp,profile=builtin}" ;;

@@ -41,6 +41,7 @@ Usage:
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
+  symphony runner apparmor [--apply --daemon-id ID]
   symphony runner import --agent codex|claude --archive PATH
   symphony runner start|stop|status|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]

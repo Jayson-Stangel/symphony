@@ -121,12 +121,16 @@ a source installation is not repointed or migrated automatically.
 
 ## Codex on AppArmor Docker hosts
 
-Before starting Codex, follow the [source-free policy preparation and readiness
-recipe](codex-docker-sandbox.md#apparmor-hosts) if the **selected Docker daemon**
+Before starting Codex, use `symphony runner apparmor` to review the supported
+[source-free policy preparation and readiness flow](codex-docker-sandbox.md#apparmor-hosts) if the **selected Docker daemon**
 advertises AppArmor. A working Docker CLI, an installed package, and a listed
 profile name do not establish protected-command readiness. The administrator
-must review, integrity-check and explicitly load the exact shipped policy on the
-daemon host; Symphony does not perform that administrator action.
+reviews the exact policy/destination and runs the printed `--apply --daemon-id ID`
+command explicitly as root on the selected daemon host. The command never invokes
+sudo. It verifies prerequisites, refuses unknown policy provenance, installs a
+versioned policy/receipt and Docker boot guard, and loads enforce mode. It enables
+AppArmor at boot without restarting Docker. Remote daemon preparation must run
+on that Linux host with the verified package and its local Docker context.
 
 The verified extracted bundle contains `scripts/codex-apparmor.profile`. After a
 default installation it is under
@@ -134,7 +138,11 @@ default installation it is under
 `releases/VERSION-STORAGE_REVISION`; use the chosen application directory if you
 installed with `--app-dir` or a namespace. Pin that physical release directory
 before checking its inventory and policy. Do not edit installed release files.
-The detailed recipe covers tools/imports, an existing profile, reboot persistence,
+Then run `symphony runner doctor --agent codex --sandbox-only` as the ordinary
+project user to verify actual protected execution. Preparation alone does not
+prove authentication or model delivery. Existing profiles remain installed for
+active projects and rollback; package updates never garbage-collect these
+administrator-owned files. The detailed recipe covers tools/imports, an existing profile, reboot persistence,
 actual protected checks, and troubleshooting without weakening the sandbox.
 
 These public [installation instructions](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md)

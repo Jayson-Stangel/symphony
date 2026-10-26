@@ -167,6 +167,40 @@ class PackageTest(PackageCommandActivationMixin, unittest.TestCase):
             SYMPHONY_SKILLS_DIR=str(self.root / "skills"), SYMPHONY_RUNNER_NAMESPACE="package-fixture",
             SYMPHONY_CONTAINER_RUNTIME=str(docker), TEST_DOCKER_CALLS=str(self.root / "docker.calls"))
 
+    def test_packaged_apparmor_plan_is_source_free_and_remote_safe(self):
+        bundle = self.bundle()
+        env = self.environment()
+        for name in ('DOCKER_CONTEXT', 'DOCKER_HOST'):
+            env.pop(name, None)
+        docker = Path(env['SYMPHONY_CONTAINER_RUNTIME'])
+        docker.write_text("""#!/bin/sh
+case "$1" in
+  context) echo 'ssh://user:synthetic-secret@remote' ;;
+  info)
+    case "$3" in
+      '{{.ID}}') echo daemon-id ;;
+      '{{.Name}}') echo remote-daemon ;;
+      *) printf 'name=seccomp,profile=builtin\\n'; [ "${TEST_APPARMOR:-}" != yes ] || echo name=apparmor ;;
+    esac ;;
+  *) exit 97 ;;
+esac
+""")
+        command = [bundle / 'scripts/symphony', 'runner', 'apparmor']
+        plain = call(command, cwd=self.root, env=env)
+        self.assertIn('no host changes required', self.assertOK(plain))
+        env['TEST_APPARMOR'] = 'yes'
+        remote = call(command, cwd=self.root, env=env)
+        self.assertEqual(remote.returncode, 1, remote.stdout + remote.stderr)
+        self.assertIn('[daemon-host]', remote.stderr)
+        self.assertIn('remote-daemon (ID daemon-id)', remote.stdout)
+        self.assertNotIn('synthetic-secret', remote.stdout + remote.stderr)
+        self.assertIn('2eddb013e3503591aaac8e583e6dca093290287713c8aa0869b2d4458fa594aa', remote.stdout)
+        (bundle / 'scripts/codex-apparmor.profile').write_text('corrupt')
+        corrupt = call(command, cwd=self.root, env=env)
+        self.assertEqual(corrupt.returncode, 1)
+        self.assertIn('integrity check failed', corrupt.stderr)
+        self.assertFalse((bundle / '.git').exists())
+
     def test_manifest_validation_and_typed_json(self):
         self.assertOK(self.helper("validate-manifest", self.file))
         self.assertEqual(self.assertOK(self.helper("host-architecture")), os.uname().machine)

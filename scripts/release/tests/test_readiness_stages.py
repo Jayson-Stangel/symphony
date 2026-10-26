@@ -46,6 +46,9 @@ runner_doctor /unused codex true
 
     def test_unsupported_command_remediation_does_not_recommend_rebuild(self):
         result = self.run_shell('''
+# This test reaches the protected-command diagnosis through a valid daemon
+# security selection; host-preparation behavior has its own dedicated suite.
+fixture_runtime() { [ "$1" = info ] && printf '%s\\n' 'name=seccomp,profile=builtin'; }
 runner_codex_run() { echo 'Codex sandbox not ready: sandbox_unsupported_command'; return 1; }
 runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 ''')
@@ -56,6 +59,9 @@ runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 
     def test_launch_failure_is_project_setup_stage(self):
         result = self.run_shell('''
+# This test reaches the protected-command diagnosis through a valid daemon
+# security selection; host-preparation behavior has its own dedicated suite.
+fixture_runtime() { [ "$1" = info ] && printf '%s\\n' 'name=seccomp,profile=builtin'; }
 runner_codex_run() { echo 'Codex sandbox not ready: sandbox_launch_failed'; return 1; }
 runner_codex_sandbox_ready /unused fixture_runtime fixture_image
 ''')
