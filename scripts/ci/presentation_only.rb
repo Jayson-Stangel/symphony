@@ -72,7 +72,48 @@ begin
   input = JSON.parse(STDIN.read)
   before = presentation(parsed(input.fetch('before')), input.fetch('path'))
   after = presentation(parsed(input.fetch('after')), input.fetch('path'))
-  puts JSON.generate('presentation_only' => before == after)
+  result = {'presentation_only' => before == after}
+  if input.fetch('path') == '.github/workflows/runner-integration.yml' && !result['presentation_only']
+    # Only these existing jobs are manual composition/signing consumers. Global
+    # settings and ordinary classification/browser jobs remain browser controls.
+    manual = %w[sign-macos portable helpers reference-node-smoke plan runners manager-inputs manager-package listener-and-cleanup]
+    ordinary = [before, after].map do |document|
+      jobs = field(document, 'jobs')
+      raise 'unknown integration job' unless jobs.keys.all? { |id| (manual + %w[changes chromium]).include?(id.value) }
+      jobs.delete_if { |id, _| manual.include?(id.value) }
+      events = field(document, 'on')
+      selected = key(events, 'workflow_dispatch')
+      events.delete(selected) if selected
+      document
+    end
+    result['browser_control_changed'] = ordinary[0] != ordinary[1]
+  end
+  if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
+    known = {
+      'python3 runner/test_codex_readiness.py' => 'readiness',
+      'python3 scripts/ci/release_tests.py codex-config' => 'codex_config',
+      'python3 runner/test_npm_cache.py' => 'npm',
+      'python3 runner/test_npm_cache_lifecycle.py' => 'npm'
+    }
+    families = []
+    compared = [before, after].map do |document|
+      jobs = field(document, 'jobs')
+      raise 'unknown application job' unless jobs.keys.all? { |id| %w[changes platform-contracts make-all].include?(id.value) }
+      jobs.each_value do |job|
+        field(job, 'steps', []).each do |step|
+          run = field(step, 'run')
+          next unless run.is_a?(Scalar)
+          commands = run.value.lines.map(&:strip).reject(&:empty?)
+          next if commands.empty? || !commands.all? { |command| known.key?(command) }
+          families.concat(commands.map { |command| known.fetch(command) })
+          step.delete(key(step, 'run'))
+        end
+      end
+      document
+    end
+    result['fast_workflow_families'] = families.uniq.sort if compared[0] == compared[1] && !families.empty?
+  end
+  puts JSON.generate(result)
 rescue StandardError => error
   warn "YAML comparison refused: #{error.class}: #{error.message}"
   exit 1

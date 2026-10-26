@@ -1,6 +1,11 @@
 name: Release preflight
 on:
   workflow_call:
+    inputs:
+      ordinary:
+        description: Fast families execute separately in ordinary branch and PR checks
+        type: boolean
+        default: false
     outputs:
       release_schema:
         description: Committed manager release format policy validated with this source
@@ -24,7 +29,14 @@ jobs:
         with:
           fetch-depth: 0
       - name: Portable policy and package input preflight
-        run: python3 scripts/ci/release_tests.py portable
+        env:
+          ORDINARY: ${{ inputs.ordinary }}
+        run: |
+          if [ "$ORDINARY" = true ]; then
+            python3 scripts/ci/release_tests.py release-policy
+          else
+            python3 scripts/ci/release_tests.py portable
+          fi
       - name: Validate selected release version before native or image work
         env:
           GH_TOKEN: ${{ github.token }}

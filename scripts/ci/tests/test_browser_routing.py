@@ -132,7 +132,9 @@ class BrowserRouting(unittest.TestCase):
             original = os.getcwd(); os.chdir(folder)
             try:
                 for path, expected in (
-                    ('.github/actions/configure-runner-cache/action.yml', False),
+                    # A newly added or malformed YAML action cannot prove the
+                    # semantic omission available to an existing valid action.
+                    ('.github/actions/configure-runner-cache/action.yml', True),
                     ('.github/actions/runner-cache-runtime/runtime.js', False),
                     ('scripts/release/runner-cache-probe.py', False),
                     ('scripts/release/build-runner-cached.sh', False),
@@ -166,7 +168,7 @@ class BrowserRouting(unittest.TestCase):
         for code, browser, expected in (('false', 'false', True), ('false', 'true', False), ('true', 'false', True),
                                         ('true', 'true', True), ('true', '', False), ('true', 'reuse', False), ('', 'false', False)):
             for result in ('success', 'failure', 'cancelled', 'skipped', ''):
-                actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser), capture_output=True)
+                actual = subprocess.run(['bash', '-e', '-c', guard], env=dict(os.environ, RESULT=result, CODE=code, BROWSER=browser, READY='true'), capture_output=True)
                 self.assertEqual(actual.returncode == 0, expected and result == 'success')
         for provider in ('codex', 'claude'):
             self.assertIn('target: ' + provider, workflow)

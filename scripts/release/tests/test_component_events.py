@@ -76,7 +76,7 @@ class ComponentEvents(unittest.TestCase):
             ):
                 for classification in ('success', 'failure', 'cancelled', 'skipped', ''):
                     with self.subTest(code=code, browser=browser, classification=classification):
-                        env = dict(os.environ, RESULT=classification, CODE=code)
+                        env = dict(os.environ, RESULT=classification, CODE=code, READY='true')
                         if browser is None:
                             env.pop('BROWSER', None)
                         else:

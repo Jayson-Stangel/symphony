@@ -315,7 +315,8 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 
 | Event | Documentation-only | Behavioral or unknown change |
 | --- | --- | --- |
-| PR to dev or main (including later commits) | Full-PR classification and dependency-free PR metadata validation; named required wrappers report omission | Always-on metadata, policy regression and workflow validation; only affected application, portable, native helper/package, process/updater and browser consumers execute. Ordinary browser checks build final provider targets only when browser inputs change; selected-environment planning and payload retrieval remain explicit integration work. |
+| Draft PR to dev or main | Full-PR classification and dependency-free metadata validation; named required wrappers report omission | Classification, metadata, policy/workflow validation and affected fast families execute. Affected Elixir, native helper/package/process and browser work is deferred; each relevant required context fails until ready qualification succeeds. |
+| Ready PR, including `ready_for_review` and later pushes | Full-PR classification and metadata validation; named required wrappers report omission | Every affected fast and expensive consumer executes for the current revision. Marking ready on the same SHA never credits deferred work as executed. |
 | Merge/push to dev or main | Before/after classification; named wrappers report omission | The same consumer routing from the exact before/after range; PR metadata validation is a PR event only. |
 | Manual full candidate | No documentation shortcut | Portable preflight, both native host engines/helpers, selected reference-image components and current manager packages. Lifecycle joins consume the exact requested current/prior artifacts. |
 | Manual `manager_only_update` candidate | No documentation shortcut | Requires an explicit previous package artifact and a complete plan with zero image builds. Reuses original immutable environments without image export/upload; installed update/rollback validation remains required. |
@@ -325,8 +326,8 @@ dependencies. See [the evidence contract](packaged-install.md#native-candidate-e
 The `Package qualification` context in `package-checks.yml` joins every selected
 portable/native result and verifies its exact-source receipt. The former
 `macos-package` and redundant ordinary `listener-and-cleanup` jobs are one gate.
-Only complete portable, both-host helper/package and native fixture qualification
-emits `qualified_revision`; partial qualification and omission emit no full-source
+Only complete explicit portable, both-host helper/package and native fixture qualification
+emits `qualified_revision`; ordinary checks, partial qualification and omission emit no full-source
 receipt. `Runner integration` has an ordinary `Browser qualification` gate and
 an explicitly manual `Installed manager integration` lifecycle. Fixture success
 is not selected-environment composition evidence. A team's authenticated task
@@ -372,9 +373,12 @@ Its dependency closure follows the actual consumers:
 - `.dockerignore` and `runner/Dockerfile.dockerignore` control the build context.
 - `.github/actions/build-runner/` builds that target and invokes
   `scripts/release/runner-cache-policy.sh`; `runner/node-smoke.sh` verifies Node.
-- `.github/workflows/runner-integration.yml`,
-  `.github/workflows/change-classification.yml` and `scripts/ci/` own routing,
-  required wrapper semantics and their regressions.
+- `.github/workflows/runner-integration.yml` owns ordinary browser/global controls.
+  Strict YAML comparison can exclude changes confined to its audited manual-only
+  jobs and dispatch inputs. New jobs or uncertain YAML stay conservative.
+- `.github/workflows/change-classification.yml` and shared `scripts/ci/` controls
+  own routing and required wrappers. Explicitly inventoried policy regression files
+  under `scripts/ci/tests/` run cheaply without image builds; unknown tests stay broad.
 
 Keep this set aligned with new COPY sources, build stages and invoked tools.
 Application source changes alone do not change the browser-stage source closure;
@@ -391,7 +395,8 @@ without consulting the ordinary browser decision.
 The tables below cover every workflow job, reusable workflow and local action.
 Paths and IDs identify implementation; display names follow the convention below. The
 routing owner is `scripts/ci/classify_changes.py`; its explicit consumers are
-`application`, `portable`, `package_macos`, `package_linux`, `fixtures`, plus the
+`application`, `portable`, `package_macos`, `package_linux`, `fixtures`,
+`npm`, `readiness`, `codex_config`, `contracts`, plus the
 existing Docker-stage-aware `browser` decision. `native` and `native_platform`
 are derived from helper/fixture requirements and validated again in the aggregate.
 Ordinary CI uses no workflow path filters. Tag events always select complete
@@ -404,12 +409,13 @@ or failed native matrices fail the required aggregate.
 | --- | --- |
 | `change-classification / classify`; each caller's `changes` | Always: full PR merge-base/head or exact push before/after paths, both sides of renames and deletions; dependency-free Python and Git. |
 | `pr-description-lint / validate-pr-description` | Every applicable PR metadata event; PR template, body and validator. Explicit cheap exception. |
-| `make-all / make-all` | Validates routing/metadata regressions and checksum-pinned actionlint for behavioral or verified presentation edits; pure prose omits those suites. Elixir/mise/dependencies/Node setup and `make all` only for application inputs. |
+| `make-all / make-all` | Routing/metadata regressions and pinned actionlint for behavioral or verified presentation edits. Selected npm configuration, readiness and Codex file/mount-policy tests run cheaply before draft deferral. Elixir setup and `make all` require application inputs and a ready event. |
+| `make-all / platform-contracts` | Selected npm process lifecycle and launcher credential/readiness/lock contracts on Ubuntu 24.04 and macOS 14, including drafts. No helper compilation, engine or updater suite. The required Application checks join rejects failed, missing, cancelled or wrongly skipped selected work. |
 | `package-checks / portable` | Selected portable policy/controller tests, shell/package input checks and release version/schema validation; ordinary events execute this once, before native allocation. A caller may supply only successful exact-source preflight evidence. |
 | `package-checks / qualification` | Always verifies local/caller preflight source or explicit omission; prior-source verification when explicitly requested. Cheap status/source gate. |
-| `package-checks / host-policy` | Only if native work is selected; calls `host-policy / select` with `all`, `macos` or `linux_x86_64`. The retained target policy stays authoritative. |
+| `package-checks / host-policy` | Only if native work is selected and ready; calls `host-policy / select` with `all`, `macos` or `linux_x86_64`. The retained target policy stays authoritative. |
 | `package-checks / native-host-package` | One allocation per affected host: native helper builds and source-independent package/selection/environment/protocol tests when that platform's helper/package inputs change; native process/updater fixtures when their inputs change. Helper-only work omits process fixtures; fixture-only work omits helper compilation and artifacts. Linux helper qualification retains clean Ubuntu 26.04 execution without development tools. |
-| `package-checks / package-qualification` | One always-present strict status/decision/source join with explicit omission summaries. Full exact-source receipt only for the complete qualification set, never for omitted or partial work. |
+| `package-checks / package-qualification` | Always-present strict status/decision/source join. Relevant draft deferral fails explicitly. Full exact-source receipt only for complete explicit qualification, never ordinary, omitted or partial work. |
 | `runner-integration / chromium` | Always-present guard; only builds/tests for changed browser-consumed stages/COPY sources, context controls, shared build action/cache controller or CI routing/validation controls. Both final provider images retain actual default-user Chromium and CLI smoke; shared builder layers avoid rebuilding common dependencies. |
 
 Application closure: `elixir/` source/tests/dependency locks/config/build tools,
@@ -456,6 +462,43 @@ to both helper consumers even when their own unit suite is portable.
 | `runner-release / retained-transfer-timing`, `transfer-benchmark`, `transfer-replay`; `transfer-timing / retained-payload-timing` | Only selected immutable run/provider/architecture diagnostics; download/measure/verify original payloads, with explicit replay and native producer guards. |
 | Local action `build-runner` | Browser/candidate/probe consumer only: target, Docker recipe/COPY/ignore closure, scoped cache policy, native buildx and load, then caller-owned actual runtime qualification. |
 | Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests. These candidate-only cache controls and probe controllers do not allocate an ordinary browser build; `build-runner` and its actual cache policy still do. |
+
+### Fast families and draft adoption (JAY-743)
+
+Npm test-only changes select local configuration semantics plus the two-host
+process lifecycle suite. Readiness tests select their cheap executable-identity
+fixtures. Codex configuration tests select the file/mount-policy suite; its
+boundary, snapshot, launch and readiness implementation inputs retain that
+coverage as well as application qualification. Shared launcher changes select
+credential/readiness/doctor-lock contracts on both hosts. Their synthetic settings
+fixture selects the same consumers. These test-only families require no helper
+compilation or unrelated engine/updater fixtures.
+
+Ordinary portable preflight uses `release-policy`: all audited portable release
+modules and shell/package-input checks, with policy/config families executed by
+their separate selected jobs. Ordinary native `process` excludes only the three
+launcher modules moved to `contracts`. Full explicit `portable` and `native`
+commands retain their original complete inventories; protected npm command/exec
+qualification remains in both original Codex architecture native paths.
+
+Strict YAML comparison can narrow `make-all.yml` changes confined to known fast
+test command bodies. Other control changes keep the broad route. Classifier and
+comparator changes, unknown tests and missing history remain broad.
+
+All three behavioral workflows handle draft conversion and `ready_for_review`.
+Per-PR concurrency groups supersede old ordinary runs across readiness changes;
+manual, retained diagnostic and tag/release scopes remain separate. Required
+contexts remain Application checks, Package qualification, Browser qualification
+and PR description. Selected deferred work fails its own required context rather
+than reporting a passing omission, closing the same-SHA ready window until the
+replacement run actually qualifies the source.
+
+Merging into dev enables these rules for new dev runs and PR branches containing
+them. Active branches must deliberately merge current dev and refresh required
+checks. In-flight runs and historical reruns retain their original workflow code.
+Hosted savings identify workflow source, event, head and executed jobs, separating
+avoided allocations from execution and scheduling time. A green omission wrapper
+alone is not evidence that an affected suite executed.
 
 ### Path attribution and verified presentation changes
 

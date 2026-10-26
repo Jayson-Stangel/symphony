@@ -1,6 +1,7 @@
 name: Runner integration
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [dev, main]
   workflow_dispatch:
@@ -65,13 +66,19 @@ jobs:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           BROWSER: ${{ needs.changes.outputs.browser }}
+          READY: ${{ needs.changes.outputs.ready }}
         run: |
           test "$RESULT" = success
+          case "$READY" in true|false) ;; *) exit 1 ;; esac
           case "$CODE" in
             false) test "$BROWSER" = false ;;
             true) case "$BROWSER" in true|false) ;; *) exit 1 ;; esac ;;
             *) exit 1 ;;
           esac
+          if [ "$BROWSER" = true ] && [ "$READY" = false ]; then
+            echo 'Draft PR: affected browser qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Check out source
         if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
