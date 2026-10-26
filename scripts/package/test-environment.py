@@ -239,12 +239,24 @@ class InitProviderGuidanceTest(unittest.TestCase):
             self.assertIn("Intended provider: " + new, result.stdout)
             self.assertIn("Stored desired provider: " + old, result.stdout)
             self.assertIn("Actual runner provider: " + old, result.stdout)
-            self.assertIn("symphony update --agent " + new, result.stdout)
+            self.assertIn("symphony update --development-runner --agent " + new, result.stdout)
             self.assertEqual(before, {p: p.read_bytes() for p in before})
             self.assertNotIn("private-fixture", result.stdout + result.stderr)
             retained = self.init(ACTUAL=old)
             self.assertIn("Intended provider: " + old, retained.stdout)
         self.assertTrue(all(line.startswith("inspect ") for line in (self.root / "operations").read_text().splitlines()))
+
+    def test_retained_claude_checks_auth_before_conditional_pause_and_login(self):
+        self.init()
+        self.metadata("claude")
+        result = self.init(ACTUAL="claude")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout
+        self.assertLess(output.index("auth claude check"), output.index("update --development-runner --pause-runner"))
+        self.assertLess(output.index("update --development-runner --pause-runner"), output.index("auth claude login"))
+        self.assertIn("If native login is required", output)
+        self.assertIn("drain alone does not release", output)
+        self.assertNotIn("then symphony auth claude login", output)
 
     def test_invalid_duplicate_and_missing_provider_refuse_before_init(self):
         for args in (("--agent", "unknown"), ("--agent",), ("--agent", "codex", "--agent", "claude")):

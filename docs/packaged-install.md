@@ -366,8 +366,11 @@ symphony environment show
 # If the retained desired environment uses the other provider, explicitly select
 # the intended locally available, verified compatible release or team image:
 symphony environment select --agent claude IMAGE
-symphony auth claude login
 symphony auth claude check
+# If native login is required, release the old listener through the updater:
+# symphony update --pause-runner
+# symphony auth claude login
+# symphony auth claude check
 symphony runner doctor --agent claude
 symphony update --agent claude
 ```
@@ -378,6 +381,13 @@ and does not silently substitute a release default. Preserve deliberate team
 extensions when choosing it. If the desired environment already matches and is
 valid, keep it and omit selection. If inspection or selection refuses, resolve
 that refusal before authentication/doctor rather than bypassing it.
+
+Check retained native authentication before asking for login again. A running
+Claude listener holds its auth volume even when idle or dispatch-drained, so
+`auth claude login` refuses until the installed updater pauses the listener with
+`update --pause-runner`. If the check succeeds, skip pause/login and continue to
+doctor and the provider transition. For an isolated source development namespace,
+add `--development-runner` to updater commands as described in the development guide.
 
 The installed updater owns the idle prior runner transition, retaining shared
 workspace/state and both provider auth stores. Never create a second listener or

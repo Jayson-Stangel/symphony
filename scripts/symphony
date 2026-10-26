@@ -572,7 +572,8 @@ use_global_skill() {
 # Read-only onboarding advice. Provider selection remains startup/updater state;
 # init never writes runner metadata or replaces a deliberate environment image.
 init_provider_guidance() {
-  local root=$1 requested=$2 agent desired='' image='' metadata selection runtime actual='' state='' retained=false blocked=false
+  local root=$1 requested=$2 agent desired='' image='' metadata selection runtime actual='' state='' retained=false blocked=false updater='symphony update'
+  if ! "$packaged_install" && [ -n "$runner_namespace" ]; then updater="$updater --development-runner"; fi
   metadata=$(runner_env_file "$root")
   if [ -e "$metadata" ]; then
     retained=true
@@ -624,10 +625,16 @@ init_provider_guidance() {
       return 1
     fi
   fi
-  printf 'Next: fill the printed credentials file, then symphony auth %s login\n' "$agent"
-  printf 'Then: symphony auth %s check; symphony runner doctor --agent %s\n' "$agent" "$agent"
   if "$retained"; then
-    printf 'Existing runner: wait for idle; use symphony update --agent %s for the installed lifecycle transition. Never start a second listener.\n' "$agent"
+    printf 'Next: fill the printed credentials file, then symphony auth %s check\n' "$agent"
+    printf 'If native login is required, wait for idle and use %s --pause-runner before symphony auth %s login; then repeat symphony auth %s check. A dispatch drain alone does not release the native auth volume.\n' "$updater" "$agent" "$agent"
+  else
+    printf 'Next: fill the printed credentials file, then symphony auth %s login\n' "$agent"
+    printf 'Then: symphony auth %s check\n' "$agent"
+  fi
+  printf 'Then: symphony runner doctor --agent %s\n' "$agent"
+  if "$retained"; then
+    printf 'Existing runner: wait for idle; use %s --agent %s for the updater-owned lifecycle transition. Never start a second listener.\n' "$updater" "$agent"
     printf 'To resume after the transition: symphony run --agent %s (and symphony runner resume if deliberately drained).\n' "$agent"
   else
     printf 'Start when ready to dispatch: symphony run --agent %s\n' "$agent"

@@ -644,6 +644,8 @@ PY
             self.assertIn("Actual runner provider: " + old, output)
             self.assertIn("environment select --agent " + new + " IMAGE", output)
             self.assertIn("symphony update --agent " + new, output)
+            self.assertLess(output.index("auth " + new + " check"), output.index("update --pause-runner"))
+            self.assertLess(output.index("update --pause-runner"), output.index("auth " + new + " login"))
             self.assertEqual(selection.read_bytes(), retained)
             self.assertEqual((credentials.read_bytes(), workflow.read_bytes()), before)
             refused = call([command, "init", "--linear-project", "fixture"], cwd=repo, env=dict(env, ACTUAL=old))
