@@ -24,6 +24,10 @@ elif n=='hostname':print('host')
 elif n=='id':print(o.get('uid',0))
 elif n=='stat':
  p=pathlib.Path(a[-1]); print('0 '+(oct(p.stat().st_mode & 0o777)[2:] if p.is_relative_to(r) else '755'))
+elif n=='cat':
+ if o.get('deny_inventory') and a and a[-1].endswith('/sys/kernel/security/apparmor/profiles'):sys.exit(1)
+ if a:sys.stdout.write(pathlib.Path(a[-1]).read_text())
+ else:sys.stdout.write(sys.stdin.read())
 elif n=='sha256sum':print(hashlib.sha256(pathlib.Path(a[-1]).read_bytes()).hexdigest()+'  '+a[-1])
 elif n=='docker':
  if a[0]=='context': print(o.get('endpoint','unix:///var/run/docker.sock'))
@@ -56,9 +60,9 @@ class HostPreparationTest(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.options = {}
         self.bin = self.root/'bin'; self.bin.mkdir()
-        for name in ('bash','python3','cat','cut','grep','cmp','cp','install','mkdir','mktemp','rm','dirname'):
+        for name in ('bash','python3','cut','grep','cmp','cp','install','mkdir','mktemp','rm','dirname'):
             (self.bin/name).symlink_to(shutil.which(name))
-        for name in ('uname','hostname','id','stat','sha256sum','docker','systemctl','flock','apparmor_parser'):
+        for name in ('uname','hostname','id','cat','stat','sha256sum','docker','systemctl','flock','apparmor_parser'):
             p=self.bin/name; p.write_text(FAKE); p.chmod(0o755)
         for path, value in {
             'sys/module/apparmor/parameters/enabled':'Y\n',
@@ -187,6 +191,12 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         self.options['systemctl_failure']=True
         self.assertIn('[persistence]',self.apply(success=False))
         self.options={};self.apply()
+
+    def test_ordinary_doctor_inventory_denial_defers_to_protected_probe(self):
+        self.options['deny_inventory']=True
+        self.assertIn('continuing to actual protected execution',self.run_command('doctor'))
+        self.assertFalse(self.destination().exists())
+        self.assertFalse(any('--replace' in v for v in self.calls()))
 
     def test_overridden_effective_boot_guard_refused(self):
         self.options['override_guard']=True

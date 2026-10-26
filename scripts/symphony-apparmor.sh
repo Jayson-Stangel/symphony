@@ -177,10 +177,14 @@ apparmor_doctor() {
     printf 'AppArmor: remote daemon host inventory unavailable on controller. If protected execution fails, run runner apparmor using the verified package on the reported daemon host.\n'
     return
   fi
+  if [ ! -r /sys/kernel/security/lsm ] || [ ! -r /sys/kernel/security/apparmor/profiles ]; then
+    printf 'AppArmor: host kernel inventory requires administrator access; continuing to actual protected execution. If it fails, run symphony runner apparmor on this daemon host for explicit administrator preparation. No inventory readiness claim.\n'
+    return
+  fi
   apparmor_prerequisites || return
   apparmor_paths
   if ! aa_loaded=$(cat /sys/kernel/security/apparmor/profiles 2>/dev/null); then
-    apparmor_fail kernel 'Cannot read loaded policy inventory. Run runner apparmor on this daemon host for the explicit administrator preparation; do not infer contents from a disk checksum.'; return 1
+    printf 'AppArmor: cannot read kernel inventory; continuing to actual protected execution. If it fails, run symphony runner apparmor on this daemon host for explicit administrator preparation. No inventory readiness claim.\n'; return
   fi
   if ! printf '%s\n' "$aa_loaded" | grep -Fx "$aa_profile (enforce)" >/dev/null; then
     apparmor_fail absent 'Shipped profile is absent or not enforced. Run symphony runner apparmor on this daemon host, review the plan and authorize preparation before retrying doctor.'; return 1

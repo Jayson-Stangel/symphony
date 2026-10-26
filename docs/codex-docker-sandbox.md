@@ -129,8 +129,9 @@ After preparation run `symphony runner doctor --agent codex --sandbox-only` from
 the project as its ordinary user. Doctor distinguishes daemon identity, missing
 kernel/tools/imports, absent enforcement, integrity/ownership conflicts and
 protected-command failure. A host setup result does not establish authentication
-or model delivery. If kernel inventory is unreadable to the user, administrator
-inspection is required; the command does not silently elevate.
+or model delivery. If kernel inventory is unreadable to the user, doctor reports that limit and
+continues to the actual protected check. On failure, use explicit administrator
+preparation on the daemon host; doctor never silently elevates.
 
 An actual reboot of the newly prepared isolated Linux host remains required
 qualification: record package/policy/daemon IDs, boot ID change, first protected
