@@ -129,6 +129,11 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         launcher = (ROOT / 'scripts/symphony').read_text()
         selection = 'codex_config_select() {' + launcher.split('codex_config_select() {', 1)[1].split('\ncodex_config_require() {', 1)[0]
         doctor = 'runner_doctor() {' + launcher.split('runner_doctor() {', 1)[1].split('\nrunner() {', 1)[0]
+        # Admission now holds the actual project and compatibility leases.
+        # Only identity/path discovery is redirected to this disposable host.
+        locks = ('updater_file_lock() {' + launcher.split('updater_file_lock() {', 1)[1].split('\nsource_update_lock() {', 1)[0] +
+                 'runner_project_lock() {' + launcher.split('runner_project_lock() {', 1)[1].split('\n# Keep the original lock pathname', 1)[0] +
+                 'runner_transition_lock() {' + launcher.split('runner_transition_lock() {', 1)[1].split('\nrunner_resume_when_ready() {', 1)[0])
         original = self.driver.read_text()
         for name in ('native-auth', 'native-settings', 'runner-state'):
             (self.root / name).write_text('preserved-' + name)
@@ -139,7 +144,10 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
                            'if runner_doctor /unused codex true; then exit 88; else exit 1; fi'):
             with self.subTest(invocation=invocation):
                 driver = original.replace('if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"; fi',
-                    selection + '\n' + doctor + '\ncodex_auth_volume=fixture-auth\npackaged_install=false\n'
+                    selection + '\n' + doctor + '\n' + locks + '\ncodex_auth_volume=fixture-auth\npackaged_install=false\n'
+                    'runner_home="$FIXTURE/runners"\n'
+                    'project_id() { printf fixture-project; }\nrunner_id() { printf host-preparation-fixture; }\n'
+                    'runner_resource_lock_path() { printf \"%s/resource.lock\" \"$FIXTURE\"; }\n'
                     'container_engine_ready() { return 0; }\nvalidate_agent() { return 0; }\n'
                     'runner_image() { printf fixture-image; }\n'
                     'runner_codex_sandbox_ready() { printf called > \"$FIXTURE/unexpected-protected\"; return 91; }\n'
@@ -151,6 +159,9 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
                 output = self.run_command(success=False)
                 self.assertIn('AppArmor [absent]', output)
                 self.assertIn('Run symphony runner apparmor', output)
+                if 'runner_doctor' in invocation:
+                    self.assertTrue((self.root / 'resource.lock').is_file())
+                    self.assertTrue((self.root / 'runners/fixture-project.transition.lock').is_file())
                 self.assertFalse((self.root / 'unexpected-store').exists())
                 self.assertFalse((self.root / 'unexpected-export').exists())
                 self.assertFalse((self.root / 'unexpected-protected').exists())

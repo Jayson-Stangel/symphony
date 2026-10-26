@@ -62,10 +62,10 @@ except (OSError, ValueError, TypeError, KeyError, UnicodeError, RuntimeError):
 source "$SYMPHONY_HOME/scripts/symphony" --help >/dev/null
 container_runtime() { printf fixture_runtime; }
 fixture_runtime() {
-  case "$1" in info|image) return 0 ;; volume) return 1 ;; run) id -u ;; *) return 90 ;; esac
+  case "$1" in info) printf '%s\n' 'name=seccomp,profile=builtin' ;; image) return 0 ;; volume) return 1 ;; run) id -u ;; *) return 90 ;; esac
 }
 runner_codex_run() { printf '%s' "$FIXTURE_EMPTY_SNAPSHOT"; }
-codex_config_store() { "$FIXTURE_PYTHON" -I "$FIXTURE_STORE_HOOK" "$SYMPHONY_HOME/scripts/codex-config-store.py" "$@"; }
+codex_config_store() { "$FIXTURE_PYTHON" -I -B "$FIXTURE_STORE_HOOK" "$SYMPHONY_HOME/scripts/codex-config-store.py" "$@"; }
 runner_codex_sandbox_ready() { codex_config_require "$1" "$3"; printf 'PROTECTED_CHECKED\n'; }
 auth_codex_check() { printf 'UNEXPECTED_AUTH\n' >&2; return 90; }
 '''
@@ -248,7 +248,7 @@ runner_doctor "$FIXTURE_PROJECT" codex true
     def test_provider_and_engine_refusals_precede_project_lock(self):
         for body, expected in [
             ('runner_doctor /unused claude true', '--sandbox-only requires --agent codex'),
-            ('fixture_runtime() { return 29; }; runner_doctor /unused codex', 'container engine unavailable'),
+            ('fixture_runtime() { return 29; }; runner_doctor /unused codex true', 'container engine unavailable'),
         ]:
             with self.subTest(expected=expected):
                 result = self.run_shell('project_id() { echo UNEXPECTED_IDENTITY >&2; return 90; }; ' + body)
