@@ -5,6 +5,7 @@ Local runs qualify configuration semantics only, never native sandbox security.
 No registry, account, model, host home or existing project is used.
 """
 # Hosted routing probe: this comment changes no npm test or sandbox behavior.
+# Draft update verifies cumulative consumer routing without changing assertions.
 import io
 import json
 import os
