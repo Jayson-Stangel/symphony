@@ -1014,7 +1014,7 @@ claude_auth() {
   root=$(repo_root)
   # Credential changes share ownership with runner transitions, including the
   # stopped-source window. Readiness is also called by the lock-owning updater.
-  if [ "$action" != check ]; then runner_project_lock "$root"; fi
+  if [ "$action" != check ]; then runner_project_lock "$root" || return; fi
   runtime=$(container_runtime); container_engine_ready "$runtime" || return
   if "$packaged_install"; then package_use_project_image "$root" claude || return; fi
   image=$(runner_image claude)
@@ -1164,9 +1164,26 @@ codex_runtime_profile_id() {
 
 # Manager-selected immutable settings. Project/ambient selectors are never used.
 codex_config_profile() { printf '%s' trust-ro-v2; }
+# Create only fresh runner storage privately, independently of ambient umask.
+# Existing paths are verified without changing their ownership or permissions.
+runner_prepare_home() {
+  if [ ! -e "$runner_home" ] && [ ! -L "$runner_home" ]; then
+    (umask 077; mkdir -p "$runner_home") || return
+  fi
+  if "$packaged_install"; then
+    package_helper selection-storage-directory "$runner_home" || return
+    return
+  fi
+  python3 - "$runner_home" <<'PYRUNNERHOME'
+import os, stat, sys
+info = os.lstat(sys.argv[1])
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    sys.exit('symphony: unsafe runner storage directory; existing permissions and contents retained')
+PYRUNNERHOME
+}
 codex_config_store_root() {
   local directory storage
-  mkdir -p "$runner_home" || return
+  runner_prepare_home || return
   directory=$(cd "$runner_home" && pwd -P) || return
   storage=$(runner_storage_id "$1") || return
   printf '%s/%s-codex-config' "$directory" "$storage"
@@ -1374,7 +1391,7 @@ runner_claude_run() {
 runner_start() {
   local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
   validate_agent "$agent"
-  runner_project_lock "$root"
+  runner_project_lock "$root" || return
   runner_require_identity "$root"
   project_credentials_require "$root" || return
   project_credentials_export
@@ -1472,7 +1489,7 @@ runner_start() {
   [ "$state" = missing ] || "$runtime" rm "$name" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-workspaces" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-state" >/dev/null
-  mkdir -p "$runner_home"
+  runner_prepare_home || return
   if [ "$agent" = claude ]; then
     export SYMPHONY_GIT_TOKEN="$git_token"
     runner_claude_run "$runtime" --detach --restart unless-stopped --name "$name" \
@@ -1641,7 +1658,7 @@ runner_project_lock() {
   [ ! -e "$path" ] || [ -f "$path" ] || die 'unsafe runner lock'
   exec 6>>"$path" || return
   updater_file_lock "$path" 6 || return
-  mkdir -p "$runner_home" || return
+  runner_prepare_home || return
   # Preserve exclusion with older updaters using the configuration-local lock.
   # Always acquire the resource lock first, then this compatibility lock.
   runner_transition_lock "$runner_home/$id.transition.lock" || return
@@ -1775,7 +1792,7 @@ runner_wait_idle() {
 
 runner_pause() {
   local root=$1 allow_legacy_stop=${2:-false} runtime name state port
-  runner_project_lock "$root"
+  runner_project_lock "$root" || return
   runner_require_identity "$root"
   runtime=$(container_runtime); name=$(runner_id "$root"); state=$(runner_status "$root")
   [ "$state" != missing ] || die 'no qualified runner to pause'
@@ -1919,7 +1936,7 @@ runner_migrate_identity() (
   local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target old_lock new_lock
   runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
   name=$(runner_id "$root"); previous="$runtime_prefix-$old"
-  mkdir -p "$runner_home"
+  runner_prepare_home || return
   # Resource ownership is independent of configuration overrides. Acquire old
   # then new (the old name is a strict prefix); reserve FD 8 for source ownership.
   old_lock=$(runner_resource_lock_path "$previous")
@@ -2005,9 +2022,9 @@ runner_transition() (
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
   else expected_runtime=$(claude_runtime_profile_id); fi
-  mkdir -p "$runner_home"
+  runner_prepare_home || return
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
-  runner_project_lock "$root"
+  runner_project_lock "$root" || return
   runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
@@ -2135,7 +2152,7 @@ runner_rollback() (
   local root=$1 runtime name backup id journal port previous_agent previous_image state
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
-  runner_project_lock "$root"
+  runner_project_lock "$root" || return
   runner_require_identity "$root"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
@@ -2192,7 +2209,7 @@ runner_rollback() (
 
 runner_stop() {
   local root=$1 runtime name storage_id
-  runner_project_lock "$root"
+  runner_project_lock "$root" || return
   runner_require_identity "$root"
   runtime=$(container_runtime); name=$(runner_id "$root")
   if "$runtime" inspect "$name" >/dev/null 2>&1; then
@@ -2319,7 +2336,7 @@ runner() {
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
-      runner_project_lock "$root"
+      runner_project_lock "$root" || return
       runner_require_identity "$root"
       runtime=$(container_runtime)
       runner_owned "$root" "$runtime" "$(runner_id "$root")"
