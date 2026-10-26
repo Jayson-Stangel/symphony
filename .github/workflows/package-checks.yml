@@ -121,6 +121,8 @@ jobs:
         env:
           SYMPHONY_TEST_HOST_HELPER: ${{ runner.temp }}/host-helper/symphony-host
           PLATFORM: ${{ matrix.platform }}
+          # Real local Docker proof on Linux; macOS hosted workers lack an engine.
+          SYMPHONY_TEST_DOCKER_IMPORT: ${{ matrix.platform == 'linux_x86_64' && '1' || '0' }}
         run: |
           test "$("$SYMPHONY_TEST_HOST_HELPER" build-revision)" = "$GITHUB_SHA"
           test "$("$SYMPHONY_TEST_HOST_HELPER" host-platform)" = "$PLATFORM"

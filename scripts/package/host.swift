@@ -397,6 +397,61 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     return normalized
 }
 
+// Relocation changes only the temporary transport authority, never graph identity.
+func runnerReference(_ manifest: [String: Any], provider: String, arch: String, reference: String? = nil) -> String {
+    guard ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch) else { fail("invalid runner provider/platform") }
+    let original = object(object(object(manifest["runners"])[provider])[arch])["image"] as? String ?? ""
+    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? original
+    guard let reference = reference else { return selected }
+    if reference == selected { return reference }
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          selected == original, matches(original, "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$"),
+          matches(reference, "^127[.]0[.]0[.]1:[1-9][0-9]{0,4}/symphony-\(provider)@sha256:[a-f0-9]{64}$"),
+          let authority = reference.split(separator: "/").first,
+          let port = Int(authority.split(separator: ":").last ?? ""), (1024...65535).contains(port),
+          reference.split(separator: "@").last == original.split(separator: "@").last else { fail("runtime image is outside selected qualified release") }
+    return reference
+}
+
+// Private receipts remember a digest-qualified transport reference, never a config-ID alias.
+func runnerImportReceipt(_ manifest: [String: Any], provider: String, arch: String, root: String, storing: String? = nil) throws -> String {
+    let selected = runnerReference(manifest, provider: provider, arch: arch)
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          matches(selected, "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$") else {
+        guard storing == nil else { fail("only original loopback candidates accept import receipts") }; return selected
+    }
+    var folder = root
+    for part in ["", "runner-imports", String(selected.split(separator: "@").last!).replacingOccurrences(of: ":", with: "-")] {
+        if !part.isEmpty { folder += "/" + part }
+        var info = stat()
+        if lstat(folder, &info) != 0 {
+            guard errno == ENOENT else { fail("cannot inspect candidate import receipt directory") }
+            if storing == nil { return selected }
+            guard mkdir(folder, 0o700) == 0 || errno == EEXIST else { fail("cannot create candidate import receipt directory") }
+        }
+        _ = checkedInfo(folder, directory: true)
+    }
+    let path = folder + "/" + provider + "-" + arch
+    var info = stat()
+    if lstat(path, &info) == 0 {
+        let checked = checkedInfo(path)
+        guard checked.st_size <= 256, checked.st_mode & 0o077 == 0 else { fail("candidate import receipt must be private and bounded") }
+    } else {
+        guard errno == ENOENT else { fail("cannot inspect candidate import receipt") }
+        if storing == nil { return selected }
+    }
+    if let reference = storing {
+        let previousMask = umask(0o077)
+        defer { umask(previousMask) }
+        _ = runnerReference(manifest, provider: provider, arch: arch, reference: reference)
+        try Data((reference + "\n").utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        guard chmod(path, 0o600) == 0 else { fail("cannot protect candidate import receipt") }
+        return reference
+    }
+    guard let text = String(data: try read(path), encoding: .utf8), text.hasSuffix("\n"), !text.dropLast().contains("\n") else { fail("invalid candidate import receipt") }
+    return runnerReference(manifest, provider: provider, arch: arch, reference: String(text.dropLast()))
+}
+
 // A qualified OCI digest binds its original config cryptographically. Classic
 // daemons expose that config as Id; manifest stores expose the manifest as Id.
 // Never confuse an archive transport manifest with the qualified OCI identity.
@@ -405,8 +460,8 @@ func validateRuntimeImage(_ manifest: [String: Any], provider: String, arch: Str
           ["arm64", "x86_64"].contains(arch), data.count <= 1024 * 1024,
           let values = try json(data) as? [[String: Any]], values.count == 1 else { fail("invalid qualified runtime image receipt") }
     let original = object(object(object(manifest["runners"])[provider])[arch])
-    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? original["image"] as? String
-    guard reference == selected, let qualified = original["image"] as? String,
+    _ = runnerReference(manifest, provider: provider, arch: arch, reference: reference)
+    guard let qualified = original["image"] as? String,
           let config = original["image_config"] as? String else { fail("runtime image is outside selected qualified release") }
     let receipt = values[0], labels = object(object(receipt["Config"])["Labels"])
     guard receipt["Os"] as? String == "linux", receipt["Architecture"] as? String == (arch == "arm64" ? "arm64" : "amd64"),
@@ -1035,13 +1090,31 @@ func codexConfigStore(_ args: [String]) throws {
     }
 }
 
-let arity = ["prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
     case "codex-config-store":
         do { try codexConfigStore(Array(args.dropFirst())) }
         catch { fail("unsafe Codex config snapshot store") }
+    case "runner-import-endpoint":
+        let data = FileHandle.standardInput.readData(ofLength: 65537)
+        guard data.count <= 65536, let text = String(data: data, encoding: .utf8) else { fail("invalid candidate registry startup receipt") }
+        let endpoints = text.split(separator: "\n").compactMap { line -> String? in
+            guard let value = try? json(Data(line.utf8)), let message = object(value)["msg"] as? String,
+                  message.hasPrefix("listening on ") else { return nil }
+            return String(message.dropFirst("listening on ".count))
+        }
+        guard endpoints.count == 1, let endpoint = endpoints.first,
+              matches(endpoint, "^127[.]0[.]0[.]1:[1-9][0-9]{0,4}$"),
+              let port = Int(endpoint.split(separator: ":").last ?? ""), (1024...65535).contains(port) else { fail("candidate registry has no unique allocated loopback endpoint") }
+        print(endpoint)
+    case "validate-runner-reference":
+        print(runnerReference(try validateRelease(args[1]), provider: args[2], arch: args[3], reference: args[4]))
+    case "resolve-runner-import":
+        print(try runnerImportReceipt(validateRelease(args[1]), provider: args[2], arch: args[3], root: args[4]))
+    case "store-runner-import":
+        print(try runnerImportReceipt(validateRelease(args[1]), provider: args[2], arch: args[3], root: args[4], storing: args[5]))
     case "prepare-runner-import":
         try prepareRunnerImport(validateRelease(args[1]), provider: args[2], arch: args[3], archive: args[4], destination: args[5])
     case "canonical-path":
