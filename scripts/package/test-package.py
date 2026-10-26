@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 from runner_import_test import RunnerImportTest
+from command_activation_test import CommandActivationTest, PackageCommandActivationMixin
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))
@@ -112,7 +113,7 @@ class InstallerLaunchTest(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
-class PackageTest(unittest.TestCase):
+class PackageTest(PackageCommandActivationMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not HELPER.is_file():
@@ -829,11 +830,15 @@ PY
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
+        # Installation may inspect the CLI's current context. A rejected image
+        # override must still fail before any additional Docker operation.
+        calls_file = self.root / "docker.calls"
+        docker_calls = calls_file.read_text() if calls_file.exists() else ""
         for image in ("mutable:latest", "sha256:" + "c" * 64, "ghcr.io/foreign/runner@sha256:" + "d" * 64):
             result = call([command, "auth", "codex", "login"], env=dict(env, SYMPHONY_RUNNER_IMAGE=image))
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("remove SYMPHONY_RUNNER_IMAGE", result.stderr)
-        self.assertFalse((self.root / "docker.calls").exists())
+        self.assertEqual(calls_file.read_text() if calls_file.exists() else "", docker_calls)
 
     def test_custom_app_dir_does_not_require_environment_override(self):
         bundle = self.bundle(); env = self.environment()
