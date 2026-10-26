@@ -178,6 +178,10 @@ class PackageCommandActivationMixin:
                     for name in ("SYMPHONY_APP_HOME", "SYMPHONY_BIN_DIR", "SYMPHONY_CONFIG_HOME", "SYMPHONY_SKILLS_DIR"):
                         env.pop(name, None)
                     home = Path(env["HOME"])
+                    # Default-path qualification must never inherit the real
+                    # account's XDG or Codex storage overrides.
+                    env["CODEX_HOME"] = str(home / ".codex")
+                    env["XDG_CONFIG_HOME"] = str(home / ".config")
                     app = home / ".local/share/symphony-package-fixture"
                     bin_dir = home / ".local/bin"
                 else:
