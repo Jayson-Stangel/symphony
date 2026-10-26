@@ -11,6 +11,7 @@ from pathlib import Path
 import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -24,18 +25,41 @@ if PROTECTED:
 CONFIG = Path(__file__).with_name('npm-cache.npmrc')
 
 
+def live_group_members(group):
+    # Inspect identities/state only, never unrelated command lines or environment.
+    # Orphan zombies cannot write and may await the container's PID 1 reaper.
+    rows = subprocess.check_output(['/bin/ps', '-axo', 'pid=,pgid=,stat='],
+                                   text=True, timeout=5)
+    return {int(pid) for pid, pgid, state in (line.split() for line in rows.splitlines())
+            if int(pgid) == group and not state.startswith(('Z', 'X'))}
+
+
 class NativeCommands:
-    def __init__(self, home, cwd):
-        self.stderr = tempfile.TemporaryFile()
-        self.child = subprocess.Popen(['codex', 'app-server'], cwd=cwd,
-                                     env={**os.environ, 'HOME': str(home), 'CODEX_HOME': str(home)},
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=self.stderr, bufsize=0)
-        self.sequence = 0
-        self.buffer = bytearray()
-        self.request('initialize', {'clientInfo': {'name': 'npm-cache-proof', 'version': '1'},
-                                    'capabilities': {'experimentalApi': True}})
-        self.send({'method': 'initialized', 'params': {}})
+    def __init__(self, home, cwd, command=('codex', 'app-server')):
+        self.home, self.cwd, self.command = home, cwd, command
+        self.child = self.stderr = None
+        self.closed = False
+
+    def start(self):
+        if self.child is not None or self.closed:
+            raise RuntimeError('native command owner cannot be started twice')
+        # Assign this owner before starting so initialization failures still have
+        # a reachable cleanup owner; never leave a TemporaryDirectory finalizer
+        # to remove HOME under a process that could not be stopped.
+        try:
+            self.stderr = tempfile.TemporaryFile()
+            self.child = subprocess.Popen(self.command, cwd=self.cwd,
+                                         env={**os.environ, 'HOME': str(self.home), 'CODEX_HOME': str(self.home)},
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=self.stderr, bufsize=0, start_new_session=True)
+            self.sequence = 0
+            self.buffer = bytearray()
+            self.request('initialize', {'clientInfo': {'name': 'npm-cache-proof', 'version': '1'},
+                                        'capabilities': {'experimentalApi': True}})
+            self.send({'method': 'initialized', 'params': {}})
+        except BaseException:
+            self.close()
+            raise
 
     def send(self, value):
         self.child.stdin.write((json.dumps(value) + '\n').encode())
@@ -64,29 +88,54 @@ class NativeCommands:
         raise RuntimeError('native command response unavailable')
 
     def close(self):
-        if self.child.stdin.closed:
+        if self.closed:
             return
-        self.child.stdin.close()
-        try:
-            self.child.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.child.kill()
-            self.child.wait(timeout=5)
-        self.child.stdout.close()
-        self.stderr.close()
+        if self.child is not None:
+            if not self.child.stdin.closed:
+                self.child.stdin.close()
+            # The frontend can exit while startup Git children remain. Own the
+            # entire session's group even when its leader has already exited.
+            def signal_owned_group(value):
+                if not live_group_members(self.child.pid):
+                    return
+                try:
+                    os.killpg(self.child.pid, value)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    # A group can disappear between inspection and signaling.
+                    # Never suppress a refusal while live members remain.
+                    if live_group_members(self.child.pid):
+                        raise
+
+            signal_owned_group(signal.SIGTERM)
+            try:
+                self.child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                signal_owned_group(signal.SIGKILL)
+                self.child.wait(timeout=2)
+            if live_group_members(self.child.pid):
+                signal_owned_group(signal.SIGKILL)
+            deadline = time.monotonic() + 2
+            while live_group_members(self.child.pid):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('owned native command group survived cleanup; retain fixture directories')
+                select.select([], [], [], 0.01)
+            self.child.stdout.close()
+        if self.stderr is not None:
+            self.stderr.close()
+        self.closed = True
 
 
 class NpmCacheTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='npm-cache-', dir='/workspaces' if PROTECTED else None)
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name).resolve()
+        self.root = Path(tempfile.mkdtemp(prefix='npm-cache-', dir='/workspaces' if PROTECTED else None)).resolve()
+        self.home = self.native = None
+        self.addCleanup(self.cleanup_resources)
         self.project = self.root / 'task with spaces'
         self.project.mkdir()
         # Native home deliberately outside every sandbox write root.
-        self.home_temp = tempfile.TemporaryDirectory(prefix='npm-home-', dir='/var/lib/symphony' if PROTECTED else None)
-        self.addCleanup(self.home_temp.cleanup)
-        self.home = Path(self.home_temp.name).resolve()
+        self.home = Path(tempfile.mkdtemp(prefix='npm-home-', dir='/var/lib/symphony' if PROTECTED else None)).resolve()
         (self.home / '.codex').mkdir()
         (self.home / '.codex/auth.json').write_text('synthetic-auth-canary')
         self.env = {k: v for k, v in os.environ.items() if not k.lower().startswith('npm_config_')}
@@ -95,7 +144,7 @@ class NpmCacheTests(unittest.TestCase):
             self.env['NPM_CONFIG_GLOBALCONFIG'] = str(CONFIG)
         else:
             self.native = NativeCommands(self.home, self.project)
-            self.addCleanup(self.native.close)
+            self.native.start()
         self.tarball = self.root / 'fixture.tgz'
         with tarfile.open(self.tarball, 'w:gz') as archive:
             for name, data in {'package.json': json.dumps({'name': 'cold-fixture', 'version': '1.0.0', 'main': 'index.js'}),
@@ -105,6 +154,16 @@ class NpmCacheTests(unittest.TestCase):
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
         self.package(self.project)
+
+    def cleanup_resources(self):
+        # One ordered cleanup: unittest runs remaining callbacks after failures.
+        # A failed close must therefore stop deletion, not merely fail a prior
+        # callback while another callback removes directories beneath a writer.
+        if self.native is not None:
+            self.native.close()
+        if self.home is not None:
+            shutil.rmtree(self.home)
+        shutil.rmtree(self.root)
 
     def package(self, directory):
         (directory / 'package.json').write_text(json.dumps({
@@ -156,7 +215,7 @@ class NpmCacheTests(unittest.TestCase):
         if PROTECTED:
             self.native.close()
             self.native = NativeCommands(self.home, self.project)
-            self.addCleanup(self.native.close)
+            self.native.start()
         self.run_command('npm run build')
         shutil.rmtree(expected)
         shutil.rmtree(self.project / 'node_modules')
