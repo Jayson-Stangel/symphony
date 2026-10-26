@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real owned-process regressions for the credential-free npm qualification helper."""
 # Hosted routing probe: the process ownership regressions remain unchanged.
-# Rapid predecessor revision exercises cancellation of obsolete PR runs.
+# Rapid successor revision requires fresh checks after obsolete runs are cancelled.
 import json
 import os
 from pathlib import Path
