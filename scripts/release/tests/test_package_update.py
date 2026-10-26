@@ -477,7 +477,18 @@ shutil.copyfile(mapping[url], args[args.index('--output')+1])
 set -euo pipefail
 source "$1/scripts/symphony" --help >/dev/null
 packaged_install=true
-runner_home="$2/runners"; mkdir "$runner_home"
+# Model the existing native helper's storage guard, not an unconditional success.
+package_helper() {
+  [ "$#" = 2 ] && [ "$1" = selection-storage-directory ] || return 90
+  if [ -n "${SYMPHONY_TEST_HOST_HELPER:-}" ]; then "$SYMPHONY_TEST_HOST_HELPER" "$@"; return; fi
+  python3 - "$2" <<'FIXTURESTORAGE'
+import os, stat, sys
+info = os.lstat(sys.argv[1])
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    sys.exit('unsafe or foreign fixture runner storage')
+FIXTURESTORAGE
+}
+runner_home="$2/runners"; (umask 077; mkdir "$runner_home")
 printf old >"$2/current"
 printf 'SYMPHONY_RUNNER_IMAGE_ID=old\n' >"$runner_home/project.env"
 container_runtime() { echo fixture_runtime; }
