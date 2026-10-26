@@ -100,3 +100,21 @@ the original October 24 Apple Silicon candidate graph, preserving digest
 That proves archive/graph preparation only. Fresh-account downloaded-package
 security acceptance, an actual Docker cold/pruned import, provider login and
 unchanged Melody project readiness still require their own recorded evidence.
+
+## Managed Codex settings
+
+The candidate accepts native trust entries for owned managed workspaces and
+retains the original native configuration and login storage. Each managed
+listener uses a separate immutable trust snapshot at the normal configuration
+path. Explicit native configuration edits while that listener is running are
+unsupported; unknown settings, hooks, rules and unqualified launch environments
+refuse startup. Authentication storage remains writable at its original path.
+
+Fresh packaged installs and transitions from the current Claude runner are the
+supported validation paths. An incompatible older Codex listener cannot be
+upgraded in place with this candidate: the updater refuses before publishing a
+transition journal, draining work or stopping the listener. Recovery and
+migration for older Codex installations are deferred. Plan a fresh installation
+separately; this refusal does not delete the existing installation, native login,
+workspaces or configuration. Compatible current-profile updates retain their
+qualified image/settings tuple through retry and rollback.

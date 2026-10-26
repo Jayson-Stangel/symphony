@@ -953,8 +953,178 @@ codex_runtime_profile_id() {
   local apparmor
   apparmor=$(codex_apparmor_profile "$1") || return
   printf '%s' "$(codex_seccomp_id)"
-  # Preserve the existing LinuxKit identity when its security inputs are unchanged.
+  printf ':config-trust-ro-v2'
+  # Include immutable-settings semantics in the actual runtime identity.
   if [ "$apparmor" != none ]; then printf ':apparmor:%s:%s' "$apparmor" "$(codex_apparmor_id)"; fi
+}
+
+# Manager-selected immutable settings. Project/ambient selectors are never used.
+codex_config_profile() { printf '%s' trust-ro-v2; }
+codex_config_store_root() {
+  mkdir -p "$runner_home"
+  printf '%s/%s-codex-config' "$(cd "$runner_home" && pwd -P)" "$(runner_storage_id "$1")"
+}
+codex_config_store() {
+  if "$packaged_install"; then package_helper codex-config-store "$@"
+  else python3 -I "$symphony_home/scripts/codex-config-store.py" "$@"; fi
+}
+codex_config_clear() { codex_config_sha=; codex_config_owner=; codex_config_file=; codex_config_image=; }
+codex_config_select() {
+  local root=$1 runtime=$2 image=$3 digest owner store
+  store=$(codex_config_store_root "$root")
+  # The exporter opens only bounded native settings. No credentials are copied
+  # or passed through project configuration; native login remains read-only.
+  local auth_mount=(--volume /root/.codex)
+  if "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1; then
+    auth_mount=(--volume "$codex_auth_volume:/root/.codex:ro")
+  fi
+  digest=$(runner_codex_run "$runtime" --rm --network none --env HOME=/root --env CODEX_HOME=/root/.codex \
+    --volume /workspaces "${auth_mount[@]}" --entrypoint /opt/symphony/elixir/bin/symphony "$image" \
+    --codex-config-snapshot | codex_config_store write "$store") || die 'native Codex settings snapshot refused; original settings and login retained'
+  owner=$("$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --mount "type=bind,source=$store/$digest/config.toml,target=/run/symphony-config.toml,readonly" \
+    --entrypoint /usr/bin/stat "$image" -c %u /run/symphony-config.toml) || die 'cannot resolve immutable settings owner on selected daemon'
+  [[ "$owner" =~ ^[0-9]{1,10}$ ]] && [ "$owner" -le 4294967294 ] || die 'invalid immutable settings owner'
+  codex_config_sha=$digest; codex_config_owner=$owner; codex_config_file="$store/$digest/config.toml"; codex_config_image=$image
+}
+codex_config_require() {
+  local root=$1 image=$2
+  [ "${codex_config_image:-}" = "$image" ] || die 'Codex settings are not pinned to the selected image'
+  [[ "${codex_config_sha:-}" =~ ^[a-f0-9]{64}$ ]] || die 'Codex settings digest is missing'
+  [[ "${codex_config_owner:-}" =~ ^[0-9]{1,10}$ ]] && [ "$codex_config_owner" -le 4294967294 ] || die 'Codex settings owner is invalid'
+  [ "${codex_config_file:-}" = "$(codex_config_store_root "$root")/$codex_config_sha/config.toml" ] || die 'Codex settings path differs'
+  codex_config_store verify "$(codex_config_store_root "$root")" "$codex_config_sha" >/dev/null || die 'immutable Codex settings verification failed'
+}
+codex_config_observe() {
+  local root=$1 runtime=$2 name=$3 image=$4
+  [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$image" ] || die 'actual Codex image differs from selected settings identity'
+  codex_config_sha=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.sha256" }}' "$name")
+  codex_config_owner=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.owner" }}' "$name")
+  codex_config_file="$(codex_config_store_root "$root")/$codex_config_sha/config.toml"; codex_config_image=$image
+  codex_config_require "$root" "$image"
+  "$runtime" inspect "$name" | codex_config_store container "$(codex_config_store_root "$root")" "$codex_config_sha" "$codex_config_owner" "$codex_auth_volume" "$(uname -s)" >/dev/null || die 'actual Codex settings mounts or selectors differ; updater refused'
+}
+codex_config_clear
+
+# The image and settings tuple are one atomic journal record, never separate
+# mutable files. The helper validates canonical bytes/ownership without eval.
+codex_config_selection_path() {
+  [ -d "$1" ] && [ ! -L "$1" ] || die 'Codex selection journal is missing or linked'
+  printf '%s/image' "$(cd "$1" && pwd -P)"
+}
+codex_config_record_load() {
+  local root=$1 image=$2 record=$3 value marker selected_image digest owner
+  [ -d "$(dirname "$record")" ] && [ ! -L "$(dirname "$record")" ] || die 'Codex selection journal is missing or linked'
+  record="$(cd "$(dirname "$record")" && pwd -P)/$(basename "$record")"
+  value=$(codex_config_store selection-read "$record") || die 'pending transition has no qualified Codex settings; updater refused'
+  IFS=$'\t' read -r marker selected_image digest owner <<< "$value"
+  [ "$marker" = codex-config-v2 ] && [ "$selected_image" = "$image" ] || die 'pending Codex image/settings identity differs'
+  codex_config_sha=$digest; codex_config_owner=$owner
+  codex_config_file="$(codex_config_store_root "$root")/$digest/config.toml"; codex_config_image=$image
+  codex_config_require "$root" "$image"
+}
+runner_transition_image() {
+  local journal=$1 value marker image digest owner
+  if [ "$(cat "$journal/target")" = codex ]; then
+    value=$(codex_config_store selection-read "$(codex_config_selection_path "$journal")") || die 'pending transition has no qualified Codex settings; updater refused'
+    IFS=$'\t' read -r marker image digest owner <<< "$value"
+    [ "$marker" = codex-config-v2 ] || die 'pending Codex settings format differs'
+    printf '%s' "$image"
+  else cat "$journal/image"; fi
+}
+codex_config_journal_write() {
+  local root=$1 image=$2 journal=$3
+  codex_config_require "$root" "$image"
+  codex_config_store selection-stage "$(codex_config_selection_path "$journal")" "$image" "$codex_config_sha" "$codex_config_owner" >/dev/null
+  codex_config_store selection-publish "$(codex_config_selection_path "$journal")" "$image" "$codex_config_sha" "$codex_config_owner" >/dev/null
+}
+codex_config_journal_load() { codex_config_record_load "$1" "$2" "$3/image"; }
+
+# Settle only this journal's private selection metadata, not a container. This
+# also closes an interrupted refresh which was reverted to the current image.
+codex_config_selection_settle() {
+  local journal=$1 current next marker image digest owner next_marker next_image next_digest next_owner path
+  path=$(codex_config_selection_path "$journal")
+  current=$(codex_config_store selection-read "$path") || die 'cannot settle unknown Codex selection; journal retained'
+  IFS=$'\t' read -r marker image digest owner <<< "$current"
+  if [ -e "$path.next" ] || [ -L "$path.next" ]; then
+    next=$(codex_config_store selection-read "$path.next") || die 'cannot settle unknown Codex selection stage; journal retained'
+    IFS=$'\t' read -r next_marker next_image next_digest next_owner <<< "$next"
+    codex_config_store selection-abort "$path" "$next_image" "$next_digest" "$next_owner" >/dev/null
+  fi
+  codex_config_store selection-publish "$path" "$image" "$digest" "$owner" >/dev/null
+}
+
+codex_config_matches_journal() {
+  local root=$1 runtime=$2 name=$3 image=$4 journal=$5 expected_sha expected_owner
+  codex_config_journal_load "$root" "$image" "$journal"
+  expected_sha=$codex_config_sha; expected_owner=$codex_config_owner
+  codex_config_observe "$root" "$runtime" "$name" "$image"
+  [ "$codex_config_sha" = "$expected_sha" ] && [ "$codex_config_owner" = "$expected_owner" ] || die 'candidate immutable settings differ from pending transition'
+}
+codex_config_rollback_preflight() {
+  local root=$1 runtime=$2 name=$3 image agent
+  agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  case "$agent" in
+    claude) return 0 ;;
+    codex) ;;
+    *) die 'legacy Codex runtime cannot safely reuse retained settings; rollback refused before stopping candidate' ;;
+  esac
+  [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id "$runtime")" ] || die 'prior Codex runtime cannot safely reuse retained settings; rollback refused before stopping candidate'
+  image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  codex_config_observe "$root" "$runtime" "$name" "$image"
+  runner_codex_sandbox_ready "$root" "$runtime" "$image" || die 'prior protected readiness failed; rollback refused before stopping candidate'
+}
+
+# Older Codex migration recovery is deliberately deferred. Do not create a
+# transition that has no compatible rollback path; original listener stays put.
+codex_config_migration_preflight() {
+  local root=$1 runtime=$2 name=$3 agent
+  agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
+  case "$agent" in
+    claude) return 0 ;;
+    codex|'<'*|"")
+      [ "$agent" = codex ] && [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id "$runtime")" ] || die 'incompatible older Codex listeners require a fresh packaged install; updater refused before journal or listener shutdown'
+      codex_config_rollback_preflight "$root" "$runtime" "$name"
+      ;;
+    *) die 'unknown listener provider; migration refused' ;;
+  esac
+}
+
+codex_config_cleanup() {
+  local root=$1 runtime=$2 store name candidate image journal digest stage_record stage_marker stage_image stage_sha stage_owner
+  local keep=()
+  store=$(codex_config_store_root "$root")
+  [ -d "$store" ] || return 0
+  name=$(runner_id "$root")
+  # Retained rollback containers may predate snapshots. Never interpret or
+  # collect their settings: defer GC until the transaction removes the backup.
+  if "$runtime" inspect "$name-before-update" >/dev/null 2>&1; then return 0; fi
+  for candidate in "$name"; do
+    if "$runtime" inspect "$candidate" >/dev/null 2>&1; then
+      runner_owned "$root" "$runtime" "$candidate"
+      if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$candidate")" = codex ]; then
+        image=$("$runtime" inspect --format '{{.Image}}' "$candidate")
+        codex_config_observe "$root" "$runtime" "$candidate" "$image"
+        keep+=("$codex_config_sha")
+      fi
+    fi
+  done
+  journal="$runner_home/$(project_id "$root").transition"
+  if [ -d "$journal" ]; then
+    [ "$(cat "$journal/target")" != codex ] || {
+      image=$(runner_transition_image "$journal")
+      codex_config_journal_load "$root" "$image" "$journal"
+      keep+=("$codex_config_sha")
+      if [ -e "$journal/image.next" ] || [ -L "$journal/image.next" ]; then
+        stage_record=$(codex_config_store selection-read "$(codex_config_selection_path "$journal").next") || die 'pending settings cleanup stage is invalid'
+        IFS=$'\t' read -r stage_marker stage_image stage_sha stage_owner <<< "$stage_record"
+        codex_config_record_load "$root" "$stage_image" "$journal/image.next"
+        keep+=("$codex_config_sha")
+      fi
+    }
+  fi
+  codex_config_store cleanup "$store" ${keep[@]+"${keep[@]}"} >/dev/null || die 'owned settings cleanup refused; unknown state retained'
 }
 
 codex_verify_profile() {
@@ -1042,6 +1212,7 @@ runner_start() {
       [ -n "$image_id" ] && [ "$image_id" = "$existing_image" ] || die 'listener image differs; transition through symphony update --agent'
       if [ "$agent" = codex ]; then
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
+        codex_config_observe "$root" "$runtime" "$name" "$image_id"
       fi
       if [ "$agent" = claude ]; then
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Claude runtime profile differs; transition through symphony update --agent'
@@ -1076,7 +1247,18 @@ runner_start() {
     ) || return 1
   fi
   if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
-  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image_id"; fi
+  if [ "$agent" = codex ]; then
+    if [ "$authority" != update ]; then
+      if [ "$state" = missing ]; then codex_config_select "$root" "$runtime" "$image_id"
+      else
+        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = codex ] || die 'listener agent differs; transition through symphony update --agent'
+        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Codex runtime profile differs; transition through symphony update --agent'
+        codex_config_observe "$root" "$runtime" "$name" "$image_id"
+      fi
+    fi
+    codex_config_require "$root" "$image_id"
+    runner_codex_sandbox_ready "$root" "$runtime" "$image_id"
+  fi
   [ "$state" = missing ] || "$runtime" rm "$name" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-workspaces" >/dev/null
   "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-state" >/dev/null
@@ -1099,20 +1281,26 @@ runner_start() {
     --label com.symphony.mode=listener \
     --label "com.symphony.storage=$storage_id" \
     --label "com.symphony.codex.runtime=$expected_runtime" \
+    --label "com.symphony.codex.config.profile=$(codex_config_profile)" \
+    --label "com.symphony.codex.config.sha256=$codex_config_sha" --label "com.symphony.codex.config.owner=$codex_config_owner" \
     --label com.symphony.agent=codex --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
     --publish "127.0.0.1:$port:4010" \
     --env-file "$project_env" \
     --env SYMPHONY_CONTAINERIZED=1 \
     --env SYMPHONY_PORT=4010 \
     --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
+    --env HOME=/root --env CODEX_HOME=/root/.codex \
+    --env "SYMPHONY_CODEX_CONFIG_PROFILE=$(codex_config_profile)" --env "SYMPHONY_CODEX_CONFIG_SHA256=$codex_config_sha" --env "SYMPHONY_CODEX_CONFIG_OWNER=$codex_config_owner" \
     --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
     --volume "$workflow:/etc/symphony/WORKFLOW.md:ro" \
     --volume "$storage_id-workspaces:/workspaces" \
     --volume "$storage_id-state:/var/lib/symphony" \
     --volume "$codex_auth_volume:/root/.codex" \
+    --mount "type=bind,source=$codex_config_file,target=/root/.codex/config.toml,readonly" \
     "$image_id" >/dev/null
   fi
   runner_write_metadata "$root" "$port" "$agent" "$image_id" "$profile"
+  codex_config_cleanup "$root" "$runtime"
   printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
 }
 
@@ -1142,6 +1330,10 @@ runner_record_observed_metadata() {
     profile=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")
     case "$profile" in ''|*[!a-f0-9]*) die 'observed native profile is invalid; updater refused' ;; esac
     [ "${#profile}" = 64 ] || die 'observed native profile is invalid; updater refused'
+  fi
+  if [ "$agent" = codex ]; then
+    [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$(codex_runtime_profile_id "$runtime")" ] || die 'observed Codex runtime profile is incompatible; updater refused'
+    codex_config_observe "$root" "$runtime" "$name" "$image"
   fi
   runner_write_metadata "$root" "$port" "$agent" "$image" "$profile"
 }
@@ -1403,6 +1595,7 @@ runner_pause() {
 runner_finish_journal() {
   local journal=$1
   [ ! -e "$journal.complete" ] || die 'completed transition metadata already exists; inspect it before retrying'
+  if [ "$(cat "$journal/target")" = codex ]; then codex_config_selection_settle "$journal"; fi
   if "$packaged_install"; then package_finish_transition "$journal" || return; fi
   mv "$journal" "$journal.complete" || return
   if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
@@ -1415,8 +1608,8 @@ runner_finish_journal() {
 # Commit the replacement image only after removing the verified old candidate.
 # A crash before that commit is retryable: the retained backup is never removed.
 runner_refresh_pending() {
-  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 runtime name old replacement state previous
-  runtime=$(container_runtime); name=$(runner_id "$root"); old=$(cat "$journal/image")
+  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 runtime name old replacement state previous selected_sha selected_owner stage_record stage_marker stage_image stage_sha stage_owner
+  runtime=$(container_runtime); name=$(runner_id "$root"); old=$(runner_transition_image "$journal")
   if [ "$(runner_status "$root")" = true ] && ! "$runtime" inspect "$backup" >/dev/null 2>&1 &&
      runner_is_legacy "$runtime" "$name"; then
     die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
@@ -1425,9 +1618,29 @@ runner_refresh_pending() {
   runner_build_image "$agent"
   replacement=$("$runtime" image inspect --format '{{.Id}}' "$desired")
   export SYMPHONY_RUNNER_IMAGE="$replacement"
+  if [ "$agent" = codex ]; then
+    if [ "$replacement" = "$old" ]; then
+      codex_config_journal_load "$root" "$replacement" "$journal"
+      return
+    fi
+    if [ -e "$journal/image.next" ] || [ -L "$journal/image.next" ]; then
+      stage_record=$(codex_config_store selection-read "$(codex_config_selection_path "$journal").next") || die 'unknown pending Codex selection stage; updater refused'
+      IFS=$'\t' read -r stage_marker stage_image stage_sha stage_owner <<< "$stage_record"
+      if [ "$stage_image" = "$replacement" ]; then
+        codex_config_record_load "$root" "$replacement" "$journal/image.next"
+      else codex_config_select "$root" "$runtime" "$replacement"; fi
+    else codex_config_select "$root" "$runtime" "$replacement"; fi
+  fi
   runner_doctor "$root" "$agent"
   [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
   if [ "$replacement" = "$old" ]; then return; fi
+  if [ "$agent" = codex ]; then
+    selected_sha=$codex_config_sha; selected_owner=$codex_config_owner
+    if [ -n "${stage_record:-}" ] && [ "$stage_image" != "$replacement" ]; then
+      codex_config_store selection-abort "$(codex_config_selection_path "$journal")" "$stage_image" "$stage_sha" "$stage_owner" >/dev/null
+    fi
+    codex_config_store selection-stage "$(codex_config_selection_path "$journal")" "$replacement" "$selected_sha" "$selected_owner" >/dev/null
+  fi
 
   state=$(runner_status "$root")
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
@@ -1458,8 +1671,12 @@ runner_refresh_pending() {
       mv "$journal/previous.env.next" "$journal/previous.env"
     fi
   fi
-  printf '%s\n' "$replacement" > "$journal/image.next"
-  mv "$journal/image.next" "$journal/image"
+  if [ "$agent" = codex ]; then
+    codex_config_store selection-publish "$(codex_config_selection_path "$journal")" "$replacement" "$selected_sha" "$selected_owner" >/dev/null
+  else
+    printf '%s\n' "$replacement" > "$journal/image.next"
+    mv "$journal/image.next" "$journal/image"
+  fi
   printf 'Refreshed pending development candidate: %s -> %s. Rollback source retained.\n' "$old" "$replacement"
 }
 
@@ -1594,15 +1811,19 @@ runner_transition() (
     if "$packaged_install"; then
       [ "$(cat "$journal/package.revision")" = "$(source_revision)" ] || die 'pending packaged release revision differs; updater refused'
       package_transition_image_compatible "$runtime" "$candidate" "$agent" "$(source_revision)"
-      [ "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" = "$(cat "$journal/image")" ] || die 'pending packaged image differs from selected release; updater refused'
-      if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$(cat "$journal/image")"; fi
+      [ "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" = "$(runner_transition_image "$journal")" ] || die 'pending packaged image differs from selected release; updater refused'
     fi
     if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
-    candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+    candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+    if [ "$agent" = codex ]; then
+      codex_config_journal_load "$root" "$candidate" "$journal"
+      runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
+    fi
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
     [ "$(runner_status "$root")" != missing ] || die 'start a fresh project with symphony run --agent; no existing runner to transition'
     runner_owned "$root" "$runtime" "$name"
+    if [ "$agent" = codex ]; then codex_config_migration_preflight "$root" "$runtime" "$name"; fi
     if runner_is_legacy "$runtime" "$name" && [ "$(runner_status "$root")" = true ]; then
       die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
     fi
@@ -1612,6 +1833,9 @@ runner_transition() (
     runner_build_image "$agent"
     candidate=$("$runtime" image inspect --format '{{.Id}}' "$candidate")
     export SYMPHONY_RUNNER_IMAGE="$candidate"
+    # A new update intent captures current native trust even when image stays
+    # unchanged. Pending intents instead retain their exact journal tuple.
+    if [ "$agent" = codex ]; then codex_config_select "$root" "$runtime" "$candidate"; fi
     runner_doctor "$root" "$agent"
     local journal_tmp
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
@@ -1622,19 +1846,23 @@ runner_transition() (
     fi
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
-    printf '%s\n' "$candidate" >"$journal_tmp/image"
+    if [ "$agent" = codex ]; then codex_config_journal_write "$root" "$candidate" "$journal_tmp"
+    else printf '%s\n' "$candidate" >"$journal_tmp/image"; fi
     if "$packaged_install"; then package_write_transition "$journal_tmp" || return; fi
     mv "$journal_tmp" "$journal"
   fi
   port=$(cat "$journal/port")
-  candidate=$(cat "$journal/image"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+  candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
+  if [ "$agent" = codex ]; then codex_config_journal_load "$root" "$candidate" "$journal"; fi
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
     if [ "$(runner_status "$root")" = true ] &&
        ! runner_is_legacy "$runtime" "$name" &&
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] &&
        { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ]; } &&
+       { [ "$agent" != codex ] || { [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.sha256" }}' "$name")" = "$codex_config_sha" ] && [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.owner" }}' "$name")" = "$codex_config_owner" ]; }; } &&
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
+      if [ "$agent" = codex ]; then codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"; fi
       runner_resume_when_ready "$port" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
       if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
@@ -1658,6 +1886,7 @@ runner_transition() (
     [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
     if [ "$agent" = codex ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Codex runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
+      codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"
     fi
     if [ "$agent" = claude ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Claude runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
@@ -1676,11 +1905,15 @@ runner_transition() (
   runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
+  # Validate selection staging before package activation or backup deletion.
+  # A malformed interrupted refresh must retain both manager and rollback source.
+  if [ "$agent" = codex ]; then codex_config_selection_settle "$journal"; fi
   # Keep the qualified prior container until packaged manager activation has
   # succeeded. A failed atomic link must remain eligible for retained rollback.
   if "$packaged_install"; then package_finish_transition "$journal" || return; fi
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
+  codex_config_cleanup "$root" "$runtime"
   printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"
 )
 
@@ -1700,9 +1933,10 @@ runner_rollback() (
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
+    codex_config_rollback_preflight "$root" "$runtime" "$backup"
     if [ "$(runner_status "$root")" != missing ]; then
       runner_owned "$root" "$runtime" "$name"
-      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$(cat "$journal/image")" ] || die 'candidate image differs; rollback refused'
+      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$(runner_transition_image "$journal")" ] || die 'candidate image differs; rollback refused'
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$(cat "$journal/target")" ] || die 'candidate provider differs; rollback refused'
       if [ "$(runner_status "$root")" = true ] &&
          "$runtime" exec "$name" sh -ceu 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'; then
@@ -1717,6 +1951,7 @@ runner_rollback() (
     runner_owned "$root" "$runtime" "$name"
     previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
     [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
+    codex_config_rollback_preflight "$root" "$runtime" "$name"
   fi
   previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
   if runner_is_legacy "$runtime" "$name"; then previous_agent=codex
@@ -1737,6 +1972,7 @@ runner_rollback() (
   fi
   if ! "$packaged_install"; then "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"; fi
   runner_finish_journal "$journal"
+  codex_config_cleanup "$root" "$runtime"
   printf 'Prior runner restored; workspaces, unpushed commits and logs retained.\n'
 )
 
@@ -1755,9 +1991,13 @@ runner_stop() {
 
 runner_codex_sandbox_ready() {
   local root=$1 runtime=$2 image=$3 output
+  codex_config_require "$root" "$image"
   # The trusted project is read-only; the probe copies it into disposable
   # storage for wrapper setup. Native login and Symphony credentials are absent.
   if output=$(runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
+    --env HOME=/root --env CODEX_HOME=/root/.codex \
+    --env "SYMPHONY_CODEX_CONFIG_PROFILE=$(codex_config_profile)" --env "SYMPHONY_CODEX_CONFIG_SHA256=$codex_config_sha" --env "SYMPHONY_CODEX_CONFIG_OWNER=$codex_config_owner" \
+    --volume /root/.codex --mount "type=bind,source=$codex_config_file,target=/root/.codex/config.toml,readonly" \
     --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
     --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
     --volume "$root/WORKFLOW.md:/etc/symphony/WORKFLOW.md:ro" \
@@ -1790,7 +2030,10 @@ runner_doctor() {
   image=$(runner_image "$agent")
   if "$packaged_install" || ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image "$agent" || return; fi
   printf 'Runner image: available.\n'
-  if [ "$agent" = codex ]; then runner_codex_sandbox_ready "$root" "$runtime" "$image" || return; fi
+  if [ "$agent" = codex ]; then
+    if [ "${codex_config_image:-}" != "$image" ]; then codex_config_select "$root" "$runtime" "$image"; fi
+    runner_codex_sandbox_ready "$root" "$runtime" "$image" || return
+  fi
   if "$sandbox_only"; then
     printf 'Protected project launch checks passed. Native authentication, Git preflight, tracker access and model tasks remain untested. No listener or model request was started.\n'
     return

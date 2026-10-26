@@ -46,6 +46,7 @@ if mode=='timeout':
 args=sys.argv[sys.argv.index('--')+1:]
 if mode=='permissive':os.execv(args[0],args)
 if mode=='denial-fixture':
+    if args[1:2]==['-I']:args=[args[0],*args[2:]]
     source=args[2]
     sys.argv=['-c',*args[3:]]
     original=pathlib.Path.write_text
@@ -157,6 +158,116 @@ if mode=='denial-fixture':
         self.binary.write_text(self.binary.read_text().replace("mode=pathlib", "assert os.environ.get('WRAPPER_READY')=='yes'\nassert pathlib.Path('setup-result').read_text()=='setup'\nmode=pathlib"))
         self.assertTrue(self.run_mode("denial-fixture")["ready"])
         self.assertFalse((self.project / "setup-result").exists())
+
+    def test_project_local_node_receipt_relocates_only_canonical_task_relative_path(self):
+        actual = self.root / "actual-task"
+        actual.mkdir()
+        copied = actual / ".readiness-owned-copy"
+        relative = Path("var/toolchain/node-v24.14.0-linux-x64/bin/node")
+        for root in (copied, actual):
+            (root / relative).parent.mkdir(parents=True)
+            (root / relative).write_bytes(b"qualified Node bytes")
+        chain = {"node": {"path": str(copied / relative), "sha256": "a" * 64},
+                 "frontend": {"path": "/official/frontend", "sha256": "b" * 64}}
+        result = probe.rebase_project_node(chain, copied, actual)
+        self.assertEqual(result["node"], {"path": str(actual / relative), "sha256": "a" * 64})
+        self.assertEqual(result["frontend"], chain["frontend"])
+        self.assertEqual(chain["node"]["path"], str(copied / relative))
+
+    def test_global_node_receipt_is_not_relocated(self):
+        copied, actual = self.root / "copy", self.root / "actual"
+        copied.mkdir(); actual.mkdir()
+        global_node = self.root / "global-node"
+        global_node.write_bytes(b"node")
+        chain = {"node": {"path": str(global_node), "sha256": "a" * 64}}
+        self.assertIs(probe.rebase_project_node(chain, copied, actual), chain)
+
+    def test_project_node_relocation_refuses_symlink_and_ambiguous_roots(self):
+        copied, actual = self.root / "copy", self.root / "actual"
+        copied.mkdir(); actual.mkdir()
+        (copied / "node").write_bytes(b"node")
+        chain = {"node": {"path": str(copied / "node"), "sha256": "a" * 64}}
+        with self.assertRaises(probe.Refusal):
+            probe.rebase_project_node(chain, copied, copied)
+        foreign = self.root / "foreign"; foreign.mkdir()
+        (actual / "node").symlink_to(foreign / "node")
+        with self.assertRaises(probe.Refusal):
+            probe.rebase_project_node(chain, copied, actual)
+        (copied / "alias").symlink_to(copied / "node")
+        chain["node"]["path"] = str(copied / "alias")
+        with self.assertRaises(probe.Refusal):
+            probe.rebase_project_node(chain, copied, actual)
+
+    def test_copy_preserves_private_helper_root_without_changing_source_permissions(self):
+        source = self.root / "ordinary source"
+        source.mkdir(mode=0o775)
+        source.chmod(0o775)
+        (source / "tracked").write_text("preserved source")
+        target = self.root / "owned helper root"
+        target.mkdir(mode=0o700)
+        before = target.stat()
+        probe.copy_project(source, target)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(target.stat().st_ino, before.st_ino)
+        self.assertEqual(source.stat().st_mode & 0o777, 0o775)
+        self.assertEqual((source / "tracked").read_text(), "preserved source")
+        self.assertEqual((target / "tracked").read_text(), "preserved source")
+
+    def test_copy_failure_restores_only_the_owned_private_destination(self):
+        source = self.root / "source"
+        source.mkdir(mode=0o775)
+        source.chmod(0o775)
+        target = self.root / "owned temporary root"
+        target.mkdir(mode=0o700)
+
+        def failed_copy(*args, **kwargs):
+            target.chmod(0o775)
+            raise OSError("ordinary copy failure")
+
+        with patch.object(probe.shutil, "copytree", side_effect=failed_copy), self.assertRaisesRegex(OSError, "ordinary copy failure"):
+            probe.copy_project(source, target)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(source.stat().st_mode & 0o777, 0o775)
+
+    def test_copy_never_chmods_a_replacement_or_linked_directory(self):
+        source = self.root / "source"
+        source.mkdir()
+        target = self.root / "owned root"
+        target.mkdir(mode=0o700)
+        moved = self.root / "moved owned root"
+        other = self.root / "surviving directory"
+        other.mkdir(mode=0o775)
+        other.chmod(0o775)
+
+        def replaced_copy(*args, **kwargs):
+            target.chmod(0o775)
+            target.rename(moved)
+            target.symlink_to(other)
+
+        with patch.object(probe.shutil, "copytree", side_effect=replaced_copy), self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            probe.copy_project(source, target)
+        self.assertEqual(moved.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(other.stat().st_mode & 0o777, 0o775)
+        self.assertTrue(target.is_symlink())
+
+    def test_copy_refuses_existing_task_roots_and_symlink_destinations(self):
+        source = self.root / "source"
+        source.mkdir()
+        task = self.root / "existing task"
+        task.mkdir(mode=0o700)
+        (task / "canary").write_text("keep")
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            probe.copy_project(source, task)
+        self.assertEqual((task / "canary").read_text(), "keep")
+        task.chmod(0o775)
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            probe.copy_project(source, task)
+        self.assertEqual(task.stat().st_mode & 0o777, 0o775)
+        link = self.root / "linked target"
+        link.symlink_to(task)
+        with self.assertRaises(OSError):
+            probe.copy_project(source, link)
+        self.assertEqual(task.stat().st_mode & 0o777, 0o775)
 
     def test_snapshot_preserves_internal_links_and_refuses_foreign_links(self):
         self.make_wrapper('cat internal-link >/dev/null\nexec "$@"\n')
