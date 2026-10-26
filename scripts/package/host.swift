@@ -774,6 +774,106 @@ func prepareRunnerImport(_ manifest: [String: Any], provider: String, arch: Stri
     print(image)
 }
 
+// Actions payloads use upload-artifact compression-level: 0. Read only the
+// selected stored member, including ZIP64 sizes; never extract paths from ZIP.
+func candidateRecord(_ manifest: [String: Any], _ provider: String, _ arch: String) -> [String: Any] {
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch) else { fail("automatic acquisition requires a schema2 candidate provider/platform") }
+    let record = object(object(object(manifest["runners"])[provider])[arch])
+    guard (object(object(manifest["distribution"])[provider])[arch] as? String ?? record["image"] as? String) == record["image"] as? String,
+          matches(record["image"] as? String ?? "", "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$") else { fail("automatic companion acquisition requires the original selected candidate graph") }
+    return record
+}
+func validateCandidateArtifact(_ manifest: [String: Any], _ provider: String, _ arch: String, _ path: String) throws {
+    let proof = object(candidateRecord(manifest, provider, arch)["qualification"])
+    let info = checkedInfo(path)
+    guard info.st_size > 0, info.st_size <= 1024 * 1024 else { fail("candidate artifact metadata exceeds bound") }
+    let metadata = object(try json(read(path))), run = object(metadata["workflow_run"])
+    let formatter = ISO8601DateFormatter()
+    guard integer(metadata["id"]) == integer(proof["artifact_id"]), metadata["name"] as? String == proof["artifact_name"] as? String,
+          metadata["digest"] as? String == proof["artifact_digest"] as? String,
+          integer(run["id"]) == integer(proof["run_id"]), run["head_sha"] as? String == proof["controller_revision"] as? String,
+          isBool(metadata["expired"], false), let expires = metadata["expires_at"] as? String,
+          let date = formatter.date(from: expires), date > Date(),
+          let size = integer(metadata["size_in_bytes"]), size > 0, UInt64(size) <= 32 << 30 else { fail("selected candidate artifact is unavailable, expired or differs from its sealed identity; use an available reviewed candidate or offline original companion") }
+    print(size)
+}
+func zipNumber(_ data: Data, _ offset: Int, _ length: Int) -> UInt64 {
+    guard offset >= 0, offset + length <= data.count else { fail("truncated candidate ZIP metadata") }
+    return (0..<length).reduce(UInt64(0)) { $0 | UInt64(data[offset + $1]) << ($1 * 8) }
+}
+func extractCandidateArtifact(_ manifest: [String: Any], _ provider: String, _ arch: String, _ archive: String, _ destination: String) throws {
+    let proof = object(candidateRecord(manifest, provider, arch)["qualification"])
+    let info = checkedInfo(archive)
+    guard info.st_size > 0, UInt64(info.st_size) <= 32 << 30 else { fail("candidate ZIP size exceeds bound") }
+    let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: archive)); defer { try? input.close() }
+    guard "sha256:" + (try streamDigest(input, maximum: 32 << 30).0) == proof["artifact_digest"] as? String else { fail("candidate ZIP checksum differs from sealed artifact") }
+    func at(_ offset: UInt64, _ count: Int) throws -> Data {
+        guard offset <= UInt64(info.st_size), UInt64(count) <= UInt64(info.st_size) - offset else { fail("candidate ZIP offset exceeds bound") }
+        try input.seek(toOffset: offset); return try importRead(input, count)
+    }
+    let tailSize = min(Int(info.st_size), 65557), tail = try at(UInt64(info.st_size) - UInt64(tailSize), tailSize)
+    guard tailSize >= 22, let end = stride(from: tailSize - 22, through: 0, by: -1).first(where: { zipNumber(tail, $0, 4) == 0x06054b50 && $0 + 22 + Int(zipNumber(tail, $0 + 20, 2)) == tailSize }) else { fail("candidate ZIP directory missing") }
+    guard zipNumber(tail, end + 4, 4) == 0 else { fail("split candidate ZIP refused") }
+    var count = zipNumber(tail, end + 10, 2), length = zipNumber(tail, end + 12, 4), offset = zipNumber(tail, end + 16, 4)
+    if count == 65535 || length == 0xffffffff || offset == 0xffffffff {
+        let location = UInt64(info.st_size) - UInt64(tailSize) + UInt64(end)
+        guard location >= 20 else { fail("candidate ZIP64 locator missing") }
+        let locator = try at(location - 20, 20)
+        guard zipNumber(locator, 0, 4) == 0x07064b50, zipNumber(locator, 4, 4) == 0, zipNumber(locator, 16, 4) == 1 else { fail("invalid candidate ZIP64 locator") }
+        let directory = try at(zipNumber(locator, 8, 8), 56)
+        guard zipNumber(directory, 0, 4) == 0x06064b50, zipNumber(directory, 16, 8) == 0 else { fail("split candidate ZIP64 refused") }
+        count = zipNumber(directory, 32, 8); length = zipNumber(directory, 40, 8); offset = zipNumber(directory, 48, 8)
+    }
+    guard count > 0, count <= 1024, length <= 4 * 1024 * 1024 else { fail("candidate ZIP directory exceeds bound") }
+    let directory = try at(offset, Int(length))
+    var cursor = 0, selected: (UInt64, UInt64, Data)?
+    for _ in 0..<Int(count) {
+        guard zipNumber(directory, cursor, 4) == 0x02014b50 else { fail("invalid candidate ZIP entry") }
+        let nameLength = Int(zipNumber(directory, cursor + 28, 2)), extraLength = Int(zipNumber(directory, cursor + 30, 2)), commentLength = Int(zipNumber(directory, cursor + 32, 2))
+        let next = cursor + 46 + nameLength + extraLength + commentLength
+        guard next <= directory.count else { fail("truncated candidate ZIP entry") }
+        let name = directory.subdata(in: cursor + 46..<cursor + 46 + nameLength)
+        if String(data: name, encoding: .utf8) == proof["archive_filename"] as? String {
+            guard selected == nil, zipNumber(directory, cursor + 10, 2) == 0, zipNumber(directory, cursor + 8, 2) & 1 == 0 else { fail("selected candidate ZIP member is duplicate, encrypted or compressed; obtain its original offline companion") }
+            var size = zipNumber(directory, cursor + 24, 4), compressed = zipNumber(directory, cursor + 20, 4), local = zipNumber(directory, cursor + 42, 4)
+            var extra = cursor + 46 + nameLength
+            let extraEnd = extra + extraLength
+            while extra + 4 <= extraEnd {
+                let kind = zipNumber(directory, extra, 2), n = Int(zipNumber(directory, extra + 2, 2)); extra += 4
+                guard extra + n <= extraEnd else { fail("invalid candidate ZIP extra field") }
+                if kind == 1 {
+                    var i = extra
+                    func wide() -> UInt64 { guard i + 8 <= extra + n else { fail("truncated candidate ZIP64 field") }; defer { i += 8 }; return zipNumber(directory, i, 8) }
+                    if size == 0xffffffff { size = wide() }; if compressed == 0xffffffff { compressed = wide() }; if local == 0xffffffff { local = wide() }
+                }
+                extra += n
+            }
+            guard size > 0, size <= 32 << 30, size == compressed else { fail("candidate ZIP member exceeds bound") }
+            selected = (local, size, name)
+        }
+        cursor = next
+    }
+    guard cursor == directory.count, let (local, size, name) = selected else { fail("candidate ZIP lacks its exact original archive member") }
+    let header = try at(local, 30)
+    guard zipNumber(header, 0, 4) == 0x04034b50, zipNumber(header, 8, 2) == 0, zipNumber(header, 6, 2) & 1 == 0 else { fail("invalid candidate ZIP local member") }
+    let nameLength = Int(zipNumber(header, 26, 2)), extraLength = zipNumber(header, 28, 2)
+    guard try at(local + 30, nameLength) == name else { fail("candidate ZIP member identity differs") }
+    let start = local + 30 + UInt64(nameLength) + extraLength
+    guard start <= offset, size <= offset - start else { fail("candidate ZIP member overlaps its directory") }
+    let fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    guard fd >= 0 else { fail("candidate archive destination exists or cannot be created") }
+    let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    defer { try? output.close() }
+    try input.seek(toOffset: start)
+    var remaining = size, hash = SHA256()
+    while remaining > 0 {
+        let data = try importRead(input, Int(min(remaining, 1024 * 1024)))
+        try output.write(contentsOf: data); hash.update(data: data); remaining -= UInt64(data.count)
+    }
+    guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == proof["archive_sha256"] as? String else { fail("candidate archive checksum differs from selected original qualification") }
+}
+
 // Manager-held project lock serializes this small content-addressed store.
 // Only sealed copies live here; original native home/auth are never inspected.
 enum ConfigStoreError: Error { case unsafe }
@@ -1090,7 +1190,7 @@ func codexConfigStore(_ args: [String]) throws {
     }
 }
 
-let arity = ["runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
@@ -1115,6 +1215,10 @@ do {
     case "codex-config-store":
         do { try codexConfigStore(Array(args.dropFirst())) }
         catch { fail("unsafe Codex config snapshot store") }
+    case "validate-candidate-artifact":
+        try validateCandidateArtifact(validateRelease(args[1]), args[2], args[3], args[4])
+    case "extract-candidate-artifact":
+        try extractCandidateArtifact(validateRelease(args[1]), args[2], args[3], args[4], args[5])
     case "prepare-runner-import":
         try prepareRunnerImport(validateRelease(args[1]), provider: args[2], arch: args[3], archive: args[4], destination: args[5])
     case "canonical-path":

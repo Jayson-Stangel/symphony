@@ -13,6 +13,7 @@ import unittest
 
 from runner_import_test import RunnerImportTest
 from command_activation_test import CommandActivationTest, PackageCommandActivationMixin
+from runner_provision_test import RunnerProvisionTest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))

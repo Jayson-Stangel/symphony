@@ -167,11 +167,13 @@ skills, and availability of the runtime CLI. Its JSON `scope` is `installation`;
 `provider_project_readiness` remains `untested`. This does not prove daemon access,
 image availability, the project command, authentication, tracker access or a completed task.
 
-Before native login, start the selected engine and provision the exact runner
-image. Stable releases pull published immutable digests. Candidates with a
-loopback reference require the [candidate companion import flow](candidate-runner-provisioning.md)
-before login, and again after a cache prune. Missing Docker sockets/contexts stop
-before image pulls; image availability and native login failures are separate stages.
+Start the selected engine before native login. Stable releases pull published
+immutable digests. For candidates with a loopback reference, normal provider
+login [automatically acquires the exact original companion](candidate-runner-provisioning.md)
+using the project GitHub credential with repository Actions read access. The
+same path recovers a pruned cache. Unavailable or expired originals refuse
+onboarding. Missing Docker sockets/contexts stop before image pulls; image
+availability and native login failures are separate stages.
 
 From the existing project checkout with its explicit local `origin` remote and
 unchanged trusted `WORKFLOW.md`, run:
@@ -324,11 +326,13 @@ export SYMPHONY_SKILLS_DIR="$HOME/.codex/skills-candidate"
 export PATH="$SYMPHONY_BIN_DIR:$PATH"
 ```
 
-Before any candidate login, run `symphony runner import --agent codex` (or
-`claude`) to inspect its exact companion identity. Follow the
-[candidate runner guide](candidate-runner-provisioning.md) to download and import
-that original payload when the candidate selects a loopback registry. Do not use
-a config-ID-only `docker load` or an unrecorded restoration script as a substitute.
+Fill the private project GitHub credential before candidate provider login;
+automatic companion acquisition additionally needs repository Actions read
+access. Follow the [candidate runner guide](candidate-runner-provisioning.md)
+for access, expiry, disk/network retries and offline recovery. `symphony runner
+import --agent codex` (or `claude`) displays the exact identity without a download;
+`--archive PATH` remains manual/offline recovery. A config-ID-only `docker load`
+cannot substitute for the original digest graph.
 
 Candidate validation does not authorize production publication or a stable rollout.
 Use the [development guide](development.md) for source development. Automatic

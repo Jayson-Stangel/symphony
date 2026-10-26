@@ -185,6 +185,7 @@ package_transition_image() {
       printf '%s\n' "$image"; return
     fi
   fi
+  package_ensure_candidate_image "$agent" || return
   package_image "$agent"
 }
 
@@ -204,15 +205,17 @@ package_use_project_image() {
   if declare -F environment_use_project >/dev/null; then environment_use_project "$root" "$agent" || return; fi
   [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || return 0
   metadata=$(runner_env_file "$root")
-  [ -f "$metadata" ] || return 0
+  if [ ! -f "$metadata" ]; then package_ensure_candidate_image "$agent"; return; fi
   package_helper owned-file "$metadata" || return
   image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
   case "$image" in sha256:*)
     [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'retained runner image identity is invalid'
-    [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" = "$agent" ] || return 0
+    if [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" != "$agent" ]; then package_ensure_candidate_image "$agent"; return; fi
     export SYMPHONY_RUNNER_IMAGE=$image
+    return 0
     ;;
   esac
+  package_ensure_candidate_image "$agent"
 }
 
 # Verify the selected home's own helper, not the currently running manager's
@@ -398,7 +401,7 @@ package_install() (
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
   package_shell_context
   package_shell_activation_instructions
-  if [ "$package_channel" = candidate ]; then printf 'Candidate image prerequisites: symphony runner import --agent codex (or claude) shows the exact companion to download before native login. See the bundled candidate provisioning guide.\n'; fi
+  if [ "$package_channel" = candidate ]; then printf 'Candidate runners: provider login automatically obtains missing original loopback images using project GitHub Actions read access. Availability is checked at login; unavailable originals refuse onboarding. See the bundled candidate provisioning guide.\n'; fi
   printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
 )
 
@@ -448,3 +451,6 @@ package_source_update_lock() { die 'this bundle lacks the packaged release updat
 
 # JAY-688 extends the same manager and lifecycle updater, without a second state owner.
 if [ -f "$symphony_home/scripts/symphony-package-update.sh" ]; then . "$symphony_home/scripts/symphony-package-update.sh"; fi
+
+# Definitions only; network acquisition runs only for a missing default candidate.
+. "$symphony_home/scripts/symphony-runner-provision.sh"

@@ -10,31 +10,64 @@ cannot recreate the selected registry digest.
 
 ## Download and install
 
-Download the manager archive, its trusted SHA-256 checksum, and the original
-runner companion artifact for each provider you intend to use. Use the same
-reviewed candidate's metadata; reused components can originate in earlier runs.
-The package's complete original component record remains authoritative. Do not
-substitute another run's similarly named image or label an older image as a new
-build. Follow [macOS security guidance](macos-install-security.md) for downloaded
-Apple Silicon packages, or the normal Linux x86-64 package installation path.
-Configure separate candidate application/configuration/bin/skills paths and a
-runner namespace as described in [packaged installation](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md).
+Download and verify the manager package using the reviewed candidate's metadata.
+Follow [macOS security guidance](macos-install-security.md) for Apple Silicon,
+or the Linux x86-64 path in [packaged installation](packaged-install.md).
+Use separate candidate application/configuration/bin/skills paths and namespace.
 
-After installation, before login, display the selected companion identity:
+After `symphony init`, fill the printed private project credentials file. For a
+candidate whose selected image is an original loopback graph, the existing
+`GH_TOKEN` (or `GITHUB_TOKEN`) needs **Actions read access to
+Jayson-Stangel/symphony**, in addition to the repository access needed for work.
+Do this before provider login; a native Codex/Claude account does not grant GitHub
+artifact access. No separately exported artifact-download token is needed.
+
+Run normal onboarding:
+
+```sh
+symphony auth codex login
+# Or: symphony auth claude login
+```
+
+With a cold or pruned image cache, the manager checks the exact artifact ID in
+the selected component's original qualification. It checks access, expiry,
+provider/architecture name, source run/controller revision and sealed ZIP digest
+before downloading the large payload. Progress reports the artifact identity,
+byte count, download and verification stages. The native helper verifies the
+complete ZIP checksum and streams only its exact original graph archive member;
+it verifies that archive's checksum before the supported importer validates and
+imports the complete manifest/config/compressed-layer closure. Host Git, gh,
+Python, Node, unzip, Swift and image builds are unnecessary. Curl with CA
+certificates remains an ordinary runtime prerequisite.
+
+Reused components retain their original run, source and input identities. The
+manager never searches for a similarly named replacement. An existing verified
+image cache is reusable without a download credential check. Explicit or retained
+team-owned environments keep their existing selection and are not replaced by
+automatic default provisioning.
+
+An unavailable, expired or inaccessible original artifact refuses onboarding
+before the large transfer. Correct the private credential's Actions permission,
+retry a temporary network/disk failure with the same login command, or choose an
+available reviewed candidate. Each attempt uses private temporary files; failure
+or interruption discards partial downloads without selecting a project image.
+Allow disk space for the ZIP, compressed graph archive, extracted graph and Docker
+storage. Two automatic network retries precede an actionable refusal. A candidate
+is usable through this path only while its exact original artifact is accessible;
+merging the implementation does not renew expired artifacts.
+
+## Manual and offline recovery
+
+Automatic acquisition is the normal path. To inspect the exact original
+companion identity without a download or Docker/model request:
 
 ```sh
 symphony runner import --agent codex
-# Repeat with --agent claude if needed.
 ```
 
-This command makes no Docker or model request. It prints the exact source run
-URL, artifact ID/name, archive filename and archive SHA-256 bound to the selected
-package. Open that run's artifacts in GitHub, download the specified original
-artifact and extract its ZIP. GitHub may require a signed-in account with access
-to the repository. An expired or inaccessible artifact blocks this candidate's
-onboarding: obtain the original verified payload from its maintainer, or select
-an available reviewed candidate. Do not reconstruct or rebuild a replacement
-and claim it has the selected identity.
+For offline recovery, obtain that exact original archive from its maintainer or
+its identified Actions artifact and use the import command below. Do not rebuild
+or relabel a substitute. A ZIP extracted manually is only a recovery option.
 
 ## Import the exact graph
 
@@ -123,6 +156,14 @@ the original October 24 Apple Silicon candidate graph, preserving digest
 That proves archive/graph preparation only. Fresh-account downloaded-package
 security acceptance, an actual Docker cold/pruned import, provider login and
 unchanged Melody project readiness still require their own recorded evidence.
+
+Automatic acquisition fixtures additionally cover exact artifact metadata,
+ZIP/ZIP64 stored-member extraction (the existing workflow uses compression level
+zero), access/expiry/checksum refusal, cache reuse and repeated cold/pruned
+attempts. These are synthetic local fixtures, not a fresh-account downloaded
+signed-package test or real authenticated GitHub/Docker/provider proof. Final
+composed macOS/Linux qualification must use the actual reviewed importer and
+manager inputs; publication/signing and stable rollout remain separate actions.
 
 ## Managed Codex settings
 
