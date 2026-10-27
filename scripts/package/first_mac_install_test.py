@@ -129,7 +129,7 @@ class FirstMacInstallMixin:
         for flags in ('-ic', '-lic'):
             result = subprocess.run(['/bin/zsh', flags,
                 'command -v symphony; symphony --version; symphony doctor --json; '
-                'print -r -- "explicit=${SYMPHONY_RUNNER_HOME+x}" "$SYMPHONY_RUNNER_HOME" '
+                'print -rl -- "explicit=${SYMPHONY_RUNNER_HOME+x}" "$SYMPHONY_RUNNER_HOME" '
                 '"$SYMPHONY_CONFIG_HOME" "namespace=$SYMPHONY_RUNNER_NAMESPACE"; '
                 'symphony doctor --config-dir "$HOME/selected-config"'],
                 env=clean, text=True, capture_output=True)
