@@ -100,7 +100,7 @@ class Selection(unittest.TestCase):
             self.assertIn('&& !inputs.transport_probe_only', block)
             self.assertIn("github.ref == 'refs/heads/main'", block)
             self.assertIn('inputs.approved_revision == github.sha', block)
-        self.assertIn('needs: mac-runner-local-import', native)
+        self.assertIn('needs: [mac-runner-local-import, staging-ingress]', native)
         self.assertIn('runs-on: ${{ needs.mac-runner-local-import.outputs.runner }}', native)
         self.assertIn('environment: macos-production-signing', native)
         self.assertIn('name: Verify locally signed distribution', native)

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import io
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -201,7 +202,7 @@ class DiagnosticTest(unittest.TestCase):
 
     def test_workflow_scopes_diagnostic_write_and_keeps_production_jobs_separate(self):
         text=(Path(__file__).parents[3]/diagnostic.WORKFLOW).read_text()
-        diag=text.split('  http-diagnostic:\n',1)[1]
+        diag=re.split(r'\n  [a-z][a-z0-9-]*:',text.split('  http-diagnostic:\n',1)[1])[0]
         original=text.split('  http-diagnostic:\n',1)[0]
         self.assertIn('diagnostic_only:',text);self.assertIn('diagnostic_fixture_revision:',text)
         self.assertIn('default: false\n        type: boolean',text)
