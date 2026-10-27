@@ -366,8 +366,8 @@ jobs:
 
   packaged-release-platform:
     name: Build release package (${{ matrix.platform }})
-    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' }}
-    needs: publication-preflight
+    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' && needs.mac-runner-packaged-release-platform.result == 'success' }}
+    needs: [publication-preflight, mac-runner-packaged-release-platform]
     strategy:
       fail-fast: false
       matrix:
@@ -376,8 +376,19 @@ jobs:
             runner: macos-14
           - platform: linux_x86_64
             runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-packaged-release-platform.outputs.runner || matrix.runner }}
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-packaged-release-platform.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -577,8 +588,8 @@ jobs:
 
   packaged-candidate:
     name: Build candidate package (${{ matrix.platform }})
-    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages }}
-    needs: [candidate-metadata, package-inputs]
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages && needs.mac-runner-packaged-candidate.result == 'success' }}
+    needs: [candidate-metadata, package-inputs, mac-runner-packaged-candidate]
     strategy:
       fail-fast: false
       matrix:
@@ -587,9 +598,20 @@ jobs:
             runner: macos-14
           - platform: linux_x86_64
             runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-packaged-candidate.outputs.runner || matrix.runner }}
     timeout-minutes: 45
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-packaged-candidate.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1234,3 +1256,55 @@ jobs:
           path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
+
+  mac-runner-packaged-candidate:
+    name: Select backup Mac for packaged candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-candidate
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+
+  mac-runner-packaged-release-platform:
+    name: Select backup Mac for packaged release platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-release-platform
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
