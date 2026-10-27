@@ -274,3 +274,137 @@ download/extraction method, installer/doctor result, retry behavior and whether
 manual approval was required. Test installed update/rollback with the final
 tarball and release metadata, including online lookup. Never remove quarantine,
 disable Gatekeeper or use another account's credentials/files as acceptance.
+
+## Protected production preparation and publication
+
+Production uses the same signing controller as the dev candidate above, through
+separate manual entry points. The dev signer and its `macos-signing` environment
+remain **dev only**. A version tag no longer publishes an ordinary unsigned
+archive. Production publication requires a completed exact-source preparation,
+completed production signing and separately approved protected publication.
+None of these steps is authorized by implementing or merging this tooling.
+
+The committed manager version is 0.0.6 with schema2. The standalone engine still
+has its independent 0.0.4 version. Its release filenames identify the manager
+release and its source receipts identify the actual build source; those filenames
+do not change the engine version. Standalone Burrito binaries are independently
+smoke-tested, but **are not covered by manager-helper notarization**. The stapled
+DMG and updater tar contain the same signed native manager helper; the bare
+helper's online ticket lookup remains necessary. Do not advertise offline trust
+for the tarball or Apple trust for the standalone engine.
+
+### Operator configuration checklist
+
+Configure these only after reviewing the exact implementation and authorizing
+these settings changes; workflow source cannot create or enforce them.
+
+- Preserve `macos-signing`: `dev` branch only, required release-owner review,
+  sole-operator self-review as previously approved, administrator bypass disabled.
+- Create **`macos-production-signing`** with a **`main` branch only** deployment
+  rule, required trusted release-owner review and administrator bypass disabled.
+  Use the established sole-operator self-review policy. Confirm the GitHub plan
+  enforces these protections before provisioning credentials. Never allow tags,
+  PRs, forks or feature branches into this environment.
+- Place the four existing credential types in that environment using secure
+  GitHub settings or a secret manager: `MACOS_SIGNING_P12_BASE64`,
+  `MACOS_SIGNING_P12_PASSWORD`, `MACOS_NOTARY_APPLE_ID`,
+  `MACOS_NOTARY_APP_PASSWORD`. Add variables `MACOS_SIGNING_IDENTITY_SHA1` and
+  `MACOS_TEAM_ID`, verifying the intended valid certificate/team. Reuse the
+  existing operator-managed identity; no new enrollment/export is inherently
+  needed. Keep values out of chat, issue bodies, source, fixtures and logs. Do not
+  move them into repository/organization scope accessible to PR jobs.
+- Preserve **`production-release`** with version-tag deployment policy `v*`,
+  required trusted reviewer, the established self-review policy and no admin
+  bypass. Registry transfer and final GitHub completion are separate jobs and
+  approvals: inspect their distinct proposed effects. Do not approve the final
+  job before outstanding final-byte/native/public-reference acceptance passes.
+- Protect `main` and release tags against unauthorized changes, retain required
+  checks/review, and verify the exact tag peels to approved source `P`.
+  `SYMPHONY_PRODUCTION_RELEASES=enabled` is required for publication but is not
+  operator approval. It was already enabled when this work was planned.
+- Verify workflow token access to both GHCR packages and public visibility of
+  `ghcr.io/jayson-stangel/symphony-codex` and `symphony-claude`. The existing
+  publisher verifies anonymous exact manifest/config/blob availability and
+  preserves digests. Package visibility/token permission was not established by
+  the planning chat's token (`read:packages` was unavailable); verify it for the
+  final execution. Only the registry job receives `packages:write`; only final
+  GitHub publication receives `contents:write`. The signer has read-only token
+  permissions and disposable hosted Apple Silicon execution.
+
+### Source freeze and exact execution order
+
+1. Finish and review the feature PR to `dev`, then freeze its integrated source
+   `D`. Refresh the complete included PR/link/purpose inventory against live
+   `main`; include this PR and all other intervening work. Obtain explicit
+   promotion approval for that inventory and promotion PR/head. Promote normally
+   and observe the actual resulting main commit **`P`**. Equal trees between
+   `D` and `P` never permit rewriting a receipt's source SHA.
+2. Keep main at `P` through qualification and signing. With separate execution
+   authority, manually run `burrito-release.yml` **on main**, setting
+   `production_prepare=true`. It performs full existing runner/helper/package and
+   standalone-engine qualification, then prepares stable-reference manifests and
+   native packages **without GHCR or GitHub release writes**. Keep successful
+   preparation run **`Q` and its exact attempt**. Diagnostic/engine-only,
+   skipped/failed producer jobs and ordinary candidate runs are not substitutes.
+3. Recompute component inputs at `P`. Production planning reuses an original only
+   when its canonical public digest graph is anonymously available. Matching
+   private candidates that cannot be published under the existing reuse rules
+   schedule genuine current-source builds; never relabel an older original as a
+   new build. Prepared metadata retains exact original provenance and final
+   production digest references before packaging. Linux and macOS helpers and
+   manager packages are freshly bound to `P`; an old dev qualification/signing
+   run is historical evidence only.
+4. After explicit Apple credential-use/submission approval for `P` and `Q`, run
+   `macos-production-signing.yml` **on main** with `approved_revision=P`,
+   `qualified_run=Q` and `qualified_attempt=Q_ATTEMPT`. Approve its matching
+   environment deployment. The controller imports only completed successful Q
+   inputs, verifies immutable artifact ZIP hashes, expiry, run/source/attempt
+   provenance and original helper bytes, then runs the existing signer. A moved
+   main head fails the SHA guard; refreeze/requalify/reapprove instead of silently
+   signing a different source. Retain signing run **`S` and exact attempt**.
+5. Download the retained `production-signed-P-S-ATTEMPT` artifact. Verify final
+   DMG/archive/helper hashes and source, certificate/team, hardened runtime,
+   timestamp, both Apple Accepted submissions, DMG staple/open assessment,
+   helper online notarization and all cleanup receipts. Use the final DMG through
+   a browser in a fresh macOS account with quarantine intact; exercise isolated
+   install, version/installation doctor and reinstall. Test installed update,
+   rollback and retry with the final signed tar and metadata in isolated paths.
+   No quarantine removal, security bypass or stable manipulation is permitted.
+   A candidate-registry lifecycle proves composition, not final public GHCR
+   availability. Keep any check requiring actual public refs explicitly pending
+   until the next authorized stage; do not rewrite the package to insert aliases.
+6. Only with exact tag/publication approval, create `v0.0.6` at `P`, then manually
+   dispatch `production-publish.yml` **on that tag**, supplying
+   `approved_revision=P`, `signed_run=S`, `signed_attempt=S_ATTEMPT`. The source
+   must remain an ancestor of protected `main`; later unrelated main advancement
+   does not authorize another `P`. All jobs consume the frozen approved SHA and
+   refuse mismatched/moved tag or completed release. The tag push itself performs
+   no production build/signing/publication; explicit dispatch imports Q/S.
+7. The first `production-release` approval authorizes exact immutable registry
+   transfer. It rechecks retained signing/qualification inputs and original
+   component availability before writes. Its returned stable manifest must equal
+   the manifest used to build/sign the packages. No package is rebuilt or changed
+   after signing. Complete any pending final-public-reference/update acceptance
+   now, before approving the final release job. Full anonymous graph checks run
+   again before GitHub completion. Already transferred immutable blobs can remain
+   after a later failure; they are not a completed stable GitHub release.
+8. Inspect the final job's exact files/hashes and acceptance ledger before its
+   separate environment approval. The publisher refuses unexpected/duplicate or
+   mismatched draft assets, uploads only missing assessed files and checks the
+   complete remote inventory/digests before marking the release complete. It
+   never overwrites a completed release or includes an unsigned fallback.
+9. Stable rollout remains a separate approval with complete change inventory,
+   exact proposed revision and runtime/project targets. Use only the installed
+   `symphony update`; if it refuses, stop. Never change stable sources, links,
+   build artifacts or running processes directly.
+
+Record Q/S IDs and attempts, final P/tag, original and signed helper identities,
+final post-staple DMG/tar/manifest hashes, component origins/digests, Apple IDs,
+native host/tool versions, quarantine/install/update observations and limitations.
+The CI fixtures test orchestration and refusals, not real Apple acceptance. The
+prior JAY-720 and newer 797f455 provider/signing evidence remain immutable proof
+for their original bytes. Both-provider authenticated task smokes need not be
+repeated merely because the manager version changes; repeat only when consumed
+provider inputs or an observed failure justify it. Final-byte native acceptance
+above remains required. No real production qualification/signing/publication or
+stable rollout was executed by adding this tooling.

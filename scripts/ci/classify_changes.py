@@ -196,7 +196,7 @@ def consumer_selection(path):
             return PACKAGES | {'fixtures'}, 'portable/native package qualification workflow control'
         if p.stem == 'browser-smoke':
             return {'portable'}, 'browser workflow migration control'
-        if p.stem == 'macos-signing':
+        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish'):
             return {'portable'}, 'explicit signing workflow policy; no ordinary Apple operation'
         return ALL, 'unknown workflow: conservative full qualification'
     if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
@@ -241,7 +241,7 @@ def consumer_selection(path):
         relative = str(p.relative_to('scripts/release'))
         if relative in PORTABLE_RELEASE:
             return {'portable'}, 'release controller with audited portable tests'
-        if relative == 'macos_signing_inputs.py':
+        if relative in {'macos_signing_inputs.py', 'production_release.py'}:
             return {'portable'}, 'portable signing or package diagnostic policy; Apple work remains explicit'
         if relative in {'macos_distribution.py', 'package_diagnostics.py', 'package-diagnostics.sh'}:
             return PACKAGES, 'native manager assembly and diagnostic dependency; no application or process fixtures'

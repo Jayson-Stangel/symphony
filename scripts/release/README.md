@@ -79,55 +79,35 @@ distribution digest.
 
 ## Approved production publication
 
-`burrito-release` reuses `runner-release` and keeps independent engine executable
-builds. Configure repository variable `SYMPHONY_PRODUCTION_RELEASES=enabled`, a
-`production-release` GitHub environment with required operator reviewers, and
-GHCR package write permissions for the workflow token. Make both packages
-`ghcr.io/jayson-stangel/symphony-codex` and `.../symphony-claude` public before the
-first completed release; new GHCR packages may default to private. A failed
-anonymous digest pull fails publication. Approval remains an operator action for
-the exact production scope; setting the variable alone is not approval.
+Production is staged through **nonpublishing main preparation**, **protected main
+signing**, and **explicit protected tag publication**. Follow the exact settings
+checklist and execution runbook in
+[macOS signing guidance](../../docs/macos-release-signing.md#protected-production-preparation-and-publication).
+A tag push no longer builds or publishes unsigned manager archives. The old
+`runner-release` `publish=true` call is explicitly refused; the only production
+mutator is `production-publish.yml`, which requires exact completed Q/S run IDs,
+attempts, same-source immutable artifacts and environment approval.
 
-After normal review, promotion and release approval, a matching `vVERSION` tag
-uses the complete source-bound component plan. Before the protected transfer job,
-all original native evidence and payload availability are reverified. Every
-reused public digest must already be anonymously available with raw manifest
-bytes and a registry digest header matching the exact original OCI digest.
-Every referenced config is fetched and checksummed; every layer must provide a
-successful anonymous HEAD with its exact digest and length. Index manifests are
-followed within fixed graph/count/byte bounds. Missing or denied referenced
-blobs refuse despite a valid root manifest. All transfer records, unique target
-selections, original origins and destination availability are validated before
-the first payload retrieval or image mutation.
+The main preparation's `production_prepare=true` runs full existing native
+qualification, computes the stable manifest with the existing read-only
+publication preflight, and assembles both native packages without registry writes.
+Its production planner selects only anonymously available canonical public
+originals for reuse; other matching private candidates require genuine new
+current-source builds. After separate Apple approval, the main-only production
+signer reuses `macos_distribution.py`, preserving Linux bytes and producing the
+same signed helper in tar.gz and final stapled DMG. Retained assessed artifacts
+are available for final native acceptance before publication.
 
-The protected job transfers only missing newly built components. It loads the
-original verified payload, checks the original config/source/input/platform,
-pushes that exact image and refuses any digest conversion. After a new transfer,
-it streams and checksums every referenced blob anonymously, without executing
-foreign-architecture images or claiming a new native image qualification.
-Already available original digests are never retagged or pushed. Manager-only schema2 releases run
-zero image build, export, transfer or repeated native qualification commands.
-The complete original records and separate immutable `distribution` map reach
-both internal and external manager manifests, built with already-qualified
-native helpers. Repository publication credentials reach only the registry
-client, never Docker build arguments or container environments.
-
-A strict schema1 bridge remains publishable: its plan requires all four actual
-current-source components. The legacy `runners` view selects their public refs;
-additive `original_components` retains every original native record unchanged.
-Both views must agree in source, config, tools and exact OCI digest. New native
-validators check this relation; old strict schema1 updaters keep their existing
-source-equals-manager contract. Manual runner-release defaults to this explicit
-bridge mode; ordinary component integration uses schema2, while the protected
-automated release follows the committed release-schema policy. No
-production publication has been exercised by the nonpublishing qualification.
-
-The GitHub release job runs only after every executable smoke and runner/bundle
-job succeeds. Stable download/update consumers select only a completed public
-GitHub release (never draft or prerelease), download its `release.json`, and pin
-all remaining downloads to that same tag. Partial registry uploads from a failed
-job are not offered as stable releases. Do not overwrite artifacts of a completed
-release to change its identity; publish a newly approved version instead.
+The exact-tag publisher uses the existing component graph transfer and anonymous
+availability rules, compares its returned internal stable manifest with the
+prepared selection, and publishes the retained packages without rebuilding them.
+Registry and final GitHub release jobs have distinct protected approvals. Any
+final-public-reference/native check still pending after registry transfer must
+pass before final release approval. Partial immutable registry transfers do not
+constitute a completed stable release. Unexpected/duplicate/mismatched draft
+assets refuse completion; completed releases cannot be changed. All public
+checksums refer to actual uploaded files. Standalone engine assets retain their
+own version and native smoke evidence and are not covered by helper notarization.
 
 These checks prove artifact identity and model-free container behavior. They do
 not prove native login, authenticated inference, clean macOS installation, or a

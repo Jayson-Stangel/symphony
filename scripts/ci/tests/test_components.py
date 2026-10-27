@@ -237,8 +237,8 @@ class Consumers(unittest.TestCase):
     def test_manual_and_release_requests_remain_complete(self):
         self.assertNotIn('outputs.application', workflow('runner-release'))
         self.assertNotIn('outputs.native', workflow('burrito-release'))
-        self.assertIn('environment: production-release', workflow('burrito-release'))
-        self.assertIn('SYMPHONY_PRODUCTION_RELEASES', workflow('runner-release'))
+        self.assertNotIn('environment: production-release', workflow('burrito-release'))
+        self.assertIn('SYMPHONY_PRODUCTION_RELEASES', workflow('production-publish'))
         self.assertIn("cancel-in-progress: ${{ github.event_name != 'workflow_dispatch'", workflow('runner-integration'))
         self.assertIn("github.event_name == 'workflow_dispatch' && github.run_id", workflow('runner-integration'))
 

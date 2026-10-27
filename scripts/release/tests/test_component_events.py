@@ -173,7 +173,7 @@ class CommittedReleaseMode(unittest.TestCase):
         self.assertRegex(dispatch, r'(?m)^      baseline_run:\n        description: [^\n]+\n        type: string\n        default: \'\'\n')
         runner_call = caller.split('  runners:\n', 1)[1].split('  build:', 1)[0]
         self.assertIn('baseline_run: ${{ inputs.baseline_run }}', runner_call)
-        self.assertIn("publish: ${{ startsWith(github.ref, 'refs/tags/v') }}", runner_call)
+        self.assertIn("publish: false", runner_call)
         preflight = (ROOT / '.github/workflows/release-preflight.yml').read_text()
         self.assertIn('schema=$(python3 scripts/release/manager_version.py --schema)', preflight)
         producer = (ROOT / '.github/workflows/runner-release.yml').read_text()
