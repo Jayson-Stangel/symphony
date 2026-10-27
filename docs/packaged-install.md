@@ -72,7 +72,6 @@ mkdir symphony-download
 tar -xzf symphony-VERSION-macos.tar.gz -C symphony-download
 cd symphony-download
 ./install.sh
-export PATH="$HOME/.local/bin:$PATH" # if the installer reports PATH is missing
 symphony --version
 symphony doctor
 ```
@@ -198,11 +197,53 @@ remain separate operator-run acceptance stages.
 
 ## Select the installed command
 
-After installation, run the exact `source` command printed by the installer to
-select its executable and saved installation context in the current terminal.
-For fresh shells and conflicting stable/source commands, see
-[command activation](command-activation.md). The installer does not edit shell
-profiles or replace another installation's command/skill links.
+For a first Apple Silicon Mac installation at the default per-user paths with
+standard `/bin/zsh`, the installer asks permission to append a marked setup block
+to `~/.zshrc`. It preserves unrelated text and permissions, then enters a configured
+zsh login shell in the same terminal. Run ordinary `symphony --version`,
+`symphony doctor` and `symphony init` there. New interactive terminals and new
+login sessions retain that selection. Exiting the installer-provided shell returns
+to the original parent shell; an installer cannot change that shell's environment.
+You can also open a new Terminal window after installation.
+
+Existing Symphony commands, application/configuration storage or managed setup
+stop this first-install flow without replacement. Symlinked, foreign-owned or
+unsafe writable setup paths are refused. This flow does not migrate an existing
+installation, install Docker or provide credentials. Nonstandard shells, custom
+paths, Linux, upgrades and rollback retain the existing explicit
+[command activation](command-activation.md) behavior.
+
+To remove only the exact managed profile block, run `./install.sh
+--remove-zsh-setup` from the verified extracted bundle. Installation files and
+existing shell environments remain unchanged. An edited or ambiguous block is
+preserved and refused. The same option is available as `symphony install
+--remove-zsh-setup` while the installed command is selected.
+
+For unattended testing at the supported default paths, `./install.sh
+--accept-zsh-setup --no-shell-handoff` explicitly consents to persistent setup and
+returns after installation. Open a new terminal afterward. Normal interactive
+installation needs neither option. `--stage-only` does not configure a shell.
+
+### First-Mac acceptance still required
+
+Synthetic-HOME archive/helper tests exercise consent, profile preservation,
+ordinary command lookup in fresh zsh processes, a terminal handoff, repeat refusal
+and removal. They do not establish final customer acceptance. Before marking this
+outcome complete, the coordinator must install the final assembled artifact in an
+isolated Apple Silicon macOS account with no prior Symphony setup and record:
+
+- Exact source revision, archive SHA-256, macOS version and zsh entry mode.
+- Normal installer consent and handoff, then `type -a symphony`, `symphony --version`,
+  `symphony doctor` and `symphony init` with the expected application, configuration,
+  skills, runner storage and empty default namespace. Keep Docker/provider
+  readiness separate from installation readiness.
+- The same command selection in a genuinely fresh Terminal and a new login session,
+  with no manual sourcing, PATH export, rehash or profile edits.
+- Unrelated profile text/mode preservation; refusal of unowned/symlinked targets and
+  existing installations; repeat refusal without duplicate setup; exact-block removal.
+
+Retain the evidence against that artifact. This implementation does not change
+JAY-735's separate native acceptance or select a release candidate.
 
 ## Connect and run a project
 
