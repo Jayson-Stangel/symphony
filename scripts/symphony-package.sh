@@ -472,7 +472,7 @@ package_install() (
     # Verify the final startup path, including .zlogin after .zshrc. Do not claim
     # readiness when user startup files skip or override the managed block.
     for shell_mode in -ic -lic; do
-      if ! /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
+      if ! /usr/bin/env -u SYMPHONY_APP_HOME -u SYMPHONY_BIN_DIR -u SYMPHONY_CONFIG_HOME -u SYMPHONY_SKILLS_DIR -u SYMPHONY_HOME -u SYMPHONY_RUNNER_HOME -u SYMPHONY_RUNNER_NAMESPACE /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
       package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
       die 'zsh startup files skipped or overrode Symphony setup; the managed block was removed. Installation files remain at the printed paths; no ready terminal handoff was made.'
       fi

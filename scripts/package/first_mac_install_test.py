@@ -122,6 +122,12 @@ class FirstMacInstallMixin:
     def test_first_mac_early_profile_return_never_claims_ready(self):
         bundle = self.bundle(); env, home = self.first_mac_environment()
         profile = home / '.zshrc'; profile.write_text('return\n')
+        # A warm installer environment must not masquerade as persisted startup.
+        env.update(SYMPHONY_APP_HOME=str(home / '.local/share/symphony'),
+                   SYMPHONY_BIN_DIR=str(home / '.local/bin'),
+                   SYMPHONY_CONFIG_HOME=str(home / '.config/symphony'),
+                   SYMPHONY_SKILLS_DIR=str(home / '.codex/skills'))
+        env['PATH'] = str(home / '.local/bin') + ':' + env['PATH']
         result = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup'], env=env, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('managed block was removed', result.stderr)
