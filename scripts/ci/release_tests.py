@@ -34,6 +34,7 @@ PORTABLE = {
     'test_manager_selected_environment.py',
     'test_manual_integration_origin.py',
     'test_macos_distribution.py',
+    'test_signing_checkpoint.py',
     'test_macos_signing_inputs.py',
     'test_local_distribution.py',
     'test_production_release.py',

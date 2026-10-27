@@ -482,6 +482,37 @@ IDs and proof. No workflow or environment permission change is implied.
 Normal local import keeps `transport_probe_only=false` (the default) and still
 requires all qualification and native checks below.
 
+### Retain an incomplete signing attempt without changing its bytes
+
+Before the first Apple upload, signing retains the already signed updater tar
+and the exact payload ZIP in a new sibling `OUTPUT.checkpoint` directory. The
+directory is exclusive, owned and mode0700; the fixed receipt binds actual source,
+input-manifest SHA256, original qualified helper and retained-file hashes. It
+does not invent a qualification run identity. No P12, keychain, passwords or
+arbitrary temporary files are copied. Copies and metadata are synchronized before
+upload; retention failure stops progression. Apple submission IDs/status are
+recorded as soon as the matching response arrives, before later log or ticket
+checks can fail. The actual payload submission reads the retained ZIP, and the
+eventual final tar is copied from those retained bytes without repacking.
+
+Both post-Accepted helper checks retain fixed stage/category/exit diagnostics in
+that private receipt, never raw command output or paths. An explicit unmet
+notarization requirement can receive at most three verification-only checks in
+60 seconds, after strict signature/certificate/runtime checks and unchanged
+helper hashes. Signature, certificate, trust, lookup/network, timeout and unknown
+failures stop; no propagation cause is assumed. Rechecks never sign, build or
+submit again. The second helper check additionally requires the DMG's Accepted
+submission. Temporary credential cleanup and keychain-search-list restoration
+remain mandatory even when verification or retention fails.
+
+Failure/cancellation leaves this checkpoint available for operator assessment;
+the hosted production signer attempts to retain only its three fixed files as
+a distinct private `production-signing-checkpoint-...` artifact. This is not a
+ready distribution or an automatic resume path, and authorizes no further Apple
+action. It adds no files to the completed public asset set. A successful build
+still requires every existing signature, ticket, assessment, provenance and
+cleanup check before writing the normal ready receipt.
+
 ### Sign once on the operator's Apple Silicon Mac
 
 Use a clean isolated checkout at the exact approved `main` source and retain
@@ -536,8 +567,13 @@ The command writes a sibling `.receipt.json` with exact inputs for
 bounded approval, supplying `approved_revision`, `staging_release`,
 `staging_asset` and `staging_digest` from the receipt. Approve its existing
 `macos-production-signing` environment gate. The job references only public
-identity/team variables, not signing or notary secrets. It runs on Intel macOS
-to inspect the ARM64 package without depending on ARM64 signing-runner capacity.
+identity/team variables, not signing or notary secrets. By default it runs on
+hosted `macos-15-intel`. An exact source/run/attempt-bound backup permit may route
+only this credential-free inspection job to the isolated macOS 14 ARM64 guest.
+The job reports its actual hardware and verifies the guest architecture/version;
+it inspects the uploaded ARM64 package without executing it. The Ubuntu transport
+probe bypasses Mac selection. This routing never admits a signing job or Apple
+credentials to the guest.
 
 Admission refuses mismatched source/Q/attempt, replaced or expired draft assets,
 unsafe archives, incomplete Apple or cleanup attestations, changed source files,

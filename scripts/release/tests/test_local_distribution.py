@@ -409,7 +409,8 @@ class WorkflowBoundaryTest(unittest.TestCase):
         root=Path(__file__).parents[3]
         ingress=(root/'.github/workflows/macos-local-signing-import.yml').read_text()
         publisher=(root/'.github/workflows/production-publish.yml').read_text()
-        self.assertIn('runs-on: macos-15-intel',ingress)
+        self.assertIn('runner=macos-15-intel',ingress)
+        self.assertIn('runs-on: ${{ needs.mac-runner-local-import.outputs.runner }}',ingress)
         self.assertIn('environment: macos-production-signing',ingress)
         self.assertIn('inputs.approved_revision == github.sha',ingress)
         for text in (ingress,publisher):

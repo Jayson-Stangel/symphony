@@ -60,13 +60,26 @@ jobs:
           if-no-files-found: error
   verify:
     name: Verify locally signed distribution
+    needs: mac-runner-local-import
     if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
     environment: macos-production-signing
-    # Inspect signatures/tickets on Intel; do not execute the ARM64 payload.
-    # This avoids depending on ARM64 signing-runner capacity for the fallback.
-    runs-on: macos-15-intel
+    # Default remains hosted Intel; an exact permit may select the isolated ARM guest.
+    # Both inspect signatures/tickets without executing the uploaded ARM64 payload.
+    runs-on: ${{ needs.mac-runner-local-import.outputs.runner }}
     timeout-minutes: 30
     steps:
+      - name: Require and report actual Mac verification hardware
+        working-directory: ${{ runner.temp }}
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-local-import.outputs.runner != 'macos-15-intel' }}
+        run: |
+          test "$(uname -s)" = Darwin
+          case "$(uname -m)" in arm64|x86_64) ;; *) echo 'Unsupported Mac inspection hardware' >&2; exit 1 ;; esac
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            test "$(uname -m)" = arm64
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
+          printf 'Native inspection hardware: %s; macOS %s\n' "$(uname -m)" "$(sw_vers -productVersion)"
       - name: Check out exact approved source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,3 +104,29 @@ jobs:
             ${{ runner.temp }}/local-import/local-origin.json
             ${{ runner.temp }}/local-import/native-verification.json
           if-no-files-found: error
+  mac-runner-local-import:
+    name: Select backup Mac for local distribution inspection
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted Intel inspection by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-15-intel' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/macos-local-signing-import.yml
+          SELECT_JOB_KEY: verify
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"

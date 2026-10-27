@@ -16,6 +16,7 @@ import sys
 from mac_runner_preflight import Refusal, REPOSITORY, SHA, github_read, inspect_run, supported_pr_route
 
 TARGETS = {
+    ".github/workflows/macos-local-signing-import.yml": {"verify"},
     ".github/workflows/make-all.yml": {"platform-contracts"},
     ".github/workflows/package-checks.yml": {"native-host-package"},
     ".github/workflows/native-manager-helpers.yml": {"helper"},
@@ -25,6 +26,7 @@ TARGETS = {
     ".github/workflows/burrito-release.yml": {"build", "smoke", "controller-diagnostics"},
 }
 CONTROLLERS = {
+    ".github/workflows/macos-local-signing-import.yml",
     ".github/workflows/make-all.yml", ".github/workflows/package-checks.yml",
     ".github/workflows/runner-integration.yml", ".github/workflows/runner-release.yml",
     ".github/workflows/burrito-release.yml",
@@ -37,6 +39,7 @@ FIELDS = {
 TARGET_FIELDS = {"consumer_workflow", "job_key", "runner_label"}
 LABEL = re.compile(r"symphony-backup-mac-[a-f0-9]{32}\Z")
 OWNER = "Jayson-Stangel"
+HOSTED_DEFAULTS = {".github/workflows/macos-local-signing-import.yml": "macos-15-intel"}
 
 
 def verify_live(permit, read=github_read, expected_pr_base_ref=None, expected_pr_head_ref=None):
@@ -69,8 +72,9 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
     """Return only this consumer's label; all unselected jobs stay hosted."""
     if consumer not in TARGETS or job_key not in TARGETS[consumer]:
         raise Refusal("unsupported credential-free selector target")
+    hosted = HOSTED_DEFAULTS.get(consumer, "macos-14")
     if not raw:
-        return "macos-14"
+        return hosted
     if len(raw) > 16384:
         raise Refusal("routing permit is oversized")
     try:
@@ -80,7 +84,7 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
     if not isinstance(permit, dict) or type(permit.get("run_id")) is not int:
         raise Refusal("routing permit has no integer run identity")
     if str(permit["run_id"]) != context.get("GITHUB_RUN_ID"):
-        return "macos-14"
+        return hosted
     if set(permit) != FIELDS or type(permit["schema"]) is not int or permit["schema"] != 1:
         raise Refusal("routing permit has an unsupported schema")
     if any(type(permit[key]) is not int or permit[key] <= 0 for key in ("run_id", "run_attempt")):
@@ -152,7 +156,7 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
                expected_pr_head_ref=event["pull_request"]["head"].get("ref"))
     else:
         verify(permit)
-    return selected or "macos-14"
+    return selected or hosted
 
 
 def main():

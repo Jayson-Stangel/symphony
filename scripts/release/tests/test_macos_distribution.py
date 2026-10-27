@@ -1,5 +1,6 @@
 """Command peers exercise refusal and ordering, never Apple credentials/trust."""
 import base64
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -458,7 +459,8 @@ class DistributionTest(unittest.TestCase):
                 content = self.root / 'packaged'
                 (content / 'libexec').mkdir(parents=True, exist_ok=True)
                 (content / 'libexec/symphony-host').write_bytes(b'FAKE SIGNED BYTES')
-                dist.write_json(content / 'signing.json', {'original_qualified_helper_sha256': original, 'payloads': {}})
+                dist.write_json(content / 'signing.json', {'original_qualified_helper_sha256': original,
+                    'payloads': {'libexec/symphony-host': {'sha256': dist.checksum(content / 'libexec/symphony-host')}}})
                 with tarfile.open(output / 'symphony-fixture-macos.tar.gz', 'w:gz') as archive:
                     archive.add(content, arcname='.')
                 (output / 'package-source.txt').write_text('fixture package source')
@@ -467,13 +469,15 @@ class DistributionTest(unittest.TestCase):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('package evidence', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
+        for failure in ('package evidence', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
+            retention_failure = (patch.object(dist.SignedCheckpoint, 'retain', side_effect=OSError('FAKE SECRET /PRIVATE/PATH'))
+                                 if failure == 'checkpoint retention' else nullcontext())
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
-                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure):
+                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure:
                 uname.return_value.machine = 'arm64'
                 if failure:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(OSError if failure == 'checkpoint retention' else ValueError):
                         dist.build(manifest, helper, output, self.env)
                     self.assertFalse((output / 'macos-distribution.json').exists())
                     if not failure.startswith('security'):
@@ -481,6 +485,10 @@ class DistributionTest(unittest.TestCase):
                     self.assertTrue((output / 'evidence/keychain-diagnostics.json').is_file())
                     if failure == 'package evidence':
                         self.assertFalse(any(command[0] == 'xcrun' for command in self.commands()))
+                    if failure == 'checkpoint retention':
+                        self.assertFalse(any(command[:3] == ['xcrun', 'notarytool', 'submit'] for command in self.commands()))
+                        operations = json.loads((output / 'evidence/keychain-diagnostics.json').read_text())['operations']
+                        self.assertTrue(all(item['status'] == 'success' for item in operations if item['stage'].startswith('cleanup.')))
                 else:
                     dist.build(manifest, helper, output, self.env)
                     receipt = json.loads((output / 'macos-distribution.json').read_text())
@@ -550,6 +558,18 @@ class DistributionTest(unittest.TestCase):
         self.assertNotIn('FAKE-SECRET', evidence.read_text())
         self.assertNotIn(IDENTITY, evidence.read_text())
         self.assertNotIn(str(helper), evidence.read_text())
+
+    def test_network_error_takes_priority_over_generic_notarization_requirement(self):
+        generic = 'code failed to satisfy specified code requirement(s)'
+        for network in ('NSURLErrorDomain', 'could not connect to server', 'the network connection was lost'):
+            with self.subTest(network=network):
+                output = generic + '\n' + network + ' FAKE-SECRET /private/secret'
+                result = subprocess.CompletedProcess([], 1, '', output)
+                with patch.object(dist.subprocess, 'run', return_value=result):
+                    with self.assertRaises(dist.CommandFailure) as caught:
+                        dist.run('codesign', 'fixture', stage='notarization.payload-helper')
+                self.assertEqual(caught.exception.reason, 'notarization-lookup-unavailable')
+                self.assertNotIn('FAKE-SECRET', str(caught.exception))
 
     def test_codesign_error_categories_discard_private_output(self):
         evidence = self.root / 'reason.json'
