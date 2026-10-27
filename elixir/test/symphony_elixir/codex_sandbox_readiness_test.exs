@@ -19,7 +19,7 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     System.put_env("SYMPHONY_CODEX_CONFIG_OWNER", "1000")
     System.put_env("SYMPHONY_CODEX_CONFIG_SHA256", String.duplicate("a", 64))
     settings = Config.settings!()
-    settings = %{settings | codex: %{settings.codex | command: "codex app-server"}}
+    settings = %{settings | workspace: %{settings.workspace | root: directory}, codex: %{settings.codex | command: "codex app-server"}}
     chain = %{"node" => %{"path" => "/qualified/node"}, "frontend" => %{"path" => executable}}
     assert {:ok, command} = SandboxReadiness.bound_command("original", directory, settings, chain)
     {json, 0} = System.cmd("python3", ["-I", "-c", "import json,shlex,sys; print(json.dumps(shlex.split(sys.argv[1])))", command])
@@ -28,7 +28,9 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     input = argv |> Enum.at(4) |> Jason.decode!()
     assert input["operation"] == "exec"
     assert input["browser_policy"]["type"] == "workspaceWrite"
-    assert directory in input["browser_policy"]["writableRoots"]
+    assert {:ok, canonical_directory} = SymphonyElixir.PathSafety.canonicalize(directory)
+    assert input["browser_policy"]["writableRoots"] == [canonical_directory, Path.join(canonical_directory, ".git")]
+    assert input["managed_workspace"] == directory
     assert input["snapshot_profile"] == "trust-ro-v2"
     assert input["expected_snapshot_uid"] == 1000
     fingerprint = SandboxReadiness.fingerprint(settings)
@@ -63,11 +65,15 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     System.put_env("SYMPHONY_CONTAINERIZED", "1")
     System.put_env("SYMPHONY_CODEX_CONFIG_PROFILE", "trust-ro-v2")
     settings = Config.settings!()
-    settings = %{settings | codex: %{settings.codex | command: executable <> " app-server"}}
+    settings = %{settings | workspace: %{settings.workspace | root: directory}, codex: %{settings.codex | command: executable <> " app-server"}}
     chain = %{"node" => %{"path" => "/qualified/node"}}
     assert {:ok, command} = SandboxReadiness.bound_command("original", directory, settings, chain)
     {json, 0} = System.cmd("python3", ["-I", "-c", "import json,shlex,sys; print(json.dumps(shlex.split(sys.argv[1])))", command])
     input = json |> Jason.decode!() |> Enum.at(4) |> Jason.decode!()
+    assert input["browser_policy"]["type"] == "workspaceWrite"
+    assert {:ok, canonical_directory} = SymphonyElixir.PathSafety.canonicalize(directory)
+    assert input["browser_policy"]["writableRoots"] == [canonical_directory, Path.join(canonical_directory, ".git")]
+    assert input["managed_workspace"] == directory
     environment = input["expected_native_environment"]
 
     for {name, value} <- native do
