@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from first_mac_install_test import FirstMacInstallMixin
+from shell_setup_test import ShellSetupTest
 from runner_import_test import RunnerImportTest
 from command_activation_test import CommandActivationTest, PackageCommandActivationMixin
 from runner_provision_test import RunnerProvisionTest
@@ -114,7 +116,7 @@ class InstallerLaunchTest(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
-class PackageTest(PackageCommandActivationMixin, unittest.TestCase):
+class PackageTest(FirstMacInstallMixin, PackageCommandActivationMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not HELPER.is_file():
