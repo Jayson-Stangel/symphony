@@ -27,6 +27,8 @@ defmodule SymphonyElixir.CodexSandboxReadinessTest do
     assert Enum.slice(argv, 1, 2) == ["-I", "-c"]
     input = argv |> Enum.at(4) |> Jason.decode!()
     assert input["operation"] == "exec"
+    assert input["browser_policy"]["type"] == "workspaceWrite"
+    assert directory in input["browser_policy"]["writableRoots"]
     assert input["snapshot_profile"] == "trust-ro-v2"
     assert input["expected_snapshot_uid"] == 1000
     fingerprint = SandboxReadiness.fingerprint(settings)

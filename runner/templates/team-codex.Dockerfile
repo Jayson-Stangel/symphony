@@ -18,3 +18,7 @@ ENV PATH="/opt/team/venv/bin:${PATH}"
 RUN /bin/bash -lc 'command -v esphome && esphome version && command -v yamllint && yamllint --version'
 # Preserve the inherited entrypoint, provider/protocol, skills and runtime source
 # labels. A host manager update does not change the embedded runtime revision.
+# Browser config defaults are supplied per task by the inherited guarded runtime,
+# after this team's launch wrapper. Preserve that runtime; do not set a shared
+# CHROME_CONFIG_HOME or make /root writable to repair browser startup. Deliberate
+# browser config must use owned storage already permitted by the task policy.

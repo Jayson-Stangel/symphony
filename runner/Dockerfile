@@ -115,6 +115,8 @@ ARG CODEX_VERSION=0.163.0
 RUN apt-get purge -y bubblewrap && npm install --global "@openai/codex@$CODEX_VERSION" \
   && ! command -v bwrap
 LABEL com.symphony.codex.version=$CODEX_VERSION
+# The embedded guarded Codex launcher initializes task-local browser config;
+# keep protected /root/auth unchanged and do not add a shared browser ENV path.
 # A global default preserves npm's user/project/environment/CLI precedence.
 # PWD is expanded by npm at consumption, including workspace setup hooks.
 COPY runner/npm-cache.npmrc /usr/local/etc/npmrc

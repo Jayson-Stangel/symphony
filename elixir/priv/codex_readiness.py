@@ -52,7 +52,8 @@ def launch_receipt(data, expected_image_chain, wrapped):
         code = chain["error"]
         if (set(chain) != {"error"} or type(code) is not str or code not in
                 ("sandbox_unqualified_config", "sandbox_unsupported_command",
-                 "sandbox_toolchain_unqualified", "sandbox_launch_failed")):
+                 "sandbox_toolchain_unqualified", "sandbox_launch_failed",
+                 "sandbox_browser_config_unsafe", "sandbox_browser_config_unwritable")):
             raise Refusal("sandbox_launch_receipt_invalid")
         raise Refusal(code)
     node = chain.get("node")
@@ -99,13 +100,16 @@ def launch_command(value):
     return args[0], options, wrapper
 
 
-def copy_project(source, target):
+def copy_project(source, target, browser_state=None, defer_external=False):
     # Preserve only links whose resolved destinations stay in the project, and
     # rewrite absolute internal links into the disposable copy. Never traverse
     # a project link into the runtime's native login/configuration directories.
     links = []
+    omitted = set()
     def ignored(directory, names):
         return [name for name in names if name == ".git" or
+                (Path(directory) / name).relative_to(source).as_posix() in omitted or
+                (Path(directory) / name) == browser_state or
                 (Path(directory) / name).resolve() == target]
     for directory, dirs, files in os.walk(source, followlinks=False):
         dirs[:] = [name for name in dirs if name not in ignored(directory, dirs)]
@@ -117,7 +121,14 @@ def copy_project(source, target):
                 except RuntimeError:
                     raise Refusal("sandbox_launch_unavailable")
                 if not contains(source, resolved) or contains(target, resolved):
-                    raise Refusal("sandbox_launch_unavailable")
+                    relative = path.relative_to(source).as_posix()
+                    if (not defer_external or contains(target, resolved) or
+                            any(part in (".codex", ".git") for part in path.relative_to(source).parts)):
+                        raise Refusal("sandbox_launch_unavailable")
+                    omitted.add(relative)
+                    if len(omitted) > 256 or sum(len(item) for item in omitted) > 32768:
+                        raise Refusal("sandbox_launch_unavailable")
+                    continue
                 links.append((path.relative_to(source), resolved.relative_to(source)))
     # This is the helper's newly-created empty temporary root, never a task
     # directory. copytree copies source directory metadata too; keep the private
@@ -146,6 +157,7 @@ def copy_project(source, target):
         copied = target / link
         copied.unlink()
         copied.symlink_to(os.path.relpath(target / destination, copied.parent))
+    return sorted(omitted)
 
 
 
@@ -179,9 +191,14 @@ def check(value):
         if os.path.lexists(parent / ".codex/config.toml"):
             raise Refusal("sandbox_unqualified_config")
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    browser_state = None
     if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
         retained_context = attest_context(value)
         retained_config = retained_context["config_bytes"]
+        # Validate the real explicit destination without writing outside the
+        # disposable diagnostic. The actual launch validates again post-wrapper.
+        browser_env = browser_environment(value, os.environ, initialize=False)
+        browser_state = Path(browser_env.get("CHROME_CONFIG_HOME", browser_env.get("XDG_CONFIG_HOME")))
         try:
             value["expected_image_chain"] = image_chain(retained_context["executable"])
         except Refusal:
@@ -206,10 +223,11 @@ def check(value):
             tempfile.TemporaryDirectory(prefix=".symphony-sandbox-", dir=outside_parent) as denied:
         allowed = Path(allowed).resolve()
         denied = Path(denied).resolve()
+        omitted_links = []
         if wrapper:
             # Never mutate the source checkout. The trusted setup script runs in
             # a disposable project copy under the real effective writable root.
-            copy_project(launch_root, allowed)
+            omitted_links = copy_project(launch_root, allowed, browser_state, defer_external=retained_config is not None)
             script = allowed / wrapper[1]
             if not script.is_file() or not contains(allowed, script.resolve()):
                 raise Refusal("sandbox_launch_unavailable")
@@ -236,8 +254,15 @@ def check(value):
         if retained_config is not None:
             (home / "config.toml").write_bytes(retained_config)
             (home / "config.toml").chmod(0o600)
-        env = {k: v for k, v in os.environ.items() if k in ("PATH", "TMPDIR", "LANG", "LC_ALL")}
+        env = {k: v for k, v in os.environ.items() if k in ("PATH", "TMPDIR", "LANG", "LC_ALL", "CHROME_CONFIG_HOME", "XDG_CONFIG_HOME")}
         env.update(HOME=str(home), CODEX_HOME=str(home))
+        browser_environment_map = []
+        if retained_config is not None:
+            for key in ("CHROME_CONFIG_HOME", "XDG_CONFIG_HOME"):
+                if key in env:
+                    original = env[key]
+                    env[key] = str(allowed / (".symphony-probe-" + key.lower()))
+                    browser_environment_map.append({"probe": env[key], "source": original})
         args = [executable, *options, "sandbox", "-c", 'sandbox_mode="workspace-write"']
         for key, name in (("networkAccess", "network_access"), ("excludeSlashTmp", "exclude_slash_tmp"),
                           ("excludeTmpdirEnvVar", "exclude_tmpdir_env_var")):
@@ -324,7 +349,11 @@ os.execvpe(exe,[exe,*sys.argv[3:]],os.environ)
         if value.get("snapshot_profile") in ("trust-ro-v1", "trust-ro-v2"):
             read_fd, write_fd = os.pipe()
             probe_value = {k: v for k, v in value.items() if k != "launch_program"}
-            probe_value.update(operation="probe", workspace=str(allowed), launch_root=str(allowed),
+            probe_value.update(operation="probe", workspace=str(allowed), launch_root=str(allowed), browser_policy=policy,
+                               browser_source={"workspace": str(workspace), "launch_root": str(launch_root), "browser_policy": value["policy"],
+                                               "home": os.environ.get("HOME", str(Path.home())),
+                                               "codex_home": str(codex_home)},
+                               browser_omitted_links=omitted_links, browser_environment_map=browser_environment_map,
                                expected_home=str(home), expected_codex_home=str(home),
                                expected_native_environment={}, expected_snapshot_uid=os.getuid(), receipt_fd=write_fd)
             prefix = [wrapper[0], str(script)] if wrapper else []

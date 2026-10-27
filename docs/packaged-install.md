@@ -542,3 +542,13 @@ The maintained image defaults to a disposable project `.npm-cache` while preserv
 explicit npm configuration. Check `npm config get cache` and `npm cache verify`
 inside the actual protected task shell. An old selected image requires a rebuilt
 team environment; installation readiness alone does not prove cold project setup.
+
+### Browser configuration readiness
+
+The maintained packaged Codex runtime initializes task-owned browser configuration
+through its guarded native launch. See [browser state in packaged tasks](team-environments.md#browser-state-in-packaged-codex-tasks)
+for explicit configuration precedence, unsafe-path refusal and workspace-lifetime
+retention. It does not make native HOME/auth writable. An old selected image does
+not receive this behavior from a manager-only update. Browser build smoke and
+synthetic command-path fixtures remain separate from final protected task/browser
+acceptance on each supported native platform.

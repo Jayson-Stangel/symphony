@@ -11,14 +11,18 @@ async function main() {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   let browser;
   try {
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
-    assert.equal(await page.title(), 'Browser smoke test');
-    await page.getByRole('button', { name: 'Run', exact: true }).click();
-    assert.equal(await page.getByRole('button').textContent(), 'Passed');
-    assert.ok((await page.screenshot()).length > 0);
-    console.log(`Chromium ${browser.version()}: navigation, JavaScript, interaction, and screenshot passed`);
+    for (const options of [{ headless: true }, { channel: 'chromium', headless: true }]) {
+      browser = await chromium.launch(options);
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${server.address().port}`);
+      assert.equal(await page.title(), 'Browser smoke test');
+      await page.getByRole('button', { name: 'Run', exact: true }).click();
+      assert.equal(await page.getByRole('button').textContent(), 'Passed');
+      assert.ok((await page.screenshot()).length > 0);
+      console.log(`Chromium ${browser.version()} (${options.channel || 'headless shell'}): navigation, JavaScript, interaction, and screenshot passed`);
+      await browser.close();
+      browser = undefined;
+    }
   } finally {
     if (browser) await browser.close();
     await new Promise((resolve) => server.close(resolve));

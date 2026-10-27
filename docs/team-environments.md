@@ -130,6 +130,67 @@ source308/image88e proof used an explicit cache workaround; it does not qualify
 this default. Final assembled-image and real issue-to-PR qualification remain
 separate evidence.
 
+## Browser state in packaged Codex tasks
+
+The maintained packaged Codex launch guard supplies `CHROME_CONFIG_HOME` as
+`<task workspace>/.symphony-browser-config` when neither `CHROME_CONFIG_HOME`
+nor `XDG_CONFIG_HOME` was explicitly supplied. It initializes that owned directory
+before starting the native app-server, after configuration and executable-chain
+attestation. Ordinary command children and login/non-login shells inherit the
+same location; project browser commands do not need an environment prefix or a
+patched test script. A trusted project launch wrapper can set an explicit browser
+location before the guard runs. Teams still own browser dependencies and project
+launch options. A manager-only update cannot change the embedded runtime in an
+already selected image; rebuild and select a new team environment to consume it.
+
+Explicit `CHROME_CONFIG_HOME` takes precedence over explicit `XDG_CONFIG_HOME`.
+The guard preserves the selected variable and never silently redirects a refused
+value. Explicit destinations must be normalized absolute paths below the task
+workspace or an already permitted writable root, outside native `HOME`,
+`CODEX_HOME`, `.codex` and `.git`. Allowed temporary roots follow the existing task
+policy; this feature adds no write roots or network access. Existing directory
+components must be owned, writable, ordinary directories without symlinks or
+shared write permissions. The permitted shared `/tmp` boundary itself is exempt
+from the private-directory mode requirement; its selected descendants are not.
+An empty, relative, escaped, linked or foreign destination refuses with
+`sandbox_browser_config_unsafe`; read-only or inaccessible state refuses with
+`sandbox_browser_config_unwritable`. These codes identify browser state admission,
+separately from native authentication or executable-chain refusal. Choose a safe
+owned path in the team's configuration instead of making native home writable.
+
+The default is one disposable directory per task workspace, retained for that
+workspace's lifetime. Restart reuses it and a pruned directory is recreated.
+Existing workspace removal owns its cleanup. There is no automatic age or size
+pruning and no recursive browser-specific cleanup of other project data. Include
+`.symphony-browser-config/` in team/project ignore rules when appropriate;
+Symphony does not change repository ignore rules or native Git configuration.
+Readiness validates the real selected destination without creating state there,
+then uses disposable diagnostic state. Inherited explicit configuration receives
+an owned diagnostic placeholder during wrapper setup; the final guard reverse
+maps that location (including a derived suffix) for read-only source validation.
+Known validated browser state is excluded from its project copy. Other external
+links are omitted from managed diagnostic setup and accepted only when the final
+wrapper-selected browser state strictly contains them; root/ancestor links and
+unrelated escapes still refuse before native launch. Retained Chromium socket
+symlinks are never followed or copied. Unguarded diagnostics retain immediate
+external-link refusal. Native HOME/auth stay
+outside task write permissions. Host-native Codex sessions and Claude's normal
+browser environment retain their existing behavior.
+
+`runner/codex-sandbox-smoke.sh <immutable image>` includes a credential-free
+browser fixture using the shipped guarded launch with an empty read-only native
+configuration mount and ordinary native `command/exec`. It runs the bundled
+headless shell and full Chromium, a second minimal project script, cold/restart/
+pruned state, login/non-login shells and native HOME/auth write denial. The outer
+fixture has no network, host home, account or existing project mount. This is
+supporting protected command-path proof, not the marketing repository acceptance
+suite. The plain Docker browser build smoke alone does not establish protected
+task readiness. Final acceptance still requires the unchanged marketing browser
+commands and assertions on the selected final candidate, native Linux ARM64
+components on macOS ARM64 and native Linux AMD64 components on Linux x86-64,
+with exact manager/source/provider/image/policy identities. Historical Chrome 155
+success after a manual environment override does not qualify this default.
+
 ## Evidence boundaries
 
 Supported host policy remains macOS ARM64 and Linux x86-64, with Linux ARM64 and

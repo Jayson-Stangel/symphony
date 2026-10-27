@@ -42,6 +42,135 @@ def refuse():
     raise Refusal("sandbox_unqualified_config")
 
 
+
+def browser_environment(value, environment, initialize=True):
+    """Task browser state; no HOME/XDG default or new sandbox write grant.
+
+    initialize=False validates existing ancestors without creating state. The
+    readiness diagnostic uses that mode before rebasing into its own workspace.
+    """
+    result = dict(environment)
+    workspace = Path(value["workspace"])
+    name = next((key for key in ("CHROME_CONFIG_HOME", "XDG_CONFIG_HOME") if key in result), None)
+    selected = result[name] if name else str(workspace / ".symphony-browser-config")
+    path = Path(selected)
+    policy = value.get("browser_policy", value.get("policy", {}))
+    roots = [workspace, *(Path(root) for root in policy.get("writableRoots", []))]
+    if not policy.get("excludeSlashTmp", False):
+        roots.append(Path("/tmp").resolve())
+    if not policy.get("excludeTmpdirEnvVar", False) and environment.get("TMPDIR"):
+        roots.append(Path(environment["TMPDIR"]).resolve())
+    if (not selected or not path.is_absolute() or os.path.normpath(selected) != selected or
+            any(part in (".codex", ".git") for part in path.parts)):
+        raise Refusal("sandbox_browser_config_unsafe")
+    for key in ("HOME", "CODEX_HOME"):
+        if environment.get(key):
+            protected = Path(environment[key])
+            if path == protected or path in protected.parents or protected in path.parents:
+                raise Refusal("sandbox_browser_config_unsafe")
+    matching = [root for root in roots if root.is_absolute() and root in path.parents]
+    if not matching:
+        raise Refusal("sandbox_browser_config_unsafe")
+    root = max(matching, key=lambda candidate: len(candidate.parts))
+    descriptor = None
+    try:
+        if root.resolve(strict=True) != root:
+            raise Refusal("sandbox_browser_config_unsafe")
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        # /tmp may be a shared authorized boundary; every descendant still must
+        # be owned and non-shared. No existing directory is chmod/chown'ed.
+        for part in (None, *path.relative_to(root).parts):
+            if part is not None:
+                if initialize:
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                try:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=descriptor)
+                except FileNotFoundError:
+                    if not initialize:
+                        break
+                    raise
+                os.close(descriptor)
+                descriptor = child
+            info = os.fstat(descriptor)
+            shared_boundary = part is None and root == Path("/tmp").resolve()
+            if (not stat.S_ISDIR(info.st_mode) or
+                    not shared_boundary and (info.st_uid != os.geteuid() or info.st_mode & 0o022)):
+                raise Refusal("sandbox_browser_config_unsafe")
+            if not shared_boundary and info.st_mode & 0o300 != 0o300:
+                raise Refusal("sandbox_browser_config_unwritable")
+        if not name:
+            result["CHROME_CONFIG_HOME"] = str(path)
+        return result
+    except Refusal:
+        raise
+    except OSError as error:
+        code = "sandbox_browser_config_unwritable" if error.errno in (13, 30) else "sandbox_browser_config_unsafe"
+        raise Refusal(code) from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def probe_browser_environment(value, environment):
+    """Resolve wrapper-final state without writing to the original project.
+
+    Omitted external links are never available to diagnostic setup. Only links
+    strictly inside its final browser-state subtree can be left out; all other
+    project escapes still refuse before the native process/receipt.
+    """
+    source = value.get("browser_source")
+    if not isinstance(source, dict):
+        raise Refusal("sandbox_browser_config_unsafe")
+    omitted = value.get("browser_omitted_links", [])
+    if (not isinstance(omitted, list) or len(omitted) > 256 or
+            any(not isinstance(item, str) for item in omitted) or
+            sum(len(item) for item in omitted) > 32768):
+        raise Refusal("sandbox_browser_config_unsafe")
+    workspace = Path(value["workspace"])
+    original_workspace = Path(source["workspace"])
+    original_launch_root = Path(source.get("launch_root", source["workspace"]))
+    name = next((key for key in ("CHROME_CONFIG_HOME", "XDG_CONFIG_HOME") if key in environment), None)
+    selected = Path(environment[name]) if name else workspace / ".symphony-browser-config"
+    mappings = value.get("browser_environment_map", [])
+    if (not isinstance(mappings, list) or len(mappings) > 2 or
+            any(not isinstance(item, dict) or set(item) != {"probe", "source"} or
+                not all(isinstance(item[key], str) for key in item) for item in mappings)):
+        raise Refusal("sandbox_browser_config_unsafe")
+    original_selected = None
+    for item in mappings:
+        placeholder = Path(item["probe"])
+        if placeholder.parent != workspace:
+            raise Refusal("sandbox_browser_config_unsafe")
+        if selected == placeholder or placeholder in selected.parents:
+            original_selected = Path(item["source"]) / selected.relative_to(placeholder)
+            break
+    if workspace in selected.parents:
+        if original_selected is None:
+            origin = original_launch_root if name else original_workspace
+            original_selected = origin / selected.relative_to(workspace)
+        disposable_selected = selected
+    else:
+        original_selected = selected
+        disposable_selected = workspace / ".symphony-probe-browser-config"
+    original_environment = dict(environment)
+    original_environment.update(HOME=source["home"], CODEX_HOME=source["codex_home"])
+    original_environment[name or "CHROME_CONFIG_HOME"] = str(original_selected)
+    # This walks real source ancestors only, never creating or chmod'ing them.
+    browser_environment(source, original_environment, initialize=False)
+    for item in omitted:
+        relative = Path(item)
+        if (not item or relative.is_absolute() or str(relative) != item or
+                any(part in (".", "..", ".codex", ".git") for part in relative.parts) or
+                original_selected not in (original_launch_root / relative).parents):
+            raise Refusal("sandbox_browser_config_unsafe")
+    result = dict(environment)
+    result[name or "CHROME_CONFIG_HOME"] = str(disposable_selected)
+    return browser_environment(value, result)
+
 def _digest(value):
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         refuse()

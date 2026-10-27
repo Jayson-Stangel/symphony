@@ -15,6 +15,7 @@ from unittest.mock import patch
 PROBE = Path(__file__).resolve().parents[1] / "elixir/priv/codex_readiness.py"
 spec = importlib.util.spec_from_file_location("probe", PROBE)
 probe = importlib.util.module_from_spec(spec)
+exec(compile(PROBE.with_name("codex_config_boundary.py").read_text(), str(PROBE.with_name("codex_config_boundary.py")), "exec"), probe.__dict__)
 spec.loader.exec_module(probe)
 
 
@@ -337,10 +338,153 @@ if mode=='denial-fixture':
         with self.assertRaisesRegex(probe.Refusal, "^sandbox_policy_enforcement_failed$"):
             self.run_mode("permissive")
 
+    def managed_browser_program(self):
+        # The native sandbox effects remain a fixture, but disposition and
+        # environment initialization execute the real shipped probe helper.
+        return PROBE.with_name('codex_config_boundary.py').read_text() + """
+value=json.loads(sys.argv[1])
+try:
+    os.environ.update(probe_browser_environment(value, os.environ))
+except Refusal as error:
+    os.write(value['receipt_fd'],json.dumps({'error':str(error)}).encode())
+    os.close(value['receipt_fd'])
+    sys.exit(78)
+selected=Path(os.environ.get('CHROME_CONFIG_HOME',os.environ.get('XDG_CONFIG_HOME')))
+assert Path(value['workspace']) in selected.parents
+chain={**value['expected_image_chain'],'node':{'path':os.path.realpath(sys.executable),'sha256':'a'*64}}
+os.write(value['receipt_fd'],json.dumps(chain).encode())
+os.close(value['receipt_fd'])
+os.execv(sys.argv[2],sys.argv[2:])
+"""
+
+    def retained_browser_state_case(self, explicit):
+        state_name = 'team-browser-state' if explicit else '.symphony-browser-config'
+        self.make_wrapper(f'test ! -e {state_name}/chromium/SingletonSocket\nexec "$@"\n')
+        self.value['workspace'] = str(self.project)
+        state = self.project / state_name
+        (state / 'chromium').mkdir(parents=True)
+        socket = state / 'chromium' / 'SingletonSocket'
+        socket.symlink_to('/tmp/.org.chromium.fixture/SingletonSocket')
+        self.snapshot_fixture(self.managed_browser_program())
+        if explicit:
+            browser_env = patch.dict(os.environ, CHROME_CONFIG_HOME=str(state))
+            browser_env.start()
+            self.addCleanup(browser_env.stop)
+        self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        self.assertTrue(socket.is_symlink())
+        self.assertEqual(os.readlink(socket), '/tmp/.org.chromium.fixture/SingletonSocket')
+        # Exclusion is narrow: an unrelated project escape still refuses.
+        (self.project / 'unrelated-link').symlink_to(self.home, target_is_directory=True)
+        with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+            self.run_mode('denial-fixture')
+
+    def test_default_browser_state_runtime_symlinks_do_not_break_restart(self):
+        self.retained_browser_state_case(explicit=False)
+
+    def test_explicit_browser_state_runtime_symlinks_do_not_break_restart(self):
+        self.retained_browser_state_case(explicit=True)
+
+    def wrapper_selected_browser_case(self, absolute=False, unsafe=False):
+        wrapper = self.make_wrapper('exec "$@"\n')
+        self.value['workspace'] = str(self.project)
+        state = self.project / 'var' / 'chrome'
+        state.parent.mkdir()
+        if unsafe:
+            state.symlink_to(self.home, target_is_directory=True)
+        else:
+            (state / 'chromium').mkdir(parents=True)
+            (state / 'chromium' / 'SingletonSocket').symlink_to('/tmp/.org.chromium.fixture/socket')
+            (state / 'retained').write_text('must-stay-unchanged')
+        selected = str(state) if absolute else '$PWD/var/chrome'
+        wrapper.write_text('#!/bin/bash\nset -eu\nexport CHROME_CONFIG_HOME="' + selected + '"\nexec "$@"\n')
+        self.snapshot_fixture(self.managed_browser_program())
+        if unsafe:
+            with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+                self.run_mode('denial-fixture')
+            self.assertTrue(state.is_symlink())
+            self.assertEqual(list(self.home.iterdir()), [])
+        else:
+            self.assertTrue(self.run_mode('denial-fixture')['ready'])
+            self.assertEqual(sorted(path.name for path in state.iterdir()), ['chromium', 'retained'])
+            self.assertEqual((state / 'retained').read_text(), 'must-stay-unchanged')
+            self.assertEqual(os.readlink(state / 'chromium' / 'SingletonSocket'), '/tmp/.org.chromium.fixture/socket')
+            (self.project / 'unrelated').symlink_to(self.home, target_is_directory=True)
+            with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+                self.run_mode('denial-fixture')
+
+    def test_wrapper_relative_browser_state_restart_omits_only_its_runtime_links(self):
+        self.wrapper_selected_browser_case()
+
+    def test_wrapper_absolute_browser_state_restart_does_not_initialize_real_source(self):
+        self.wrapper_selected_browser_case(absolute=True)
+
+    def test_wrapper_selected_browser_root_link_remains_unsafe(self):
+        self.wrapper_selected_browser_case(unsafe=True)
+
+    def test_selected_browser_root_symlink_refuses_before_project_copy(self):
+        self.make_wrapper('exec "$@"\n')
+        self.value['workspace'] = str(self.project)
+        state = self.project / '.symphony-browser-config'
+        state.symlink_to(self.home, target_is_directory=True)
+        self.snapshot_fixture('raise AssertionError("unsafe browser root reached launch")')
+        with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+            self.run_mode('denial-fixture')
+        self.assertTrue(state.is_symlink())
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_retained_browser_configuration_is_validated_then_rebased_without_real_writes(self):
+        self.make_wrapper('exec "$@"\n')
+        program = ("import json,os,pathlib,sys; value=json.loads(sys.argv[1]); "
+                   "selected=pathlib.Path(os.environ['CHROME_CONFIG_HOME']); "
+                   "assert selected.parent==pathlib.Path(value['workspace']); "
+                   "assert os.environ['XDG_CONFIG_HOME']!=os.environ['CHROME_CONFIG_HOME']; "
+                   "chain={**value['expected_image_chain'],'node':{'path':os.path.realpath(sys.executable),'sha256':'a'*64}}; "
+                   "os.write(value['receipt_fd'],json.dumps(chain).encode()); os.close(value['receipt_fd']); "
+                   "os.execv(sys.argv[2],sys.argv[2:])")
+        self.snapshot_fixture(program)
+        chrome = self.workspace / 'team-chrome' / 'config'
+        with patch.dict(os.environ, CHROME_CONFIG_HOME=str(chrome), XDG_CONFIG_HOME='/ignored-invalid-lower-priority'):
+            self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        self.assertFalse(chrome.parent.exists())
+        for selected in ('relative', str(self.home / 'config')):
+            with patch.dict(os.environ, CHROME_CONFIG_HOME=selected), \
+                    self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+                self.run_mode('denial-fixture')
+
+    def test_wrapper_derived_inherited_browser_state_keeps_setup_and_init_disposable(self):
+        self.make_wrapper('mkdir -p "$CHROME_CONFIG_HOME/setup-only"\nexport CHROME_CONFIG_HOME="$CHROME_CONFIG_HOME/subdir"\nexec "$@"\n')
+        self.value['workspace'] = str(self.project)
+        self.snapshot_fixture(self.managed_browser_program())
+        original = self.project / 'team-state'
+        with patch.dict(os.environ, CHROME_CONFIG_HOME=str(original)):
+            self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        self.assertFalse(original.exists(), 'setup or initialization wrote real source')
+        original.mkdir()
+        (original / 'subdir').symlink_to(self.home, target_is_directory=True)
+        with patch.dict(os.environ, CHROME_CONFIG_HOME=str(original)), \
+                self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+            self.run_mode('denial-fixture')
+        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual([path.name for path in original.iterdir()], ['subdir'])
+
+    def test_startup_default_and_wrapper_explicit_source_obey_original_policy(self):
+        wrapper = self.make_wrapper('exec "$@"\n')
+        self.snapshot_fixture(self.managed_browser_program())
+        self.assertNotEqual(self.project, self.workspace)
+        self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        wrapper.write_text('#!/bin/bash\nexport CHROME_CONFIG_HOME="$PWD/var/chrome"\nexec "$@"\n')
+        with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+            self.run_mode('denial-fixture')
+        self.assertFalse((self.project / 'var').exists())
+        self.value['policy']['writableRoots'] = [str(self.project)]
+        self.assertTrue(self.run_mode('denial-fixture')['ready'])
+        self.assertFalse((self.project / 'var').exists())
+
     def test_retained_guard_error_receipt_distinguishes_config_from_toolchain(self):
         self.make_wrapper('exec "$@"\n')
         self.snapshot_fixture("")
-        for code in ("sandbox_unqualified_config", "sandbox_toolchain_unqualified", "sandbox_launch_failed"):
+        for code in ("sandbox_unqualified_config", "sandbox_toolchain_unqualified", "sandbox_launch_failed",
+                     "sandbox_browser_config_unsafe", "sandbox_browser_config_unwritable"):
             self.value["launch_program"] = ("import json,os,sys; value=json.loads(sys.argv[1]); "
                 "os.write(value['receipt_fd'], " + repr(json.dumps({"error": code}).encode()) + "); "
                 "print('secret-child-output',file=sys.stderr); sys.exit(78)")

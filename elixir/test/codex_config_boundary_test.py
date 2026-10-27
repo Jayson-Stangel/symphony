@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -633,6 +634,128 @@ class NpmLaunchChainTest(unittest.TestCase):
             boundary.image_chain(str(self.native))
 
 
+class BrowserEnvironmentTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="browser-state-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.workspace = self.root / "task with spaces"
+        self.workspace.mkdir()
+        self.home = self.root / "native-home"
+        self.home.mkdir()
+        self.auth = self.home / "auth.json"
+        self.auth.write_text("synthetic-auth-canary")
+        self.value = {"workspace": str(self.workspace), "browser_policy": {
+            "writableRoots": [str(self.workspace)], "excludeSlashTmp": True, "excludeTmpdirEnvVar": True}}
+        self.env = {"HOME": str(self.home), "CODEX_HOME": str(self.home)}
+
+    def configure(self, **environment):
+        return boundary.browser_environment(self.value, {**self.env, **environment})
+
+    def test_cold_restart_pruned_state_and_ordinary_shell_children(self):
+        selected = self.workspace / ".symphony-browser-config"
+        self.assertFalse(selected.exists())
+        environment = self.configure()
+        self.assertEqual(environment["CHROME_CONFIG_HOME"], str(selected))
+        self.assertEqual(stat.S_IMODE(selected.stat().st_mode), 0o700)
+        (selected / "retained").write_text("retained")
+        self.assertEqual(self.configure(), environment)
+        self.assertEqual((selected / "retained").read_text(), "retained")
+        for mode in ("-c", "-lc"):
+            result = subprocess.run(["/bin/bash", mode, "sh -c 'printf %s \"$CHROME_CONFIG_HOME\"'"],
+                                    cwd=self.workspace, env={**os.environ, **environment},
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout, str(selected))
+        (selected / "retained").unlink()
+        selected.rmdir()
+        self.assertEqual(self.configure(), environment)
+        self.assertTrue(selected.is_dir())
+        self.assertEqual(self.auth.read_text(), "synthetic-auth-canary")
+        self.assertNotIn("XDG_CONFIG_HOME", environment)
+        self.assertEqual(environment["HOME"], str(self.home))
+
+    def test_explicit_chrome_then_xdg_precedence_is_preserved(self):
+        chrome = str(self.workspace / "team-chrome")
+        xdg = str(self.workspace / "team-xdg")
+        result = self.configure(CHROME_CONFIG_HOME=chrome, XDG_CONFIG_HOME=xdg)
+        self.assertEqual(result["CHROME_CONFIG_HOME"], chrome)
+        self.assertEqual(result["XDG_CONFIG_HOME"], xdg)
+        self.assertTrue(Path(chrome).is_dir())
+        self.assertFalse(Path(xdg).exists())
+        result = self.configure(XDG_CONFIG_HOME=xdg)
+        self.assertEqual(result["XDG_CONFIG_HOME"], xdg)
+        self.assertNotIn("CHROME_CONFIG_HOME", result)
+        self.assertTrue(Path(xdg).is_dir())
+
+    def test_explicit_additional_write_root_needs_no_new_grant(self):
+        extra = self.root / "team-state"
+        extra.mkdir()
+        self.value["browser_policy"]["writableRoots"].append(str(extra))
+        selected = str(extra / "browser")
+        self.assertEqual(self.configure(CHROME_CONFIG_HOME=selected)["CHROME_CONFIG_HOME"], selected)
+        self.assertTrue(Path(selected).is_dir())
+        self.assertEqual(self.value["browser_policy"]["writableRoots"], [str(self.workspace), str(extra)])
+
+    def test_readonly_validation_does_not_initialize_real_state(self):
+        selected = self.workspace / "cold" / "config"
+        environment = {**self.env, "CHROME_CONFIG_HOME": str(selected)}
+        self.assertEqual(boundary.browser_environment(self.value, environment, initialize=False), environment)
+        self.assertFalse(selected.parent.exists())
+
+    def test_relative_outside_protected_empty_and_unsafe_destinations_refuse(self):
+        for selected in ("", "relative", str(self.home / "config"), str(self.root / "outside"),
+                         str(self.workspace), str(self.workspace / ".codex" / "config"),
+                         str(self.workspace / ".git" / "config")):
+            with self.subTest(selected=selected), self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unsafe"):
+                self.configure(CHROME_CONFIG_HOME=selected)
+        self.assertEqual(self.auth.read_text(), "synthetic-auth-canary")
+        self.assertFalse((self.home / "config").exists())
+
+    def test_symlink_and_non_directory_refuse_without_touching_target(self):
+        link = self.workspace / ".symphony-browser-config"
+        link.symlink_to(self.home, target_is_directory=True)
+        with self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unsafe"):
+            self.configure()
+        self.assertEqual(list(self.home.iterdir()), [self.auth])
+        link.unlink()
+        link.write_text("unrelated-data")
+        with self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unsafe"):
+            self.configure()
+        self.assertEqual(link.read_text(), "unrelated-data")
+
+    def test_shared_foreign_and_unwritable_directories_refuse(self):
+        selected = self.workspace / ".symphony-browser-config"
+        selected.mkdir(mode=0o777)
+        selected.chmod(0o777)
+        with self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unsafe"):
+            self.configure()
+        selected.chmod(0o500)
+        with self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unwritable"):
+            self.configure()
+        selected.chmod(0o700)
+        real_fstat = os.fstat
+        def foreign(descriptor):
+            info = real_fstat(descriptor)
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=os.geteuid() + 1)
+        with patch.object(os, "fstat", foreign), self.assertRaisesRegex(boundary.Refusal, "sandbox_browser_config_unsafe"):
+            self.configure()
+
+    def test_probe_deferred_links_are_bounded_relative_strict_browser_descendants(self):
+        probe_workspace = self.root / 'disposable'
+        probe_workspace.mkdir()
+        source = {**self.value, 'home': str(self.home), 'codex_home': str(self.home)}
+        value = {'workspace': str(probe_workspace), 'browser_source': source, 'browser_omitted_links': []}
+        for omitted in (['../escape'], ['/absolute'], ['.symphony-browser-config'],
+                        ['.symphony-browser-config/.codex/config'], ['unrelated/socket'],
+                        ['.symphony-browser-config/socket'] * 257):
+            with self.subTest(omitted=omitted[:1]), self.assertRaisesRegex(boundary.Refusal, 'sandbox_browser_config_unsafe'):
+                boundary.probe_browser_environment({**value, 'browser_omitted_links': omitted}, self.env)
+        result = boundary.probe_browser_environment({**value, 'browser_omitted_links': [
+            '.symphony-browser-config/chromium/SingletonSocket']}, self.env)
+        self.assertEqual(result['CHROME_CONFIG_HOME'], str(probe_workspace / '.symphony-browser-config'))
+        self.assertFalse((self.workspace / '.symphony-browser-config').exists())
+
+
 class LaunchReceiptTest(unittest.TestCase):
     def setUp(self):
         self.launch = dict(boundary.__dict__)
@@ -695,6 +818,31 @@ class LaunchReceiptTest(unittest.TestCase):
                 patch.object(sys, "stderr", output), patch.object(os, "execve", side_effect=AssertionError("must refuse before exec")):
             self.assertEqual(self.launch["launch_main"](), 78)
         self.assertEqual(output.getvalue(), "symphony: sandbox_toolchain_unqualified before native launch\n")
+
+    def test_both_probe_and_actual_launch_initialize_browser_after_attestation(self):
+        class Executed(BaseException):
+            pass
+        executable = str(Path(sys.executable).resolve())
+        chain = {"node": None}
+        for operation in ("probe", "exec"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory(prefix="launch-browser-") as temp:
+                workspace = Path(temp).resolve()
+                value = {"operation": operation, "workspace": str(workspace), "expected_launch_chain": chain,
+                         "browser_source": {"workspace": str(workspace), "home": "/native-home", "codex_home": "/native-home/.codex"}}
+                self.launch["attest_context"] = lambda *args, **kwargs: {"executable": executable}
+                self.launch["attest_runtime_chain"] = lambda *args, **kwargs: chain
+                receipts, calls = [], []
+                self.launch["write_launch_receipt"] = lambda value, receipt: receipts.append(receipt)
+                def execute(binary, args, environment):
+                    calls.append((binary, args, environment))
+                    raise Executed()
+                with patch.object(sys, "argv", ["-c", json.dumps(value), executable, "app-server"]), \
+                        patch.dict(os.environ, {"HOME": "/native-home", "CODEX_HOME": "/native-home/.codex"}, clear=True), \
+                        patch.object(os, "execve", execute), self.assertRaises(Executed):
+                    self.launch["launch_main"]()
+                self.assertEqual(calls[0][2]["CHROME_CONFIG_HOME"], str(workspace / ".symphony-browser-config"))
+                self.assertTrue((workspace / ".symphony-browser-config").is_dir())
+                self.assertEqual(receipts, [chain] if operation == "probe" else [])
 
     def test_success_receipt_retains_existing_raw_chain_schema(self):
         read_fd, write_fd = os.pipe()

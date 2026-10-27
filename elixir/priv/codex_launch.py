@@ -3,7 +3,9 @@ import json
 import sys
 
 LAUNCH_REFUSALS = frozenset(("sandbox_unqualified_config", "sandbox_unsupported_command",
-                            "sandbox_toolchain_unqualified", "sandbox_launch_failed"))
+                            "sandbox_toolchain_unqualified", "sandbox_launch_failed",
+                            "sandbox_browser_config_unsafe", "sandbox_browser_config_unwritable"))
+
 
 
 def write_launch_receipt(value, receipt):
@@ -43,16 +45,18 @@ def launch_main():
         except (OSError, RuntimeError, ValueError, TypeError):
             raise Refusal("sandbox_toolchain_unqualified")
         chain = attest_runtime_chain(value, executable, require_launch_chain=operation != "probe")
+        if operation == "exec" and chain != value.get("expected_launch_chain"):
+            raise Refusal("sandbox_toolchain_unqualified")
+        environment = (probe_browser_environment(value, os.environ)
+                       if operation == "probe" else browser_environment(value, os.environ))
         if operation == "probe":
             write_launch_receipt(value, chain)
-        elif chain != value.get("expected_launch_chain"):
-            raise Refusal("sandbox_toolchain_unqualified")
         # Preserve the official frontend's package/environment semantics while
         # making interpreter selection explicit after trusted wrapper setup.
         if chain["node"] is None:
-            os.execve(executable, [executable, *args[1:]], os.environ)
+            os.execve(executable, [executable, *args[1:]], environment)
         node = chain["node"]["path"]
-        os.execve(node, [node, executable, *args[1:]], os.environ)
+        os.execve(node, [node, executable, *args[1:]], environment)
     except Exception as error:
         code = str(error) if isinstance(error, Refusal) and str(error) in LAUNCH_REFUSALS else "sandbox_launch_failed"
         # This private pipe carries only fixed codes, never child output or

@@ -123,10 +123,13 @@ defmodule SymphonyElixir.Codex.SandboxReadiness do
 
       case System.find_executable("python3") do
         python when is_binary(python) ->
+          {:ok, runtime} = Config.resolve_codex_runtime_settings(settings, workspace, [])
+
           input =
             boundary_input(settings, workspace)
             |> Map.merge(%{
               operation: "exec",
+              browser_policy: runtime.turn_sandbox_policy,
               expected_launch_chain: chain,
               expected_image_chain: Map.delete(chain, "node"),
               workspace: workspace,

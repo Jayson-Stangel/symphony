@@ -65,3 +65,15 @@ runner_codex_run docker --rm \
   --volume /workspaces --volume /var/lib/symphony \
   --volume "$root/runner:/qualification:ro" \
   --entrypoint /usr/bin/timeout "$image_id" 180 python3 /qualification/test_npm_cache.py --protected
+
+# The browser default is applied by the shipped post-attestation launch guard,
+# not by a test-only environment prefix. Only this empty synthetic config is
+# mounted; no host home, native account, project or existing runtime is used.
+browser_profile=$(mktemp -d)
+trap 'rm -rf "$browser_profile"' EXIT
+: > "$browser_profile/config.toml"
+runner_codex_run docker --rm --network none \
+  --volume /workspaces \
+  --volume "$browser_profile/config.toml:/native-profile/config.toml:ro" \
+  --volume "$root/runner:/qualification:ro" \
+  --entrypoint /usr/bin/timeout "$image_id" 300 python3 /qualification/browser/protected.py
