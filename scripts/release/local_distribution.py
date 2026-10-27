@@ -31,6 +31,7 @@ import production_release as production
 from component_provenance import api, api_command, REPOSITORY, instant
 from macos_distribution import checksum, require, write_json, INSTALL_INSTRUCTIONS
 import package_diagnostics
+from signing_payload import bundle_files, compare_package_payload
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_BYTES = production.MAX_BYTES
@@ -162,28 +163,6 @@ def unpack(raw, destination):
             target.write_bytes(archive.read(entry))
 
 
-def bundle_files(archive_path, with_directories=False):
-    result = {}
-    total = 0; names = set(); directories = {}
-    with tarfile.open(archive_path, 'r:gz') as archive:
-        require(not archive.pax_headers, 'extended archive metadata refused')
-        for member in archive:
-            name = member.name.removeprefix('./')
-            path = PurePosixPath(name)
-            require((member.isfile() or member.isdir()) and not path.is_absolute() and '..' not in path.parts
-                    and '\\' not in name and name == str(path) and name not in names
-                    and (member.isdir() or name != '.') and not member.pax_headers and member.mode & 0o7000 == 0,
-                    'unsafe or duplicate package member')
-            names.add(name)
-            if member.isdir():
-                directories[name] = stat.S_IMODE(member.mode)
-                continue
-            total += member.size
-            require(total <= MAX_BYTES and len(result) < 10000, 'package payload exceeds bound')
-            result[name] = (archive.extractfile(member).read(), stat.S_IMODE(member.mode))
-    return (result, directories) if with_directories else result
-
-
 def executable_identity(raw):
     """Bind every ARM64 Mach-O byte except the signature and its exact size fields.
 
@@ -237,32 +216,6 @@ def executable_identity(raw):
     struct.pack_into('<Q', normalized, segment + 32, ((unsigned_size + 16383) // 16384) * 16384)
     struct.pack_into('<Q', normalized, segment + 48, unsigned_size)
     return hashlib.sha256(normalized).hexdigest()
-
-
-def compare_package_payload(signed_archive, qualified_archive):
-    """The same exact qualified payload comparison before upload and on ingress."""
-    current, directories = bundle_files(signed_archive, with_directories=True)
-    original, original_directories = bundle_files(qualified_archive, with_directories=True)
-    require(directories == original_directories, 'signed payload directory inventory/modes differ')
-    require('distribution-status.txt' in original and 'signing.json' not in original,
-            'original qualification is not the expected unsigned package')
-    require(set(current) == (set(original) - {'distribution-status.txt'}) | {'signing.json'},
-            'signed payload file inventory differs from qualification')
-    for name in set(original) - {'libexec/symphony-host', 'files.sha256', 'distribution-status.txt'}:
-        require(current[name] == original[name], 'signed package source bytes or permissions differ from qualification')
-    require(current['libexec/symphony-host'][1] == original['libexec/symphony-host'][1], 'signed helper permissions differ')
-    require(current['files.sha256'][1] == original['files.sha256'][1], 'signed inventory permissions differ')
-    require(current['signing.json'][1] == 0o644, 'signed receipt permissions differ')
-    lines = current['files.sha256'][0].decode().splitlines()
-    expected = {name: hashlib.sha256(raw).hexdigest() for name, (raw, _) in current.items() if name != 'files.sha256'}
-    observed = {}
-    for line in lines:
-        require(re.fullmatch(r'[a-f0-9]{64}  \./[^\r\n]+', line), 'invalid signed payload inventory')
-        digest, name = line.split('  ./', 1)
-        require(name not in observed, 'duplicate signed payload inventory')
-        observed[name] = digest
-    require(observed == expected, 'signed payload inventory does not match actual files')
-    return current
 
 
 def verify_payload(folder, qualified):

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from macos_distribution import checksum, require, write_json
 from manager_envelope import load_release
 import manager_version
+from signing_payload import helper_hash
 
 MAX_BYTES = 512 * 1024 * 1024
 
@@ -85,14 +86,6 @@ def download(run_id, attempt, revision, name, destination, fetch=api):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(entry))
     return {key: item[key] for key in ('id', 'name', 'digest')}
-
-
-def helper_hash(archive):
-    with tarfile.open(archive, 'r:gz') as bundle:
-        entries = [e for e in bundle if e.name in ('./libexec/symphony-host', 'libexec/symphony-host')]
-        require(len(entries) == 1 and entries[0].isfile() and entries[0].size <= MAX_BYTES,
-                'production archive helper missing')
-        return hashlib.sha256(bundle.extractfile(entries[0]).read()).hexdigest()
 
 
 def same_manifest(left, right):

@@ -576,7 +576,7 @@ def build(manifest, helper, output, env, qualified_archive=None):
     original = checksum(helper)
     require(qualified_archive is not None and qualified_archive.is_file() and not qualified_archive.is_symlink(),
             'original qualified package is required before signing')
-    from production_release import helper_hash
+    from signing_payload import helper_hash
     require(helper_hash(qualified_archive) == original, 'qualified package helper differs')
     output.mkdir(parents=True)
     evidence = output / 'evidence'
@@ -602,7 +602,7 @@ def build(manifest, helper, output, env, qualified_archive=None):
             receipt = json.loads((bundle / 'signing.json').read_text())
             require(receipt['original_qualified_helper_sha256'] == original,
                     'qualified helper binding differs')
-            from local_distribution import compare_package_payload
+            from signing_payload import compare_package_payload
             compare_package_payload(archive, qualified_archive)
             run(bundle / 'libexec/symphony-host', 'verify-files', bundle)
             # Apple's custom-installer guidance calls for payload qualification
