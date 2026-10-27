@@ -1295,10 +1295,11 @@ func zshSetup(_ operation: String, home path: String, activation: String) throws
     // whose original final line did not end with a newline, byte for byte.
     let block = Data(("\n" + start + "\n[ ! -r " + quoted + " ] || . " + quoted + "\n" + end + "\n").utf8)
     var replacement = original
-    if operation == "zsh-setup-remove" {
+    if operation == "zsh-setup-remove" || operation == "zsh-setup-status" {
         guard let range = replacement.range(of: block) else { throw ZshSetupError.unsafe }
         replacement.removeSubrange(range)
         try zshRequire(replacement.range(of: Data(start.utf8)) == nil && replacement.range(of: Data(end.utf8)) == nil)
+        if operation == "zsh-setup-status" { return }
     } else {
         try zshRequire(original.range(of: Data(start.utf8)) == nil && original.range(of: Data(end.utf8)) == nil)
         if operation == "zsh-setup-check" { return }
@@ -1312,6 +1313,11 @@ func zshSetup(_ operation: String, home path: String, activation: String) throws
     #if canImport(Darwin)
     if profile >= 0 { try zshRequire(fcopyfile(profile, output, nil, copyfile_flags_t(COPYFILE_ACL | COPYFILE_XATTR)) == 0) }
     #endif
+    if let before {
+        // A temporary file inherits the home's group; preserving only mode
+        // could otherwise grant access to a different group on a 0640 profile.
+        try zshRequire(fchown(output, before.st_uid, before.st_gid) == 0)
+    }
     try zshRequire(fchmod(output, before.map { $0.st_mode & 0o777 } ?? 0o600) == 0)
     try replacement.withUnsafeBytes { bytes in
         var offset = 0
@@ -1333,14 +1339,14 @@ func zshSetup(_ operation: String, home path: String, activation: String) throws
     try zshRequire(fsync(home) == 0)
 }
 
-let arity = ["first-install-path-check": 3, "zsh-setup-check": 3, "zsh-setup-install": 3, "zsh-setup-remove": 3, "validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+let arity = ["first-install-path-check": 3, "zsh-setup-status": 3, "zsh-setup-check": 3, "zsh-setup-install": 3, "zsh-setup-remove": 3, "validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
     case "first-install-path-check":
         do { try firstInstallPathCheck(home: args[1], target: args[2]) }
         catch { fail("unsafe first-install path; preserve existing storage and inspect ownership, permissions and symlinks") }
-    case "zsh-setup-check", "zsh-setup-install", "zsh-setup-remove":
+    case "zsh-setup-check", "zsh-setup-install", "zsh-setup-remove", "zsh-setup-status":
         do { try zshSetup(command, home: args[1], activation: args[2]) }
         catch { fail("unsafe or existing managed zsh shell setup; preserve ~/.zshrc and inspect its ownership, permissions and Symphony block") }
     case "runner-import-endpoint":

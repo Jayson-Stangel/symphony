@@ -325,6 +325,11 @@ package_shell_context() {
 }
 
 package_shell_activation_instructions() {
+  if [ "${package_platform:-}" = macos ] && package_helper zsh-setup-status "$HOME" "$package_app_home/activate.sh" >/dev/null 2>&1; then
+    printf 'Managed zsh setup is installed in ~/.zshrc. Use this installation in a new Terminal window.\n'
+    printf 'Remove only the managed block with symphony install --remove-zsh-setup.\n'
+    return
+  fi
   if [ ! -f "$package_app_home/activate.sh" ]; then
     printf 'This installation has no saved activation file. For this effective context, run in bash/zsh:\n'
     package_shell_environment
@@ -382,7 +387,7 @@ package_first_mac_preflight() {
   package_helper zsh-setup-check "$HOME" "$package_app_home/activate.sh" || return
   # Read the user's normal zsh startup files without executing any Symphony
   # command. Aliases/functions and login-profile PATH selections outrank PATH.
-  /bin/zsh -lic 'if whence symphony >/dev/null 2>&1; then exit 73; fi' </dev/null >/dev/null 2>&1 || die 'first installation found conflicting zsh command selection or unsupported startup files; preserved unchanged'
+  /bin/zsh -lic '[[ ${ZDOTDIR:-$HOME} = $HOME && -o rcs ]] || exit 74; if whence symphony >/dev/null 2>&1; then exit 73; fi' </dev/null >/dev/null 2>&1 || die 'first installation found conflicting zsh command selection or unsupported startup files; preserved unchanged'
   package_preflight_links
 }
 
@@ -415,6 +420,7 @@ package_install() (
     esac
   done
   if "$remove_zsh_setup"; then
+    ! "$stage_only" && ! "$accept_zsh_setup" && ! "$no_shell_handoff" || die '--remove-zsh-setup cannot be combined with installation setup or staging options'
     package_first_mac_defaults || die 'managed zsh setup removal requires the default Mac installation paths'
     package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
     printf 'Removed only the Symphony managed zsh block. Existing terminals and installation files are unchanged.\n'
@@ -461,6 +467,12 @@ package_install() (
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
   if "$first_mac"; then
     package_helper zsh-setup-install "$HOME" "$package_app_home/activate.sh" || return
+    # Verify the final startup path, including .zlogin after .zshrc. Do not claim
+    # readiness when user startup files skip or override the managed block.
+    if ! /bin/zsh -lic '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
+      package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
+      die 'zsh startup files skipped or overrode Symphony setup; the managed block was removed. Installation files remain at the printed paths; no ready terminal handoff was made.'
+    fi
     printf 'zsh setup installed. New interactive zsh terminals and login sessions select this installation.\n'
   else
     package_shell_context

@@ -48,12 +48,15 @@ class ShellSetupTest(unittest.TestCase):
     def test_check_is_read_only_and_missing_profile_install_remove(self):
         self.ok(self.call("check"))
         self.assertFalse(self.profile.exists())
+        self.refused(self.call("status"))
         self.ok(self.call("install"))
+        self.ok(self.call("status"))
         self.assertEqual(self.profile.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.profile.stat().st_nlink, 1)
         self.assertEqual(self.profile.read_bytes().count(START), 1)
         self.ok(self.call("remove"))
         self.assertEqual(self.profile.read_bytes(), b"")
+        self.refused(self.call("status"))
         self.assertEqual(list(self.home.glob(".symphony-zsh-*")), [])
 
     def test_preserve_arbitrary_profile_bytes_mode_and_final_line(self):
@@ -70,17 +73,36 @@ class ShellSetupTest(unittest.TestCase):
                 self.assertEqual(self.profile.read_bytes(), original)
                 self.assertEqual(self.profile.stat().st_mode & 0o777, 0o640)
 
+    def test_preserve_profile_owner_and_group(self):
+        self.profile.write_bytes(b"# preserve owner and group\n")
+        self.profile.chmod(0o640)
+        groups = set(os.getgroups()) | {os.getgid(), os.getegid()}
+        alternatives = groups - {self.home.stat().st_gid}
+        if alternatives:
+            # Only a group the current account already belongs to; no sudo or
+            # foreign account is needed to expose temporary-file inheritance.
+            os.chown(self.profile, -1, min(alternatives))
+        before = self.profile.stat()
+        expected = (before.st_uid, before.st_gid, before.st_mode & 0o777)
+        for operation in ("install", "remove"):
+            self.ok(self.call(operation))
+            after = self.profile.stat()
+            self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777), expected)
+        self.assertEqual(self.profile.read_bytes(), b"# preserve owner and group\n")
+
     def test_repeat_and_changed_managed_block_are_preserved_and_refused(self):
         self.ok(self.call("install"))
         original = self.profile.read_bytes()
         self.refused(self.call("check"))
         self.refused(self.call("install"))
         self.assertEqual(self.profile.read_bytes(), original)
+        self.refused(self.call("status", activation=self.home / "other-activation"))
         self.refused(self.call("remove", activation=self.home / "other-activation"))
         self.assertEqual(self.profile.read_bytes(), original)
         changed = original.replace(b"[ ! -r", b"# changed [ ! -r")
         self.profile.write_bytes(changed)
         self.refused(self.call("remove"))
+        self.refused(self.call("status"))
         self.assertEqual(self.profile.read_bytes(), changed)
 
     def test_managed_markers_in_unowned_text_are_not_replaced(self):

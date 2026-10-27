@@ -58,6 +58,12 @@ class FirstMacInstallMixin:
         result = subprocess.run(['/bin/zsh', '-lic', 'symphony init --linear-project fixture'],
                                 cwd=project, env=clean, text=True, capture_output=True)
         self.assertIn('Project: initialized', self.assertOK(result))
+        doctor = subprocess.run(['/bin/zsh', '-lic', 'symphony doctor'], env=clean, text=True, capture_output=True)
+        self.assertIn('Managed zsh setup is installed', self.assertOK(doctor))
+        self.assertNotIn('No shell profiles were changed', doctor.stdout)
+        mixed = subprocess.run([bundle / 'install.sh', '--stage-only', '--remove-zsh-setup'], env=env, text=True, capture_output=True)
+        self.assertNotEqual(mixed.returncode, 0)
+        self.assertEqual(profile.read_bytes(), content)
         repeat = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup'], env=env, text=True, capture_output=True)
         self.assertNotEqual(repeat.returncode, 0)
         self.assertIn('existing Symphony state', repeat.stderr)
@@ -99,6 +105,28 @@ class FirstMacInstallMixin:
             self.assertIn('conflicting zsh command selection', result.stderr)
             self.assertEqual(profile.read_text(), text)
             self.assertFalse((home / '.local').exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
+    def test_first_mac_refuses_redirected_or_disabled_startup(self):
+        bundle = self.bundle(); env, home = self.first_mac_environment()
+        startup = home / '.zshenv'
+        for text in ('export ZDOTDIR=/nonexistent\n', 'unsetopt RCS\n'):
+            startup.write_text(text)
+            result = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup'], env=env, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('unsupported startup files', result.stderr)
+            self.assertEqual(startup.read_text(), text)
+            self.assertFalse((home / '.local').exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
+    def test_first_mac_early_profile_return_never_claims_ready(self):
+        bundle = self.bundle(); env, home = self.first_mac_environment()
+        profile = home / '.zshrc'; profile.write_text('return\n')
+        result = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup'], env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('managed block was removed', result.stderr)
+        self.assertEqual(profile.read_text(), 'return\n')
+        self.assertNotIn('zsh setup installed', result.stdout)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
     def test_first_mac_interactive_handoff_uses_normal_command(self):
