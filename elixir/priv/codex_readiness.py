@@ -197,8 +197,15 @@ def check(value):
         retained_config = retained_context["config_bytes"]
         # Validate the real explicit destination without writing outside the
         # disposable diagnostic. The actual launch validates again post-wrapper.
-        browser_env = browser_environment(value, os.environ, initialize=False)
-        browser_state = Path(browser_env.get("CHROME_CONFIG_HOME", browser_env.get("XDG_CONFIG_HOME")))
+        try:
+            browser_env = browser_environment(value, os.environ, initialize=False)
+            browser_state = Path(browser_env.get("CHROME_CONFIG_HOME", browser_env.get("XDG_CONFIG_HOME")))
+        except Refusal as error:
+            # A trusted wrapper may replace inherited browser configuration.
+            # The post-wrapper probe guard still validates its final real path
+            # before native launch; no original path is initialized here.
+            if not wrapper or str(error) not in ("sandbox_browser_config_unsafe", "sandbox_browser_config_unwritable"):
+                raise
         try:
             value["expected_image_chain"] = image_chain(retained_context["executable"])
         except Refusal:

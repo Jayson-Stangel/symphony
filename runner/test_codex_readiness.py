@@ -421,12 +421,12 @@ os.execv(sys.argv[2],sys.argv[2:])
     def test_wrapper_selected_browser_root_link_remains_unsafe(self):
         self.wrapper_selected_browser_case(unsafe=True)
 
-    def test_selected_browser_root_symlink_refuses_before_project_copy(self):
+    def test_selected_browser_root_symlink_refuses_before_native_launch(self):
         self.make_wrapper('exec "$@"\n')
         self.value['workspace'] = str(self.project)
         state = self.project / '.symphony-browser-config'
         state.symlink_to(self.home, target_is_directory=True)
-        self.snapshot_fixture('raise AssertionError("unsafe browser root reached launch")')
+        self.snapshot_fixture(self.managed_browser_program())
         with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
             self.run_mode('denial-fixture')
         self.assertTrue(state.is_symlink())
@@ -434,14 +434,7 @@ os.execv(sys.argv[2],sys.argv[2:])
 
     def test_retained_browser_configuration_is_validated_then_rebased_without_real_writes(self):
         self.make_wrapper('exec "$@"\n')
-        program = ("import json,os,pathlib,sys; value=json.loads(sys.argv[1]); "
-                   "selected=pathlib.Path(os.environ['CHROME_CONFIG_HOME']); "
-                   "assert selected.parent==pathlib.Path(value['workspace']); "
-                   "assert os.environ['XDG_CONFIG_HOME']!=os.environ['CHROME_CONFIG_HOME']; "
-                   "chain={**value['expected_image_chain'],'node':{'path':os.path.realpath(sys.executable),'sha256':'a'*64}}; "
-                   "os.write(value['receipt_fd'],json.dumps(chain).encode()); os.close(value['receipt_fd']); "
-                   "os.execv(sys.argv[2],sys.argv[2:])")
-        self.snapshot_fixture(program)
+        self.snapshot_fixture(self.managed_browser_program())
         chrome = self.workspace / 'team-chrome' / 'config'
         with patch.dict(os.environ, CHROME_CONFIG_HOME=str(chrome), XDG_CONFIG_HOME='/ignored-invalid-lower-priority'):
             self.assertTrue(self.run_mode('denial-fixture')['ready'])
@@ -479,6 +472,62 @@ os.execv(sys.argv[2],sys.argv[2:])
         self.value['policy']['writableRoots'] = [str(self.project)]
         self.assertTrue(self.run_mode('denial-fixture')['ready'])
         self.assertFalse((self.project / 'var').exists())
+
+    def unsafe_inherited_browser_case(self, key, replacement, unrelated_link=False):
+        setup = 'mkdir -p "${CHROME_CONFIG_HOME:-$XDG_CONFIG_HOME}/setup-only"\n'
+        if replacement:
+            setup += f'export {key}="$PWD/owned-browser"\n'
+        self.make_wrapper(setup + 'exec "$@"\n')
+        self.value['workspace'] = str(self.project)
+        self.snapshot_fixture(self.managed_browser_program())
+        auth = self.home / 'auth.json'
+        auth.write_text('{"synthetic_auth_canary":true}')
+        inherited = self.home / 'browser-config'
+        if unrelated_link:
+            (self.project / 'unrelated-link').symlink_to(self.home, target_is_directory=True)
+        source_before = sorted(path.name for path in self.project.iterdir())
+        with patch.dict(os.environ):
+            os.environ.pop('CHROME_CONFIG_HOME', None)
+            os.environ.pop('XDG_CONFIG_HOME', None)
+            os.environ[key] = str(inherited)
+            if replacement and not unrelated_link:
+                self.assertTrue(self.run_mode('denial-fixture')['ready'])
+            else:
+                with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+                    self.run_mode('denial-fixture')
+        self.assertEqual(sorted(path.name for path in self.project.iterdir()), source_before)
+        self.assertFalse((self.project / 'owned-browser').exists())
+        self.assertFalse(inherited.exists(), 'diagnostic setup or init wrote real inherited destination')
+        self.assertEqual(auth.read_text(), '{"synthetic_auth_canary":true}')
+        self.assertEqual(list(self.home.iterdir()), [auth])
+        if unrelated_link:
+            self.assertTrue((self.project / 'unrelated-link').is_symlink())
+
+    def test_trusted_wrapper_can_replace_unsafe_inherited_chrome_without_source_writes(self):
+        self.unsafe_inherited_browser_case('CHROME_CONFIG_HOME', replacement=True)
+
+    def test_trusted_wrapper_can_replace_unsafe_inherited_xdg_without_source_writes(self):
+        self.unsafe_inherited_browser_case('XDG_CONFIG_HOME', replacement=True)
+
+    def test_unchanged_unsafe_inherited_chrome_refuses_at_final_guard(self):
+        self.unsafe_inherited_browser_case('CHROME_CONFIG_HOME', replacement=False)
+
+    def test_unchanged_unsafe_inherited_xdg_refuses_at_final_guard(self):
+        self.unsafe_inherited_browser_case('XDG_CONFIG_HOME', replacement=False)
+
+    def test_wrapper_replacement_does_not_authorize_unrelated_source_escape_links(self):
+        self.unsafe_inherited_browser_case('CHROME_CONFIG_HOME', replacement=True, unrelated_link=True)
+
+    def test_direct_launch_still_refuses_unsafe_inherited_browser_destination_before_launch(self):
+        self.snapshot_fixture('raise AssertionError("unsafe direct launch reached guard")')
+        for key in ('CHROME_CONFIG_HOME', 'XDG_CONFIG_HOME'):
+            with self.subTest(key=key), patch.dict(os.environ):
+                os.environ.pop('CHROME_CONFIG_HOME', None)
+                os.environ.pop('XDG_CONFIG_HOME', None)
+                os.environ[key] = str(self.home / 'browser-config')
+                with self.assertRaisesRegex(probe.Refusal, '^sandbox_browser_config_unsafe$'):
+                    self.run_mode('denial-fixture')
+        self.assertEqual(list(self.home.iterdir()), [])
 
     def test_retained_guard_error_receipt_distinguishes_config_from_toolchain(self):
         self.make_wrapper('exec "$@"\n')
