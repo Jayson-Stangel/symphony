@@ -327,9 +327,12 @@ these settings changes; workflow source cannot create or enforce them.
   publisher verifies anonymous exact manifest/config/blob availability and
   preserves digests. Package visibility/token permission was not established by
   the planning chat's token (`read:packages` was unavailable); verify it for the
-  final execution. Only the registry job receives `packages:write`; only final
-  GitHub publication receives `contents:write`. The signer has read-only token
-  permissions and disposable hosted Apple Silicon execution.
+  final execution. Only the registry job receives `packages:write`. Final GitHub
+  publication and the protected Ubuntu private-staging ingress job receive
+  job-local `contents:write`; the latter needs that capability to read private
+  drafts, not to publish them. The signer and Mac verifier retain read-only
+  token permissions. Review the ingress capability risk described below before
+  approving its exact source and execution.
 
 ### Source freeze and exact execution order
 
@@ -424,63 +427,39 @@ the old workflow does not acquire these commands by merging a later controller.
 Do not move its tag, relabel old qualification, or claim that later controller
 code was part of its signed package. Integrate/review/promote this change, freeze
 the resulting source, and qualify that source before the one local signing pass.
-All existing final-byte native, fresh-account, installed update/rollback and
-public-reference acceptance obligations above still apply.
+All existing final-byte native, fresh-account, both-provider setup/task,
+installed update/rollback and public-reference acceptance obligations above still
+apply.
 
-### Prove private staging access before qualification or signing
+### Private staging capability and transport evidence
 
-Before spending a new qualification/signing run, use the optional transport-only
-mode to prove that the real read-only Actions job token can fetch a private draft
-asset. A successful operator `gh` request does not prove that job-token access:
-the two authenticated identities and permissions differ. Permission denial stops
-this probe; do not make staging public or grant `contents:write` to bypass it.
+The supported import uses three jobs: protected main-only Ubuntu staging ingress,
+read-only Mac verification, and the read-only Mac runner selector. The Ubuntu
+job has **job-local `contents:write` and `actions:read`**, behind the existing
+`macos-production-signing` environment review. Its code performs reads only:
+it downloads the original private draft asset by ID, verifies source, nonce tag,
+age, size and digest, and retains the opaque ZIP plus a closed manifest in an
+immutable Actions artifact. It never unpacks or executes the uploaded ZIP and
+does not reference signing/notary secrets, a PAT or public staging.
 
-With separate bounded approval, create one unique nonproduction draft at the
-exact reviewed main revision and upload only the fixed public probe fixture. For
-the approved operator's own Terminal, the fixture can be prepared outside the
-checkout without accessing credentials:
+The token's capability is broader than those reads: `contents:write` can mutate
+repository contents and releases. Exact reviewed main source, the protected
+environment approval, and the prohibition on executing uploaded code therefore
+remain required. This is an explicit permission decision within the approved
+promotion/import scope; successful transport evidence does not authorize another
+dispatch, qualification, Apple submission, publication or stable rollout.
 
-```sh
-probe_dir=$(mktemp -d)
-python3 - "$probe_dir/permission-probe.zip" <<'PY'
-import sys, zipfile
-with zipfile.ZipFile(sys.argv[1], 'w', compression=zipfile.ZIP_STORED) as archive:
-    entry = zipfile.ZipInfo('permission-probe.txt', date_time=(1980, 1, 1, 0, 0, 0))
-    entry.external_attr = 0o100644 << 16
-    archive.writestr(entry, b'Symphony local signing staging permission probe. Public fixture. No credentials or candidate package.\n')
-PY
-shasum -a 256 "$probe_dir/permission-probe.zip"
-```
-
-This is exactly 240 bytes, SHA256
-`bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1`.
-The later approved staging operation uses a new
-`local-signing-FULL_REVISION-RANDOM_32_HEX` draft tag, `target_commitish` equal to
-that full revision, and one asset named `permission-probe.zip`. Retain its
-original release ID, asset ID, server digest and size. These are test data, not
-signed candidate packages. Do not reuse a production draft, move a tag or publish
-the staging draft.
-
-Dispatch `macos-local-signing-import.yml` on `main`, supplying the exact
-`approved_revision`, `staging_release`, `staging_asset`, `staging_digest` and
-**`transport_probe_only=true`**, then approve its normal existing
-`macos-production-signing` environment gate. The Ubuntu job uses the same
-`contents:read`/`actions:read` token and source/asset checks as actual import. It
-downloads only the original ID/digest-bound blob with a separate 4 KiB ceiling,
-checks the fixed name/240-byte digest, and never parses, unpacks or executes its
-contents. It needs no qualification, Mac runner, signing secret or Apple action.
-
-Its receipt and `local-signing-transport-probe-...` Actions artifact prove
-transport access only. The native verification job is skipped. Even an overall
-green probe run is **refused** by the production importer because the mandatory
-`Verify locally signed distribution` job did not succeed; no signed-package
-artifact or native/Apple/cleanup receipt is fabricated. Keep the successful probe
-receipt before qualification/local signing. With explicitly approved cleanup,
-remove only the just-created verified probe draft/asset; preserve its service
-IDs and proof. No workflow or environment permission change is implied.
-
-Normal local import keeps `transport_probe_only=false` (the default) and still
-requires all qualification and native checks below.
+Actual HTTP diagnostics observed private-draft access refused with the read-only
+job token (`403`) and accepted with the explicitly approved write capability
+(`200`). The final transport proof in [run40581169862](https://github.com/Jayson-Stangel/symphony/actions/runs/40581169862)
+used the same archive-staging and handoff cores: a fixed 240-byte public fixture
+was uploaded privately, read by the write-capability producer, retained as an
+immutable artifact, and read unchanged by a separate read-only consumer. Its
+SHA256 was `bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1`.
+This proves transport for that fixture and source, not a full signed-package
+import, final-source qualification, Apple acceptance, native installation or
+customer lifecycle. Temporary feature proof/HTTP jobs and the unsupported
+read-only private-draft probe are not production entry points.
 
 ### Retain an incomplete signing attempt without changing its bytes
 
@@ -566,23 +545,44 @@ This performs fresh original-Q checks and native verification, then uploads an
 allowlisted ZIP to a **draft** whose unique tag begins `local-signing-`, never
 `v`. This is private transport visible to repository maintainers, not a completed
 release, latest release, registry publication or stable update. The upload
-receipt records the source, draft release ID, original asset ID, GitHub's SHA256
-digest and size. The ZIP contains packages and sanitized receipts only—no P12,
-password, keychain or arbitrary logs. Never publish this staging draft or use
-`--clobber` to replace an asset.
+uses the shared `stage_archive` path: structured creation captures the original
+release ID, and reads before and after upload use that ID with exact private
+draft/source/nonce and sole-asset checks. Drafts are not discovered through the
+published-release by-tag endpoint. The receipt records source, original release
+and asset IDs, GitHub's SHA256 digest and size. The ZIP contains packages and
+sanitized receipts only—no P12, password, keychain or arbitrary logs. Never publish
+this staging draft or use `--clobber` to replace an asset.
+
+If creation or upload has an uncertain outcome, stop without an automatic retry.
+Preserve the archive, source, any returned original IDs and the service ledger;
+reconcile the exact draft/asset before a separately approved retry. Changing the
+archive path or creating another nonce draft is not uncertainty recovery.
 
 The command writes a sibling `.receipt.json` with exact inputs for
 `macos-local-signing-import.yml`. Dispatch that workflow on `main` only after
 bounded approval, supplying `approved_revision`, `staging_release`,
 `staging_asset` and `staging_digest` from the receipt. Approve its existing
-`macos-production-signing` environment gate. The job references only public
-identity/team variables, not signing or notary secrets. By default it runs on
-hosted `macos-15-intel`. An exact source/run/attempt-bound backup permit may route
-only this credential-free inspection job to the isolated macOS 14 ARM64 guest.
-The job reports its actual hardware and verifies the guest architecture/version;
-it inspects the uploaded ARM64 package without executing it. The Ubuntu transport
-probe bypasses Mac selection. This routing never admits a signing job or Apple
+`macos-production-signing` environment deployments after reviewing the Ubuntu
+ingress write capability and the Mac inspection effects separately. The Mac job
+explicitly keeps `contents:read`/`actions:read` and references only public
+identity/team variables, not signing or notary secrets. It depends on successful
+staging ingress and the unchanged runner selector. By default it runs on hosted
+`macos-15-intel`; an exact source/run/attempt-bound backup permit may route only
+this credential-free inspection job to the isolated macOS 14 ARM64 guest. The
+Ubuntu ingress is not a backup-Mac consumer. The Mac reports its actual hardware
+and verifies the guest architecture/version, inspecting the uploaded ARM64
+package without executing it. This routing admits no signing job or Apple
 credentials to the guest.
+
+The Mac reads only the exact Actions artifact ID, derived name and service
+digest returned by the ingress job in the **same current run, attempt and
+source**. Admission requires one uniquely identified successful ingress job;
+artifact creation must fall within that producer job's start/completion times.
+The whole workflow is still running at this handoff, so neither whole-run
+completion nor the mutable run `updated_at` establishes artifact provenance.
+The opaque ZIP and closed manifest must bind the original release/asset IDs,
+size and digest before the existing unpacking, qualification and native checks.
+There is no latest/name-only, cross-run or cross-attempt fallback.
 
 Admission refuses mismatched source/Q/attempt, replaced or expired draft assets,
 unsafe archives, incomplete Apple or cleanup attestations, changed source files,
@@ -601,8 +601,11 @@ The successful import retains `production-local-signed-P-RUN-ATTEMPT` with an
 honest `origin: local` receipt and byte-bound native verification. Subsequent
 publication reads that original immutable Actions artifact, not the mutable
 staging draft; later draft mutation cannot substitute accepted bytes. Retention
-expiry still refuses publication. Keep the original staging upload receipt and
-import run/attempt with the final acceptance ledger.
+expiry still refuses publication. Unlike the earlier same-run transport handoff,
+publication requires the **whole import run to have completed successfully**,
+including the mandatory native producer. Ingress alone never proves native
+acceptance. Keep the original staging upload receipt, ingress artifact identity
+and import run/attempt with the final acceptance ledger.
 
 ### Publish the already signed packages through the existing gates
 
@@ -614,6 +617,15 @@ successful same-source `macos-local-signing-import.yml` run and all original-Q,
 native and immutable-artifact bindings. Its normal registry and final-release
 jobs each revalidate original inputs after their existing protected approval.
 No package bytes are rebuilt, resigned or renotarized after local signing.
+
+The publisher also retains the original production draft ID. A retry uses a
+bounded release inventory and requires one exact-tag draft; ambiguous/incomplete
+inventory or an already completed release stops publication. New creation uses
+one structured POST with no blind retry after an uncertain result. Subsequent
+reads and final completion PATCH use the original ID, with unchanged asset
+hash/size checks and live source/tag revalidation before each mutation. For an
+existing Git tag, `target_commitish` is opaque stable service metadata, not proof
+of source: the peeled immutable tag and approved-source ancestry remain binding.
 
 Hosted signing remains supported with `signed_origin=hosted` (the default).
 Neither origin grants production publication or stable rollout authority merely

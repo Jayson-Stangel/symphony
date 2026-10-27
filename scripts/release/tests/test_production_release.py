@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tarfile
@@ -11,6 +12,7 @@ import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import production_release as production
@@ -214,7 +216,83 @@ class SignedSelectionTest(unittest.TestCase):
                 inputs,signed=self.fixture(Path(temporary));mutation(signed)
                 with self.assertRaises((ValueError,KeyError,OSError)):production.verify_signed(signed,inputs,'a'*40)
 
+class PublicationPeer:
+    """Private drafts deliberately have no by-tag API representation."""
+    revision = 'a' * 40
+
+    def __init__(self, existing=True):
+        self.release = self.value() if existing else None
+        self.calls = []
+        self.mutations = []
+        self.tag_checks = 0
+        self.gets = 0
+        self.pages = None
+        self.read_change = None
+        self.create_response = None
+        self.create_error = False
+        self.partial_upload = False
+
+    def value(self):
+        return {'id': 17, 'tag_name': 'v0.0.6', 'target_commitish': self.revision,
+                'draft': True, 'prerelease': False, 'assets': []}
+
+    def verify(self):
+        self.tag_checks += 1
+
+    def invoke(self, argv, **kwargs):
+        self.calls.append(argv)
+        if argv[:3] == ['gh', 'release', 'upload']:
+            self.mutations.append(('upload', self.tag_checks))
+            if not self.partial_upload:
+                for filename in argv[4:]:
+                    path = Path(filename)
+                    self.release['assets'].append({'name': path.name, 'digest': 'sha256:' + production.checksum(path),
+                                                   'size': path.stat().st_size})
+            return SimpleNamespace(returncode=0)
+        self.assert_api(argv)
+        path = argv[2].removeprefix('repos/' + production.REPOSITORY + '/')
+        method = argv[argv.index('--method') + 1] if '--method' in argv else 'GET'
+        if method == 'GET' and path.startswith('releases?per_page=100&page='):
+            page = int(path.rsplit('=', 1)[1])
+            value = self.pages(page) if self.pages else ([self.release] if self.release else [])
+        elif method == 'POST' and path == 'releases':
+            self.mutations.append(('create', self.tag_checks))
+            payload = json.loads(kwargs['input'])
+            assert payload == {'tag_name': 'v0.0.6', 'target_commitish': self.revision,
+                               'draft': True, 'generate_release_notes': True}
+            self.release = self.value()
+            if self.create_error:
+                raise subprocess.CalledProcessError(1, argv, stderr='uncertain POST outcome')
+            value = self.create_response if self.create_response is not None else self.release
+        elif method == 'GET' and path == 'releases/17':
+            self.gets += 1
+            value = copy.deepcopy(self.release)
+            if self.read_change:
+                self.read_change(value, self.gets)
+        elif method == 'PATCH' and path == 'releases/17':
+            self.mutations.append(('complete', self.tag_checks))
+            assert json.loads(kwargs['input']) == {'draft': False, 'prerelease': False, 'make_latest': 'true'}
+            self.release.update(draft=False, prerelease=False)
+            value = self.release
+        else:
+            raise AssertionError('unexpected production API method/path')
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+
+    @staticmethod
+    def assert_api(argv):
+        assert argv[:2] == ['gh', 'api']
+        assert '/releases/tags/' not in argv[2], 'by-tag endpoint cannot discover private drafts'
+
+
 class DraftPublicationTest(unittest.TestCase):
+    def publish(self, root, file, peer, verify=None):
+        manifest = root / 'signed/release.json'
+        manifest.parent.mkdir(exist_ok=True)
+        if not manifest.exists():production.write_json(manifest, {'source_revision': peer.revision})
+        with patch.object(production, 'release_files', return_value=[file]), \
+                patch.dict(production.os.environ, GITHUB_SHA=peer.revision):
+            production.publish_release(root, 'v0.0.6', peer.invoke, verify_tag=verify or peer.verify)
+
     def test_unexpected_duplicate_wrong_digest_and_incomplete_assets_refuse(self):
         with tempfile.TemporaryDirectory() as temporary:
             file=Path(temporary)/'signed.dmg';file.write_bytes(b'assessed final bytes')
@@ -228,34 +306,121 @@ class DraftPublicationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):production.release_inventory(value,[file],True)
 
     def test_no_completion_after_partial_upload_or_stale_draft_asset(self):
-        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             file=Path(temporary)/'signed.dmg';file.write_bytes(b'assessed')
-            calls=[]
-            def invoke(argv,**kwargs):
-                calls.append(argv)
-                if argv[1]=='api':
-                    return SimpleNamespace(returncode=0,stdout=json.dumps({'tag_name':'v0.0.6','draft':True,'assets':[]}))
-                return SimpleNamespace(returncode=0)
-            with patch.object(production,'release_files',return_value=[file]),self.assertRaises(ValueError):
-                production.publish_release(Path(temporary),'v0.0.6',invoke,verify_tag=lambda:None)
-            self.assertTrue(any('upload' in call for call in calls))
-            self.assertFalse(any('--draft=false' in call for call in calls))
+            peer = PublicationPeer();peer.partial_upload = True
+            with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+            self.assertIn('upload', [name for name, _ in peer.mutations])
+            self.assertNotIn('complete', [name for name, _ in peer.mutations])
 
     def test_success_compares_remote_hashes_before_completion_without_clobber(self):
-        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             file=Path(temporary)/'signed.dmg';file.write_bytes(b'assessed')
-            asset={'name':file.name,'digest':'sha256:'+production.checksum(file),'size':file.stat().st_size}
-            calls=[];states=iter([[],[asset]])
-            def invoke(argv,**kwargs):
-                calls.append(argv)
-                if argv[1]=='api':return SimpleNamespace(returncode=0,stdout=json.dumps({'tag_name':'v0.0.6','draft':True,'assets':next(states)}))
-                return SimpleNamespace(returncode=0)
-            with patch.object(production,'release_files',return_value=[file]):
-                production.publish_release(Path(temporary),'v0.0.6',invoke,verify_tag=lambda:None)
-            self.assertIn('--draft=false',calls[-1])
-            self.assertFalse(any('--clobber' in call for call in calls))
+            peer = PublicationPeer()
+            self.publish(Path(temporary), file, peer)
+            self.assertFalse(peer.release['draft'])
+            self.assertEqual(peer.mutations, [('upload', 2), ('complete', 3)])
+            self.assertFalse(any('--clobber' in call for call in peer.calls))
+
+    def test_new_draft_uses_original_post_id_and_never_by_tag_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            peer = PublicationPeer(existing=False)
+            self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [('create', 1), ('upload', 2), ('complete', 3)])
+            self.assertEqual(peer.gets, 2)
+            self.assertEqual(peer.release['assets'][0]['digest'], 'sha256:' + production.checksum(file))
+
+    def test_retry_uses_one_original_draft_and_never_recreates_completed_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            peer = PublicationPeer()
+            peer.release['assets'] = [{'name': file.name, 'digest': 'sha256:' + production.checksum(file), 'size': file.stat().st_size}]
+            self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [('complete', 2)])
+            peer.mutations.clear()
+            with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [])
+
+    def test_ambiguous_incomplete_and_invalid_target_inventory_refuse_before_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            for listing in ([PublicationPeer().value(), PublicationPeer().value()],
+                            [dict(PublicationPeer().value(), target_commitish='')]):
+                peer = PublicationPeer();peer.pages = lambda page: listing
+                with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+                self.assertEqual(peer.mutations, [])
+            peer = PublicationPeer();peer.pages = lambda page: [{'tag_name': 'other'}] * 100
+            with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+            self.assertEqual(len(peer.calls), 10)
+            self.assertEqual(peer.mutations, [])
+
+    def test_existing_tag_source_uses_live_verifier_not_ignored_target_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            peer = PublicationPeer();peer.release['target_commitish'] = 'main'
+            self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [('upload', 2), ('complete', 3)])
+            self.assertEqual(peer.release['target_commitish'], 'main')
+            peer = PublicationPeer();peer.release['target_commitish'] = 'main'
+            with self.assertRaises(ValueError):
+                self.publish(Path(temporary), file, peer, lambda: (_ for _ in ()).throw(ValueError('wrong live source')))
+            self.assertEqual(peer.mutations, [])
+
+    def test_missing_or_wrong_workflow_source_refuses_before_service_access(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            file = root / 'signed.dmg';file.write_bytes(b'assessed')
+            (root / 'signed').mkdir()
+            production.write_json(root / 'signed/release.json', {'source_revision': 'a' * 40})
+            for revision in ('', 'b' * 40):
+                peer = PublicationPeer()
+                with patch.object(production, 'release_files', return_value=[file]), \
+                        patch.dict(production.os.environ, GITHUB_SHA=revision), self.assertRaises(ValueError):
+                    production.publish_release(root, 'v0.0.6', peer.invoke, verify_tag=peer.verify)
+                self.assertEqual(peer.calls, [])
+
+    def test_existing_draft_on_second_page_is_reconciled_without_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            peer = PublicationPeer()
+            peer.pages = lambda page: [{'tag_name': 'other'}] * 100 if page == 1 else [peer.release]
+            self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [('upload', 2), ('complete', 3)])
+            self.assertEqual(sum('releases?per_page=100&page=' in call[2] for call in peer.calls if call[1] == 'api'), 2)
+
+    def test_original_id_privacy_tag_source_and_asset_tampering_refuse(self):
+        changes = ({'id': 18}, {'draft': False}, {'tag_name': 'other'}, {'target_commitish': 'b' * 40},
+                   {'assets': [{'name': 'foreign', 'digest': 'sha256:' + '0' * 64, 'size': 1}]})
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            for at in (1, 2):
+                for change in changes:
+                    peer = PublicationPeer()
+                    peer.read_change = lambda value, count: value.update(change) if count == at else None
+                    with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+                    self.assertNotIn('complete', [name for name, _ in peer.mutations])
+
+    def test_uncertain_or_malformed_creation_never_retries_or_uploads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            for response in ({}, [], {'id': True}, {'id': 0}, {'id': 17, 'tag_name': 'wrong'}):
+                peer = PublicationPeer(existing=False);peer.create_response = response
+                with self.assertRaises(ValueError):self.publish(Path(temporary), file, peer)
+                self.assertEqual(peer.mutations, [('create', 1)])
+            peer = PublicationPeer(existing=False);peer.create_error = True
+            with self.assertRaises(subprocess.SubprocessError):self.publish(Path(temporary), file, peer)
+            self.assertEqual(peer.mutations, [('create', 1)])
+
+    def test_explicit_retry_reconciles_original_after_uncertain_post_without_duplicate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / 'signed.dmg';file.write_bytes(b'assessed')
+            peer = PublicationPeer(existing=False);peer.create_error = True
+            with self.assertRaises(subprocess.SubprocessError):self.publish(Path(temporary), file, peer)
+            peer.create_error = False
+            self.publish(Path(temporary), file, peer)
+            self.assertEqual([name for name, _ in peer.mutations], ['create', 'upload', 'complete'])
+            self.assertFalse(peer.release['draft'])
 
 class EndToEndPublicationTest(unittest.TestCase):
     def test_real_seal_to_publication_inventory_matches_every_public_checksum(self):
@@ -276,17 +441,11 @@ class EndToEndPublicationTest(unittest.TestCase):
                 self.assertIn(name,by_name)
                 self.assertEqual(production.checksum(by_name[name]),digest)
             self.assertEqual({p.name for p in signed.iterdir() if p.is_file()},set(sums)|{'SHA256SUMS'})
-            remote=[];calls=[]
-            def invoke(argv,**kwargs):
-                calls.append(argv)
-                if argv[1]=='api':return SimpleNamespace(returncode=0,stdout=json.dumps({'tag_name':'v0.0.6','draft':True,'assets':remote}))
-                if 'upload' in argv:
-                    for file in argv[4:]:
-                        p=Path(file);remote.append({'name':p.name,'digest':'sha256:'+production.checksum(p),'size':p.stat().st_size})
-                return SimpleNamespace(returncode=0)
-            production.publish_release(root,'v0.0.6',invoke,verify_tag=lambda:None)
-            self.assertEqual({a['name'] for a in remote},set(by_name))
-            self.assertIn('--draft=false',calls[-1])
+            peer = PublicationPeer()
+            with patch.dict(production.os.environ, GITHUB_SHA=peer.revision):
+                production.publish_release(root, 'v0.0.6', peer.invoke, verify_tag=peer.verify)
+            self.assertEqual({a['name'] for a in peer.release['assets']},set(by_name))
+            self.assertFalse(peer.release['draft'])
 
     def test_live_tag_peels_annotations_and_rejects_moved_commit(self):
         revision='a'*40;annotation='b'*40
@@ -298,18 +457,17 @@ class EndToEndPublicationTest(unittest.TestCase):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
             file=Path(temporary)/'signed.dmg';file.write_bytes(b'assessed')
-            asset={'name':file.name,'digest':'sha256:'+production.checksum(file),'size':file.stat().st_size}
-            states=iter([[],[asset]]);calls=[];checks=[]
-            def invoke(argv,**kwargs):
-                calls.append(argv)
-                if argv[1]=='api':return SimpleNamespace(returncode=0,stdout=json.dumps({'tag_name':'v0.0.6','draft':True,'assets':next(states)}))
-                return SimpleNamespace(returncode=0)
+            peer = PublicationPeer();checks=[]
+            (Path(temporary) / 'signed').mkdir()
+            production.write_json(Path(temporary) / 'signed/release.json', {'source_revision': peer.revision})
             def moved():
                 checks.append(True)
-                if len(checks)==2:raise ValueError('live tag moved')
-            with patch.object(production,'release_files',return_value=[file]),self.assertRaises(ValueError):
-                production.publish_release(Path(temporary),'v0.0.6',invoke,verify_tag=moved)
-            self.assertFalse(any('--draft=false' in call for call in calls))
+                if len(checks)==3:raise ValueError('live tag moved')
+            with patch.object(production,'release_files',return_value=[file]), \
+                    patch.dict(production.os.environ, GITHUB_SHA=peer.revision), self.assertRaises(ValueError):
+                production.publish_release(Path(temporary),'v0.0.6',peer.invoke,verify_tag=moved)
+            self.assertNotIn('complete', [name for name, _ in peer.mutations])
+            self.assertIn('upload', [name for name, _ in peer.mutations])
 
 class LiveSourceTest(unittest.TestCase):
     def test_signing_refuses_moved_main_after_approval(self):

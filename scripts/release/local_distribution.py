@@ -35,9 +35,6 @@ from signing_payload import bundle_files, compare_package_payload
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_BYTES = production.MAX_BYTES
-MAX_PROBE_BYTES = 4096
-PROBE_DIGEST = 'sha256:bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1'
-PROBE_SIZE = 240
 EVIDENCE = {'keychain-diagnostics.json', 'package-diagnostics.json', 'payload-log.json',
             'payload-submission.json', 'notary-log.json', 'notary-submission.json', 'package-source.txt'}
 KEYCHAIN_STAGES = {'keychain.' + name for name in ('snapshot-search-list', 'decode-p12', 'create',
@@ -324,24 +321,8 @@ def upload(folder, revision, archive_path, invoke=subprocess.run, fetch=api):
     with zipfile.ZipFile(archive_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name in names:
             archive.write(folder / name, name)
-    require(archive_path.stat().st_size <= MAX_BYTES, 'local upload archive oversized')
-    tag = 'local-signing-' + revision + '-' + uuid.uuid4().hex
-    invoke(['gh', 'release', 'create', tag, '--repo', REPOSITORY, '--draft', '--target', revision,
-            '--title', 'Local signing staging (not a production release)',
-            '--notes', 'Private transport only. Do not publish this draft or move its target.'], check=True)
-    release = fetch('releases/tags/' + tag)
-    require(release['draft'] is True and release['tag_name'] == tag and release['target_commitish'] == revision
-            and not release['assets'], 'local staging draft differs')
-    invoke(['gh', 'release', 'upload', tag, str(archive_path), '--repo', REPOSITORY], check=True)
-    release = fetch('releases/' + str(release['id']))
-    require(release['draft'] is True and len(release['assets']) == 1, 'local staging asset inventory differs')
-    asset = release['assets'][0]
-    require(asset['name'] == archive_path.name and asset['state'] == 'uploaded' and
-            asset['size'] == archive_path.stat().st_size and asset['digest'] == 'sha256:' + checksum(archive_path),
-            'GitHub staging asset digest/size differs')
-    return {'schema': 1, 'origin': 'local', 'repository': REPOSITORY, 'source_revision': revision,
-            'release_id': release['id'], 'asset_id': asset['id'], 'digest': asset['digest'], 'size': asset['size'],
-            'name': asset['name'], 'staging_tag': tag}
+    from staging_archive import stage_archive
+    return stage_archive(archive_path, revision, invoke, fetch)
 
 
 def download_staging(release_id, asset_id, digest, revision, fetch=staging_api, max_bytes=MAX_BYTES):
@@ -373,21 +354,8 @@ def download_staging(release_id, asset_id, digest, revision, fetch=staging_api, 
     return raw, origin
 
 
-def probe_transport(release_id, asset_id, digest, revision, destination, fetch=staging_api):
-    """Prove this job token can read a tiny public fixture, never signed inputs."""
-    require(not destination.exists(), 'probe receipt already exists')
-    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch, MAX_PROBE_BYTES)
-    # The probe only hashes the fixed public blob. Never parse, unpack or run it.
-    require(origin['name'] == 'permission-probe.zip' and len(raw) == PROBE_SIZE and
-            origin['digest'] == PROBE_DIGEST, 'probe requires the exact named public fixture')
-    proof = dict(origin, origin='transport-probe',
-                 scope='read-only job-token staging access; not qualification, signing or native evidence')
-    write_json(destination, proof)
-    return proof
-
-
-def import_local(release_id, asset_id, digest, revision, destination, identity, team, fetch=staging_api, native=verify_native):
-    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch)
+def admit_local(raw, origin, revision, destination, identity, team, fetch=api, native=verify_native):
+    """Keep all original qualification/native admission after either transport."""
     unpack(raw, destination / 'signed')
     folder = destination / 'signed'
     transport_files(folder)
@@ -397,6 +365,23 @@ def import_local(release_id, asset_id, digest, revision, destination, identity, 
     proof = native(folder, identity, team, destination / 'qualified')
     write_json(destination / 'native-verification.json', proof)
     write_json(destination / 'local-origin.json', origin)
+
+
+
+def import_local(release_id, asset_id, digest, revision, destination, identity, team, fetch=staging_api, native=verify_native):
+    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch)
+    admit_local(raw, origin, revision, destination, identity, team, fetch, native)
+
+
+def import_ingress(artifact_id, artifact_name, artifact_digest, release_id, asset_id, staging_digest,
+                   revision, destination, identity, team, fetch=api, native=verify_native):
+    from staging_ingress import receive
+    staged = receive(artifact_id, artifact_name, artifact_digest, release_id, asset_id, staging_digest,
+                     revision, destination / 'transport', fetch=fetch)
+    raw = staged['payload'].read_bytes()
+    origin = dict(staged['origin'], ingress_artifact=staged['artifact'],
+                  ingress_payload_sha256=checksum(staged['payload']), ingress_payload_size=len(raw))
+    admit_local(raw, origin, revision, destination, identity, team, fetch, native)
 
 
 def retained_local(run_id, attempt, revision, destination, fetch=api):
@@ -436,16 +421,25 @@ def main():
     receive = modes.add_parser('import')
     receive.add_argument('release_id'); receive.add_argument('asset_id'); receive.add_argument('digest')
     receive.add_argument('destination', type=Path)
-    probe = modes.add_parser('probe')
-    probe.add_argument('release_id'); probe.add_argument('asset_id'); probe.add_argument('digest')
-    probe.add_argument('receipt', type=Path)
+    ingress = modes.add_parser('stage-ingress')
+    ingress.add_argument('release_id'); ingress.add_argument('asset_id'); ingress.add_argument('digest')
+    ingress.add_argument('destination', type=Path)
+    bridged = modes.add_parser('import-ingress')
+    bridged.add_argument('artifact_id'); bridged.add_argument('artifact_name'); bridged.add_argument('artifact_digest')
+    bridged.add_argument('release_id'); bridged.add_argument('asset_id'); bridged.add_argument('digest')
+    bridged.add_argument('destination', type=Path)
     args = parser.parse_args()
     revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
     exact_source(revision)
-    if args.mode == 'probe':
+    if args.mode == 'stage-ingress':
+        from staging_ingress import stage
         production.source(revision)
-        probe_transport(args.release_id, args.asset_id, args.digest, revision, args.receipt)
-        print('Read-only staging probe passed; this is not signing or native admission.')
+        stage(args.release_id, args.asset_id, args.digest, revision, args.destination, download=download_staging)
+    elif args.mode == 'import-ingress':
+        production.source(revision)
+        import_ingress(args.artifact_id, args.artifact_name, args.artifact_digest,
+                       args.release_id, args.asset_id, args.digest, revision, args.destination,
+                       os.environ['MACOS_SIGNING_IDENTITY_SHA1'], os.environ['MACOS_TEAM_ID'])
     elif args.mode == 'import':
         production.source(revision)
         import_local(args.release_id, args.asset_id, args.digest, revision, args.destination,
