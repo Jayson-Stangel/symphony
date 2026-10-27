@@ -17,6 +17,9 @@ field=bundle
 if [ "$platform" = linux_x86_64 ]; then field=bundles.linux_x86_64; fi
 mkdir -p "$output"
 stage=$(mktemp -d); trap 'package_diagnostics_cleanup "$?"' EXIT
+# Payload modes are public contract bytes; the enclosing stage stays private.
+caller_umask=$(umask)
+umask 022
 bundle="$stage/bundle"; mkdir -p "$bundle/scripts" "$bundle/libexec" "$bundle/elixir" "$bundle/.codex/skills"
 if [ -n "$helper" ]; then cp "$helper" "$bundle/libexec/symphony-host"
 else "$root/scripts/release/build-host-helper.sh" "$bundle/libexec/symphony-host"; fi
@@ -140,5 +143,6 @@ package_stage package.inventory
 "$bundle/libexec/symphony-host" verify-files "$bundle"
 package_stage package.archive
 filename=$("$bundle/libexec/symphony-host" get "$manifest" "$field.filename")
+umask "$caller_umask"
 tar -C "$bundle" -czf "$output/$filename" .
 printf '%s  %s\n' "$("$bundle/libexec/symphony-host" sha256 "$output/$filename")" "$output/$filename"

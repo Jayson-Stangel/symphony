@@ -46,7 +46,7 @@ def env_for(flags):
     platform = 'all'
     if fixtures == 'false' and macos != linux:
         platform = 'macos' if macos == 'true' else 'linux_x86_64'
-    return dict(RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
+    return dict(MAC_RUNNER_RESULT='success', RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
                 MACOS=macos, LINUX=linux, FIXTURES=fixtures, NATIVE_REQUIRED=str(native).lower(),
                 PLATFORM=platform, PORTABLE='success', PACKAGE='success' if native else 'skipped',
                 READY='true', GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
@@ -157,9 +157,9 @@ class Consumers(unittest.TestCase):
             route = classifier.decisions([path])
             values = {'needs.changes.outputs.native': str(route['native']).lower(),
                       'needs.changes.result': 'success', 'needs.qualification.result': 'success',
-                      'needs.host-policy.result': 'success', 'needs.changes.outputs.ready': 'true'}
+                      'needs.host-policy.result': 'success', 'needs.mac-runner.result': 'success', 'needs.changes.outputs.ready': 'true'}
             self.assertEqual(expression(condition, values), route['native'], path)
-            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result'):
+            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result', 'needs.mac-runner.result'):
                 for status in ('failure', 'cancelled', 'skipped', ''):
                     self.assertFalse(expression(condition, dict(values, **{key: status})), (path, key, status))
             if path == 'scripts/package/linux/Package.resolved':
@@ -223,6 +223,23 @@ class Consumers(unittest.TestCase):
                     dependency = ROOT / 'scripts/release' / ((name or '').split('.')[0] + '.py')
                     if dependency.is_file():
                         pending.append(str(dependency.relative_to(ROOT)))
+
+    def test_signing_payload_dependency_is_native_without_publication_imports(self):
+        shared = 'scripts/release/signing_payload.py'
+        self.assertEqual(classifier.consumers(shared), {'portable', 'package_macos', 'package_linux'})
+        tree = ast.parse((ROOT / shared).read_text())
+        names = set()
+        for node in ast.walk(tree):
+            names.update(item.name for item in node.names) if isinstance(node, ast.Import) else None
+            if isinstance(node, ast.ImportFrom):
+                names.add(node.module)
+        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'tarfile'})
+        distribution = ast.parse((ROOT / 'scripts/release/macos_distribution.py').read_text())
+        imports = {node.module for node in ast.walk(distribution) if isinstance(node, ast.ImportFrom)}
+        self.assertIn('signing_payload', imports)
+        self.assertTrue(imports.isdisjoint({'local_distribution', 'production_release'}))
+        for filename in ('production_release.py', 'component_publication.py', 'graph_publication.py', 'registry_closure.py'):
+            self.assertEqual(classifier.consumers('scripts/release/' + filename), {'portable'})
 
     def test_native_work_cannot_bypass_portable_preflight(self):
         guard = scripts(job(workflow('package-checks'), 'qualification'))[0]

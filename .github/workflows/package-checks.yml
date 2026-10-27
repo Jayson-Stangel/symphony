@@ -32,6 +32,10 @@ concurrency:
   group: package-checks-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   changes:
     name: Classify changes
@@ -98,18 +102,29 @@ jobs:
       platform: ${{ needs.changes.outputs.native_platform }}
   native-host-package:
     name: Native helpers and fixtures (${{ matrix.platform }})
-    needs: [changes, qualification, host-policy]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' }}
+    needs: [changes, qualification, host-policy, mac-runner]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.mac-runner.result == 'success' && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner.outputs.runner || matrix.runner }}
     timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Build actual native macOS ARM64 helper
         if: matrix.platform == 'macos' && needs.changes.outputs.package_macos == 'true'
         run: |
@@ -218,7 +233,7 @@ jobs:
 
   package-qualification:
     name: Package qualification
-    needs: [changes, qualification, native-host-package]
+    needs: [changes, qualification, native-host-package, mac-runner]
     if: ${{ always() }}
     outputs:
       qualified_revision: ${{ steps.qualified.outputs.revision }}
@@ -235,8 +250,10 @@ jobs:
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
           PLATFORM: ${{ needs.changes.outputs.native_platform }}
           READY: ${{ needs.changes.outputs.ready }}
+          MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
+          test "$MAC_RUNNER_RESULT" = success
           for flag in "$CODE" "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES" "$NATIVE_REQUIRED" "$READY"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done
@@ -304,3 +321,29 @@ jobs:
             test -z "$QUALIFIED_REVISION"
           fi
           echo "Selected current-source checks passed: helper/package macOS=$MACOS, Linux=$LINUX; process/updater fixtures=$FIXTURES. Unselected checks intentionally omitted, not executed. This is fixture proof; selected-environment image qualification and installed composition are separate explicit integration." >> "$GITHUB_STEP_SUMMARY"
+
+  mac-runner:
+    name: Select backup Mac for native host package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/package-checks.yml
+          SELECT_JOB_KEY: native-host-package
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"

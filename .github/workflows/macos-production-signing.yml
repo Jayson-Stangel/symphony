@@ -54,7 +54,7 @@ jobs:
           MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
         run: |
           python3 scripts/release/production_release.py source
-          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --authorize-apple-upload
+          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --authorize-apple-upload
       - name: Preserve Linux and seal final distribution and updater hashes
         run: python3 scripts/release/production_release.py seal "$RUNNER_TEMP/production-inputs" "$RUNNER_TEMP/production-signed"
       - name: Retain final assessed bytes for independent native acceptance
@@ -69,4 +69,14 @@ jobs:
         with:
           name: production-signing-refused-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/production-signed/evidence/*.json
+          if-no-files-found: ignore
+      - name: Retain exact private signing checkpoint after failure or cancellation
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: production-signing-checkpoint-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/production-signed.checkpoint/checkpoint.json
+            ${{ runner.temp }}/production-signed.checkpoint/signed-updater.tar.gz
+            ${{ runner.temp }}/production-signed.checkpoint/payload.zip
           if-no-files-found: ignore

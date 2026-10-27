@@ -1190,10 +1190,165 @@ func codexConfigStore(_ args: [String]) throws {
     }
 }
 
-let arity = ["validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+
+// Only the normal first-time Mac installer owns this one zsh startup block.
+// Hold the home directory and profile descriptors while preparing a replacement;
+// never follow a profile symlink or truncate an existing file in place.
+enum ZshSetupError: Error { case unsafe }
+func zshRequire(_ condition: Bool) throws { if !condition { throw ZshSetupError.unsafe } }
+func zshSafeACL(_ descriptor: Int32) throws {
+    #if canImport(Darwin)
+    guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+        try zshRequire(errno == ENOENT) // No extended ACL is installed.
+        return
+    }
+    defer { acl_free(UnsafeMutableRawPointer(acl)) }
+    var entry: acl_entry_t?
+    var position = ACL_FIRST_ENTRY
+    while true {
+        let result = acl_get_entry(acl, Int32(position.rawValue), &entry)
+        if result == -1 && errno == EINVAL { break } // Darwin marks end-of-ACL with EINVAL.
+        try zshRequire(result == 0)
+        position = ACL_NEXT_ENTRY
+        var tag = acl_tag_t(0)
+        try zshRequire(acl_get_tag_type(entry, &tag) == 0)
+        if tag == ACL_EXTENDED_ALLOW {
+            var permissions: acl_permset_t?
+            try zshRequire(acl_get_permset(entry, &permissions) == 0)
+            // Conservatively refuse ACL write grants, regardless of principal;
+            // Unix owner write access already suffices for installer updates.
+            for permission in [ACL_WRITE_DATA, ACL_APPEND_DATA, ACL_DELETE, ACL_DELETE_CHILD, ACL_WRITE_ATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER] {
+                try zshRequire(acl_get_perm_np(permissions, permission) == 0)
+            }
+        }
+    }
+    #endif
+}
+func zshHome(_ path: String) throws -> Int32 {
+    try zshRequire(storeLexicalPath(path) && path != "/")
+    var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    try zshRequire(descriptor >= 0)
+    do {
+        let components = path.split(separator: "/")
+        for (index, component) in components.enumerated() {
+            let child = openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            try zshRequire(child >= 0)
+            close(descriptor); descriptor = child
+            var info = stat()
+            try zshRequire(fstat(descriptor, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR)
+            try zshSafeACL(descriptor)
+            let last = index == components.count - 1
+            let trustedTemporary = !last && info.st_uid == 0 && info.st_mode & S_ISVTX != 0
+            try zshRequire((info.st_uid == geteuid() || (!last && info.st_uid == 0)) && (info.st_mode & 0o022 == 0 || trustedTemporary))
+        }
+        return descriptor
+    } catch { close(descriptor); throw error }
+}
+func firstInstallPathCheck(home path: String, target: String) throws {
+    try zshRequire(storeLexicalPath(target) && target.hasPrefix(path + "/"))
+    var descriptor = try zshHome(path)
+    defer { close(descriptor) }
+    for component in target.dropFirst(path.count + 1).split(separator: "/") {
+        let child = openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        if child < 0 { try zshRequire(errno == ENOENT); return }
+        close(descriptor); descriptor = child
+        var info = stat()
+        try zshRequire(fstat(descriptor, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == geteuid() && info.st_mode & 0o022 == 0)
+        try zshSafeACL(descriptor)
+    }
+}
+func zshProfile(_ home: Int32) throws -> (Int32, stat?, Data) {
+    var before = stat()
+    if fstatat(home, ".zshrc", &before, AT_SYMLINK_NOFOLLOW) != 0 {
+        try zshRequire(errno == ENOENT)
+        return (-1, nil, Data())
+    }
+    try zshRequire(before.st_mode & S_IFMT == S_IFREG && before.st_uid == geteuid() && before.st_nlink == 1 && before.st_mode & 0o022 == 0 && before.st_mode & 0o7000 == 0 && before.st_size >= 0 && before.st_size <= 1024 * 1024)
+    let descriptor = openat(home, ".zshrc", O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    try zshRequire(descriptor >= 0)
+    do {
+        try zshSafeACL(descriptor)
+        try zshRequire(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+        var current = stat()
+        try zshRequire(fstat(descriptor, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let count = read(descriptor, &buffer, buffer.count)
+            try zshRequire(count >= 0 && data.count + max(count, 0) <= 1024 * 1024)
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        try zshRequire(data.count == before.st_size && fstat(descriptor, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        return (descriptor, before, data)
+    } catch { close(descriptor); throw error }
+}
+func zshSetup(_ operation: String, home path: String, activation: String) throws {
+    try zshRequire(storeLexicalPath(activation) && !activation.contains("\n") && !activation.contains("\r"))
+    let home = try zshHome(path)
+    defer { close(home) }
+    let (profile, before, original) = try zshProfile(home)
+    defer { if profile >= 0 { close(profile) } }
+    let start = "# >>> Symphony managed zsh setup v1 >>>"
+    let end = "# <<< Symphony managed zsh setup v1 <<<"
+    let quoted = "'" + activation.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    // The leading separator belongs to us, so removal restores even a profile
+    // whose original final line did not end with a newline, byte for byte.
+    let block = Data(("\n" + start + "\n[ ! -r " + quoted + " ] || . " + quoted + "\n" + end + "\n").utf8)
+    var replacement = original
+    if operation == "zsh-setup-remove" || operation == "zsh-setup-status" {
+        guard let range = replacement.range(of: block) else { throw ZshSetupError.unsafe }
+        replacement.removeSubrange(range)
+        try zshRequire(replacement.range(of: Data(start.utf8)) == nil && replacement.range(of: Data(end.utf8)) == nil)
+        if operation == "zsh-setup-status" { return }
+    } else {
+        try zshRequire(original.range(of: Data(start.utf8)) == nil && original.range(of: Data(end.utf8)) == nil)
+        if operation == "zsh-setup-check" { return }
+        replacement.append(block)
+    }
+    let temporary = ".symphony-zsh-" + UUID().uuidString.lowercased()
+    let output = openat(home, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    try zshRequire(output >= 0)
+    defer { close(output); unlinkat(home, temporary, 0) }
+    // Keep existing macOS access-control entries as well as Unix permissions.
+    #if canImport(Darwin)
+    if profile >= 0 { try zshRequire(fcopyfile(profile, output, nil, copyfile_flags_t(COPYFILE_ACL | COPYFILE_XATTR)) == 0) }
+    #endif
+    if let before {
+        // A temporary file inherits the home's group; preserving only mode
+        // could otherwise grant access to a different group on a 0640 profile.
+        try zshRequire(fchown(output, before.st_uid, before.st_gid) == 0)
+    }
+    try zshRequire(fchmod(output, before.map { $0.st_mode & 0o777 } ?? 0o600) == 0)
+    try replacement.withUnsafeBytes { bytes in
+        var offset = 0
+        while offset < bytes.count {
+            let count = write(output, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+            try zshRequire(count > 0); offset += count
+        }
+    }
+    try zshRequire(fsync(output) == 0)
+    var current = stat()
+    if let before {
+        try zshRequire(fstatat(home, ".zshrc", &current, AT_SYMLINK_NOFOLLOW) == 0 && storeIdentity(current) == storeIdentity(before))
+        try zshRequire(fstat(profile, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        try zshRequire(renameat(home, temporary, home, ".zshrc") == 0)
+    } else {
+        // Hard-link publication is no-overwrite even if a new profile appeared.
+        try zshRequire(linkat(home, temporary, home, ".zshrc", 0) == 0)
+    }
+    try zshRequire(fsync(home) == 0)
+}
+
+let arity = ["first-install-path-check": 3, "zsh-setup-status": 3, "zsh-setup-check": 3, "zsh-setup-install": 3, "zsh-setup-remove": 3, "validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
+    case "first-install-path-check":
+        do { try firstInstallPathCheck(home: args[1], target: args[2]) }
+        catch { fail("unsafe first-install path; preserve existing storage and inspect ownership, permissions and symlinks") }
+    case "zsh-setup-check", "zsh-setup-install", "zsh-setup-remove", "zsh-setup-status":
+        do { try zshSetup(command, home: args[1], activation: args[2]) }
+        catch { fail("unsafe or existing managed zsh shell setup; preserve ~/.zshrc and inspect its ownership, permissions and Symphony block") }
     case "runner-import-endpoint":
         let data = FileHandle.standardInput.readData(ofLength: 65537)
         guard data.count <= 65536, let text = String(data: data, encoding: .utf8) else { fail("invalid candidate registry startup receipt") }

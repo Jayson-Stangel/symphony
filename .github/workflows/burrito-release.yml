@@ -46,6 +46,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: engine-candidate-${{ github.event_name }}-${{ github.ref }}-${{ (inputs.controller_only || inputs.retain_diagnostic) && github.run_id || 'latest' }}
@@ -111,9 +112,9 @@ jobs:
 
   build:
     name: Build engine (${{ matrix.target }})
-    needs: [qualification, host-policy]
-    if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
-    runs-on: ${{ matrix.runner }}
+    needs: [qualification, host-policy, mac-runner-build]
+    if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' && needs.mac-runner-build.result == 'success' }}
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-build.outputs.runner || matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
@@ -122,6 +123,17 @@ jobs:
         working-directory: elixir
 
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-build.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -189,13 +201,24 @@ jobs:
 
   smoke:
     name: Verify engine (${{ matrix.target }})
-    needs: [build, host-policy]
-    runs-on: ${{ matrix.runner }}
+    needs: [build, host-policy, mac-runner-smoke]
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-smoke.outputs.runner || matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
 
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-smoke.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Checkout the exact candidate controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -232,10 +255,21 @@ jobs:
 
   controller-diagnostics:
     name: Diagnose release controller
-    if: inputs.controller_only
-    runs-on: macos-14
+    if: ${{ inputs.controller_only && needs.mac-runner-controller-diagnostics.result == 'success' }}
+    needs: mac-runner-controller-diagnostics
+    runs-on: ${{ needs.mac-runner-controller-diagnostics.outputs.runner }}
     timeout-minutes: 10
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-controller-diagnostics.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Checkout the exact candidate controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Record controller platform and run isolated process fixtures
@@ -243,3 +277,81 @@ jobs:
           uname -sm
           python3 -VV
           python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
+
+  mac-runner-build:
+    name: Select backup Mac for build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
+          SELECT_JOB_KEY: build
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+
+  mac-runner-smoke:
+    name: Select backup Mac for smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
+          SELECT_JOB_KEY: smoke
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+
+  mac-runner-controller-diagnostics:
+    name: Select backup Mac for controller diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
+          SELECT_JOB_KEY: controller-diagnostics
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
