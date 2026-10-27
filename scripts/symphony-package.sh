@@ -373,7 +373,7 @@ package_first_mac_defaults() {
 }
 
 package_first_mac_preflight() {
-  local path selected
+  local path selected shell_mode
   [ "${SHELL:-/bin/zsh}" = /bin/zsh ] && [ -z "${ZDOTDIR:-}" ] || die 'automatic first installation requires standard /bin/zsh without ZDOTDIR'
   [ -z "${SYMPHONY_HOME:-}" ] || die 'first installation refuses SYMPHONY_HOME; preserve the existing installation'
   for path in "$package_app_home_input" "$bin_dir" "$config_home" "$skills_dir"; do
@@ -387,7 +387,9 @@ package_first_mac_preflight() {
   package_helper zsh-setup-check "$HOME" "$package_app_home/activate.sh" || return
   # Read the user's normal zsh startup files without executing any Symphony
   # command. Aliases/functions and login-profile PATH selections outrank PATH.
-  /bin/zsh -lic '[[ ${ZDOTDIR:-$HOME} = $HOME && -o rcs ]] || exit 74; if whence symphony >/dev/null 2>&1; then exit 73; fi' </dev/null >/dev/null 2>&1 || die 'first installation found conflicting zsh command selection or unsupported startup files; preserved unchanged'
+  for shell_mode in -ic -lic; do
+    /bin/zsh "$shell_mode" '[[ ${ZDOTDIR:-$HOME} = $HOME && -o rcs ]] || exit 74; if whence symphony >/dev/null 2>&1; then exit 73; fi' </dev/null >/dev/null 2>&1 || die 'first installation found conflicting zsh command selection or unsupported startup files; preserved unchanged'
+  done
   package_preflight_links
 }
 
@@ -405,7 +407,7 @@ package_first_mac_consent() {
 
 package_install() (
   local stage_only=false skill source target destination next app_lock
-  local accept_zsh_setup=false no_shell_handoff=false remove_zsh_setup=false first_mac=false
+  local accept_zsh_setup=false no_shell_handoff=false remove_zsh_setup=false first_mac=false shell_mode
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bin-dir|--config-dir|--skills-dir|--app-dir)
@@ -469,10 +471,12 @@ package_install() (
     package_helper zsh-setup-install "$HOME" "$package_app_home/activate.sh" || return
     # Verify the final startup path, including .zlogin after .zshrc. Do not claim
     # readiness when user startup files skip or override the managed block.
-    if ! /bin/zsh -lic '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
+    for shell_mode in -ic -lic; do
+      if ! /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
       package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
       die 'zsh startup files skipped or overrode Symphony setup; the managed block was removed. Installation files remain at the printed paths; no ready terminal handoff was made.'
-    fi
+      fi
+    done
     printf 'zsh setup installed. New interactive zsh terminals and login sessions select this installation.\n'
   else
     package_shell_context

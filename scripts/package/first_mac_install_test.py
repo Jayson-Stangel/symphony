@@ -98,7 +98,7 @@ class FirstMacInstallMixin:
     def test_first_mac_refuses_zsh_alias_and_function(self):
         bundle = self.bundle(); env, home = self.first_mac_environment()
         profile = home / '.zshrc'
-        for text in ('alias symphony="echo existing"\n', 'symphony() { echo existing; }\n'):
+        for text in ('alias symphony="echo existing"\n', 'symphony() { echo existing; }\n', 'if [[ ! -o login ]]; then alias symphony="echo existing"; fi\n'):
             profile.write_text(text)
             result = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup'], env=env, text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
