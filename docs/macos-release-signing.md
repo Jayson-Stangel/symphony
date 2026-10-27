@@ -408,3 +408,113 @@ repeated merely because the manager version changes; repeat only when consumed
 provider inputs or an observed failure justify it. Final-byte native acceptance
 above remains required. No real production qualification/signing/publication or
 stable rollout was executed by adding this tooling.
+
+## Local signing with GitHub delivery
+
+Local signing is an alternative producer of the same final packages, not an
+alternative production approval path. The local operator signs once, uploads
+those exact bytes to private draft staging, and a credential-free Mac job
+independently verifies them. The existing tag publisher consumes the admitted
+immutable Actions artifact without building, packaging, signing or notarizing
+again. Both `production-release` environment approvals remain required.
+
+This path must already exist in the candidate's exact source **before** its
+qualification and local signing. A previously frozen source whose tag points to
+the old workflow does not acquire these commands by merging a later controller.
+Do not move its tag, relabel old qualification, or claim that later controller
+code was part of its signed package. Integrate/review/promote this change, freeze
+the resulting source, and qualify that source before the one local signing pass.
+All existing final-byte native, fresh-account, installed update/rollback and
+public-reference acceptance obligations above still apply.
+
+### Sign once on the operator's Apple Silicon Mac
+
+Use a clean isolated checkout at the exact approved `main` source and retain
+successful production preparation `Q` and its exact attempt. If a hosted signing
+run was attempted, first inspect its steps, artifacts and Apple receipts: failure
+can happen after an Accepted submission. Do not start local signing while a
+hosted pass is active or after one succeeded. The local command enforces this
+serialization and refuses an existing output directory instead of retrying.
+
+With explicit approval for the exact source, qualification, existing credential
+use and both Apple submissions, run:
+
+```sh
+python3 scripts/release/local_distribution.py sign Q Q_ATTEMPT /absolute/private/local-signing --authorize-apple-upload
+```
+
+Replace `Q`, `Q_ATTEMPT` and the output path. In your own interactive Terminal,
+the command asks for the existing successful P12 file path, its export password,
+the Apple Developer email and app-specific password (credential values hidden),
+then the public pinned certificate SHA1 and Team ID. The current intended pin is
+`6696C74960AEAE2B4061B0410CD29E46E243321D`, team `UVKZ67Z7UT`; the import job
+also checks them against the protected environment's public variables.
+Unavailable hidden input fails closed. Never put private values in command
+arguments, shell history, tickets or chat.
+
+The established controller creates a disposable private keychain, imports the
+existing identity, temporarily changes and restores its search list, signs,
+submits the payload and DMG to Apple, staples/assesses, and removes its temporary
+credential material. No new certificate, login-keychain identity installation or
+global configuration change is needed. Retain sanitized failure/cleanup evidence
+and stop after a failure; a fresh attempt needs renewed exact approval.
+
+### Upload and independently admit the final bytes
+
+With explicit staging-upload approval, run from the same clean source:
+
+```sh
+python3 scripts/release/local_distribution.py upload /absolute/private/local-signing/signed /absolute/private/local-signing-upload.zip --authorize-staging-upload
+```
+
+This performs fresh original-Q checks and native verification, then uploads an
+allowlisted ZIP to a **draft** whose unique tag begins `local-signing-`, never
+`v`. This is private transport visible to repository maintainers, not a completed
+release, latest release, registry publication or stable update. The upload
+receipt records the source, draft release ID, original asset ID, GitHub's SHA256
+digest and size. The ZIP contains packages and sanitized receipts only—no P12,
+password, keychain or arbitrary logs. Never publish this staging draft or use
+`--clobber` to replace an asset.
+
+The command writes a sibling `.receipt.json` with exact inputs for
+`macos-local-signing-import.yml`. Dispatch that workflow on `main` only after
+bounded approval, supplying `approved_revision`, `staging_release`,
+`staging_asset` and `staging_digest` from the receipt. Approve its existing
+`macos-production-signing` environment gate. The job references only public
+identity/team variables, not signing or notary secrets. It runs on Intel macOS
+to inspect the ARM64 package without depending on ARM64 signing-runner capacity.
+
+Admission refuses mismatched source/Q/attempt, replaced or expired draft assets,
+unsafe archives, incomplete Apple or cleanup attestations, changed source files,
+or wrong signatures/tickets. It compares the signed executable to the actual
+qualified helper with only validated Mach-O signing-size fields/signature bytes
+excluded; every other byte and offset is bound. The signed tar's source files,
+permissions and inventory must match qualification. It also mounts the DMG
+read-only, checks its exact root instructions and payload against the signed tar,
+then detaches only that owned mount. Native signature, pinned certificate/team,
+runtime, timestamp, online notarization, staple and Gatekeeper checks must pass.
+Local cleanup receipts are operator attestations; the hosted verifier cannot
+inspect the operator's former temporary keychain. Intel inspection is not ARM64
+execution, fresh-account installation or authenticated provider acceptance.
+
+The successful import retains `production-local-signed-P-RUN-ATTEMPT` with an
+honest `origin: local` receipt and byte-bound native verification. Subsequent
+publication reads that original immutable Actions artifact, not the mutable
+staging draft; later draft mutation cannot substitute accepted bytes. Retention
+expiry still refuses publication. Keep the original staging upload receipt and
+import run/attempt with the final acceptance ledger.
+
+### Publish the already signed packages through the existing gates
+
+After final native acceptance and the separate exact tag/publication approval,
+dispatch `production-publish.yml` on the exact approved `vVERSION` tag, setting
+`signed_origin=local`, `signed_run=IMPORT_RUN`,
+`signed_attempt=IMPORT_ATTEMPT` and `approved_revision=P`. The importer requires a
+successful same-source `macos-local-signing-import.yml` run and all original-Q,
+native and immutable-artifact bindings. Its normal registry and final-release
+jobs each revalidate original inputs after their existing protected approval.
+No package bytes are rebuilt, resigned or renotarized after local signing.
+
+Hosted signing remains supported with `signed_origin=hosted` (the default).
+Neither origin grants production publication or stable rollout authority merely
+by producing or uploading a signed package.

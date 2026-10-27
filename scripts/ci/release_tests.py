@@ -35,6 +35,7 @@ PORTABLE = {
     'test_manual_integration_origin.py',
     'test_macos_distribution.py',
     'test_macos_signing_inputs.py',
+    'test_local_distribution.py',
     'test_production_release.py',
     'test_native_recovery.py',
     'test_package_lifecycle.py',

@@ -42,6 +42,7 @@ def completed_run(run_id, attempt, revision, workflow, fetch=api):
     required = (['Candidate qualification', 'Build release package (macos)', 'Build release package (linux_x86_64)',
                  'Assemble release packages', 'Verify engine (linux_x86_64)', 'Verify engine (macos_arm64)',
                  'Verify production preparation source'] if workflow == 'burrito-release.yml' else
+                ['Verify locally signed distribution'] if workflow == 'macos-local-signing-import.yml' else
                 ['Sign exact production preparation'])
     for suffix in required:
         matches = [job for job in jobs['jobs'] if job['name'] == suffix or job['name'].endswith(' / ' + suffix)]
@@ -215,6 +216,13 @@ def signed(run_id, attempt, revision, destination, fetch=api):
                       destination / 'signed', fetch)
     qualified = json.loads((destination / 'signed/qualification.json').read_text())
     qualification(str(qualified['run_id']), str(qualified['run_attempt']), revision, destination / 'qualified', fetch)
+    verify_retained(destination, revision, fetch)
+    write_json(destination / 'signed-origin.json', record)
+
+
+def verify_retained(destination, revision, fetch=api):
+    """The same byte/evidence admission for hosted and imported local signing."""
+    qualified = json.loads((destination / 'signed/qualification.json').read_text())
     verify_signed(destination / 'signed', destination / 'qualified', revision)
     sums = (destination / 'signed/SHA256SUMS').read_text().splitlines()
     expected_files = {p.name: checksum(p) for p in (destination / 'signed').iterdir()
@@ -240,7 +248,6 @@ def signed(run_id, attempt, revision, destination, fetch=api):
                              'source_revision': revision, 'target': target}, 'engine source/checksum differs')
         require((folder / (filename + '.sha256')).read_text().strip() == checksum(folder / filename) + '  ' + filename,
                 'engine checksum receipt differs')
-    write_json(destination / 'signed-origin.json', record)
 
 
 def release_files(retained):
@@ -353,7 +360,14 @@ def main():
     args = parser.parse_args(); revision = os.environ['GITHUB_SHA']
     if args.mode == 'qualify': qualification(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
     elif args.mode == 'seal': seal_signed(Path(args.paths[0]), Path(args.paths[1]), revision)
-    elif args.mode == 'signed': signed(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
+    elif args.mode == 'signed':
+        origin = os.environ.get('SIGNED_ORIGIN', 'hosted')
+        require(origin in ('hosted', 'local'), 'unknown signing origin')
+        if origin == 'local':
+            from local_distribution import retained_local
+            retained_local(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
+        else:
+            signed(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
     elif args.mode == 'source': source(revision, args.paths[0] if args.paths else None)
     elif args.mode == 'public':
         from registry_closure import registry_available

@@ -307,18 +307,21 @@ def sign_payload(bundle, keychain, env):
             'original_qualified_helper_sha256': original, 'payloads': {'libexec/symphony-host': signed}})
 
 
+INSTALL_INSTRUCTIONS = (
+    'Open Terminal and run the existing per-user installer:\n'
+    '  /bin/bash "/Volumes/Symphony/Symphony/install.sh"\n'
+    'Use the actual mounted volume path if macOS gave it another name.\n'
+    'No sudo or host build tools are needed. Docker must be installed separately.\n'
+    'After installation, eject this disk. Do not move or modify files within Symphony.\n'
+    'Unsigned candidates are not evidence of Apple trust. Verify the distribution receipt.\n')
+
+
 def create_dmg(bundle, destination):
     """Same installer and Terminal entry point, carried in a mountable image."""
     with tempfile.TemporaryDirectory(prefix='dmg-content-') as temporary:
         content = Path(temporary)
         shutil.copytree(bundle, content / 'Symphony')
-        (content / 'Read Me.txt').write_text(
-            'Open Terminal and run the existing per-user installer:\n'
-            '  /bin/bash "/Volumes/Symphony/Symphony/install.sh"\n'
-            'Use the actual mounted volume path if macOS gave it another name.\n'
-            'No sudo or host build tools are needed. Docker must be installed separately.\n'
-            'After installation, eject this disk. Do not move or modify files within Symphony.\n'
-            'Unsigned candidates are not evidence of Apple trust. Verify the distribution receipt.\n')
+        (content / 'Read Me.txt').write_text(INSTALL_INSTRUCTIONS)
         run('hdiutil', 'create', '-fs', 'HFS+', '-format', 'UDZO', '-volname', 'Symphony',
             '-srcfolder', content, destination, timeout=300)
         run('hdiutil', 'verify', destination)
