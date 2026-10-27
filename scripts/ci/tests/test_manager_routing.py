@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from test_components import job
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -14,7 +15,7 @@ class OrdinaryManagerRouting(unittest.TestCase):
     def setUpClass(cls):
         cls.packages = (ROOT / '.github/workflows/package-checks.yml').read_text()
         cls.integration = (ROOT / '.github/workflows/runner-integration.yml').read_text()
-        block = cls.packages.split('      - name: Verify the exact-source qualification receipt\n', 1)[1]
+        block = job(cls.packages, 'package-qualification').split('      - name: Verify the exact-source qualification receipt\n', 1)[1]
         cls.guard = textwrap.dedent(block.split('        run: |\n', 1)[1])
 
     def gate(self, **changes):
@@ -35,8 +36,8 @@ class OrdinaryManagerRouting(unittest.TestCase):
         self.assertNotIn('uses: ./.github/workflows/release-native.yml', self.packages)
         self.assertIn('  native-host-package:', self.packages)
         self.assertIn('Run native process and updater fixtures in the helper allocation', self.packages)
-        listener = self.packages.split('  package-qualification:\n', 1)[1]
-        self.assertIn('needs: [changes, qualification, native-host-package]', listener)
+        listener = job(self.packages, 'package-qualification')
+        self.assertIn('needs: [changes, qualification, native-host-package, mac-runner]', listener)
         for forbidden in ('build-host-helper', 'build-linux-host-helper', 'component-plan', 'runner-release'):
             self.assertNotIn(forbidden, listener)
         self.assertIn('fixture proof', listener)

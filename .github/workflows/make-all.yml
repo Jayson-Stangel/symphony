@@ -12,23 +12,38 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   changes:
     name: Classify changes
     uses: ./.github/workflows/change-classification.yml
   platform-contracts:
     name: Fast process contracts (${{ matrix.os }})
-    needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
+    needs: [changes, mac-runner]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.mac-runner.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'macos-14' && needs.mac-runner.outputs.runner || matrix.os }}
     timeout-minutes: 5
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.os == 'macos-14'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Require supported fast contract prerequisites
         run: python3 -c 'import sys; assert sys.version_info >= (3, 11), "fast contracts require Python 3.11+"'
       - name: Npm process ownership regressions
@@ -39,7 +54,7 @@ jobs:
         run: python3 scripts/ci/release_tests.py contracts
   make-all:
     name: Application checks
-    needs: [changes, platform-contracts]
+    needs: [changes, platform-contracts, mac-runner]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -54,8 +69,10 @@ jobs:
           CONFIG: ${{ needs.changes.outputs.codex_config }}
           CONTRACTS: ${{ needs.changes.outputs.contracts }}
           PROCESS_RESULT: ${{ needs.platform-contracts.result }}
+          MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
+          test "$MAC_RUNNER_RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
           for flag in "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
@@ -133,3 +150,29 @@ jobs:
       - name: Documentation policy omission
         if: needs.changes.outputs.policy == 'false'
         run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+
+  mac-runner:
+    name: Select backup Mac for platform contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
+          SELECT_JOB_KEY: platform-contracts
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
