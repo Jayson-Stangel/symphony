@@ -134,19 +134,12 @@ class LocalTransportTest(unittest.TestCase):
             # Later mutable draft changes cannot replace admitted Actions bytes.
             release['assets'].clear()
             for name, data in before.items(): self.assertEqual((retained/'signed'/name).read_bytes(), data)
-            assets = []; operations = []
-            def publish(args, **kwargs):
-                operations.append(args)
-                if args[1] == 'api':
-                    return subprocess.CompletedProcess(args, 0, json.dumps({'draft':True,'tag_name':'v0.0.6','assets':assets}), '')
-                if args[1:3] == ['release','upload']:
-                    for filename in args[4:]:
-                        path=Path(filename); assets.append({'name':path.name,'size':path.stat().st_size,
-                                                          'digest':'sha256:'+production.checksum(path)})
-                return subprocess.CompletedProcess(args, 0, '', '')
-            production.publish_release(retained, 'v0.0.6', publish, verify_tag=lambda:None)
-            self.assertTrue(any(cmd[1:3] == ['release','edit'] for cmd in operations))
-            self.assertFalse(any('build' in cmd or 'codesign' in cmd for cmd in operations))
+            publisher = fixtures.PublicationPeer()
+            with patch.dict(os.environ, GITHUB_SHA='a' * 40):
+                production.publish_release(retained, 'v0.0.6', publisher.invoke, verify_tag=publisher.verify)
+            self.assertEqual([name for name, _ in publisher.mutations], ['upload', 'complete'])
+            self.assertFalse(publisher.release['draft'])
+            self.assertFalse(any('build' in cmd or 'codesign' in cmd for cmd in publisher.calls))
             published = {p.name:p.read_bytes() for p in production.release_files(retained)}
             for name,data in before.items():self.assertEqual(published[name],data)
 
