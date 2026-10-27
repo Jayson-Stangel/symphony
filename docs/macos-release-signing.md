@@ -484,6 +484,15 @@ requires all qualification and native checks below.
 
 ### Retain an incomplete signing attempt without changing its bytes
 
+Before the first notarization upload, signing compares the staged signed archive against
+the original qualified package: full directories, file modes and unchanged source
+bytes must match. Production, dev and local signing supply that original archive
+via `--qualified-package`; missing or mismatched inputs refuse progression. Secure
+timestamp service contact has already occurred during signature creation. Payload
+construction uses canonical public permissions inside a private stage, extraction
+preserves those permissions, and DMG instructions are explicitly mode0644. The
+caller's private umask still governs outer archives/checkpoints/credentials.
+
 Before the first Apple upload, signing retains the already signed updater tar
 and the exact payload ZIP in a new sibling `OUTPUT.checkpoint` directory. The
 directory is exclusive, owned and mode0700; the fixed receipt binds actual source,

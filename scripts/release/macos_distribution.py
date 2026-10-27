@@ -502,6 +502,7 @@ def create_dmg(bundle, destination):
         content = Path(temporary)
         shutil.copytree(bundle, content / 'Symphony')
         (content / 'Read Me.txt').write_text(INSTALL_INSTRUCTIONS)
+        (content / 'Read Me.txt').chmod(0o644)
         run('hdiutil', 'create', '-fs', 'HFS+', '-format', 'UDZO', '-volname', 'Symphony',
             '-srcfolder', content, destination, timeout=300)
         run('hdiutil', 'verify', destination)
@@ -564,7 +565,7 @@ def notarize(dmg, keychain, env, evidence, checkpoint=None):
     return submission
 
 
-def build(manifest, helper, output, env):
+def build(manifest, helper, output, env, qualified_archive=None):
     credentials(env)  # Refuse before touching keychains or invoking unqualified code.
     require(sys.platform == 'darwin' and os.uname().machine == 'arm64', 'requires native Apple Silicon macOS')
     require(not output.exists(), 'signed output must be a new directory')
@@ -573,6 +574,10 @@ def build(manifest, helper, output, env):
             'signed distribution requires a clean committed checkout')
     require(helper.is_file() and not helper.is_symlink(), 'qualified helper must be a regular file')
     original = checksum(helper)
+    require(qualified_archive is not None and qualified_archive.is_file() and not qualified_archive.is_symlink(),
+            'original qualified package is required before signing')
+    from production_release import helper_hash
+    require(helper_hash(qualified_archive) == original, 'qualified package helper differs')
     output.mkdir(parents=True)
     evidence = output / 'evidence'
     evidence.mkdir()
@@ -593,10 +598,12 @@ def build(manifest, helper, output, env):
             archive = archives[0]
             bundle = private / 'bundle'
             bundle.mkdir()
-            run('tar', '-xzf', archive, '-C', bundle)
+            run('tar', '-xpzf', archive, '-C', bundle)
             receipt = json.loads((bundle / 'signing.json').read_text())
             require(receipt['original_qualified_helper_sha256'] == original,
                     'qualified helper binding differs')
+            from local_distribution import compare_package_payload
+            compare_package_payload(archive, qualified_archive)
             run(bundle / 'libexec/symphony-host', 'verify-files', bundle)
             # Apple's custom-installer guidance calls for payload qualification
             # before packaging/notarizing the outer distribution. Bare command
@@ -649,6 +656,8 @@ def main():
     signed.add_argument('manifest', type=Path)
     signed.add_argument('helper', type=Path)
     signed.add_argument('output', type=Path)
+    signed.add_argument('--qualified-package', type=Path, required=True,
+                        help='original package imported from the approved qualification')
     signed.add_argument('--authorize-apple-upload', action='store_true', required=True,
                         help='operator has approved this exact source/candidate and credential use')
     payload = commands.add_parser('sign-payload')
@@ -664,7 +673,7 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     try:
         if args.command == 'build':
-            build(args.manifest.resolve(), args.helper.resolve(), args.output.resolve(), os.environ)
+            build(args.manifest.resolve(), args.helper.resolve(), args.output.resolve(), os.environ, args.qualified_package.resolve())
         elif args.command == 'sign-payload':
             credentials(os.environ)
             sign_payload(args.bundle, Path(os.environ['SYMPHONY_MACOS_KEYCHAIN']), os.environ)

@@ -1,12 +1,13 @@
 """Command peers exercise refusal and ordering, never Apple credentials/trust."""
 import base64
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 import subprocess
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -82,6 +83,15 @@ elif tool=='xcrun':
     elif args[:2]==['stapler','staple']:
         with open(args[-1],'ab') as f:f.write(b'-stapled')
 '''
+
+
+@contextmanager
+def private_umask():
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 class DistributionTest(unittest.TestCase):
@@ -444,6 +454,16 @@ class DistributionTest(unittest.TestCase):
         original = dist.checksum(helper)
         manifest = self.root / 'release.json'
         manifest.write_text('{}')
+        qualified = self.root / 'qualified-package.tar.gz'
+        original_bundle = self.root / 'original-bundle'
+        (original_bundle / 'libexec').mkdir(parents=True)
+        (original_bundle / 'libexec/symphony-host').write_bytes(helper.read_bytes())
+        (original_bundle / 'libexec/symphony-host').chmod(0o755)
+        (original_bundle / 'source.txt').write_bytes(b'unchanged source')
+        (original_bundle / 'distribution-status.txt').write_text('unsigned')
+        (original_bundle / 'files.sha256').write_text('original inventory')
+        with tarfile.open(qualified, 'w:gz', format=tarfile.USTAR_FORMAT) as archive:
+            archive.add(original_bundle, arcname='.')
         real_run = dist.run
 
         def invoke(*args, **kwargs):
@@ -458,39 +478,61 @@ class DistributionTest(unittest.TestCase):
                 output.mkdir()
                 content = self.root / 'packaged'
                 (content / 'libexec').mkdir(parents=True, exist_ok=True)
+                content.chmod(0o700 if failure == 'directory modes' else 0o755)
+                (content / 'libexec').chmod(0o755)
                 (content / 'libexec/symphony-host').write_bytes(b'FAKE SIGNED BYTES')
+                (content / 'libexec/symphony-host').chmod(0o755)
+                (content / 'source.txt').write_bytes(b'unchanged source')
+                (content / 'source.txt').chmod(0o600 if failure == 'payload modes' else 0o644)
                 dist.write_json(content / 'signing.json', {'original_qualified_helper_sha256': original,
                     'payloads': {'libexec/symphony-host': {'sha256': dist.checksum(content / 'libexec/symphony-host')}}})
-                with tarfile.open(output / 'symphony-fixture-macos.tar.gz', 'w:gz') as archive:
+                (content / 'signing.json').chmod(0o644)
+                inventory = ''.join(dist.checksum(path) + '  ./' + str(path.relative_to(content)) + '\n'
+                                    for path in sorted(content.rglob('*')) if path.is_file() and path.name != 'files.sha256')
+                (content / 'files.sha256').write_text(inventory)
+                (content / 'files.sha256').chmod(0o600 if failure == 'inventory modes' else 0o644)
+                with tarfile.open(output / 'symphony-fixture-macos.tar.gz', 'w:gz', format=tarfile.USTAR_FORMAT) as archive:
                     archive.add(content, arcname='.')
                 (output / 'package-source.txt').write_text('fixture package source')
                 return ''
+            if args[:2] == ('hdiutil', 'create'):
+                tree = Path(args[args.index('-srcfolder') + 1])
+                self.assertEqual(stat.S_IMODE(tree.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE((tree / 'Read Me.txt').stat().st_mode), 0o644)
+                for path in (tree / 'Symphony').rglob('*'):
+                    expected = 0o755 if path.is_dir() or path.name == 'symphony-host' else 0o644
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), expected, str(path))
+                self.assertEqual(stat.S_IMODE((tree / 'Symphony').stat().st_mode), 0o755)
             if str(args[0]).endswith('/libexec/symphony-host'):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('package evidence', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
+        for failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
             retention_failure = (patch.object(dist.SignedCheckpoint, 'retain', side_effect=OSError('FAKE SECRET /PRIVATE/PATH'))
                                  if failure == 'checkpoint retention' else nullcontext())
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
-                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure:
+                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask():
                 uname.return_value.machine = 'arm64'
                 if failure:
                     with self.assertRaises(OSError if failure == 'checkpoint retention' else ValueError):
-                        dist.build(manifest, helper, output, self.env)
+                        dist.build(manifest, helper, output, self.env, qualified)
                     self.assertFalse((output / 'macos-distribution.json').exists())
                     if not failure.startswith('security'):
                         self.assertFalse(list(output.glob('*.dmg')))
                     self.assertTrue((output / 'evidence/keychain-diagnostics.json').is_file())
-                    if failure == 'package evidence':
+                    if failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes'):
                         self.assertFalse(any(command[0] == 'xcrun' for command in self.commands()))
                     if failure == 'checkpoint retention':
                         self.assertFalse(any(command[:3] == ['xcrun', 'notarytool', 'submit'] for command in self.commands()))
                         operations = json.loads((output / 'evidence/keychain-diagnostics.json').read_text())['operations']
                         self.assertTrue(all(item['status'] == 'success' for item in operations if item['stage'].startswith('cleanup.')))
                 else:
-                    dist.build(manifest, helper, output, self.env)
+                    dist.build(manifest, helper, output, self.env, qualified)
+                    self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
+                    checkpoint = output.with_name(output.name + '.checkpoint')
+                    self.assertEqual(stat.S_IMODE(checkpoint.stat().st_mode), 0o700)
+                    self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in checkpoint.iterdir()))
                     receipt = json.loads((output / 'macos-distribution.json').read_text())
                     self.assertEqual(receipt['status'], 'notarized-stapled-assessed')
                     for name, digest in receipt['artifacts'].items():

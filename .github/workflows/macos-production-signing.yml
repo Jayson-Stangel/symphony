@@ -54,7 +54,7 @@ jobs:
           MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
         run: |
           python3 scripts/release/production_release.py source
-          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --authorize-apple-upload
+          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --authorize-apple-upload
       - name: Preserve Linux and seal final distribution and updater hashes
         run: python3 scripts/release/production_release.py seal "$RUNNER_TEMP/production-inputs" "$RUNNER_TEMP/production-signed"
       - name: Retain final assessed bytes for independent native acceptance

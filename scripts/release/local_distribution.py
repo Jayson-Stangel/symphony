@@ -239,17 +239,10 @@ def executable_identity(raw):
     return hashlib.sha256(normalized).hexdigest()
 
 
-def verify_payload(folder, qualified):
-    manifest = json.loads((folder / 'release.json').read_text())
-    require((folder / 'internal-release.json').read_bytes() == (qualified / 'internal/release.json').read_bytes(),
-            'internal source manifest differs from original qualification')
-    core = qualified / 'internal/manager-core.json'
-    require(core.exists() == (folder / 'manager-core.json').exists(), 'manager core inventory differs')
-    if core.exists():
-        require(core.read_bytes() == (folder / 'manager-core.json').read_bytes(), 'manager core differs')
-    mac = manifest['bundles']['macos']['filename']
-    current, directories = bundle_files(folder / mac, with_directories=True)
-    original, original_directories = bundle_files(qualified / 'packages' / mac, with_directories=True)
+def compare_package_payload(signed_archive, qualified_archive):
+    """The same exact qualified payload comparison before upload and on ingress."""
+    current, directories = bundle_files(signed_archive, with_directories=True)
+    original, original_directories = bundle_files(qualified_archive, with_directories=True)
     require(directories == original_directories, 'signed payload directory inventory/modes differ')
     require('distribution-status.txt' in original and 'signing.json' not in original,
             'original qualification is not the expected unsigned package')
@@ -258,6 +251,8 @@ def verify_payload(folder, qualified):
     for name in set(original) - {'libexec/symphony-host', 'files.sha256', 'distribution-status.txt'}:
         require(current[name] == original[name], 'signed package source bytes or permissions differ from qualification')
     require(current['libexec/symphony-host'][1] == original['libexec/symphony-host'][1], 'signed helper permissions differ')
+    require(current['files.sha256'][1] == original['files.sha256'][1], 'signed inventory permissions differ')
+    require(current['signing.json'][1] == 0o644, 'signed receipt permissions differ')
     lines = current['files.sha256'][0].decode().splitlines()
     expected = {name: hashlib.sha256(raw).hexdigest() for name, (raw, _) in current.items() if name != 'files.sha256'}
     observed = {}
@@ -267,6 +262,19 @@ def verify_payload(folder, qualified):
         require(name not in observed, 'duplicate signed payload inventory')
         observed[name] = digest
     require(observed == expected, 'signed payload inventory does not match actual files')
+    return current
+
+
+def verify_payload(folder, qualified):
+    manifest = json.loads((folder / 'release.json').read_text())
+    require((folder / 'internal-release.json').read_bytes() == (qualified / 'internal/release.json').read_bytes(),
+            'internal source manifest differs from original qualification')
+    core = qualified / 'internal/manager-core.json'
+    require(core.exists() == (folder / 'manager-core.json').exists(), 'manager core inventory differs')
+    if core.exists():
+        require(core.read_bytes() == (folder / 'manager-core.json').read_bytes(), 'manager core differs')
+    mac = manifest['bundles']['macos']['filename']
+    current = compare_package_payload(folder / mac, qualified / 'packages' / mac)
     signing = json.loads(current['signing.json'][0])
     distribution = json.loads((folder / 'macos-distribution.json').read_text())
     require(signing == {'status': 'developer-id-signed-not-yet-notarized',
@@ -525,7 +533,9 @@ def main():
         signed = args.output.resolve() / 'signed'
         subprocess.run([sys.executable, str(ROOT / 'scripts/release/macos_distribution.py'), 'build',
                         str(inputs.resolve() / 'internal/release.json'), str(inputs.resolve() / 'helper/symphony-host'),
-                        str(signed), '--authorize-apple-upload'], env=env, check=True)
+                        str(signed), '--qualified-package',
+                        str(inputs.resolve() / 'packages' / json.loads((inputs / 'internal/release.json').read_text())['bundles']['macos']['filename']),
+                        '--authorize-apple-upload'], env=env, check=True)
         production.seal_signed(inputs, signed, revision)
         verify_native(signed, identity, team, inputs)
         print('Local signed bytes verified. Explicit staging-upload authorization is a separate command.')
