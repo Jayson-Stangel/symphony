@@ -199,7 +199,7 @@ class DiagnosticTest(unittest.TestCase):
         with self.assertRaises(ValueError):local.retained_local('77','1',C,self.root/'native',fetch)
         self.assertFalse(any('artifacts' in path for path in calls))
 
-    def test_workflow_keeps_read_only_isolation_and_production_jobs_separate(self):
+    def test_workflow_scopes_diagnostic_write_and_keeps_production_jobs_separate(self):
         text=(Path(__file__).parents[3]/diagnostic.WORKFLOW).read_text()
         diag=text.split('  http-diagnostic:\n',1)[1]
         original=text.split('  http-diagnostic:\n',1)[0]
@@ -209,6 +209,8 @@ class DiagnosticTest(unittest.TestCase):
         self.assertIn('runs-on: ubuntu-24.04',diag);self.assertIn('if: always()',diag)
         self.assertIn('local-signing-http-diagnostic-',diag);self.assertNotIn('production-local-signed-',diag)
         self.assertIn('contents: read\n  actions: read',text)
+        self.assertIn('permissions:\n      contents: write\n      actions: read',diag)
+        self.assertNotIn('contents: write',original)
         self.assertEqual(original.count('!inputs.diagnostic_only'),3)
         self.assertIn('--transport-probe-only "$TRANSPORT_PROBE_ONLY"',diag)
 

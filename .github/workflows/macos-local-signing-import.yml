@@ -141,6 +141,10 @@ jobs:
         run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
   http-diagnostic:
     name: Diagnose private fixture HTTP stages
+    # Bounded diagnostic capability test; requests remain GET-only.
+    permissions:
+      contents: write
+      actions: read
     # CLI fails conflicting modes and invalid feature/source bindings before GET.
     if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_only
     runs-on: ubuntu-24.04
