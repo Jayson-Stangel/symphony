@@ -71,5 +71,3 @@ def helper_hash(archive):
         require(len(entries) == 1 and entries[0].isfile() and entries[0].size <= MAX_BYTES,
                 'production archive helper missing')
         return hashlib.sha256(bundle.extractfile(entries[0]).read()).hexdigest()
-
-
