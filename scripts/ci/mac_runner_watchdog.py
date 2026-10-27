@@ -22,6 +22,7 @@ import uuid
 
 REPOSITORY = "Jayson-Stangel/symphony"
 PREFIX = "symphony-backup-mac-"
+ASSIGNMENT_CONFIRM_SECONDS = 15
 
 
 class Refusal(ValueError):
@@ -235,6 +236,7 @@ def supervise(lease, host, cancelled=lambda: False, clock=time.monotonic, wall_c
     started = clock()
     expiry = expiry_seconds(lease["expires_at"])
     expiry_deadline = started + expiry - wall_clock()
+    busy_observed_at = None
     def deadline(acquiring=False):
         if wall_clock() >= expiry or clock() >= expiry_deadline:
             return "permit_expired"
@@ -243,6 +245,8 @@ def supervise(lease, host, cancelled=lambda: False, clock=time.monotonic, wall_c
             return "total_timeout"
         if acquiring and elapsed >= lease["acquisition_seconds"]:
             return "acquisition_timeout"
+        if busy_observed_at is not None and clock() - busy_observed_at >= ASSIGNMENT_CONFIRM_SECONDS:
+            return "unexpected_runner_activity"
         return None
     try:
         if not wall_clock() < expiry <= wall_clock() + 7200:
@@ -269,12 +273,12 @@ def supervise(lease, host, cancelled=lambda: False, clock=time.monotonic, wall_c
             if cancelled():
                 receipt["outcome"] = "cancelled"
                 break
-            expired = deadline()
+            expired = deadline(acquiring=busy_observed_at is not None)
             if expired:
                 receipt["outcome"] = expired
                 break
             host.validate_permit()
-            expired = deadline()
+            expired = deadline(acquiring=busy_observed_at is not None)
             if expired:
                 receipt["outcome"] = expired
                 break
@@ -284,25 +288,44 @@ def supervise(lease, host, cancelled=lambda: False, clock=time.monotonic, wall_c
             if expired:
                 receipt["outcome"] = expired
                 break
+            if not runner and job.get("status") != "completed":
+                registration = host.owned_runner()
+                if registration is None or type(registration.get("busy")) is not bool:
+                    receipt["outcome"] = "unexpected_runner_activity"
+                    break
+                expired = deadline(acquiring=True)
+                if expired:
+                    receipt["outcome"] = expired
+                    break
+                if registration["busy"]:
+                    if busy_observed_at is None:
+                        busy_observed_at = clock()
+                    # Runner and job endpoints can publish assignment at different
+                    # times. Busy is never proof: refresh only the approved job.
+                    job = host.job()
+                    runner = job.get("runner_id")
+            if cancelled():
+                receipt["outcome"] = "cancelled"
+                break
+            expired = deadline(acquiring=not runner or busy_observed_at is not None)
+            if expired:
+                receipt["outcome"] = expired
+                break
             if runner and (runner != lease["runner_id"] or job.get("runner_name") != lease["runner_name"]):
                 receipt["outcome"] = "wrong_assignment"
                 break
+            if runner:
+                busy_observed_at = None
             if job.get("status") == "completed":
                 receipt["outcome"] = "completed" if runner else "completed_without_runner"
                 receipt["job_conclusion"] = job.get("conclusion")
-                break
-            registration = host.owned_runner()
-            if not runner and (registration is None or registration.get("busy") is not False):
-                receipt["outcome"] = "unexpected_runner_activity"
-                break
-            expired = deadline(acquiring=not runner)
-            if expired:
-                receipt["outcome"] = expired
                 break
             elapsed = clock() - started
             remaining = lease["total_seconds"] - elapsed
             if not runner:
                 remaining = min(remaining, lease["acquisition_seconds"] - elapsed)
+            if busy_observed_at is not None:
+                remaining = min(remaining, ASSIGNMENT_CONFIRM_SECONDS - (clock() - busy_observed_at))
             pause(max(0, min(5, remaining, expiry_deadline - clock(), expiry - wall_clock())))
     except (Refusal, OSError, ValueError, TypeError, AttributeError):
         receipt["errors"].append("session observation or identity verification failed")

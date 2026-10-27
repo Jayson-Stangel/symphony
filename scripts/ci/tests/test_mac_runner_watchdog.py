@@ -112,17 +112,125 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "wrong_assignment")
         self.assertTrue(result["cleanup_complete"])
 
-    def test_busy_runner_without_selected_job_assignment_is_refused(self):
-        value = lease()
-        host = FakeHost(value, [job(value), job(value)])
-        calls = [0]
+    def busy_host(self, value, jobs, statuses=None):
+        host = FakeHost(value, jobs)
+        registrations = iter(statuses or itertools.chain([False], itertools.repeat(True)))
         def registration():
-            calls[0] += 1
-            return {"status": "offline" if calls[0] == 1 else "online", "busy": calls[0] != 1}
+            busy = next(registrations)
+            return {"status": "online" if busy else "offline", "busy": busy}
         host.owned_runner = registration
+        return host
+
+    def confirmation_lease(self):
+        value = lease()
+        value.update(acquisition_seconds=30, total_seconds=60)
+        return value
+
+    def test_busy_endpoint_race_refreshes_exact_job_before_refusing(self):
+        value = self.confirmation_lease()
+        host = self.busy_host(value, [job(value), job(value), job(value, "in_progress", True),
+                                      job(value, "completed", True)])
+        result, _ = self.run_session(host)
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(result["job_conclusion"], "success")
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_busy_endpoint_race_can_confirm_on_next_poll(self):
+        value = self.confirmation_lease()
+        host = self.busy_host(value, [job(value), job(value), job(value),
+                                      job(value, "in_progress", True), job(value, "completed", True)])
+        result, _ = self.run_session(host)
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(result["elapsed_seconds"], 10)
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_persistent_busy_without_assignment_refuses_after_fifteen_seconds(self):
+        value = self.confirmation_lease()
+        host = self.busy_host(value, itertools.repeat(job(value)))
         result, _ = self.run_session(host)
         self.assertEqual(result["outcome"], "unexpected_runner_activity")
+        self.assertEqual(result["elapsed_seconds"], 15)
         self.assertTrue(result["cleanup_complete"])
+
+    def test_busy_confirmation_never_extends_shorter_acquisition_deadline(self):
+        value = lease()
+        host = self.busy_host(value, itertools.repeat(job(value)))
+        result, _ = self.run_session(host)
+        self.assertEqual(result["outcome"], "acquisition_timeout")
+        self.assertEqual(result["elapsed_seconds"], 3)
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_confirmation_provider_failure_remains_fail_closed(self):
+        value = self.confirmation_lease()
+        host = self.busy_host(value, [])
+        reads = [0]
+        def read_job():
+            reads[0] += 1
+            if reads[0] <= 2:
+                return job(value)
+            raise watchdog.Refusal("confirmation provider unavailable")
+        host.job = read_job
+        result, _ = self.run_session(host)
+        self.assertEqual(result["outcome"], "unavailable")
+        self.assertIsNone(result["job_conclusion"])
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_busy_confirmation_wrong_runner_or_name_refuses_immediately(self):
+        for field, wrong in (("runner_id", 999), ("runner_name", "foreign")):
+            with self.subTest(field=field):
+                value = self.confirmation_lease()
+                refreshed = job(value, "in_progress", True)
+                refreshed[field] = wrong
+                host = self.busy_host(value, [job(value), job(value), refreshed])
+                result, _ = self.run_session(host)
+                self.assertEqual(result["outcome"], "wrong_assignment")
+                self.assertEqual(result["elapsed_seconds"], 0)
+                self.assertTrue(result["cleanup_complete"])
+
+    def test_busy_to_idle_flapping_does_not_restart_confirmation_window(self):
+        value = self.confirmation_lease()
+        statuses = itertools.chain([False, True, False, True], itertools.repeat(False))
+        host = self.busy_host(value, itertools.repeat(job(value)), statuses)
+        result, _ = self.run_session(host)
+        self.assertEqual(result["outcome"], "unexpected_runner_activity")
+        self.assertEqual(result["elapsed_seconds"], 15)
+
+    def test_slow_confirmation_cannot_accept_assignment_after_grace(self):
+        value = self.confirmation_lease()
+        host = self.busy_host(value, [])
+        ticks, reads = [0], [0]
+        def read_job():
+            reads[0] += 1
+            if reads[0] <= 2:
+                return job(value)
+            ticks[0] = 16
+            return job(value, "in_progress", True)
+        host.job = read_job
+        result = watchdog.supervise(value, host, clock=lambda: ticks[0])
+        self.assertEqual(result["outcome"], "unexpected_runner_activity")
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_confirmation_refresh_obeys_expiry_and_cancellation(self):
+        for cause in ("expiry", "cancel"):
+            with self.subTest(cause=cause):
+                value = self.confirmation_lease()
+                start = watchdog.expiry_seconds("2026-10-27T16:00:00Z")
+                value["expires_at"] = "2026-10-27T16:00:02Z"
+                host = self.busy_host(value, [])
+                ticks, reads, interrupted = [0], [0], [False]
+                def read_job():
+                    reads[0] += 1
+                    if reads[0] <= 2:
+                        return job(value)
+                    ticks[0] = 3 if cause == "expiry" else 1
+                    interrupted[0] = cause == "cancel"
+                    return job(value, "completed", True)
+                host.job = read_job
+                result = watchdog.supervise(value, host, clock=lambda: ticks[0],
+                                            wall_clock=lambda: start + ticks[0], cancelled=lambda: interrupted[0])
+                self.assertEqual(result["outcome"], "permit_expired" if cause == "expiry" else "cancelled")
+                self.assertIsNone(result["job_conclusion"])
+                self.assertTrue(result["cleanup_complete"])
 
     def test_acquisition_timeout_is_finite(self):
         value = lease()
