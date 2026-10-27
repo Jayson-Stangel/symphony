@@ -307,19 +307,62 @@ def live_source(revision, tag=None, fetch=api):
 def publish_release(retained, tag, invoke=subprocess.run, verify_tag=None):
     files = release_files(retained)
     verify_tag = verify_tag or (lambda: live_source(os.environ["GITHUB_SHA"], tag))
-    def state():
-        result = invoke(['gh', 'api', f'repos/{REPOSITORY}/releases/tags/{tag}'], capture_output=True, text=True, check=False)
-        value = json.loads(result.stdout)
-        if result.returncode:
-            require(isinstance(value, dict) and str(value.get('status')) == '404', 'release inventory unavailable')
-            return None
-        require(value.get('tag_name') == tag, 'release inventory tag differs')
+    candidate_manifest = retained / 'signed/release.json'
+    revision = os.environ.get('GITHUB_SHA', '')
+    require(re.fullmatch(r'[a-f0-9]{40}', revision), 'invalid production source')
+    require(json.loads(candidate_manifest.read_text())['source_revision'] == revision,
+            'retained publication source differs')
+
+    def request(path, method=None, payload=None):
+        command = ['gh', 'api', f'repos/{REPOSITORY}/' + path]
+        kwargs = {'capture_output': True, 'text': True, 'check': True}
+        if method:
+            command += ['--method', method, '--input', '-']
+            kwargs['input'] = json.dumps(payload)
+        result = invoke(command, **kwargs)
+        require(result.returncode == 0, 'production release service unavailable')
+        return json.loads(result.stdout)
+
+    def identity(value, release_id=None, original_target=None):
+        require(isinstance(value, dict) and type(value.get('id')) is int and value['id'] > 0
+                and (release_id is None or value['id'] == release_id)
+                and value.get('tag_name') == tag
+                and isinstance(value.get('target_commitish'), str) and 0 < len(value['target_commitish']) <= 256
+                and (original_target is None or value['target_commitish'] == original_target),
+                'original production release identity differs')
         return value
-    value = state()
+
+    # The by-tag endpoint only promises published releases. Reconcile a retry's
+    # original draft by a complete bounded inventory before creating anything.
+    matches = []
+    for page in range(1, 11):
+        listing = request(f'releases?per_page=100&page={page}')
+        require(isinstance(listing, list) and len(listing) <= 100
+                and all(isinstance(item, dict) for item in listing), 'invalid production release inventory')
+        matches.extend(item for item in listing if item.get('tag_name') == tag)
+        require(len(matches) <= 1, 'ambiguous original production draft')
+        if len(listing) < 100:
+            break
+    else:
+        raise ValueError('production release inventory exceeds reconciliation bound')
+    value = identity(matches[0]) if matches else None
+    if value is not None:
+        require(value.get('draft') is True, 'refusing to alter a completed release')
+    verify_tag()
     if value is None:
-        verify_tag()
-        invoke(['gh', 'release', 'create', tag, '--draft', '--verify-tag', '--generate-notes'], check=True)
-        value = state()
+        # Capture the ORIGINAL ID once. A failed/uncertain POST is not retried.
+        value = identity(request('releases', 'POST', {'tag_name': tag, 'target_commitish': revision,
+                         'draft': True, 'generate_release_notes': True}))
+        require(value.get('draft') is True, 'created production release is not a draft')
+    release_id = value['id']
+    original_target = value['target_commitish']
+
+    def state():
+        value = identity(request('releases/' + str(release_id)), release_id, original_target)
+        require(value.get('draft') is True, 'refusing to alter a completed release')
+        return value
+
+    value = state()
     present = release_inventory(value, files)
     missing = [str(p) for p in files if p.name not in present]
     if missing:
@@ -327,7 +370,10 @@ def publish_release(retained, tag, invoke=subprocess.run, verify_tag=None):
         invoke(['gh', 'release', 'upload', tag, *missing], check=True)
     release_inventory(state(), files, complete=True)
     verify_tag()
-    invoke(['gh', 'release', 'edit', tag, '--draft=false', '--prerelease=false', '--latest'], check=True)
+    completed = identity(request('releases/' + str(release_id), 'PATCH',
+                         {'draft': False, 'prerelease': False, 'make_latest': 'true'}), release_id, original_target)
+    require(completed.get('draft') is False and completed.get('prerelease') is False,
+            'production release completion differs')
 
 
 def source(revision, tag=None):

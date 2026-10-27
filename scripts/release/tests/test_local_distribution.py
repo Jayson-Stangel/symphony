@@ -64,8 +64,12 @@ class LocalTransportTest(unittest.TestCase):
         release = {}; staged = {}; commands = []
         def invoke(args, **kwargs):
             commands.append(args)
-            if args[1:3] == ['release', 'create']:
-                release.update(id=70, draft=True, tag_name=args[3], target_commitish='a'*40, assets=[])
+            if args[1:4] == ['api', '--method', 'POST']:
+                self.assertEqual(args[4:], ['repos/' + production.REPOSITORY + '/releases', '--input', '-'])
+                payload = json.loads(kwargs['input'])
+                self.assertIs(payload['draft'], True)
+                release.update(id=70, draft=True, tag_name=payload['tag_name'], target_commitish=payload['target_commitish'], assets=[])
+                return subprocess.CompletedProcess(args, 0, json.dumps(release), '')
             elif args[1:3] == ['release', 'upload']:
                 path = Path(args[4]); data = path.read_bytes()
                 staged[71] = data
@@ -76,7 +80,9 @@ class LocalTransportTest(unittest.TestCase):
                 raise AssertionError(args)
             return subprocess.CompletedProcess(args, 0, '', '')
         def service(path, binary=False):
-            if path.startswith('releases/tags/') or path == 'releases/70':
+            if path.startswith('releases/tags/'):
+                raise AssertionError('Private draft tag lookup must never be called (404)')
+            if path == 'releases/70':
                 return copy.deepcopy(release)
             if path == 'releases/assets/71':
                 return staged[71] if binary else copy.deepcopy(release['assets'][0])
@@ -128,21 +134,93 @@ class LocalTransportTest(unittest.TestCase):
             # Later mutable draft changes cannot replace admitted Actions bytes.
             release['assets'].clear()
             for name, data in before.items(): self.assertEqual((retained/'signed'/name).read_bytes(), data)
-            assets = []; operations = []
-            def publish(args, **kwargs):
-                operations.append(args)
-                if args[1] == 'api':
-                    return subprocess.CompletedProcess(args, 0, json.dumps({'draft':True,'tag_name':'v0.0.6','assets':assets}), '')
-                if args[1:3] == ['release','upload']:
-                    for filename in args[4:]:
-                        path=Path(filename); assets.append({'name':path.name,'size':path.stat().st_size,
-                                                          'digest':'sha256:'+production.checksum(path)})
-                return subprocess.CompletedProcess(args, 0, '', '')
-            production.publish_release(retained, 'v0.0.6', publish, verify_tag=lambda:None)
-            self.assertTrue(any(cmd[1:3] == ['release','edit'] for cmd in operations))
-            self.assertFalse(any('build' in cmd or 'codesign' in cmd for cmd in operations))
+            publisher = fixtures.PublicationPeer()
+            with patch.dict(os.environ, GITHUB_SHA='a' * 40):
+                production.publish_release(retained, 'v0.0.6', publisher.invoke, verify_tag=publisher.verify)
+            self.assertEqual([name for name, _ in publisher.mutations], ['upload', 'complete'])
+            self.assertFalse(publisher.release['draft'])
+            self.assertFalse(any('build' in cmd or 'codesign' in cmd for cmd in publisher.calls))
             published = {p.name:p.read_bytes() for p in production.release_files(retained)}
             for name,data in before.items():self.assertEqual(published[name],data)
+
+    def test_original_creation_id_is_used_for_both_reads_without_a_tag_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, signed, fetch, invoke, release, _, commands, *_ = self.fixture(root)
+            reads = []
+            def service(path, binary=False):
+                reads.append(path)
+                return fetch(path, binary=binary)
+            receipt = local.upload(signed, 'a'*40, root/'local.zip', invoke, service)
+            self.assertEqual(reads, ['releases/70', 'releases/70'])
+            self.assertEqual(receipt['release_id'], 70)
+            self.assertEqual(commands[0][1:4], ['api', '--method', 'POST'])
+            self.assertEqual(commands[1][1:4], ['release', 'upload', release['tag_name']])
+            self.assertEqual(len(commands), 2)
+
+    def test_original_release_identity_and_private_inventory_refuse_before_or_after_upload(self):
+        changes = (lambda r:r.update(id=71), lambda r:r.update(id=True), lambda r:r.update(draft=False),
+                   lambda r:r.update(tag_name='replacement'), lambda r:r.update(target_commitish='b'*40),
+                   lambda r:r.update(assets=[{}] if not r['assets'] else []), lambda r:r.update(assets={}))
+        for after_upload in (False, True):
+            for change in changes:
+                with self.subTest(after_upload=after_upload, change=change), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    _, signed, fetch, invoke, _, _, commands, *_ = self.fixture(root)
+                    reads = []
+                    def service(path, binary=False):
+                        result = fetch(path, binary=binary)
+                        reads.append(path)
+                        if len(reads) == (2 if after_upload else 1):
+                            change(result)
+                        return result
+                    archive = root/'local.zip'
+                    with self.assertRaises(ValueError):
+                        local.upload(signed, 'a'*40, archive, invoke, service)
+                    self.assertTrue(archive.is_file())
+                    self.assertEqual(len(commands), 2 if after_upload else 1)
+                    before = archive.read_bytes()
+                    with self.assertRaises(ValueError):
+                        local.upload(signed, 'a'*40, archive, invoke, service)
+                    self.assertEqual(archive.read_bytes(), before)
+                    self.assertEqual(len(commands), 2 if after_upload else 1)
+
+    def test_uncertain_or_malformed_creation_never_retries_or_uploads(self):
+        results = (subprocess.TimeoutExpired('gh', 1), subprocess.CalledProcessError(1, 'gh'),
+                   'not JSON', '{}', '[]', 'null', '{"id":true}', '{"id":0}', '{"id":-1}', '{"id":"70"}')
+        for result in results:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, signed, _, _, _, _, _, *_ = self.fixture(root)
+                calls = []
+                def invoke(args, **kwargs):
+                    calls.append(args)
+                    if isinstance(result, Exception):
+                        raise result
+                    return subprocess.CompletedProcess(args, 0, result, '')
+                def refuse_read(*args, **kwargs):
+                    self.fail('Uncertain creation must not discover/retry a release')
+                archive = root/'local.zip'
+                with self.assertRaises((ValueError, KeyError, subprocess.SubprocessError)):
+                    local.upload(signed, 'a'*40, archive, invoke, refuse_read)
+                self.assertTrue(archive.is_file())
+                with self.assertRaises(ValueError):
+                    local.upload(signed, 'a'*40, archive, invoke, refuse_read)
+                self.assertEqual(len(calls), 1)
+
+    def test_uploaded_asset_tamper_refuses_original_id_receipt(self):
+        changes = (lambda a:a.update(name='replacement.zip'), lambda a:a.update(state='new'),
+                   lambda a:a.update(size=a['size']+1), lambda a:a.update(digest='sha256:'+'0'*64))
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                _, signed, fetch, invoke, _, _, _, *_ = self.fixture(root)
+                reads=[]
+                def service(path, binary=False):
+                    value=fetch(path,binary=binary);reads.append(path)
+                    if len(reads)==2:change(value['assets'][0])
+                    return value
+                with self.assertRaises(ValueError):local.upload(signed,'a'*40,root/'local.zip',invoke,service)
 
     def test_replaced_asset_wrong_digest_expired_or_completed_staging_refuses_before_native(self):
         changes = [lambda r:r.update(draft=False), lambda r:r.update(target_commitish='b'*40),
@@ -181,79 +259,17 @@ class LocalTransportTest(unittest.TestCase):
                     local.upload(signed,'a'*40,root/'local.zip',lambda *a,**k:self.fail('must refuse before GitHub'))
 
 
-class TransportProbeTest(unittest.TestCase):
-    def fixture(self):
-        buffer=io.BytesIO()
-        with zipfile.ZipFile(buffer,'w',compression=zipfile.ZIP_STORED) as archive:
-            entry=zipfile.ZipInfo('permission-probe.txt',date_time=(1980,1,1,0,0,0))
-            entry.external_attr=0o100644<<16
-            archive.writestr(entry,b'Symphony local signing staging permission probe. Public fixture. No credentials or candidate package.\n')
-        raw=buffer.getvalue()
-        self.assertEqual('sha256:'+hashlib.sha256(raw).hexdigest(),local.PROBE_DIGEST)
-        self.assertEqual(len(raw),local.PROBE_SIZE)
-        asset={'id':71,'name':'permission-probe.zip','state':'uploaded','size':len(raw),
-               'digest':local.PROBE_DIGEST,'created_at':datetime.now(timezone.utc).isoformat()}
-        release={'draft':True,'target_commitish':'a'*40,'tag_name':'local-signing-'+'a'*40+'-'+'b'*32,
-                 'assets':[asset]}
-        calls=[]
-        def fetch(path,binary=False):
-            calls.append((path,binary))
-            if path=='releases/70':return copy.deepcopy(release)
-            if path=='releases/assets/71':return raw if binary else copy.deepcopy(asset)
-            raise AssertionError('Probe must not request qualification or native inputs: '+path)
-        return fetch,release,asset,calls
-
-    def test_exact_public_probe_uses_shared_service_reads_without_parsing_or_native_work(self):
-        fetch,_,_,calls=self.fixture()
-        with tempfile.TemporaryDirectory() as temporary:
-            path=Path(temporary)/'transport-probe.json'
-            with patch.object(local.zipfile,'ZipFile',side_effect=AssertionError('probe must not parse archives')), \
-                 patch.object(production,'qualification',side_effect=AssertionError('probe must not qualify')), \
-                 patch.object(local,'verify_native',side_effect=AssertionError('probe must not invoke native tools')):
-                proof=local.probe_transport('70','71',local.PROBE_DIGEST,'a'*40,path,fetch)
-            self.assertEqual(proof['origin'],'transport-probe')
-            self.assertEqual(proof['source_revision'],'a'*40)
-            self.assertEqual(proof,json.loads(path.read_text()))
-            self.assertEqual(calls,[('releases/70',False),('releases/assets/71',False),('releases/assets/71',True)])
-
-    def test_wrong_source_asset_digest_size_and_oversized_fixture_leave_no_proof(self):
-        changes=[lambda r,a:r.update(target_commitish='b'*40),lambda r,a:a.update(id=72),
-                 lambda r,a:a.update(digest='sha256:'+'0'*64),lambda r,a:a.update(size=local.PROBE_SIZE-1),
-                 lambda r,a:a.update(size=local.MAX_PROBE_BYTES+1),lambda r,a:a.update(size=True),
-                 lambda r,a:r.update(draft=False),lambda r,a:a.update(name='private-package.zip')]
-        for change in changes:
-            with self.subTest(change=change),tempfile.TemporaryDirectory() as temporary:
-                fetch,release,asset,_=self.fixture();change(release,asset);path=Path(temporary)/'proof.json'
-                with self.assertRaises(ValueError):local.probe_transport('70','71',local.PROBE_DIGEST,'a'*40,path,fetch)
-                self.assertFalse(path.exists())
-
-    def test_job_token_permission_denial_is_not_treated_as_public_or_successful_access(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path=Path(temporary)/'proof.json'
-            def denied(*args,**kwargs):raise subprocess.CalledProcessError(1,['gh','api'])
-            with self.assertRaises(subprocess.SubprocessError):
-                local.probe_transport('70','71',local.PROBE_DIGEST,'a'*40,path,denied)
-            self.assertFalse(path.exists())
-
-    def test_downloaded_bytes_must_match_original_service_size_and_digest(self):
-        for body in (b'X'*local.PROBE_SIZE,b'X'*(local.MAX_PROBE_BYTES+1)):
-            with self.subTest(size=len(body)),tempfile.TemporaryDirectory() as temporary:
-                original,*_=self.fixture();path=Path(temporary)/'proof.json'
-                def fetch(name,binary=False):return body if binary else original(name,binary=False)
-                with self.assertRaisesRegex(ValueError,'downloaded staging asset differs'):
-                    local.probe_transport('70','71',local.PROBE_DIGEST,'a'*40,path,fetch)
-                self.assertFalse(path.exists())
-
-    def test_green_probe_with_skipped_native_job_cannot_be_used_as_signed_production_input(self):
+class NonNativeAdmissionTest(unittest.TestCase):
+    def test_successful_ingress_without_native_cannot_be_used_as_signed_production_input(self):
         run={'head_sha':'a'*40,'head_branch':'main','event':'workflow_dispatch','status':'completed',
              'conclusion':'success','run_attempt':1,'path':'.github/workflows/macos-local-signing-import.yml',
              'head_repository':{'full_name':production.REPOSITORY}}
         def fetch(path,binary=False):
             if path in ('actions/runs/456','actions/runs/456/attempts/1'):return run
             if path=='actions/runs/456/attempts/1/jobs?per_page=100':
-                return {'jobs':[{'name':'Probe private staging read access','conclusion':'success'},
+                return {'jobs':[{'name':'Read private staged distribution','conclusion':'success'},
                                 {'name':'Verify locally signed distribution','conclusion':'skipped'}]}
-            self.fail('Probe must be refused before artifact selection: '+path)
+            self.fail('Ingress alone must be refused before artifact selection: '+path)
         with tempfile.TemporaryDirectory() as temporary,self.assertRaisesRegex(ValueError,'mandatory production producer'):
             local.retained_local('456','1','a'*40,Path(temporary)/'retained',fetch)
 
@@ -420,25 +436,6 @@ class WorkflowBoundaryTest(unittest.TestCase):
         self.assertEqual(publisher.count('SIGNED_ORIGIN:'),3)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')",publisher)
 
-    def test_probe_is_explicit_optional_and_cannot_emit_a_production_artifact(self):
-        root=Path(__file__).parents[3]
-        ingress=(root/'.github/workflows/macos-local-signing-import.yml').read_text()
-        probe,native=ingress.split('  transport-probe:\n',1)[1].split('  verify:\n',1)
-        self.assertIn('transport_probe_only:',ingress)
-        self.assertIn('default: false\n        type: boolean',ingress)
-        self.assertIn('&& inputs.transport_probe_only',probe)
-        self.assertIn('&& !inputs.transport_probe_only',native)
-        for block in (probe,native):
-            self.assertIn("github.repository == 'Jayson-Stangel/symphony'",block)
-            self.assertIn("github.ref == 'refs/heads/main'",block)
-            self.assertIn('inputs.approved_revision == github.sha',block)
-            self.assertIn('environment: macos-production-signing',block)
-        self.assertIn('runs-on: ubuntu-24.04',probe)
-        self.assertIn('local-signing-transport-probe-',probe)
-        self.assertNotIn('production-local-signed-',probe)
-        self.assertNotIn('local_distribution.py import',probe)
-        self.assertNotIn('MACOS_',probe)
-        self.assertIn('  contents: read\n  actions: read',ingress)
 
 
 if __name__ == '__main__': unittest.main()
