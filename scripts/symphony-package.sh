@@ -37,10 +37,13 @@ package_usage() {
 Usage:
   symphony --version
   symphony doctor [--json]
-  symphony init --linear-project SLUG [--local-skill NAME]...
+  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
-  symphony runner start|stop|status|doctor|logs|drain|resume|recheck
+  symphony runner doctor [--agent codex|claude] [--sandbox-only]
+  symphony runner apparmor [--apply --daemon-id ID]
+  symphony runner import --agent codex|claude --archive PATH
+  symphony runner start|stop|status|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]
   symphony environment select --agent codex|claude IMAGE
   symphony environment show [--json]
@@ -51,24 +54,36 @@ agent toolchain is needed. From an existing project checkout, initialize it, edi
 the printed private credentials file, authenticate the native container login,
 and run. Runner images are pulled by immutable release digest; they never build
 locally. Use the installed updater for release changes and runner recovery.
-See the packaged installation guide for isolated candidate storage and namespaces.
+init --agent codex|claude requests setup guidance; it never switches a runner.
+Without --agent, retained state wins, then new projects default to Codex.
+Repeat init to resume setup. Resolve a conflicting retained image with explicit
+compatible environment selection before auth/doctor; update --agent owns the
+existing runner transition. See the packaged installation guide for details.
 USAGE
 }
 
-package_image() {
+package_manifest_image() {
   local image
   image=$(package_helper release-get "$symphony_home/release.json" "distribution.${1:-codex}.$package_arch" 2>/dev/null) || image=
   if [ -n "$image" ]; then printf '%s\n' "$image"
   else package_helper release-get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; fi
 }
+package_image() {
+  package_helper resolve-runner-import "$symphony_home/release.json" "${1:-codex}" "$package_arch" "$package_app_home"
+}
 package_release_image() {
   local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
-  [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
+  package_helper validate-runner-reference "$symphony_home/release.json" "$agent" "$package_arch" "$image" >/dev/null || die 'runner image is outside the selected release manifest'
   [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
   revision=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
   platform=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
+  container_engine_ready "$runtime" || return
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
-    "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; check engine network access and release availability: $image"
+    case "$image" in
+      localhost:*/*|127.0.0.1:*/*|localhost/*|127.0.0.1/*)
+        die "selected candidate $agent image is absent from the cache. Import its matching companion before login: symphony runner import --agent $agent --archive PATH. Repeat after pruning the image; see docs/candidate-runner-provisioning.md" ;;
+    esac
+    "$runtime" pull --platform "$platform" "$image" || die "cannot pull released $agent image; engine is reachable. Check registry network access and release availability: $image"
   fi
   [ "$("$runtime" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" = "$revision" ] || die 'runner source revision does not match selected release'
   [ "$("$runtime" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "$platform" ] || die 'runner architecture does not match selected release'
@@ -170,6 +185,7 @@ package_transition_image() {
       printf '%s\n' "$image"; return
     fi
   fi
+  package_ensure_candidate_image "$agent" || return
   package_image "$agent"
 }
 
@@ -189,15 +205,17 @@ package_use_project_image() {
   if declare -F environment_use_project >/dev/null; then environment_use_project "$root" "$agent" || return; fi
   [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || return 0
   metadata=$(runner_env_file "$root")
-  [ -f "$metadata" ] || return 0
+  if [ ! -f "$metadata" ]; then package_ensure_candidate_image "$agent"; return; fi
   package_helper owned-file "$metadata" || return
   image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
   case "$image" in sha256:*)
     [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'retained runner image identity is invalid'
-    [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" = "$agent" ] || return 0
+    if [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" != "$agent" ]; then package_ensure_candidate_image "$agent"; return; fi
     export SYMPHONY_RUNNER_IMAGE=$image
+    return 0
     ;;
   esac
+  package_ensure_candidate_image "$agent"
 }
 
 # Verify the selected home's own helper, not the currently running manager's
@@ -242,11 +260,90 @@ package_stage_bundle() {
   printf '%s\n' "$destination"
 }
 
+# This file belongs to application storage, not the immutable release. It keeps
+# install-time overrides together without editing a user's shell startup files.
+package_shell_activation_preflight() {
+  local activation="$package_app_home/activate.sh" header
+  if [ -e "$activation" ] || [ -L "$activation" ]; then
+    package_helper owned-file "$activation" || return
+    IFS= read -r header < "$activation" || header=
+    [ "$header" = '# Symphony shell activation v1' ] || die "refusing to replace existing shell activation file: $activation"
+  fi
+}
+
+package_shell_environment() {
+  local name
+  printf '# Symphony shell activation v1\n# Source in bash or zsh; generated by the per-user installer.\n'
+  printf 'unset SYMPHONY_HOME\n'
+  printf 'export SYMPHONY_APP_HOME=%q\n' "$package_app_home"
+  printf 'export SYMPHONY_BIN_DIR=%q\n' "$bin_dir"
+  printf 'export SYMPHONY_CONFIG_HOME=%q\n' "$config_home"
+  printf 'export SYMPHONY_SKILLS_DIR=%q\n' "$skills_dir"
+  # Preserve the override's provenance: a derived default must continue to
+  # follow --config-dir in later doctor/update commands after activation.
+  if [ -n "${SYMPHONY_RUNNER_HOME:-}" ]; then
+    printf 'export SYMPHONY_RUNNER_HOME=%q\n' "$runner_home"
+  else
+    printf 'unset SYMPHONY_RUNNER_HOME\n'
+  fi
+  printf 'export SYMPHONY_RUNNER_NAMESPACE=%q\n' "$runner_namespace"
+  # Only explicit engine selections are retained; never serialize credentials or
+  # the rest of the installing process's environment into a sourced file.
+  for name in SYMPHONY_CONTAINER_RUNTIME DOCKER_CONTEXT DOCKER_HOST DOCKER_CONFIG; do
+    if [ "${!name+x}" = x ]; then printf 'export %s=%q\n' "$name" "${!name}"
+    else printf 'unset %s\n' "$name"; fi
+  done
+  printf 'export PATH=%q:"$PATH"\nhash -r\n' "$bin_dir"
+}
+
+package_shell_activation_write() {
+  local temporary
+  package_shell_activation_preflight || return
+  temporary=$(mktemp "$package_app_home/.activate.XXXXXX") || return
+  if ! package_shell_environment > "$temporary"; then rm -f "$temporary"; return 1; fi
+  if ! mv -f "$temporary" "$package_app_home/activate.sh"; then rm -f "$temporary"; return 1; fi
+}
+
+package_shell_context() {
+  local selected runtime context
+  selected=$(type -P symphony) || selected=
+  printf 'Running launcher: %s/scripts/symphony\nInstalled command: %s/symphony\n' "$symphony_home" "$bin_dir"
+  printf 'PATH command (fresh lookup): %s\n' "${selected:-not found}"
+  if [ "$selected" != "$bin_dir/symphony" ]; then
+    printf 'Command activation required: PATH does not select this installation.\n'
+  fi
+  printf 'Application: %s\nConfiguration: %s\nSkills: %s\nRunner storage: %s\nNamespace: %s\n' \
+    "$package_app_home" "$config_home" "$skills_dir" "$runner_home" "${runner_namespace:-default}"
+  runtime=$(container_runtime 2>/dev/null) || runtime=
+  if [ -n "${DOCKER_CONTEXT:-}" ]; then context=$DOCKER_CONTEXT
+  elif [ -n "${DOCKER_HOST:-}" ]; then context='DOCKER_HOST override (value omitted)'
+  elif [ -n "$runtime" ]; then context=$("$runtime" context show 2>/dev/null) || context='unavailable'
+  else context=unavailable; fi
+  printf 'Container runtime: %s\nDocker context: %s\n' "${runtime:-unavailable}" "$context"
+  printf 'The parent shell may also have aliases/functions or cached commands; check with type -a symphony.\n'
+}
+
+package_shell_activation_instructions() {
+  if [ ! -f "$package_app_home/activate.sh" ]; then
+    printf 'This installation has no saved activation file. For this effective context, run in bash/zsh:\n'
+    package_shell_environment
+    printf 'Explicitly retain this block in your own shell profile if wanted; no profiles were changed.\n'
+    return
+  fi
+  printf 'Activate this installation in the current bash/zsh terminal:\n  source %q\n' "$package_app_home/activate.sh"
+  printf 'For fresh terminals, explicitly add that same source line to your own ~/.zshrc (zsh) or ~/.bashrc (interactive bash); a bash login profile must source ~/.bashrc.\n'
+  printf 'For a headless shell, source it before invoking Symphony. No shell profiles were changed.\n'
+  printf 'Verify selection: type -a symphony; symphony --version\n'
+  printf 'A shell alias/function can still override PATH; inspect it before changing it.\n'
+}
+
 package_preflight_links() {
   local source target skill
+  package_shell_activation_preflight || return
   source="$package_app_home/current/scripts/symphony"; target="$bin_dir/symphony"
-  if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target"
-  elif [ -e "$target" ]; then die "refusing to replace existing command: $target"; fi
+  if [ -L "$target" ]; then
+    [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target (expected $source). Choose a separate --bin-dir for this installation; preserve the existing command."
+  elif [ -e "$target" ]; then die "refusing to replace existing command: $target (expected link to $source). Choose a separate --bin-dir for this installation; preserve the existing command."; fi
   for skill in "${managed_skills[@]}"; do
     source="$package_app_home/current/.codex/skills/$skill"; target=$(global_skill_path "$skill")
     if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing global skill link: $target"
@@ -272,6 +369,11 @@ package_install() (
   done
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
   package_app_home=$(package_helper canonical-path "$package_app_home")
+  bin_dir=$(package_helper canonical-path "$bin_dir") || return
+  config_home=$(package_helper canonical-path "$config_home") || return
+  skills_dir=$(package_helper canonical-path "$skills_dir") || return
+  resolve_runner_home
+  runner_home=$(package_helper canonical-path "$runner_home") || return
   if ! "$stage_only"; then package_preflight_links; fi
   (umask 077; mkdir -p "$package_app_home") || return
   package_helper lock-directory "$package_app_home" || return
@@ -285,6 +387,7 @@ package_install() (
   # Another installation may share command/skill paths while using a different
   # application lock. Recheck after the long copy before any activation.
   package_preflight_links || return
+  package_shell_activation_write || return
   next="$package_app_home/.current-$$"
   package_helper ensure-link "releases/$package_storage_key" "$next" || return
   package_helper replace-link "$next" "$package_app_home/current" || { rm -f "$next"; return 1; }
@@ -296,8 +399,10 @@ package_install() (
   done
   (umask 077; mkdir -p "$config_home/projects") || return
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
-  case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add this directory to PATH: export PATH="%s:$PATH"\n' "$bin_dir" ;; esac
-  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, then symphony auth codex login and symphony run.\n'
+  package_shell_context
+  package_shell_activation_instructions
+  if [ "$package_channel" = candidate ]; then printf 'Candidate runners: provider login automatically obtains missing original loopback images using project GitHub Actions read access. Availability is checked at login; unavailable originals refuse onboarding. See the bundled candidate provisioning guide.\n'; fi
+  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
 )
 
 package_doctor() {
@@ -308,6 +413,7 @@ package_doctor() {
       *) die "unknown doctor option: $1" ;;
     esac
   done
+  resolve_runner_home
   (container_runtime) >/dev/null 2>&1 || ready=false
   [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$package_app_home/current/scripts/symphony" ] || ready=false
   global_skills_ready || ready=false
@@ -328,9 +434,12 @@ package_doctor() {
     fi
   fi
   if "$json"; then
-    printf '{"mode":"doctor","installation":"packaged","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
+    printf '{"mode":"doctor","installation":"packaged","scope":"installation","provider_project_readiness":"untested","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
   else
-    printf 'Symphony %s (%s), packaged %s %s\nReady: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    printf 'Symphony %s (%s), packaged %s %s\nInstallation ready: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    package_shell_context
+    package_shell_activation_instructions
+    printf 'Readiness scope: installation files, command/skills and runtime CLI. Engine access, image provisioning, project launch/sandbox, native authentication and Git require symphony runner doctor. Tracker access and completed tasks remain untested.\n'
     if [ "$selected" != null ]; then printf 'Selected environment: %s (runtime %s)\n' "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" runtime_revision)"; fi
     "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2
   fi
@@ -342,3 +451,6 @@ package_source_update_lock() { die 'this bundle lacks the packaged release updat
 
 # JAY-688 extends the same manager and lifecycle updater, without a second state owner.
 if [ -f "$symphony_home/scripts/symphony-package-update.sh" ]; then . "$symphony_home/scripts/symphony-package-update.sh"; fi
+
+# Definitions only; network acquisition runs only for a missing default candidate.
+. "$symphony_home/scripts/symphony-runner-provision.sh"

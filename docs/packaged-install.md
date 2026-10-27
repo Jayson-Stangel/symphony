@@ -48,6 +48,18 @@ engine-startup error. Other engines may use their own executable/context; set
 
 ## Download, verify and install
 
+When the selected release actually includes a notarized DMG, download
+`symphony-VERSION-macos.dmg` and its `macos-distribution.json`/`SHA256SUMS` from
+that same trusted release. Compare the DMG's `shasum -a 256` with its final hash,
+open the disk image, then run its existing installer from Terminal:
+`/bin/bash "/Volumes/Symphony/Symphony/install.sh"`. Use the actual mounted volume
+path if macOS gives it another name. Eject the disk after installation. Only a successful
+`notarized-stapled-assessed` receipt for those exact bytes establishes that the
+release tooling passed Apple checks; ordinary candidates are explicitly unsigned.
+No new stable notarized release is implied by this documentation. The installed
+updater continues to use tar.gz archives. See
+[signing setup and acceptance](macos-release-signing.md) for remaining owner steps.
+
 From one completed stable release, download `symphony-VERSION-macos.tar.gz` and
 its accompanying `release.json`. Replace `VERSION` below with that same release's
 version. Verify the archive's printed SHA256 against `bundle.sha256` in the
@@ -64,6 +76,12 @@ export PATH="$HOME/.local/bin:$PATH" # if the installer reports PATH is missing
 symphony --version
 symphony doctor
 ```
+
+If the verified macOS helper cannot start, the installer stops before activation
+and reports that stage separately from inventory failure. Follow the
+[macOS security approval and retry guide](macos-install-security.md); a killed
+process alone does not prove Gatekeeper caused it. Keep the archive and inventory
+checks intact. Ordinary candidate ad-hoc signing does not establish notarized-download acceptance. Production uses the separately protected exact-source preparation/signing/publication path described in [the release runbook](macos-release-signing.md#protected-production-preparation-and-publication).
 
 Installation needs no sudo and does not run `symphony setup` or build an image.
 New macOS archives carry only an ARM64 Apple Silicon helper and select the Linux
@@ -103,12 +121,16 @@ a source installation is not repointed or migrated automatically.
 
 ## Codex on AppArmor Docker hosts
 
-Before starting Codex, follow the [source-free policy preparation and readiness
-recipe](codex-docker-sandbox.md#apparmor-hosts) if the **selected Docker daemon**
+Before starting Codex, use `symphony runner apparmor` to review the supported
+[source-free policy preparation and readiness flow](codex-docker-sandbox.md#apparmor-hosts) if the **selected Docker daemon**
 advertises AppArmor. A working Docker CLI, an installed package, and a listed
 profile name do not establish protected-command readiness. The administrator
-must review, integrity-check and explicitly load the exact shipped policy on the
-daemon host; Symphony does not perform that administrator action.
+reviews the exact policy/destination and runs the printed `--apply --daemon-id ID`
+command explicitly as root on the selected daemon host. The command never invokes
+sudo. It verifies prerequisites, refuses unknown policy provenance, installs a
+versioned policy/receipt and Docker boot guard, and loads enforce mode. It enables
+AppArmor at boot without restarting Docker. Remote daemon preparation must run
+on that Linux host with the verified package and its local Docker context.
 
 The verified extracted bundle contains `scripts/codex-apparmor.profile`. After a
 default installation it is under
@@ -116,7 +138,11 @@ default installation it is under
 `releases/VERSION-STORAGE_REVISION`; use the chosen application directory if you
 installed with `--app-dir` or a namespace. Pin that physical release directory
 before checking its inventory and policy. Do not edit installed release files.
-The detailed recipe covers tools/imports, an existing profile, reboot persistence,
+Then run `symphony runner doctor --agent codex --sandbox-only` as the ordinary
+project user to verify actual protected execution. Preparation alone does not
+prove authentication or model delivery. Existing profiles remain installed for
+active projects and rollback; package updates never garbage-collect these
+administrator-owned files. The detailed recipe covers tools/imports, an existing profile, reboot persistence,
 actual protected checks, and troubleshooting without weakening the sandbox.
 
 These public [installation instructions](https://github.com/Jayson-Stangel/symphony/blob/dev/docs/packaged-install.md)
@@ -134,6 +160,50 @@ to pin a compatible team environment before authentication and startup. See
 [team-owned environments](team-environments.md) for requirements, templates,
 explicit changes and update/recovery behavior.
 
+## Readiness stages and smoke checks
+
+`symphony doctor` reports **installation** readiness: installed files, command and
+skills, and availability of the runtime CLI. Its JSON `scope` is `installation`;
+`provider_project_readiness` remains `untested`. This does not prove daemon access,
+image availability, the project command, authentication, tracker access or a completed task.
+
+Start the selected engine before native login. Stable releases pull published
+immutable digests. For candidates with a loopback reference, normal provider
+login [automatically acquires the exact original companion](candidate-runner-provisioning.md)
+using the project GitHub credential with repository Actions read access. The
+same path recovers a pruned cache. Unavailable or expired originals refuse
+onboarding. Missing Docker sockets/contexts stop before image pulls; image
+availability and native login failures are separate stages.
+
+From the existing project checkout with its explicit local `origin` remote and
+unchanged trusted `WORKFLOW.md`, run:
+
+```sh
+symphony runner doctor --agent codex --sandbox-only
+```
+
+This checks the engine, selected image and real protected project launch command.
+It starts no listener, makes no model request, and mounts no native login or
+Symphony tracker credentials. It does execute the trusted project's setup wrapper
+in a disposable copy; setup can download dependencies, and project source may
+contain sensitive files. Review that source first. A direct Codex command needs
+no custom wrapper. Supported wrappers preserve their required setup; see the
+[launch contract](codex-docker-sandbox.md#project-launch-wrappers).
+
+After native login, `symphony runner doctor --agent codex` adds native authentication
+and isolated local Git preflight. The Claude equivalent requires its native login.
+These checks do not establish remote Git authorization, Linear access, dependency
+installation for a real task, listener operation or authenticated inference. Those
+remain separate operator-run acceptance stages.
+
+## Select the installed command
+
+After installation, run the exact `source` command printed by the installer to
+select its executable and saved installation context in the current terminal.
+For fresh shells and conflicting stable/source commands, see
+[command activation](command-activation.md). The installer does not edit shell
+profiles or replace another installation's command/skill links.
+
 ## Connect and run a project
 
 Follow [project initialization](getting-started.md#initialize-a-repository) from
@@ -149,6 +219,17 @@ Edit the exact private credentials-file path printed by `init`, adding
 is `~/.config/symphony`; `SYMPHONY_CONFIG_HOME` and a runner namespace can change it.
 A file in another configuration root will not be used. Keep credentials outside
 Git and chat. Repeated `init` preserves existing workflows, overrides and credentials.
+Use literal, unquoted `KEY=value` assignments; the launcher loads them automatically,
+without `source` or `eval`. Nonempty exported credentials override file credentials;
+`GH_TOKEN` precedes `GITHUB_TOKEN` within each source. Both names are supported.
+See [credential scope and source selection](getting-started.md#configure-credentials).
+Run `symphony project doctor` or `symphony project doctor --json` before login:
+it reports all missing names, the effective private file and source types without
+printing secrets or starting a listener/model request. This works in headless Linux
+and custom candidate namespaces: run it with the same installation, configuration
+root and namespace you intend to start. Native provider auth and artifact-download
+access are separate. Configured names do not prove remote permissions or successful
+work; use the provider auth check and runner doctor before startup.
 
 Before starting a listener, review the workflow's tracker project, active states,
 hooks and validation commands. Require a label assigned only to the disposable
@@ -245,6 +326,14 @@ export SYMPHONY_SKILLS_DIR="$HOME/.codex/skills-candidate"
 export PATH="$SYMPHONY_BIN_DIR:$PATH"
 ```
 
+Fill the private project GitHub credential before candidate provider login;
+automatic companion acquisition additionally needs repository Actions read
+access. Follow the [candidate runner guide](candidate-runner-provisioning.md)
+for access, expiry, disk/network retries and offline recovery. `symphony runner
+import --agent codex` (or `claude`) displays the exact identity without a download;
+`--archive PATH` remains manual/offline recovery. A config-ID-only `docker load`
+cannot substitute for the original digest graph.
+
 Candidate validation does not authorize production publication or a stable rollout.
 Use the [development guide](development.md) for source development. Automatic
 migration of source installations is deferred. Older project identity migration
@@ -283,6 +372,62 @@ Claude login for a real issue-to-PR run and packaged update/recovery. Its record
 Linux container and universal-helper evidence remains historical; it does not
 expand the current two-host policy. An Intel walkthrough was operator-deferred.
 OrbStack execution was not part of that fresh-user qualification.
+
+## Choose or change the provider
+
+From the project repository, choose `symphony init --linear-project SLUG --agent codex`
+or `--agent claude`. New projects default to Codex when the flag is omitted.
+Init reports the intended provider, stored desired provider/image and observed
+runner provider separately. The flag requests guidance; it does not persist a
+new provider, replace a team image, authenticate, start work or switch a listener.
+Repeat init with the same slug and explicit provider to resume setup safely.
+
+A retained team selection takes precedence over retained runner metadata for the
+desired image. An existing listener can still use a different provider until the
+installed updater transitions it. A manager-only update does not switch that
+listener. Resolve unknown, invalid or incompatible selections explicitly; do not
+interpret a requested init provider as an applied change.
+
+When changing from either provider to the other, wait for active work to finish.
+Use the commands below, replacing `claude` with `codex` for the reverse direction:
+
+```sh
+symphony init --linear-project SLUG --agent claude
+symphony environment show
+# If the retained desired environment uses the other provider, explicitly select
+# the intended locally available, verified compatible release or team image:
+symphony environment select --agent claude IMAGE
+symphony auth claude check
+# If native login is required, release the old listener through the updater:
+# symphony update --pause-runner
+# symphony auth claude login
+# symphony auth claude check
+symphony runner doctor --agent claude
+symphony update --agent claude
+```
+
+`IMAGE` is a real compatible image reference, not a literal placeholder. Obtain
+it through the supported provisioning or team image path; selection validates it
+and does not silently substitute a release default. Preserve deliberate team
+extensions when choosing it. If the desired environment already matches and is
+valid, keep it and omit selection. If inspection or selection refuses, resolve
+that refusal before authentication/doctor rather than bypassing it.
+
+Check retained native authentication before asking for login again. A running
+Claude listener holds its auth volume even when idle or dispatch-drained, so
+`auth claude login` refuses until the installed updater pauses the listener with
+`update --pause-runner`. If the check succeeds, skip pause/login and continue to
+doctor and the provider transition. For an isolated source development namespace,
+add `--development-runner` to updater commands as described in the development guide.
+
+The installed updater owns the idle prior runner transition, retaining shared
+workspace/state and both provider auth stores. Never create a second listener or
+manually kill/replace the old container. After a successful transition, resume
+with `symphony run --agent claude`; use `symphony runner resume` if you deliberately
+drained dispatch. Keep native auth credentials out of the project env file.
+An unobserved runner means absent **or** engine unavailable, not proof that no
+listener exists. Restore engine access and inspect `symphony runner status` before
+starting when that state is uncertain.
 
 ## Updating a packaged installation
 
@@ -389,3 +534,11 @@ that the old updater avoids downloading a wrong-architecture artifact. Apple
 Silicon upgrade/rollback acceptance requires execution through the installed old
 updater with real source-bound old/new ARM helpers; fixture metadata is not image
 lifecycle or authenticated inference evidence.
+
+### npm cache readiness
+
+For packaged Codex Node projects, see the [task npm cache contract](team-environments.md#npm-cache-in-packaged-codex-tasks).
+The maintained image defaults to a disposable project `.npm-cache` while preserving
+explicit npm configuration. Check `npm config get cache` and `npm cache verify`
+inside the actual protected task shell. An old selected image requires a rebuilt
+team environment; installation readiness alone does not prove cold project setup.

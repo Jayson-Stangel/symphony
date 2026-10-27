@@ -2,6 +2,7 @@ name: Application checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches:
       - main
@@ -15,9 +16,30 @@ jobs:
   changes:
     name: Classify changes
     uses: ./.github/workflows/change-classification.yml
+  platform-contracts:
+    name: Fast process contracts (${{ matrix.os }})
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require supported fast contract prerequisites
+        run: python3 -c 'import sys; assert sys.version_info >= (3, 11), "fast contracts require Python 3.11+"'
+      - name: Npm process ownership regressions
+        if: needs.changes.outputs.npm == 'true'
+        run: python3 runner/test_npm_cache_lifecycle.py
+      - name: Launcher credential and lock contracts
+        if: needs.changes.outputs.contracts == 'true'
+        run: python3 scripts/ci/release_tests.py contracts
   make-all:
     name: Application checks
-    needs: changes
+    needs: [changes, platform-contracts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -26,11 +48,28 @@ jobs:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.application }}
           POLICY: ${{ needs.changes.outputs.policy }}
+          READY: ${{ needs.changes.outputs.ready }}
+          NPM: ${{ needs.changes.outputs.npm }}
+          READINESS: ${{ needs.changes.outputs.readiness }}
+          CONFIG: ${{ needs.changes.outputs.codex_config }}
+          CONTRACTS: ${{ needs.changes.outputs.contracts }}
+          PROCESS_RESULT: ${{ needs.platform-contracts.result }}
         run: |
           test "$RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
+          for flag in "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
           if [ "$CODE" = true ]; then test "$POLICY" = true; fi
+          if [ "$NPM" = true ] || [ "$READINESS" = true ] || [ "$CONFIG" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$POLICY" = true
+          fi
+          if [ "$NPM" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$PROCESS_RESULT" = success
+          else
+            test "$PROCESS_RESULT" = skipped
+          fi
       - name: Check out source
         if: needs.changes.outputs.policy == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,20 +86,34 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
 
+      - name: Codex readiness regressions
+        if: needs.changes.outputs.readiness == 'true'
+        run: python3 runner/test_codex_readiness.py
+      - name: Codex file and mount policy regressions
+        if: needs.changes.outputs.codex_config == 'true'
+        run: python3 scripts/ci/release_tests.py codex-config
+      - name: Npm configuration semantics
+        if: needs.changes.outputs.npm == 'true'
+        run: python3 runner/test_npm_cache.py
+      - name: Require ready application qualification
+        env:
+          APPLICATION: ${{ needs.changes.outputs.application }}
+          READY: ${{ needs.changes.outputs.ready }}
+        run: |
+          if [ "$APPLICATION" = true ] && [ "$READY" = false ]; then
+            echo 'Draft PR: affected Elixir qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Set up mise tools
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
           working_directory: elixir
 
-      - name: Codex protected-command failure regressions
-        if: needs.changes.outputs.application != 'false'
-        run: python3 runner/test_codex_readiness.py
-
       - name: Cache deps and build
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -71,7 +124,7 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify make all
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         working-directory: elixir
         run: make all
       - name: Application qualification omission

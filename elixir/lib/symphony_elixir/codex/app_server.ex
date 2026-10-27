@@ -47,6 +47,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     with true <- SandboxReadiness.qualified?(workspace, settings),
          {:ok, expanded_workspace} <- Workspace.validate_agent_cwd(workspace, worker_host),
+         {:ok, command} <- SandboxReadiness.qualified_command(command, expanded_workspace, settings),
          {:ok, session_policies} <- Config.resolve_codex_runtime_settings(settings, expanded_workspace, runtime_opts),
          {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, command) do
       metadata = port_metadata(port, worker_host)

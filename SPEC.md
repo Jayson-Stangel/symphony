@@ -672,6 +672,12 @@ not require recognizing or validating extension fields unless that extension is 
 When `SYMPHONY_CONTAINERIZED=1`, the implementation keeps its fixed workspace root,
 server bind address and noninteractive Codex approval binding. It preserves the
 configured Codex filesystem/network policy instead of disabling the native sandbox.
+For local managed `workspaceWrite` tasks it adds only the canonical owned `.git`
+directory as an explicit writable root, so normal Git development works without
+full filesystem access. Non-directory or symlinked Git metadata is refused; host-native
+and SSH policies receive no container grant. Readiness MUST exercise the full Git
+workflow through the effective protected command path, including commit, push to a
+disposable remote and exact readback, rather than treating `.git` denial as success.
 Codex readiness MUST verify protected command effects before accepting work and
 before draining a usable runner for a candidate transition. Failed or indeterminate
 checks MUST refuse readiness without downgrading isolation. Requested nonempty

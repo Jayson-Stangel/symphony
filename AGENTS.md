@@ -3,6 +3,109 @@
 These rules apply to all work in this repository. Also follow directory-specific
 `AGENTS.md` instructions where present.
 
+## Development process and Linear lifecycle
+
+- This project develops Symphony; it does not use Symphony to develop itself.
+  Implementation runs through operator-directed coding-agent chats in isolated
+  development checkouts, with Linear as the work contract and GitHub as the
+  implementation, review and merge record.
+- Do not dispatch this project's issues through a Symphony listener, add routing
+  labels to enable execution, or start a listener to implement repository work.
+  `elixir/WORKFLOW.md` is a shipped runner workflow. Reuse its useful delivery
+  practices (acceptance checklists, validation, feedback sweeps and rework), but
+  follow this file for this project's coordination, status and authority rules.
+  This reference does not incorporate that workflow's instructions wholesale.
+  Do not import runner-specific tracker routing, labels, worker shutdown rules or
+  Symphony-worker-only skills into direct development.
+  Explicitly authorized Symphony qualification against a separate target project
+  is testing the product, not using it to implement its own repair.
+- Use `Backlog` for planned work and explicit holds. Starting implementation
+  requires operator authorization; a Linear state or label alone does not grant
+  it. Use `Todo` for authorized work queued to start and `In Progress` for active
+  implementation and testing. Record direct-agent ownership and handoff evidence
+  on the issue so Backlog does not become a store of completed work.
+- Use `Agent Review` when subagents hand work to the main chat for acceptance
+  review. Use `Rework` when that review returns actionable findings for fixes;
+  return to `Agent Review` with refreshed evidence after addressing them.
+- Use `Human Review` only when an operator decision or approval is actually
+  needed, including a requested unmerged handoff. Identify the exact decision
+  needed. If the operator already authorized the current scope's merge into
+  `dev`, the main chat proceeds from successful `Agent Review` to `Merging`
+  without adding a `Human Review` approval step. Material scope changes or
+  instructions to stop unmerged still require operator assessment.
+- Use `Merging` for accepted work proceeding through an authorized merge into
+  `dev`. Use `Blocked` for an external impediment, with the precise blocker and
+  unblock action recorded. Pending automated checks or agent review are not
+  reasons to request human approval. Do not use the ambiguous `In Review` status
+  for this project; distinguish `Agent Review` from `Human Review` explicitly.
+- Use `Done` as the sole successful completion status for this project. Do not
+  use `Integrated` or create a separate completed state for a merge into `dev`.
+  Preserve cancellation and duplicate dispositions for work that was not completed.
+- Before marking an implementation issue `Done`, read its current contract,
+  verify all acceptance criteria with the required evidence, confirm review and
+  validation are satisfied, and observe its PR merged into `dev`. An open PR
+  handed off for operator review remains in `Human Review`. If the operator
+  explicitly defines a review-only, research or other non-merge issue, verify
+  that issue's authorized endpoint instead; completion never grants merge authority.
+- A merged PR alone does not complete an issue with outstanding required native,
+  installed, authenticated or end-to-end acceptance. Keep those gaps explicit and
+  leave the issue unfinished until satisfied or the operator explicitly changes
+  the contract. Distinguish fixtures, CI, native runtime and installed proof.
+- Record the PR link, exact reviewed/tested revision, merge revision when
+  applicable, and acceptance results before closeout. Read back Linear after a
+  status change. When reconciling stale Backlog issues, check live issue and PR
+  evidence and move only verified completed work to `Done`.
+- `Done` describes completion of the issue's contract, not production promotion,
+  release publication or stable installation. Those actions retain their separate
+  approval and validation boundaries below.
+
+## Main-chat coordination and subagent delivery
+
+- Coordination before merging means verifying the impact on the other chat's
+  work and obtaining that chat's explicit clearance, not merely announcing a
+  merge or agreeing on timing. When work shares an integration branch, build
+  inputs, qualification evidence or a release candidate, identify the affected
+  owners and inspect their current source freeze and in-flight operations.
+- Before requesting clearance, present the exact PR/head, proposed base and
+  relevant impact evidence. Check actual consumed files and input identities,
+  artifact reuse, source-bound validation, signing and runtime consequences.
+  Documentation-only CI classification does not establish build-input safety.
+  Resolve uncertainty with the owning chat before merging; silence is not
+  clearance. Record clearance for the verified scope and timing, and obtain
+  renewed clearance if the head, base, affected inputs or other chat's work
+  changes in a way that invalidates that assessment. Operator authorization to
+  coordinate does not waive this requirement or separate production approvals.
+- The main chat owns the operator's request, current Linear contract, scope,
+  acceptance decisions and final handoff. For implementation work, it delegates
+  focused development and testing to subagents, with explicit ownership, base
+  revision, deliverable, required proof and action limits. Use separate worktrees
+  where needed; parallelize independent work without competing writes or duplicate
+  builds and qualification runs. Small documentation or administrative changes
+  may be handled directly without an unnecessary delegation cycle.
+- Subagents implement, test and return a reviewable diff or PR with exact source
+  revisions, commands/results, acceptance evidence and remaining gaps. A subagent
+  completion message is a handoff, not acceptance or merge approval. Subagents
+  must not merge or expand external effects beyond their delegated authority.
+- The main chat reviews the actual diff, current issue, tests, required CI,
+  available review feedback and resulting behavior. It checks the final combined
+  change against the contract rather than accepting a subagent's summary alone.
+  Use an independent review subagent for substantial code or safety-sensitive
+  changes; its findings supplement the main chat's responsibility.
+- Return actionable findings to the owning subagent with concrete expected
+  behavior and proof. Reassess the approach when failures expose a mistaken
+  assumption; do not merely repeat tests until green. After fixes or integration
+  changes, refresh the relevant validation and review against the final head.
+- Once acceptance, review and required checks pass, the main chat may merge the
+  focused PR into `dev` only within the operator's existing merge authorization.
+  If authority is missing or the request requires an unmerged handoff, leave the
+  PR open and present the reviewed result. A subagent verdict or an unexplained
+  `Merging` status does not supply operator approval. An explicit operator move
+  to `Merging` can communicate approval for the identified current PR and scope
+  targeting `dev`; verify that provenance and honor any narrower instructions.
+  After an authorized merge, verify the resulting revision and close the Linear
+  issue as `Done` when its contract is complete. Production promotion and stable
+  rollout remain separately gated.
+
 ## Explicit approval for production
 
 - Before merging any promotion into `main` or performing any stable rollout,
@@ -102,3 +205,28 @@ PR metadata validation remains required on PR events. Their summaries
 say explicitly when behavioral qualification was intentionally omitted; that is
 not a claim that tests executed. Classification failure fails the required wrapper.
 See `docs/development.md` for the event map and local classifier validation.
+
+## Direct development and validation under `elixir/`
+
+These instructions apply to direct coding-agent development and documentation
+validation under `elixir/`. They take precedence over conflicting generic
+full-gate, toolchain setup, or runtime-only wording in the packaged
+`elixir/AGENTS.md`.
+
+- The workspace safety rules in `elixir/AGENTS.md` describe Symphony runtime
+  product invariants. They do not prohibit direct coding-agent work in an
+  isolated development checkout.
+- Pure human-facing documentation changes follow the root documentation-only
+  validation policy above. They do not require Elixir or application setup,
+  `make all`, or application test suites. Code changes retain targeted tests
+  while iterating and the applicable full required gates before handoff.
+- Validate PR bodies, including documentation-only PRs, from the repository root
+  with the dependency-free validator:
+
+  ```bash
+  python3 scripts/ci/check_pr_body.py --file /path/to/pr_body.md
+  ```
+
+  The existing `mix pr_body.check --file /path/to/pr_body.md` wrapper is optional
+  when the Elixir environment is already available; documentation validation
+  does not require installing that toolchain.

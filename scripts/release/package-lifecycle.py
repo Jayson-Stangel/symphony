@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import shlex
 import socket
 import stat
 import subprocess
@@ -19,6 +20,79 @@ import tarfile
 import time
 import urllib.request
 import uuid
+
+
+# Only exact native account entrypoints are replaced. This fixture grants no
+# credentials and does not change the real listener's own readiness result.
+CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
+  local action="${@: -1}" storage image actual expected expected_build argument index auth_like=false
+  for argument in "$@"; do
+    case "$argument" in *auth.mjs*) auth_like=true ;; esac
+  done
+  "$auth_like" || return 1
+  local -a args=("$@") command=(run --rm)
+  [[ "$action" = login || "$action" = check ]] || return 2
+  [[ "${@: -2:1}" = /opt/symphony/claude/auth.mjs ]] || return 2
+  if [[ "$action" = login ]]; then command+=(--interactive --tty); fi
+  storage=''
+  for ((index=0; index<${#args[@]}-1; index++)); do
+    if [[ "${args[index]}" = --name ]]; then storage="${args[index+1]}"; fi
+  done
+  [[ -n "${FIXTURE_CLAUDE_STORAGE:-}" && "$storage" = "$FIXTURE_CLAUDE_STORAGE-claude-auth" ]] || return 2
+  storage="${storage%-claude-auth}"
+  image="${@: -3:1}"
+  [[ $'\n'"${FIXTURE_CLAUDE_IMAGES:-}"$'\n' = *$'\n'"$image"$'\n'* ]] || return 2
+  command+=(--name "$storage-claude-auth"
+    --label "com.symphony.storage=$storage" --read-only --cap-drop ALL
+    --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m
+    --volume "$storage-claude-auth:/home/claude" --entrypoint /usr/local/bin/node
+    "$image" /opt/symphony/claude/auth.mjs "$action")
+  printf -v actual '%q ' "$@"
+  printf -v expected '%q ' "${command[@]}"
+  # Preserve the exact original-manager auth invocation during rollback as well
+  # as the exact current build-capable profile. Never accept a loose argv match.
+  local -a build=(run --read-only --cap-drop ALL --security-opt no-new-privileges
+    --pids-limit 512 --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m
+    --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g --rm)
+  if [[ "$action" = login ]]; then build+=(--interactive --tty); fi
+  build+=(--name "$storage-claude-auth" --label "com.symphony.storage=$storage"
+    --volume "$storage-claude-auth:/home/claude" --entrypoint /usr/local/bin/node
+    "$image" /opt/symphony/claude/auth.mjs "$action")
+  printf -v expected_build '%q ' "${build[@]}"
+  [[ "$actual" = "$expected" || "$actual" = "$expected_build" ]] || return 2
+  if [[ "$action" = check ]]; then
+    printf '%s\n' '{"ready":true,"profile":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","model_requests":0,"fixture":"credential-free-native-status"}'
+  else
+    echo 'STUB Claude native login entrypoint; no credentials or inference'
+  fi
+}
+'''
+
+
+def docker_peer_script(docker="/usr/bin/docker"):
+    return '#!/bin/bash\n' + CLAUDE_AUTH_FIXTURE + '''
+set -euo pipefail
+printf '%q ' "$@" >> "$PROOF_ROOT/docker-calls.log"; printf '\\n' >> "$PROOF_ROOT/docker-calls.log"
+# Only account entrypoints are stubbed; no account credentials are created.
+if [[ "$*" == *"--entrypoint codex "* ]] && { [[ "$*" == *" login status" ]] || [[ "$*" == *" login --device-auth" ]]; }; then
+  echo 'STUB Codex native login entrypoint/status; no credentials or inference'; exit 0
+fi
+if credential_free_claude_auth "$@"; then exit 0
+else
+  fixture_status=$?
+  if [ "$fixture_status" -ne 1 ]; then
+    echo 'refused foreign or malformed credential-free auth invocation' >&2
+    exit "$fixture_status"
+  fi
+fi
+''' + shlex.quote(docker) + ''' "$@"
+if [ -f "$PROOF_ROOT/fault" ]; then
+  mode=$(cat "$PROOF_ROOT/fault")
+  if [ "$mode" = create ] && [ "$1" = run ] && [[ "$*" == *"--detach"* ]]; then
+    rm "$PROOF_ROOT/fault"; echo 'FAULT after actual Docker create' >&2; exit 97
+  fi
+fi
+'''
 
 
 def qualify_browser(run, image_id, provider, completed):
@@ -219,7 +293,7 @@ def main():
     owned_volumes = set()
     log = (evidence / "commands.log").open("w")
     result = {"source_revision": os.environ.get("GITHUB_SHA"), "os_arch": os.uname().sysname + "/" + os.uname().machine,
-              "nativeAuth": "STUB login entrypoints and Codex login status ONLY; no account/model requests",
+              "nativeAuth": "STUB login entrypoints and native account status ONLY; no account/model requests",
               "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
               "diagnostic_artifact_run": os.environ.get("DIAGNOSTIC_ARTIFACT_RUN"),
               "mode": "current-manager-only" if current_only else "manager-only-update" if manager_update_only else "two-revision-lifecycle",
@@ -368,24 +442,7 @@ def main():
         for name in ("git", "python", "python3", "node", "mise", "swift", "swiftc", "elixir", "erl", "shasum", "codex", "claude"):
             tool = tools / name; tool.write_text("#!/bin/sh\necho 'unexpected host dependency: " + name + "' >&2\nexit 98\n"); tool.chmod(0o755)
         wrapper = root / "docker-peer"
-        wrapper.write_text('''#!/bin/bash
-set -euo pipefail
-printf '%q ' "$@" >> "$PROOF_ROOT/docker-calls.log"; printf '\\n' >> "$PROOF_ROOT/docker-calls.log"
-# Only account entrypoints are stubbed; no account credentials are created.
-if [[ "$*" == *"--entrypoint codex "* ]] && { [[ "$*" == *" login status" ]] || [[ "$*" == *" login --device-auth" ]]; }; then
-  echo 'STUB Codex native login entrypoint/status; no credentials or inference'; exit 0
-fi
-if [[ "$*" == *"/opt/symphony/claude/auth.mjs login" ]]; then
-  echo 'STUB Claude native login entrypoint; no credentials or inference'; exit 0
-fi
-/usr/bin/docker "$@"
-if [ -f "$PROOF_ROOT/fault" ]; then
-  mode=$(cat "$PROOF_ROOT/fault")
-  if [ "$mode" = create ] && [ "$1" = run ] && [[ "$*" == *"--detach"* ]]; then
-    rm "$PROOF_ROOT/fault"; echo 'FAULT after actual Docker create' >&2; exit 97
-  fi
-fi
-'''); wrapper.chmod(0o755)
+        wrapper.write_text(docker_peer_script()); wrapper.chmod(0o755)
         socket_gid = os.stat("/var/run/docker.sock").st_gid
         controller_ids[client] = acquire_container(run, "-d", "--name", client, "--network", "host", "--volume", "/var/run/docker.sock:/var/run/docker.sock",
                "--volume", f"{root}:{root}", "ubuntu:26.04", "sleep", "infinity")
@@ -398,8 +455,13 @@ fi
             "SYMPHONY_SKILLS_DIR": str(root / "skills"), "SYMPHONY_CONTAINER_RUNTIME": str(wrapper), "PROOF_ROOT": str(root),
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "XDG_CONFIG_HOME": str(home / ".config")}
 
+        fixture_storages = {}
+        claude_images = sorted({image for rec in result['qualified_runner_components'] if rec['provider'] == 'claude'
+                                for image in (rec['image'], rec['distribution_image'], rec['observed_runtime_id']) if image})
+
         def client_run(args, cwd=root, expected=0, overrides=None):
-            env = dict(environment, **(overrides or {}))
+            env = dict(environment, FIXTURE_CLAUDE_STORAGE=fixture_storages.get(str(cwd), ''),
+                       FIXTURE_CLAUDE_IMAGES='\n'.join(claude_images), **(overrides or {}))
             options = ["docker", "exec", "--user", f"{uid}:{socket_gid}", "--workdir", str(cwd)]
             for key, value in env.items(): options += ["--env", key + "=" + value]
             return run([*options, client, *args], expected=expected)
@@ -436,6 +498,7 @@ fi
             script = 'source "$1" --help >/dev/null; project_id "$2"'
             identity = client_run(["bash", "-euc", script, "fixture", str(command), str(repo)]).stdout.strip()
             identifiers.append(identity); name = prefix + "-" + identity; names.append(name); owned.update((name, name + "-before-update")); storages.add(name)
+            fixture_storages[str(repo)] = name
             credentials = root / "config/projects" / (identity + ".env")
             credentials.write_text("GH_TOKEN=credential-free-placeholder-" + str(number) + "\n# credential-canary\n")
             credentials.chmod(0o600)

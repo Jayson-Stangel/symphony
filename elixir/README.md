@@ -4,16 +4,26 @@ Codex listener startup performs a bounded, credential-free protected-command
 check before starting the application. `symphony runner doctor` and candidate
 update preflight use the same check in disposable storage, before draining an
 existing runner. The check writes an owned workspace canary and requires denial
-outside the effective writable roots and inside the canary workspace's `.git`.
+outside the effective writable roots and inside the canary workspace's protected
+metadata (`.codex` in managed containers; `.git` for unchanged native policy).
+Managed containers must also complete the full owned Git workflow described below.
 A version, app-server handshake, direct Git command or zero exit alone cannot pass.
 
-The first adapter supports direct `codex app-server` commands (including the
-generated `--config shell_environment_policy.inherit=all` option), local workers,
-`workspace-write` threads, and `workspaceWrite` turns with full read access.
-Unknown policy fields, other shell wrappers, remote workers, injected native
-runtime options, or native `config.toml`/managed requirements fail closed because
-their equivalence has not been qualified. Credentials are neither copied nor
-mounted into diagnostic containers. Claude retains its native readiness check.
+The adapter supports direct `codex app-server` commands and argv-preserving
+`bash scripts/with-node.sh codex app-server` project wrappers (including quoted
+paths and the generated `--config shell_environment_policy.inherit=all` option).
+Wrappers execute their setup in a disposable project copy, then the actual
+Codex executable is resolved in their effective environment and runs the same
+protected checks. Each wrapped task repeats that check after workspace hooks,
+before app-server launch, so changed setup dependencies cannot reuse startup
+qualification. The supported policy remains local workers, `workspace-write`
+threads, and `workspaceWrite` turns with full read access. Shell operators,
+expansions, unknown arguments/policy fields, escaping symlinks, remote workers,
+injected native runtime options, or native `config.toml`/managed requirements
+fail closed. See [the wrapper contract](../docs/codex-docker-sandbox.md#project-launch-wrappers). Symphony tracker credentials and native login volumes are withheld from
+sandbox-only diagnostics. Trusted project scripts still execute and can read
+project files or download their pinned tools; keep unrelated secrets out of the
+project checkout. Claude retains its native readiness check.
 
 The image's model-free diagnostic is
 `/opt/symphony/elixir/bin/symphony --check-codex-sandbox /path/to/WORKFLOW.md`.
@@ -58,6 +68,14 @@ For container lifecycle and stable updates, use [operations](../docs/operations.
 This guide covers implementation behavior, configuration, native development,
 and testing. Symphony is engineering preview software for trusted environments.
 
+Managed container `workspaceWrite` task policies explicitly allow writes to the
+owned task's `.git` directory. Native/SSH policies remain unchanged. Container
+readiness proves clone/fetch/branch/edit/test/commit/push/readback against a
+disposable local remote while preserving outside-workspace and `.codex` denials.
+An external/symlinked Git directory refuses qualification; no full-access fallback
+is used. Local-remote Git proof does not establish GitHub authentication or a
+completed provider task.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
@@ -72,7 +90,8 @@ and testing. Symphony is engineering preview software for trusted environments.
 5. Keeps the agent working on the issue until the work is done
 
 Codex uses [App Server mode](https://developers.openai.com/codex/app-server/);
-Claude uses the [native SDK helper](../docs/claude.md).
+Claude uses the [native SDK helper](../docs/claude.md), including its bounded CPU
+and executable build-scratch resource profile.
 
 During agent sessions, the selected tracker adapter may advertise provider-native tools.
 Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves

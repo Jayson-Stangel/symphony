@@ -32,6 +32,21 @@ on:
       native_platform:
         description: Ordinary consumer decision for native_platform
         value: ${{ jobs.classify.outputs.native_platform }}
+      ready:
+        description: Whether expensive qualification may execute for this event
+        value: ${{ jobs.classify.outputs.ready }}
+      npm:
+        description: Selected npm semantics and native process lifecycle tests
+        value: ${{ jobs.classify.outputs.npm }}
+      readiness:
+        description: Selected cheap Codex readiness tests
+        value: ${{ jobs.classify.outputs.readiness }}
+      codex_config:
+        description: Selected cheap file and mount-policy tests
+        value: ${{ jobs.classify.outputs.codex_config }}
+      contracts:
+        description: Selected cross-platform launcher credential and lock contracts
+        value: ${{ jobs.classify.outputs.contracts }}
 permissions:
   contents: read
 jobs:
@@ -49,6 +64,11 @@ jobs:
       fixtures: ${{ steps.changes.outputs.fixtures }}
       native: ${{ steps.changes.outputs.native }}
       native_platform: ${{ steps.changes.outputs.native_platform }}
+      ready: ${{ steps.changes.outputs.ready }}
+      npm: ${{ steps.changes.outputs.npm }}
+      readiness: ${{ steps.changes.outputs.readiness }}
+      codex_config: ${{ steps.changes.outputs.codex_config }}
+      contracts: ${{ steps.changes.outputs.contracts }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

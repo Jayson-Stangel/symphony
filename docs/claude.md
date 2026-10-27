@@ -24,12 +24,20 @@ Choose one disposable issue and restrict its labels and concurrency before start
 the listener, as described in the [first-run guide](getting-started.md#initialize-a-repository):
 
 ```sh
+symphony init --linear-project YOUR_LINEAR_PROJECT_SLUG --agent claude
+# Fill the printed credentials file before continuing.
 symphony auth claude login
 # Complete native sign-in in the terminal; never paste its codes into a workpad.
 symphony auth claude check
 symphony runner doctor --agent claude
 symphony run --agent claude
 ```
+
+For an existing Codex runner, first follow the
+[provider transition sequence](packaged-install.md#choose-or-change-the-provider).
+Init only prints guidance and preserves the existing runner. Repeating init
+without `--agent` follows retained environment/runner state, so pass `--agent claude`
+when requesting a change. Authentication does not switch the listener.
 
 The account check and doctor make no model requests and do not start a listener.
 Billing-attestation files and expiry checks are not required. Native authentication
@@ -461,3 +469,32 @@ updates, status notifications, retries and usage notifications do not reset that
 clock. A long-running tool can therefore hit the configured stall timeout even
 while it reports heartbeats; choose the timeout to allow expected tool durations.
 Codex activity accounting is unchanged.
+
+## Coding resource profile
+
+The packaged Claude listener runs as UID/GID 11001 with a read-only root, no
+capabilities, no-new-privileges and a 512-process/thread limit. Its four-CPU quota
+is visible to supported Node runtimes' `availableParallelism()`, so ordinary test
+runners choose workers within that CPU budget. This does not change configured
+agent concurrency or guarantee that every concurrent workload fits the container.
+
+`/tmp` remains non-executable. Coding sessions receive an owned helper directory
+under `/var/tmp/symphony-build`, a separate executable tmpfs limited to 1 GiB, owned by
+UID 11001 with mode 0700 and nosuid/nodev. It supports extracted toolchains and
+native build fixtures outside real Git checkouts. Project tool environment
+selection cannot override this path. Native account identity, authentication and
+non-coding readiness retain their original temporary environment.
+
+The scratch mount is separate from the native login, workspace and state volumes;
+it disappears with the container. Normal helper shutdown removes only its scratch
+once owned native processes are confirmed dead. External cleanup derives the same
+directory from the existing helper PID and start identity after confirming death;
+foreign or uncertain ownership is preserved. Do not store durable work there.
+The measured Forge qualification uses one active worker and the complete default Melody suite;
+its scratch peak exceeded 512 MiB, while process/thread peak stayed below 512 with
+the CPU budget. Higher concurrent workloads require their own capacity proof.
+
+The launcher records this resource profile separately from the native account
+profile. An existing listener with an old or unknown resource profile requires
+`symphony update --agent claude`; ordinary start does not silently reuse it. The
+updater retains its normal drain, retry and rollback behavior.

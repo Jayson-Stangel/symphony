@@ -276,5 +276,97 @@ class ManagerComposition(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [root])
 
 
+class CredentialFreeClaudeAuth(unittest.TestCase):
+    def argv(self, action='check'):
+        storage = 'symphony-package-fixture-service-0123456789ab'
+        return ['run', '--rm', *(['--interactive', '--tty'] if action == 'login' else []),
+                '--name', storage + '-claude-auth', '--label', 'com.symphony.storage=' + storage,
+                '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', '--volume', storage + '-claude-auth:/home/claude',
+                '--entrypoint', '/usr/local/bin/node', 'localhost:5000/symphony-claude@sha256:' + 'b'*64,
+                '/opt/symphony/claude/auth.mjs', action]
+
+    def build_argv(self, action='check'):
+        original = self.argv(action)
+        suffix = original.index('--volume')
+        return ['run', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                '--pids-limit', '512', '--cpus', '4', '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
+                '--tmpfs', '/var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g',
+                '--rm', *(['--interactive', '--tty'] if action == 'login' else []),
+                '--name', original[original.index('--name') + 1],
+                '--label', original[original.index('--label') + 1], *original[suffix:]]
+
+    def test_current_build_profile_and_original_profile_are_exact_and_credential_free(self):
+        for action in ('login', 'check'):
+            current = self.build_argv(action)
+            self.assertEqual(self.execute(current).returncode, 0)
+            for name, value in (('--cpus', '20'), ('--pids-limit', '4096'),
+                                ('--tmpfs', '/tmp:rw,exec,size=4g')):
+                foreign = current.copy(); foreign[foreign.index(name) + 1] = value
+                self.assertEqual(self.execute(foreign).returncode, 2)
+
+    def environment(self):
+        return dict(os.environ, SYMPHONY_RUNNER_NAMESPACE='package-fixture',
+                    FIXTURE_CLAUDE_STORAGE='symphony-package-fixture-service-0123456789ab',
+                    FIXTURE_CLAUDE_IMAGES='localhost:5000/symphony-claude@sha256:' + 'b'*64)
+
+    def execute(self, args):
+        # Run the exact function shipped in the controller wrapper, with no
+        # Docker, account files, network, or listener process available.
+        return subprocess.run(['bash', '-euc', LIFECYCLE.CLAUDE_AUTH_FIXTURE +
+                               '\ncredential_free_claude_auth "$@"', 'fixture', *args],
+                              env=self.environment(),
+                              capture_output=True, text=True)
+
+    def test_exact_status_supplies_a_valid_synthetic_profile_without_credentials(self):
+        result = self.execute(self.argv())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads(result.stdout)
+        self.assertIs(status['ready'], True)
+        self.assertRegex(status['profile'], r'^[a-f0-9]{64}$')
+        self.assertEqual(status['model_requests'], 0)
+        self.assertEqual(status['fixture'], 'credential-free-native-status')
+        login = self.execute(self.argv('login'))
+        self.assertEqual(login.returncode, 0, login.stderr)
+        self.assertIn('STUB Claude native login', login.stdout)
+
+    def test_foreign_or_malformed_auth_and_all_runtime_operations_are_not_stubbed(self):
+        original = self.argv()
+        variants = [[], ['run', '--detach', 'image'], original + ['extra'], self.argv('logout')]
+        for old, new in [('package-fixture', 'foreign'), ('--read-only', '--privileged'),
+                         ('/usr/local/bin/node', '/bin/sh'), ('@sha256:', ':tag-'), ('b'*64, 'c'*64), ('0123456789ab', 'ffffffffffff'),
+                         ('/home/claude', '/root'), ('com.symphony.storage=', 'foreign=')]:
+            variants.append([arg.replace(old, new) for arg in original])
+        for args in variants:
+            result = self.execute(args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertEqual(result.stdout, '', args)
+
+    def test_actual_wrapper_routes_runtime_but_never_delegates_rejected_auth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / 'recording docker'
+            fake.write_text('#!/bin/bash\nprintf "%s\\n" "$@" >> "$PROOF_ROOT/delegated"\n')
+            fake.chmod(0o755)
+            wrapper = root / 'peer'
+            wrapper.write_text(LIFECYCLE.docker_peer_script(str(fake)))
+            env = dict(self.environment(), PROOF_ROOT=str(root))
+            def run(args):
+                return subprocess.run(['bash', str(wrapper), *args], env=env,
+                                      capture_output=True, text=True)
+            self.assertEqual(run(self.argv()).returncode, 0)
+            self.assertEqual(run(self.argv('login')).returncode, 0)
+            malformed = self.argv()
+            malformed[malformed.index('--read-only')] = '--privileged'
+            foreign_image = [a.replace('b'*64, 'c'*64) for a in self.argv()]
+            for args in (malformed, foreign_image, self.argv('logout'), self.argv() + ['extra']):
+                rejected = run(args)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                self.assertIn('refused foreign or malformed', rejected.stderr)
+            self.assertFalse((root / 'delegated').exists())
+            self.assertEqual(run(['inspect', 'owned-listener']).returncode, 0)
+            self.assertEqual((root / 'delegated').read_text().splitlines(), ['inspect', 'owned-listener'])
+
+
 if __name__ == '__main__':
     unittest.main()

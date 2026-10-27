@@ -11,6 +11,10 @@ import sys
 import tempfile
 import unittest
 
+from runner_import_test import RunnerImportTest
+from command_activation_test import CommandActivationTest, PackageCommandActivationMixin
+from runner_provision_test import RunnerProvisionTest
+
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = Path(os.environ.get("SYMPHONY_TEST_HOST_HELPER", "/tmp/symphony-package-test-host"))
 
@@ -33,8 +37,84 @@ def manifest(version="1.2.3", revision=None):
         bundles=dict(macos=bundle, linux_x86_64=dict(filename=f"symphony-{version}-linux_x86_64.tar.gz", architectures=["x86_64"])))
 
 
+class InstallerLaunchTest(unittest.TestCase):
+    """Execute the shipped installer body with explicit helper process peers.
+
+    These fixtures distinguish shell stages; they do not model Gatekeeper or
+    replace the native archive/inventory/install tests below.
+    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="symphony-installer-launch-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bundle = self.root / "download with spaces"
+        (self.bundle / "libexec").mkdir(parents=True)
+        (self.bundle / "scripts").mkdir()
+        source = (ROOT / "scripts/release/package.sh").read_text()
+        installer = source.split("<<'INSTALL'\n", 1)[1].split("\nINSTALL\n", 1)[0]
+        self.install = self.bundle / "install.sh"
+        self.install.write_text(installer + "\n"); self.install.chmod(0o755)
+        (self.bundle / "host-platform").write_text("macos\n" if sys.platform == "darwin" else "linux_x86_64\n")
+        self.activation = self.root / "activated"
+        manager = self.bundle / "scripts/symphony"
+        manager.write_text('#!/bin/sh\nprintf activated > "$TEST_ACTIVATION"\n')
+        manager.chmod(0o755)
+        self.helper = self.bundle / "libexec/symphony-host"
+        self.env = dict(os.environ, TEST_ACTIVATION=str(self.activation))
+        self.existing = self.root / "existing-command"
+        self.existing.write_text("user-owned-command")
+
+    def peer(self, body):
+        self.helper.write_text("#!/bin/sh\n" + body + "\n")
+        self.helper.chmod(0o755)
+
+    def assertPreserved(self, result, status):
+        self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        self.assertFalse(self.activation.exists())
+        self.assertEqual(self.existing.read_text(), "user-owned-command")
+
+    def test_helper_killed_at_start_refuses_before_inventory_and_can_retry(self):
+        self.peer('kill -KILL $$')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 137)
+        self.assertIn("native helper startup failed (exit status 137)", failed.stderr)
+        self.assertIn("not proof of a checksum mismatch", failed.stderr)
+        if sys.platform == "darwin":
+            self.assertIn("Privacy & Security", failed.stderr)
+            self.assertIn("trusted candidate/release checksum", failed.stderr)
+        # Retry after restoring an executable peer; this represents only the
+        # retry control flow, not actual macOS approval.
+        self.peer('case "$1" in host-platform|verify-files) exit 0 ;; *) exit 99 ;; esac')
+        retried = call([self.install], env=self.env)
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertTrue(self.activation.exists())
+
+    def test_inventory_refusal_is_not_reported_as_security_approval(self):
+        self.peer('case "$1" in host-platform) exit 0 ;; verify-files) echo "bundle checksum mismatch: ./payload" >&2; exit 1 ;; *) exit 99 ;; esac')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 1)
+        self.assertIn("bundle checksum mismatch", failed.stderr)
+        self.assertIn("bundle inventory verification failed", failed.stderr)
+        self.assertNotIn("Open Anyway", failed.stderr)
+
+    def test_verification_interruption_is_not_reported_as_checksum_refusal(self):
+        self.peer('case "$1" in host-platform) exit 0 ;; verify-files) kill -KILL $$ ;; *) exit 99 ;; esac')
+        failed = call([self.install], env=self.env)
+        self.assertPreserved(failed, 137)
+        self.assertIn("native helper inventory-verification failed (exit status 137)", failed.stderr)
+        self.assertNotIn("bundle inventory verification failed", failed.stderr)
+
+    def test_unlaunchable_helper_refuses_before_activation(self):
+        self.peer('exit 0')
+        self.helper.chmod(0o644)
+        failed = call([self.install], env=self.env)
+        self.assertIn(failed.returncode, (1, 126), failed.stderr)
+        self.assertPreserved(failed, failed.returncode)
+        self.assertIn("native helper startup failed", failed.stderr)
+
+
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "native helper requires macOS or Linux")
-class PackageTest(unittest.TestCase):
+class PackageTest(PackageCommandActivationMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not HELPER.is_file():
@@ -87,6 +167,40 @@ class PackageTest(unittest.TestCase):
             SYMPHONY_CONFIG_HOME=str(self.root / "config"), SYMPHONY_BIN_DIR=str(self.root / "bin"),
             SYMPHONY_SKILLS_DIR=str(self.root / "skills"), SYMPHONY_RUNNER_NAMESPACE="package-fixture",
             SYMPHONY_CONTAINER_RUNTIME=str(docker), TEST_DOCKER_CALLS=str(self.root / "docker.calls"))
+
+    def test_packaged_apparmor_plan_is_source_free_and_remote_safe(self):
+        bundle = self.bundle()
+        env = self.environment()
+        for name in ('DOCKER_CONTEXT', 'DOCKER_HOST'):
+            env.pop(name, None)
+        docker = Path(env['SYMPHONY_CONTAINER_RUNTIME'])
+        docker.write_text("""#!/bin/sh
+case "$1" in
+  context) echo 'ssh://user:synthetic-secret@remote' ;;
+  info)
+    case "$3" in
+      '{{.ID}}') echo daemon-id ;;
+      '{{.Name}}') echo remote-daemon ;;
+      *) printf 'name=seccomp,profile=builtin\\n'; [ "${TEST_APPARMOR:-}" != yes ] || echo name=apparmor ;;
+    esac ;;
+  *) exit 97 ;;
+esac
+""")
+        command = [bundle / 'scripts/symphony', 'runner', 'apparmor']
+        plain = call(command, cwd=self.root, env=env)
+        self.assertIn('no host changes required', self.assertOK(plain))
+        env['TEST_APPARMOR'] = 'yes'
+        remote = call(command, cwd=self.root, env=env)
+        self.assertEqual(remote.returncode, 1, remote.stdout + remote.stderr)
+        self.assertIn('[daemon-host]', remote.stderr)
+        self.assertIn('remote-daemon (ID daemon-id)', remote.stdout)
+        self.assertNotIn('synthetic-secret', remote.stdout + remote.stderr)
+        self.assertIn('2eddb013e3503591aaac8e583e6dca093290287713c8aa0869b2d4458fa594aa', remote.stdout)
+        (bundle / 'scripts/codex-apparmor.profile').write_text('corrupt')
+        corrupt = call(command, cwd=self.root, env=env)
+        self.assertEqual(corrupt.returncode, 1)
+        self.assertIn('integrity check failed', corrupt.stderr)
+        self.assertFalse((bundle / '.git').exists())
 
     def test_manifest_validation_and_typed_json(self):
         self.assertOK(self.helper("validate-manifest", self.file))
@@ -503,6 +617,23 @@ PY
         self.assertFalse(list(output.glob('*.tar.gz')))
         self.assertFalse((self.root/'app').exists())
 
+    @unittest.skipUnless(sys.platform == "darwin", "signature integrity guard requires macOS packaging")
+    def test_invalid_helper_signature_refused_before_execution(self):
+        tools = self.root / "signature-tools"; tools.mkdir()
+        for name, body in (("lipo", "printf 'arm64\\n'"), ("codesign", "exit 1")):
+            tool = tools / name
+            tool.write_text("#!/bin/sh\n" + body + "\n"); tool.chmod(0o755)
+        sentinel = self.root / "helper-executed"
+        helper = self.root / "helper-sentinel"
+        helper.write_text('#!/bin/sh\ntouch "$TEST_HELPER_EXECUTED"\nexit 99\n'); helper.chmod(0o755)
+        env = dict(os.environ, PATH=f"{tools}:" + os.environ["PATH"], TEST_HELPER_EXECUTED=str(sentinel))
+        output = self.root / "invalid-signature-output"
+        refused = call([ROOT / "scripts/release/package.sh", self.file, output, helper], env=env)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("macOS helper signature integrity check failed", refused.stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertFalse(list(output.glob("*.tar.gz")))
+
     def test_unsupported_installer_refuses_before_helper_or_activation(self):
         bundle = self.bundle()
         env = self.environment()
@@ -518,6 +649,50 @@ PY
                 self.assertFalse((self.root/'app').exists())
                 self.assertFalse((self.root/'bin/symphony').exists())
                 self.assertEqual(canary.read_bytes(), b'keep data\x00')
+
+    def test_source_free_init_provider_choice_and_retained_transition_guidance(self):
+        bundle = self.bundle(); env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        # The installer may inspect Docker context for activation diagnostics.
+        # Measure init's inspect-only contract from the end of installation.
+        (self.root / "docker.calls").write_text("")
+        command = self.root / "bin/symphony"
+        repo = self.root / "provider-project"; repo.mkdir(); (repo / ".git").mkdir()
+        (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/provider.git\n')
+        for provider in ("codex", "claude"):
+            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", provider], cwd=repo, env=env))
+            self.assertIn("auth " + provider + " login", output)
+            self.assertIn("run --agent " + provider, output)
+        credentials = next((self.root / "config/projects").glob("*.env"))
+        workflow = repo / "WORKFLOW.md"
+        before = (credentials.read_bytes(), workflow.read_bytes())
+        directory = self.root / "config/runners/environments"; directory.mkdir(parents=True, mode=0o700)
+        selection = directory / (credentials.stem + ".json")
+        docker = self.root / "tools/docker"
+        docker.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_DOCKER_CALLS"\n'
+            'case "$*" in *State.Status*) echo running ;; *com.symphony.agent*) echo "$ACTUAL" ;; *) exit 97 ;; esac\n')
+        for old, new in (("claude", "codex"), ("codex", "claude")):
+            selection.write_text(json.dumps(dict(schema_version=1, provider=old,
+                image_id="sha256:" + "a" * 64, reference="team:retained",
+                runtime_revision="b" * 40, platform="linux/amd64", protocol=1)))
+            selection.chmod(0o600)
+            retained = selection.read_bytes()
+            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", new],
+                cwd=repo, env=dict(env, ACTUAL=old)))
+            self.assertIn("Stored desired provider: " + old, output)
+            self.assertIn("Actual runner provider: " + old, output)
+            self.assertIn("environment select --agent " + new + " IMAGE", output)
+            self.assertIn("symphony update --agent " + new, output)
+            self.assertLess(output.index("auth " + new + " check"), output.index("update --pause-runner"))
+            self.assertLess(output.index("update --pause-runner"), output.index("auth " + new + " login"))
+            self.assertEqual(selection.read_bytes(), retained)
+            self.assertEqual((credentials.read_bytes(), workflow.read_bytes()), before)
+            refused = call([command, "init", "--linear-project", "fixture"], cwd=repo, env=dict(env, ACTUAL=old))
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("unavailable or incompatible", refused.stdout)
+            self.assertNotIn("auth " + old + " login", refused.stdout)
+        operations = (self.root / "docker.calls").read_text().splitlines()
+        self.assertTrue(all(line.startswith("inspect ") or line.startswith("image inspect ") for line in operations))
 
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
@@ -537,6 +712,33 @@ PY
         self.assertNotEqual(failed.returncode, 0); self.assertIn("cannot pull released codex image", failed.stderr)
         self.assertNotIn("build", (self.root / "docker.calls").read_text())
         self.assertOK(call([command, "--version"], env=env))
+
+    if sys.platform == 'darwin':
+        def test_unsigned_native_dmg_mount_inventory_install_retry_and_eject(self):
+            """Real native construction/installation; no signing or Apple trust claim."""
+            import plistlib
+            bundle = self.bundle()
+            dmg = self.root / 'unsigned.dmg'
+            self.assertIn('UNSIGNED DMG', self.assertOK(call([
+                sys.executable, ROOT / 'scripts/release/macos_distribution.py',
+                'unsigned-dmg', bundle, dmg])))
+            self.assertOK(call(['hdiutil', 'verify', dmg]))
+            mounted = plistlib.loads(self.assertOK(call([
+                'hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', dmg])).encode())
+            volumes = [entry for entry in mounted['system-entities'] if 'mount-point' in entry]
+            self.assertEqual(len(volumes), 1)
+            mount = Path(volumes[0]['mount-point'])
+            try:
+                self.assertOK(self.helper('verify-files', mount / 'Symphony'))
+                env = self.environment()
+                for attempt in range(2):
+                    self.assertOK(call(['/bin/bash', mount / 'Symphony/install.sh'], env=env))
+                self.assertIn('unsigned candidate', (mount / 'Symphony/distribution-status.txt').read_text())
+            finally:
+                self.assertOK(call(['hdiutil', 'detach', mount]))
+            command = self.root / 'bin/symphony'
+            self.assertIn('"installation":"packaged"', self.assertOK(call([command, '--version'], env=env)))
+            self.assertIn('"ready":true', self.assertOK(call([command, 'doctor', '--json'], env=env)))
 
     def test_conflict_and_corrupt_install_do_not_activate(self):
         bundle = self.bundle(); env = self.environment()
@@ -707,11 +909,15 @@ PY
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
         command = self.root / "bin/symphony"
+        # Installation may inspect the CLI's current context. A rejected image
+        # override must still fail before any additional Docker operation.
+        calls_file = self.root / "docker.calls"
+        docker_calls = calls_file.read_text() if calls_file.exists() else ""
         for image in ("mutable:latest", "sha256:" + "c" * 64, "ghcr.io/foreign/runner@sha256:" + "d" * 64):
             result = call([command, "auth", "codex", "login"], env=dict(env, SYMPHONY_RUNNER_IMAGE=image))
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("remove SYMPHONY_RUNNER_IMAGE", result.stderr)
-        self.assertFalse((self.root / "docker.calls").exists())
+        self.assertEqual(calls_file.read_text() if calls_file.exists() else "", docker_calls)
 
     def test_custom_app_dir_does_not_require_environment_override(self):
         bundle = self.bundle(); env = self.environment()

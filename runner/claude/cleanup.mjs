@@ -2,6 +2,7 @@
 // The caller supplies only identities captured from its own helper handshake.
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { cleanupBuildTemporary } from './temporary.mjs';
 import { processIdentity, signalOwnedGroup, ownedGroupAlive } from './processes.mjs';
 
 const identity = z.object({ pid: z.number().int().min(2), start: z.string().regex(/^\d+$/) }).strict();
@@ -26,6 +27,7 @@ async function main() {
   if (owned.native.some(ownedGroupAlive) || (owned.helper && helper?.start === owned.helper.start && !['Z', 'X'].includes(helper?.state))) {
     throw new Error('cleanup_unconfirmed');
   }
+  cleanupBuildTemporary(owned.helper);
 }
 
 main().catch(() => { console.error('owned_process_cleanup_failed'); process.exitCode = 1; });

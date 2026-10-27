@@ -24,7 +24,8 @@ def plan_distribution(plan, manifest, revision, verify, inputs, probe=registry_a
     artifacts.require(manifest['schema_version'] in (1,2) and manifest['source_revision']==revision and
                       plan.get('manager_source_revision')==revision and plan.get('planning_complete') is True,
                       'publication requires complete current-source component metadata')
-    artifacts.require(prefix in ('ghcr.io/jayson-stangel/symphony','localhost:5000/symphony'),'unexpected distribution namespace')
+    artifacts.require(prefix == 'ghcr.io/jayson-stangel/symphony',
+                      'production publication refuses candidate-only distribution; use the approved public GHCR namespace')
     stable=copy.deepcopy(manifest);stable['channel']='stable'
     legacy=manifest['schema_version']==1
     if legacy:stable['original_components']=copy.deepcopy(manifest['runners'])
@@ -63,6 +64,17 @@ def plan_distribution(plan, manifest, revision, verify, inputs, probe=registry_a
             'manifest':stable,'original_records_preserved':stable.get('original_components',stable['runners'])==manifest['runners']}
 
 
+def validate_public_distribution(stable):
+    """Reject candidate-only references even if a forged prepared plan reaches publish."""
+    artifacts.require(stable.get('channel') == 'stable', 'publication requires stable distribution metadata')
+    for provider in artifacts.PROVIDERS:
+        for architecture in artifacts.ARCHITECTURES:
+            image = selected_image(stable, provider, architecture)
+            artifacts.require(re.fullmatch(r'ghcr\.io/jayson-stangel/symphony-' + provider +
+                                          r'@sha256:[a-f0-9]{64}', image or ''),
+                              'production publication refuses candidate-only or unsupported distribution references')
+
+
 def selected_image(stable,provider,architecture):
     if stable['schema_version']==1:return stable['runners'][provider][architecture]['image']
     return stable['distribution'][provider][architecture]
@@ -72,9 +84,10 @@ def docker(*args, timeout=600):
     return subprocess.check_output(['docker',*args],text=True,stderr=subprocess.PIPE,timeout=timeout).strip()
 
 
-def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None, transfer=None, extract=None):
+def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None, transfer=None, extract=None, before_transfer=lambda: None):
     """Protected job only: transfer only missing newly built images; never retag reused images."""
     stable=prepared['manifest'];artifacts.validate(stable,require_bundle=False)
+    validate_public_distribution(stable)
     artifacts.require(prepared['manager_source_revision']==stable['source_revision'],'publication manager identity differs')
     transfers=prepared['transfers']
     components=stable.get('original_components',stable['runners'])
@@ -120,7 +133,9 @@ def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=d
             directory=Path(folder)/('graph-'+str(index))
             extract(archive,[record],directory)
             pending.append({'record':record,'directory':directory,'image':item['image']})
-        if pending:transfer(pending)
+        if pending:
+            before_transfer()
+            transfer(pending)
         for item in pending:
             checked=qualify(item['image']) if qualify is not None else registry_available(item['image'],full=True)
             artifacts.require(checked,'new original digest blob closure is not anonymously available')
@@ -148,7 +163,10 @@ def main():
                           'publication tag/source differs')
         # The raw graph client reads credentials only after complete payload
         # preflight. No docker login, load, retag, or push can transform identity.
-        result=publish(prepared,verify)
+        from production_release import live_source
+        check_tag=lambda: live_source(revision, os.environ['GITHUB_REF_NAME'])
+        check_tag()
+        result=publish(prepared,verify,before_transfer=check_tag)
     else:
         artifacts.require(args.plan is not None and args.metadata is not None,'publication planning inputs missing')
         metadata=json.loads(args.metadata.read_text())

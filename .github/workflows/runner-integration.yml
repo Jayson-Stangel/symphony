@@ -1,10 +1,23 @@
 name: Runner integration
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [dev, main]
   workflow_dispatch:
     inputs:
+      sign_macos:
+        description: Only sign/notarize an explicitly approved already-qualified exact dev candidate
+        type: boolean
+        default: false
+      approved_revision:
+        description: Exact dev SHA approved for Apple credential use/upload (signing mode only)
+        type: string
+        default: ''
+      qualified_run:
+        description: Successful exact-source manual Runner integration run (signing mode only)
+        type: string
+        default: ''
       distribution_alias:
         description: Isolated same-content distribution alias proof using original OCI digests
         type: boolean
@@ -24,13 +37,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'latest' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
 jobs:
+  sign-macos:
+    name: Sign approved macOS candidate
+    if: github.event_name == 'workflow_dispatch' && inputs.sign_macos && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha
+    uses: ./.github/workflows/macos-signing.yml
+    with:
+      approved_revision: ${{ inputs.approved_revision }}
+      qualified_run: ${{ inputs.qualified_run }}
+    # Explicit names are required even when values live only in the callee environment.
+    secrets:
+      MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+      MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
   changes:
     name: Classify changes
+    if: ${{ !inputs.sign_macos }}
     uses: ./.github/workflows/change-classification.yml
   chromium:
     name: Browser qualification
     needs: changes
-    if: ${{ always() }}
+    if: ${{ !inputs.sign_macos && (always()) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -39,13 +66,19 @@ jobs:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           BROWSER: ${{ needs.changes.outputs.browser }}
+          READY: ${{ needs.changes.outputs.ready }}
         run: |
           test "$RESULT" = success
+          case "$READY" in true|false) ;; *) exit 1 ;; esac
           case "$CODE" in
             false) test "$BROWSER" = false ;;
             true) case "$BROWSER" in true|false) ;; *) exit 1 ;; esac ;;
             *) exit 1 ;;
           esac
+          if [ "$BROWSER" = true ] && [ "$READY" = false ]; then
+            echo 'Draft PR: affected browser qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Check out source
         if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.code == 'true' && needs.changes.outputs.browser == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,11 +122,11 @@ jobs:
   portable:
     name: Portable preflight
     needs: changes
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true') }}
     uses: ./.github/workflows/release-preflight.yml
   helpers:
     name: Qualify manager helpers
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch') }}
     needs: portable
     uses: ./.github/workflows/native-manager-helpers.yml
     with:
@@ -101,7 +134,7 @@ jobs:
   reference-node-smoke:
     name: Reference Node images
     needs: [changes, portable]
-    if: ${{ github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && needs.portable.result == 'success' && inputs.reference_node_smoke }}
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.code == 'true' && needs.portable.result == 'success' && inputs.reference_node_smoke) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -119,14 +152,14 @@ jobs:
   plan:
     name: Plan components
     needs: [changes, portable]
-    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true') }}
     uses: ./.github/workflows/component-plan.yml
     with:
       baseline_run: ${{ inputs.baseline_run }}
   runners:
     name: Qualify runner components
     needs: [plan, portable]
-    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_builds == 'true'
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && needs.plan.outputs.has_builds == 'true') }}
     uses: ./.github/workflows/runner-release.yml
     with:
       preflight_revision: ${{ needs.portable.outputs.qualified_revision }}
@@ -143,7 +176,7 @@ jobs:
   manager-inputs:
     name: Bind selected component inputs
     needs: [changes, plan, runners]
-    if: ${{ github.event_name == 'workflow_dispatch' && always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped') }}
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && always() && needs.changes.outputs.code == 'true' && needs.plan.result == 'success' && (needs.runners.result == 'success' || needs.runners.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require the complete selected component result
@@ -194,7 +227,7 @@ jobs:
           if-no-files-found: error
   manager-package:
     name: Build current manager packages
-    if: ${{ github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success' }}
+    if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && always() && !cancelled() && needs.manager-inputs.result == 'success' && needs.helpers.result == 'success') }}
     needs: [manager-inputs, helpers]
     uses: ./.github/workflows/current-manager-package.yml
     with:
@@ -203,7 +236,7 @@ jobs:
   listener-and-cleanup:
     name: Installed manager integration
     needs: [changes, portable, helpers, reference-node-smoke, plan, runners, manager-inputs, manager-package]
-    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    if: ${{ !inputs.sign_macos && (always() && github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

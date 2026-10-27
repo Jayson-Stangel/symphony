@@ -25,6 +25,7 @@ async function fixture(t, model = 'sonnet', effort, maxTurns = 20) {
   const messages = [];
   let query;
   const helper = new Helper({ identity: { profile: 'test' }, env: {}, binary: '/test/native',
+    makeTemporary: () => ({ path: '/fixture/owned-scratch', cleanup() {} }),
     graceMs: 0, killMs: 0, send: value => messages.push(value),
     makeQuery: params => { query = new FakeQuery(params); return query; } });
   t.after(() => helper.stop('test_cleanup'));
@@ -32,6 +33,7 @@ async function fixture(t, model = 'sonnet', effort, maxTurns = 20) {
     config: { model, effort, max_turns: maxTurns, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
   query.push({ type: 'system', subtype: 'init', session_id: 'native-one' });
   await tick();
+  assert.equal(query.params.options.env.TMPDIR, '/fixture/owned-scratch');
   const input = query.params.prompt[Symbol.asyncIterator]();
   return { helper, messages, query, input };
 }
@@ -180,6 +182,16 @@ test('interrupt cancels callbacks and emits a single cancellation outcome', asyn
   assert.equal(ctx.helper.tools.size, 0);
   await ctx.helper.stop('repeat');
   assert.equal(ctx.messages.filter(value => value.type === 'stopped').length, 1);
+});
+
+test('temporary cleanup failure withholds stopped acknowledgement', async t => {
+  const ctx = await fixture(t);
+  let terminated = 0;
+  ctx.helper.terminate = () => { terminated++; };
+  ctx.helper.temporary.cleanup = () => { throw new Error('foreign ownership'); };
+  await ctx.helper.stop('cleanup');
+  assert.equal(terminated, 1);
+  assert.equal(ctx.messages.some(value => value.type === 'stopped'), false);
 });
 
 function assistant(ctx, id, input, extra = {}) {

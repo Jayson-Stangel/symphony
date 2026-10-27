@@ -25,6 +25,21 @@ class PublicationTest(unittest.TestCase):
     def prepare(self,plan,metadata,probe=lambda image:True):
         return publication.plan_distribution(plan,metadata,'a'*40,lambda record:{'exact':'origin'},lambda p,a:'d'*64,probe)
 
+    def test_candidate_distribution_refuses_before_publication_effects(self):
+        plan,metadata=self.fixture()
+        with self.assertRaisesRegex(ValueError,'candidate-only distribution'):
+            publication.plan_distribution(plan,metadata,'a'*40,lambda record:self.fail('origin lookup'),
+                                          lambda p,a:self.fail('input lookup'),lambda image:self.fail('registry probe'),
+                                          prefix='localhost:5000/symphony')
+        prepared=self.prepare(plan,metadata)
+        for image in ('localhost:5000/symphony-codex', 'ghcr.io/foreign/codex'):
+            invalid=copy.deepcopy(prepared)
+            original=invalid['manifest']['distribution']['codex']['arm64']
+            invalid['manifest']['distribution']['codex']['arm64']=image+'@'+original.split('@')[1]
+            with self.assertRaisesRegex(ValueError,'candidate-only or unsupported'):
+                publication.publish(invalid,lambda record:self.fail('origin lookup'),
+                                    probe=lambda image:self.fail('registry probe'),fetch=lambda *a:self.fail('payload fetch'))
+
     def test_manager_only_release_changes_no_original_record_and_runs_no_image_commands(self):
         plan,metadata=self.fixture();original=copy.deepcopy(metadata['runners'])
         prepared=self.prepare(plan,metadata)
@@ -116,15 +131,15 @@ class PublicationTest(unittest.TestCase):
 
     def test_workflow_uses_plan_transfers_and_complete_stable_manifest(self):
         import re
-        text=(Path(__file__).resolve().parents[3]/'.github/workflows/runner-release.yml').read_text()
-        block=re.search(r'^  publish:\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
+        text=(Path(__file__).resolve().parents[3]/'.github/workflows/production-publish.yml').read_text()
+        block=re.search(r'^  registry:\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
         self.assertNotIn('matrix:',block)
-        self.assertIn('component_publication.py --prepared prepared/publication-plan.json',block)
+        self.assertIn('component_publication.py --prepared retained/signed/production-plan.json',block)
         self.assertIn('environment: production-release',block)
-        self.assertIn("vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'",block)
-        self.assertIn('name: runner-stable-metadata',block)
+        self.assertIn("vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'",text)
+        self.assertIn('production_release.py compare',block)
         self.assertNotIn('pattern: runner-stable-*',text)
-        self.assertIn('finalize-manager-packages.py metadata/release.json dist',text)
+        self.assertNotIn('build-manager-package.sh',text)
 
     def test_every_transfer_origin_destination_and_availability_precedes_any_mutation(self):
         plan,metadata=self.fixture()

@@ -132,7 +132,7 @@ def recovery_payload_binding(job, recovery, artifact):
     require(start <= created <= end, "payload belongs to another native job attempt")
 
 
-def run_identity(run_id, controller, fetch, current_context=None):
+def run_identity(run_id, controller, fetch, current_context=None, candidate_run=None):
     run = fetch(f"actions/runs/{run_id}")
     current = current_context if current_context and run_id == current_context["run_id"] else None
     require(run.get("id") == run_id, "qualification run identity differs")
@@ -142,6 +142,8 @@ def run_identity(run_id, controller, fetch, current_context=None):
                 "current-run qualification context differs")
         require(run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml",
                                      ".github/workflows/runner-integration.yml"), "unqualified current-run workflow")
+        if current["event"] != "pull_request":
+            require(run.get("head_repository", {}).get("full_name") == REPOSITORY, "foreign qualification repository")
         if run.get("head_sha") != controller:
             require(current["event"] == "pull_request", "current controller differs from run source")
             commit = fetch(f"commits/{controller}")
@@ -151,8 +153,12 @@ def run_identity(run_id, controller, fetch, current_context=None):
     else:
         require(run.get("head_sha") == controller, "qualification run identity differs")
         require(run.get("head_repository", {}).get("full_name") == REPOSITORY, "foreign qualification repository")
-        require(run.get("event") in ("workflow_dispatch", "push") and
-                run.get("path") in (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml"),
+        workflows = (".github/workflows/runner-release.yml", ".github/workflows/burrito-release.yml")
+        # Only an explicitly selected manual original can authorize integration
+        # evidence. Ordinary historical discovery retains its existing policy.
+        if type(candidate_run) is int and candidate_run == run_id and run.get("event") == "workflow_dispatch":
+            workflows += (".github/workflows/runner-integration.yml",)
+        require(run.get("event") in ("workflow_dispatch", "push") and run.get("path") in workflows,
                 "unqualified native workflow origin")
     return run
 
@@ -178,8 +184,8 @@ def verify_origin(record, fetch=api, now=None, candidate_run=None, current_conte
     record_attempt = origin.get("run_attempt", attempt)
     record_controller = origin.get("controller_revision", controller)
     record_job = origin.get("job_name", proof["job_name"])
-    native_run = run_identity(run_id, controller, fetch, current_context)
-    metadata_run = run_identity(record_run, record_controller, fetch, current_context)
+    native_run = run_identity(run_id, controller, fetch, current_context, candidate_run=candidate_run)
+    metadata_run = run_identity(record_run, record_controller, fetch, current_context, candidate_run=candidate_run)
     payload_origin = proof.get("payload_origin", {})
     payload_run = payload_origin.get("run_id", run_id)
     payload_controller = payload_origin.get("controller_revision", controller)

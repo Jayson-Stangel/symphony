@@ -64,7 +64,7 @@ class AppArmorPreparationTest(unittest.TestCase):
         self.root = Path(self.folder.name)
         scripts = self.root / 'scripts'
         (scripts / 'ci').mkdir(parents=True)
-        for name in ('symphony', 'symphony-environment.sh', 'codex-apparmor.profile', 'codex-seccomp.json'):
+        for name in ('symphony', 'symphony-environment.sh', 'symphony-apparmor.sh', 'codex-apparmor.profile', 'codex-seccomp.json'):
             shutil.copy2(ROOT / 'scripts' / name, scripts / name)
         self.helper = scripts / 'ci/prepare-codex-apparmor.sh'
         shutil.copy2(ROOT / 'scripts/ci/prepare-codex-apparmor.sh', self.helper)
@@ -288,7 +288,10 @@ class AppArmorWorkflowTest(unittest.TestCase):
 
     def test_actual_protected_image_entrypoint_checks_runtime_apply_and_keeps_both_network_modes(self):
         smoke = (ROOT / 'runner/codex-sandbox-smoke.sh').read_text()
-        self.assertLess(smoke.index('AppArmor runtime apply verified'), smoke.index('exec /opt/symphony/elixir/bin/symphony --check-codex-sandbox'))
+        marker = smoke.index('AppArmor runtime apply verified')
+        calls = [smoke.index('/opt/symphony/elixir/bin/symphony --check-codex-sandbox /tmp/' + name)
+                 for name in ('qualification-WORKFLOW.md', 'wrapper-WORKFLOW.md')]
+        self.assertTrue(all(marker < call for call in calls))
         self.assertIn('runner_codex_run docker --rm', smoke)
         self.assertIn('"$image_id"', smoke)
         boundaries = (ROOT / 'runner/codex-boundaries.py').read_text()

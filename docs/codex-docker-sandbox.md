@@ -45,10 +45,101 @@ masks. Codex still creates user/PID namespaces and applies its own restrictions.
 Container mode binds workspace `/workspaces`, server `0.0.0.0`, and noninteractive
 approval. It preserves the configured Codex filesystem/network policy instead of
 forcing full access. The initial readiness adapter supports workspace-write;
-unsupported policies, custom commands, SSH workers and unqualified native config
+unsupported policies, unsupported command forms, SSH workers and unqualified native config
 refuse readiness. Claude's launch and authentication policy are unchanged.
 
+## Project launch wrappers
+
+The protected probe supports `codex app-server`, the existing
+`--config shell_environment_policy.inherit=all` (or `-c`) option, and the same
+commands behind a repository-local Bash pass-through wrapper:
+
+```yaml
+codex:
+  command: bash scripts/with-node.sh codex --config shell_environment_policy.inherit=all app-server
+```
+
+The wrapper must perform its environment setup and execute its supplied argv,
+usually with `exec "$@"`. Quoted arguments and repository paths containing spaces
+are supported. Shell operators, expansions, pipelines, alternate providers and
+unknown options refuse safely. The diagnostic names the launch/configuration
+stage instead of recommending a rebuilt image for an unsupported command.
+
+The project source is mounted read-only at the same path for doctor and listener;
+the probe copies it into disposable writable storage and invokes the actual
+wrapper before resolving Codex from its resulting PATH. Native positive-write,
+outside-workspace denial and protected `.codex` denial effects remain required.
+Managed container tasks receive an explicit writable root for their own `.git`
+directory while retaining `workspace-write` mode. A linked or symlinked Git
+directory is refused rather than granting access outside the owned task. Host-native
+and SSH execution retain their configured policy without this container grant.
+Container readiness also performs real Git initialization, local identity, clone,
+fetch, branch creation, edit/test, stage, commit, push to a disposable bare remote,
+and exact-commit/content readback, including dirty/untracked preservation on retry.
+The wrapper is trusted project code, can run setup/downloads, and may read project
+files; diagnostics withhold Symphony credential files and native login mounts,
+not arbitrary sensitive content already in project source. Missing/failing setup
+refuses readiness. The original workflow is preserved.
+
+Wrapped task sessions repeat this same protected check against the actual task
+workspace before app-server launch, so changed sourced scripts and task hooks do
+not inherit a receipt from different project bytes. The cheap scheduler receipt
+still guards admission; a receipt marker alone never replaces protected effects.
+Direct commands retain their existing protected qualification path.
+
 ## AppArmor hosts
+
+### Supported packaged preparation
+
+Run `symphony runner apparmor` using the verified installed package before the
+first Codex start. This prints the selected daemon name/ID, exact profile digest,
+destination and privileged effects. Review the shipped policy and package
+inventory, then explicitly run the printed physical-package command as root:
+`/path/to/release/scripts/symphony runner apparmor --apply --daemon-id ID`.
+Use the same local Docker context when elevating; a changed daemon ID is refused.
+Symphony never invokes sudo or installs distribution prerequisites automatically.
+
+Supported preparation targets rootful Linux Docker at `/var/run/docker.sock`,
+with matching daemon/host names, systemd `docker.service` and `apparmor.service`.
+Remote or custom daemons receive a safe handoff: transfer the verified Linux
+package to the reported daemon host and review/apply there with its local Docker
+context. Controller policy is never substituted for remote host policy. Daemons
+that do not advertise AppArmor require no preparation, including the supported
+Docker Desktop/macOS path. Claude launch is unchanged.
+
+The administrator command checks the shipped digest and parsed profile name,
+active kernel/LSM/per-thread interface, parser/imports and root-owned destinations.
+Unknown existing files or loaded names without an owned receipt, links, changed
+owned files and disable/complain overrides are refused. It stages and rechecks
+policy bytes before privileged loading. A successful repeat reestablishes the
+exact owned kernel policy, rather than trusting only a loaded name or disk hash.
+Operational failures retain owned files for an explicit retry; no policy is
+unloaded, and no existing runner is stopped or replaced.
+
+The exact versioned policy persists under `/etc/apparmor.d/`, alongside a hidden
+ownership receipt. A versioned `/etc/systemd/system/docker.service.d/` drop-in
+requires/orders AppArmor before Docker and loads the exact policy with
+`ExecStartPre=... apparmor_parser --replace --skip-cache ...`. Failure prevents
+Docker startup. Preparation enables AppArmor and reloads systemd unit metadata;
+it never restarts Docker. Old versioned guards/policies remain for active projects
+and rollback; removal is a separate administrator decision. Unsupported service
+layouts require administrator investigation rather than a bypass.
+
+After preparation run `symphony runner doctor --agent codex --sandbox-only` from
+the project as its ordinary user. Doctor distinguishes daemon identity, missing
+kernel/tools/imports, absent enforcement, integrity/ownership conflicts and
+protected-command failure. A host setup result does not establish authentication
+or model delivery. If kernel inventory is unreadable to the user, doctor reports that limit and
+continues to the actual protected check. On failure, use explicit administrator
+preparation on the daemon host; doctor never silently elevates.
+
+An actual reboot of the newly prepared isolated Linux host remains required
+qualification: record package/policy/daemon IDs, boot ID change, first protected
+Codex check and unchanged auth/workspace sentinels, without manual loading or
+restart. Fixture boot-guard assertions and the prior manually prepared Forge
+reboot are not fresh-install proof for this command.
+
+### Administrator reference and manual diagnostics
 
 Docker's default AppArmor profile denies all mounts, including the helper's
 namespaced staging mounts. The shipped Docker-derived policy replaces that
@@ -184,7 +275,8 @@ Do not overwrite an existing persistent policy file or unload profiles needed by
 running projects, retained environments or rollback. Keep old versioned profiles
 until their consumers are retired. A future changed recipe needs a new versioned
 name. See [Ubuntu's AppArmor administration guide](https://documentation.ubuntu.com/server/how-to/security/apparmor/index.html)
-for distribution policy management; Symphony does not configure boot persistence.
+for distribution policy management. The supported explicit `runner apparmor`
+preparation above configures persistence; this manual reference does not.
 
 ### Verify protected readiness, then distinguish authentication
 
@@ -203,7 +295,8 @@ the sandbox.
 `runner doctor` first uses the shared launch integration and selected immutable
 image for a credential-free disposable protected-command check. The exact marker
 `Codex sandbox protected-command checks passed.` means it wrote the intended
-workspace canary and denied outside/protected Git writes for that workflow and
+workspace canary, completed the owned Git workflow, and denied outside/protected
+Codex-metadata writes for that container workflow and
 image. No native login or model request is provided to this first check. It does
 not independently repeat CI's sibling-process and both network-mode probes.
 
@@ -225,7 +318,9 @@ authority; they are not needed to inspect the policy or its credential-free gate
 | Policy loaded, protected check still fails | Retain the refusal; inspect `sandbox_not_ready`, selected immutable image compatibility, workflow policy, workspace/TMPDIR paths, mount/storage behavior and host kernel/runtime diagnostics. A listed profile is not execution proof. |
 | Protected marker succeeds, auth check fails | Treat policy success and native login as separate results. Do not claim whole-doctor readiness or start a listener merely to test the policy. |
 
-The ordinary installed manager never invokes sudo, loads policy, changes
+Ordinary installation and launch never invoke sudo or load host policy. Only
+the explicitly authorized administrator `runner apparmor --apply` command changes
+host policy and boot ordering. Ordinary launch never changes
 `docker-default`, or restarts the daemon. Explicit disposable CI preparation is
 a separate qualification action, not a persistent-host setup command. A missing
 profile causes Docker to refuse launch. Daemon-info errors,
@@ -268,7 +363,7 @@ builds always run the current protected-command qualifier.
 
 Run `bash runner/codex-sandbox-smoke.sh IMAGE` to verify the immutable image with
 credential-free disposable storage. The first check uses the actual resolved
-container workflow and tests workspace/outside/`.git` writes. A second check
+container workflow and tests owned Git development plus outside/`.codex` denials. A second check
 verifies that an ordinary sibling's disposable environment and proc-root paths
 cannot be read, sibling signal access is denied, and a controlled TCP endpoint is
 denied with network disabled and reachable when explicitly enabled. Positive
