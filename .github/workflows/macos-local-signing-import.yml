@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       approved_revision:
-        description: Exact promoted source approved for local import or transport probe
+        description: Exact promoted source approved for local import
         required: true
         type: string
       staging_release:
@@ -18,25 +18,6 @@ on:
         description: Original GitHub sha256 asset digest from local upload receipt
         required: true
         type: string
-      transport_probe_only:
-        description: Read one small public fixture with the job token before qualification or signing
-        required: false
-        default: false
-        type: boolean
-      diagnostic_only:
-        description: Observe closed HTTP stages for the fixed public fixture from a reviewed feature source
-        required: false
-        default: false
-        type: boolean
-      diagnostic_fixture_revision:
-        description: Exact ancestor source targeted by the separately prepared public fixture draft
-        required: false
-        type: string
-      diagnostic_handoff_proof:
-        description: Temporary fixed public fixture opaque handoff proof; requires diagnostic_only
-        required: false
-        default: false
-        type: boolean
 permissions:
   contents: read
   actions: read
@@ -46,39 +27,13 @@ concurrency:
 env:
   PYTHONDONTWRITEBYTECODE: '1'
 jobs:
-  transport-probe:
-    name: Probe private staging read access
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && inputs.transport_probe_only && !inputs.diagnostic_only && !inputs.diagnostic_handoff_proof
-    environment: macos-production-signing
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Check out exact approved source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Read the exact private draft fixture with the normal read only job token
-        env:
-          GH_TOKEN: ${{ github.token }}
-          STAGING_RELEASE: ${{ inputs.staging_release }}
-          STAGING_ASSET: ${{ inputs.staging_asset }}
-          STAGING_DIGEST: ${{ inputs.staging_digest }}
-        run: |
-          python3 scripts/release/local_distribution.py probe "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/transport-probe.json"
-      - name: Retain transport proof without signed or native admission artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: local-signing-transport-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/transport-probe.json
-          if-no-files-found: error
   verify:
     name: Verify locally signed distribution
     permissions:
       contents: read
       actions: read
     needs: [mac-runner-local-import, staging-ingress]
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only && !inputs.diagnostic_only && !inputs.diagnostic_handoff_proof
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
     environment: macos-production-signing
     # Default remains hosted Intel; an exact permit may select the isolated ARM guest.
     # Both inspect signatures/tickets without executing the uploaded ARM64 payload.
@@ -126,7 +81,7 @@ jobs:
           if-no-files-found: error
   mac-runner-local-import:
     name: Select backup Mac for local distribution inspection
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only && !inputs.diagnostic_only && !inputs.diagnostic_handoff_proof
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -150,43 +105,9 @@ jobs:
           SELECT_WORKFLOW_PATH: .github/workflows/macos-local-signing-import.yml
           SELECT_JOB_KEY: verify
         run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
-  http-diagnostic:
-    name: Diagnose private fixture HTTP stages
-    # Bounded diagnostic capability test; requests remain GET-only.
-    permissions:
-      contents: write
-      actions: read
-    # CLI fails conflicting modes and invalid feature/source bindings before GET.
-    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_only && !inputs.diagnostic_handoff_proof
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Check out the diagnostic controller source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Observe read only service stages without raw API output
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APPROVED_REVISION: ${{ inputs.approved_revision }}
-          FIXTURE_REVISION: ${{ inputs.diagnostic_fixture_revision }}
-          STAGING_RELEASE: ${{ inputs.staging_release }}
-          STAGING_ASSET: ${{ inputs.staging_asset }}
-          STAGING_DIGEST: ${{ inputs.staging_digest }}
-          TRANSPORT_PROBE_ONLY: ${{ inputs.transport_probe_only }}
-        run: |
-          python3 scripts/release/local_distribution.py diagnostic "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$FIXTURE_REVISION" "$RUNNER_TEMP/http-diagnostic.json" --approved-revision "$APPROVED_REVISION" --transport-probe-only "$TRANSPORT_PROBE_ONLY"
-      - name: Retain only the closed HTTP diagnostic even after refusal
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: local-signing-http-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/http-diagnostic.json
-          if-no-files-found: error
   staging-ingress:
     name: Read private staged distribution
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only && !inputs.diagnostic_only && !inputs.diagnostic_handoff_proof
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
     environment: macos-production-signing
     permissions:
       contents: write
@@ -219,80 +140,4 @@ jobs:
           path: |
             ${{ runner.temp }}/staging-ingress/payload.zip
             ${{ runner.temp }}/staging-ingress/ingress.json
-          if-no-files-found: error
-  fixture-ingress:
-    name: Read fixed fixture into opaque handoff
-    # TEMPORARY feature proof; remove before the production PR.
-    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_handoff_proof
-    permissions:
-      contents: write
-      actions: read
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      artifact_id: ${{ steps.opaque.outputs.artifact-id }}
-      artifact_digest: "sha256:${{ steps.opaque.outputs.artifact-digest }}"
-      artifact_name: local-signing-fixture-proof-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - name: Check out exact feature proof controller
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Read and stage only the fixed public fixture
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APPROVED_REVISION: ${{ inputs.approved_revision }}
-          FIXTURE_REVISION: ${{ inputs.diagnostic_fixture_revision }}
-          DIAGNOSTIC_ONLY: ${{ inputs.diagnostic_only }}
-          TRANSPORT_PROBE_ONLY: ${{ inputs.transport_probe_only }}
-          STAGING_RELEASE: ${{ inputs.staging_release }}
-          STAGING_ASSET: ${{ inputs.staging_asset }}
-          STAGING_DIGEST: ${{ inputs.staging_digest }}
-        run: |
-          python3 scripts/release/fixture_handoff_proof.py produce "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/fixture-ingress" --approved-revision "$APPROVED_REVISION" --fixture-revision "$FIXTURE_REVISION" --diagnostic-only "$DIAGNOSTIC_ONLY" --transport-probe-only "$TRANSPORT_PROBE_ONLY"
-      - name: Retain exact opaque fixture and bound ingress receipt
-        id: opaque
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: local-signing-fixture-proof-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/fixture-ingress/payload.zip
-            ${{ runner.temp }}/fixture-ingress/ingress.json
-          if-no-files-found: error
-  fixture-read-consumer:
-    name: Verify fixed fixture with read only token
-    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_handoff_proof
-    needs: fixture-ingress
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Check out exact feature proof controller
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Read only the exact successful producer artifact from this attempt
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APPROVED_REVISION: ${{ inputs.approved_revision }}
-          FIXTURE_REVISION: ${{ inputs.diagnostic_fixture_revision }}
-          DIAGNOSTIC_ONLY: ${{ inputs.diagnostic_only }}
-          TRANSPORT_PROBE_ONLY: ${{ inputs.transport_probe_only }}
-          STAGING_RELEASE: ${{ inputs.staging_release }}
-          STAGING_ASSET: ${{ inputs.staging_asset }}
-          STAGING_DIGEST: ${{ inputs.staging_digest }}
-          ARTIFACT_ID: ${{ needs.fixture-ingress.outputs.artifact_id }}
-          ARTIFACT_NAME: ${{ needs.fixture-ingress.outputs.artifact_name }}
-          ARTIFACT_DIGEST: ${{ needs.fixture-ingress.outputs.artifact_digest }}
-        run: |
-          python3 scripts/release/fixture_handoff_proof.py receive "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/fixture-consumer" --approved-revision "$APPROVED_REVISION" --fixture-revision "$FIXTURE_REVISION" --diagnostic-only "$DIAGNOSTIC_ONLY" --transport-probe-only "$TRANSPORT_PROBE_ONLY" --artifact-id "$ARTIFACT_ID" --artifact-name "$ARTIFACT_NAME" --artifact-digest "$ARTIFACT_DIGEST"
-      - name: Retain fixed fixture byte identity and service provenance only
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: fixed-fixture-read-proof-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/fixture-consumer/fixture-proof.json
           if-no-files-found: error

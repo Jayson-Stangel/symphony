@@ -37,7 +37,6 @@ PORTABLE = {
     'test_signing_checkpoint.py',
     'test_macos_signing_inputs.py',
     'test_local_distribution.py',
-    'test_staging_diagnostic.py',
     'test_staging_ingress.py',
     'test_staging_glue.py',
     'test_production_release.py',

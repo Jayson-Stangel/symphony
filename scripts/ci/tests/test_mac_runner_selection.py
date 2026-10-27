@@ -88,16 +88,15 @@ class Selection(unittest.TestCase):
         with self.assertRaises(selector.Refusal):
             self.select()
 
-    def test_local_import_probe_bypasses_selector_and_native_gates_stay_exact(self):
+    def test_private_ingress_bypasses_mac_selector_and_native_gates_stay_exact(self):
         text = workflow('macos-local-signing-import')
-        probe = job(text, 'transport-probe')
+        ingress = job(text, 'staging-ingress')
         native = job(text, 'verify')
         route = job(text, 'mac-runner-local-import')
-        self.assertIn('runs-on: ubuntu-24.04', probe)
-        self.assertNotIn('needs:', probe)
-        self.assertNotIn('SYMPHONY_BACKUP_MAC_PERMIT', probe)
-        for block in (native, route):
-            self.assertIn('&& !inputs.transport_probe_only', block)
+        self.assertIn('runs-on: ubuntu-24.04', ingress)
+        self.assertNotIn('needs:', ingress)
+        self.assertNotIn('SYMPHONY_BACKUP_MAC_PERMIT', ingress)
+        for block in (native, route, ingress):
             self.assertIn("github.ref == 'refs/heads/main'", block)
             self.assertIn('inputs.approved_revision == github.sha', block)
         self.assertIn('needs: [mac-runner-local-import, staging-ingress]', native)

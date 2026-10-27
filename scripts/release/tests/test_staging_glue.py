@@ -1,4 +1,4 @@
-"""Bridge/workflow/temporary fixture glue peers; no live API or native execution."""
+"""Bridge/workflow glue peers; no live API or native execution."""
 import hashlib
 import io
 import json
@@ -15,7 +15,6 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parents[1]))
 import local_distribution as local
 import staging_ingress as ingress
-import fixture_handoff_proof as fixture_proof
 import test_staging_ingress as ingress_fixtures
 import test_local_distribution as local_fixtures
 
@@ -60,64 +59,39 @@ class StagingGlueTest(unittest.TestCase):
             self.assertEqual(core.run['status'],'in_progress')
             self.assertEqual(core.run['updated_at'],'2020-01-01T00:00:00Z')
 
-    def test_fixed_fixture_metadata_refuses_before_any_binary_get(self):
-        peer=local_fixtures.TransportProbeTest();fetch,release,asset,calls=peer.fixture()
-        asset['name']='candidate-private.zip'
-        with patch.object(fixture_proof,'staging_api',side_effect=fetch):
-            with self.assertRaises(ValueError):fixture_proof.fixture_download('70','71',local.PROBE_DIGEST,'a'*40)
-        self.assertFalse(any(binary for _,binary in calls))
-
-    def test_temporary_wrapper_subprocess_failures_emit_only_closed_stage(self):
-        args=['fixture_handoff_proof.py','produce','70','71',local.PROBE_DIGEST,'unused-output',
-              '--approved-revision','c'*40,'--fixture-revision','c'*40,'--diagnostic-only','true',
-              '--transport-probe-only','false']
-        for failing in ('source','stage'):
-            error=subprocess.TimeoutExpired('PRIVATE TOKEN https://private.invalid',20)
-            stderr=io.StringIO()
-            with self.subTest(failing=failing),patch.object(sys,'argv',args), \
-                 patch.dict(os.environ,GITHUB_SHA='c'*40,GITHUB_REF=fixture_proof.CONTRACT.ref), \
-                 patch.object(fixture_proof,'source_guard',side_effect=error if failing=='source' else None), \
-                 patch.object(fixture_proof,'stage_core',side_effect=error),redirect_stderr(stderr):
-                with self.assertRaises(SystemExit):fixture_proof.main()
-            self.assertNotIn('PRIVATE',stderr.getvalue());self.assertNotIn('https://',stderr.getvalue())
-            self.assertIn('source-binding' if failing=='source' else 'opaque-stage',stderr.getvalue())
-
-    def test_temporary_wrapper_invalid_modes_cannot_call_transport_core(self):
-        args=['fixture_handoff_proof.py','produce','70','71',local.PROBE_DIGEST,'unused-output',
-              '--approved-revision','c'*40,'--fixture-revision','c'*40,'--diagnostic-only','false',
-              '--transport-probe-only','false']
-        with patch.object(sys,'argv',args),patch.object(fixture_proof,'source_guard') as guard, \
-             patch.object(fixture_proof,'stage_core') as stage,redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):fixture_proof.main()
-        guard.assert_not_called();stage.assert_not_called()
-
-    def test_workflow_write_boundary_and_bare_action_digest_normalization_both_roles(self):
+    def test_workflow_only_protected_main_ingress_can_write_and_mac_is_read_only(self):
         text=(Path(__file__).parents[3]/'.github/workflows/macos-local-signing-import.yml').read_text()
-        for key in ('staging-ingress','fixture-ingress'):
-            producer=job(text,key)
-            self.assertIn('contents: write\n      actions: read',producer)
-            self.assertIn('artifact_digest: "sha256:${{ steps.opaque.outputs.artifact-digest }}"',producer)
-            bare='d'*64
-            normalized='sha256:${{ steps.opaque.outputs.artifact-digest }}'.replace('${{ steps.opaque.outputs.artifact-digest }}',bare)
-            self.assertRegex(normalized,r'^sha256:[a-f0-9]{64}$')
-        native=job(text,'verify');reader=job(text,'fixture-read-consumer')
-        for consumer in (native,reader):
-            self.assertIn('contents: read\n      actions: read',consumer)
-            self.assertNotIn('contents: write',consumer)
+        self.assertEqual(set(re.findall(r'^  ([a-z][a-z0-9-]*):$',text,re.M)),
+                         {'verify','mac-runner-local-import','staging-ingress'})
+        producer=job(text,'staging-ingress');native=job(text,'verify')
+        self.assertIn('contents: write\n      actions: read',producer)
+        self.assertIn('artifact_digest: "sha256:${{ steps.opaque.outputs.artifact-digest }}"',producer)
+        bare='d'*64
+        normalized='sha256:${{ steps.opaque.outputs.artifact-digest }}'.replace('${{ steps.opaque.outputs.artifact-digest }}',bare)
+        self.assertRegex(normalized,r'^sha256:[a-f0-9]{64}$')
+        self.assertIn('contents: read\n      actions: read',native)
+        self.assertNotIn('contents: write',native)
         self.assertIn('needs: [mac-runner-local-import, staging-ingress]',native)
-        main=job(text,'staging-ingress')
-        self.assertIn("github.ref == 'refs/heads/main'",main)
-        self.assertIn('environment: macos-production-signing',main)
-        for key in ('fixture-ingress','fixture-read-consumer'):
-            proof=job(text,key)
-            self.assertNotIn('environment:',proof);self.assertNotIn('secrets.',proof)
-            self.assertNotIn('production-local-signed-',proof)
-        for key in ('verify','staging-ingress','mac-runner-local-import','transport-probe'):
+        for key in ('verify','staging-ingress','mac-runner-local-import'):
             block=job(text,key)
-            self.assertIn('!inputs.diagnostic_only',block)
-            self.assertIn('!inputs.diagnostic_handoff_proof',block)
+            self.assertIn("github.ref == 'refs/heads/main'",block)
+            self.assertIn('inputs.approved_revision == github.sha',block)
+        self.assertIn('environment: macos-production-signing',producer)
+        self.assertIn('environment: macos-production-signing',native)
+        self.assertEqual(text.count('contents: write'),1)
+        self.assertNotIn('secrets.',text)
+        for retired in ('transport_probe_only','diagnostic_only','diagnostic_fixture_revision','diagnostic_handoff_proof',
+                        'http-diagnostic','fixture-ingress','fixture-read-consumer'):
+            self.assertNotIn(retired,text)
         for name in ('staging_release','staging_asset','staging_digest'):
             self.assertIn('required: true',text.split('      '+name+':\n',1)[1].split('        type:',1)[0])
+
+    def test_retired_probe_and_diagnostic_cli_modes_refuse_before_any_source_or_api_call(self):
+        for mode in ('probe','diagnostic'):
+            with self.subTest(mode=mode),patch.object(sys,'argv',['local_distribution.py',mode]), \
+                 patch.object(local,'exact_source') as source,redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):local.main()
+                source.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

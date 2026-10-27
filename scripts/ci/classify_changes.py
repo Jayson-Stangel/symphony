@@ -164,10 +164,8 @@ PORTABLE_RELEASE = {
     'runner-startup.sh',
     'runner_reuse.py',
     'test_registry.py',
-    'staging_diagnostic.py',
     'staging_archive.py',
     'staging_ingress.py',
-    'fixture_handoff_proof.py',
     'verify-prior-source.py',
 }
 

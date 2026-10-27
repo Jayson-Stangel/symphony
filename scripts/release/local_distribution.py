@@ -35,9 +35,6 @@ from signing_payload import bundle_files, compare_package_payload
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_BYTES = production.MAX_BYTES
-MAX_PROBE_BYTES = 4096
-PROBE_DIGEST = 'sha256:bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1'
-PROBE_SIZE = 240
 EVIDENCE = {'keychain-diagnostics.json', 'package-diagnostics.json', 'payload-log.json',
             'payload-submission.json', 'notary-log.json', 'notary-submission.json', 'package-source.txt'}
 KEYCHAIN_STAGES = {'keychain.' + name for name in ('snapshot-search-list', 'decode-p12', 'create',
@@ -357,19 +354,6 @@ def download_staging(release_id, asset_id, digest, revision, fetch=staging_api, 
     return raw, origin
 
 
-def probe_transport(release_id, asset_id, digest, revision, destination, fetch=staging_api):
-    """Prove this job token can read a tiny public fixture, never signed inputs."""
-    require(not destination.exists(), 'probe receipt already exists')
-    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch, MAX_PROBE_BYTES)
-    # The probe only hashes the fixed public blob. Never parse, unpack or run it.
-    require(origin['name'] == 'permission-probe.zip' and len(raw) == PROBE_SIZE and
-            origin['digest'] == PROBE_DIGEST, 'probe requires the exact named public fixture')
-    proof = dict(origin, origin='transport-probe',
-                 scope='read-only job-token staging access; not qualification, signing or native evidence')
-    write_json(destination, proof)
-    return proof
-
-
 def admit_local(raw, origin, revision, destination, identity, team, fetch=api, native=verify_native):
     """Keep all original qualification/native admission after either transport."""
     unpack(raw, destination / 'signed')
@@ -437,9 +421,6 @@ def main():
     receive = modes.add_parser('import')
     receive.add_argument('release_id'); receive.add_argument('asset_id'); receive.add_argument('digest')
     receive.add_argument('destination', type=Path)
-    probe = modes.add_parser('probe')
-    probe.add_argument('release_id'); probe.add_argument('asset_id'); probe.add_argument('digest')
-    probe.add_argument('receipt', type=Path)
     ingress = modes.add_parser('stage-ingress')
     ingress.add_argument('release_id'); ingress.add_argument('asset_id'); ingress.add_argument('digest')
     ingress.add_argument('destination', type=Path)
@@ -447,19 +428,7 @@ def main():
     bridged.add_argument('artifact_id'); bridged.add_argument('artifact_name'); bridged.add_argument('artifact_digest')
     bridged.add_argument('release_id'); bridged.add_argument('asset_id'); bridged.add_argument('digest')
     bridged.add_argument('destination', type=Path)
-    diagnostic = modes.add_parser('diagnostic')
-    diagnostic.add_argument('release_id'); diagnostic.add_argument('asset_id'); diagnostic.add_argument('digest')
-    diagnostic.add_argument('fixture_revision'); diagnostic.add_argument('receipt', type=Path)
-    diagnostic.add_argument('--approved-revision', required=True)
-    diagnostic.add_argument('--transport-probe-only', choices=('true', 'false'), default='false')
     args = parser.parse_args()
-    if args.mode == 'diagnostic':
-        from staging_diagnostic import diagnose
-        diagnose(ROOT, args.receipt, args.approved_revision, args.fixture_revision,
-                 args.release_id, args.asset_id, args.digest, os.environ, download_staging,
-                 conflicting=args.transport_probe_only)
-        print('Read-only HTTP diagnostic passed; no native or production admission.')
-        return
     revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
     exact_source(revision)
     if args.mode == 'stage-ingress':
@@ -471,10 +440,6 @@ def main():
         import_ingress(args.artifact_id, args.artifact_name, args.artifact_digest,
                        args.release_id, args.asset_id, args.digest, revision, args.destination,
                        os.environ['MACOS_SIGNING_IDENTITY_SHA1'], os.environ['MACOS_TEAM_ID'])
-    elif args.mode == 'probe':
-        production.source(revision)
-        probe_transport(args.release_id, args.asset_id, args.digest, revision, args.receipt)
-        print('Read-only staging probe passed; this is not signing or native admission.')
     elif args.mode == 'import':
         production.source(revision)
         import_local(args.release_id, args.asset_id, args.digest, revision, args.destination,
