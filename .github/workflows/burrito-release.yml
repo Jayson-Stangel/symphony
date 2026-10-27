@@ -4,6 +4,10 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      production_prepare:
+        description: Prepare exact main production-reference packages without publication
+        type: boolean
+        default: false
       baseline_run:
         description: Exact explicitly authorized original native-record run for nonpublishing manual composition
         type: string
@@ -48,12 +52,35 @@ concurrency:
   cancel-in-progress: ${{ !inputs.controller_only && !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  production-source:
+    name: Verify production preparation source
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require manual main preparation
+        env:
+          PREPARE: ${{ inputs.production_prepare }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          ENGINE_ONLY: ${{ inputs.engine_only }}
+          CONTROLLER_ONLY: ${{ inputs.controller_only }}
+        run: |
+          test "$EVENT" = workflow_dispatch
+          if [ "$PREPARE" = true ]; then
+            test "$REF" = refs/heads/main
+            test "$ENGINE_ONLY" != true
+            test "$CONTROLLER_ONLY" != true
+          fi
+
   qualification:
     name: Validate preflight inputs
-    if: ${{ !inputs.controller_only }}
+    needs: production-source
+    if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/release-preflight.yml
   host-policy:
     name: Select native hosts
+    needs: production-source
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/host-policy.yml
 
   engine-fixtures:
@@ -65,7 +92,7 @@ jobs:
   runners:
     name: Qualify runner components
     needs: qualification
-    if: ${{ !inputs.controller_only && !inputs.engine_only }}
+    if: ${{ !inputs.controller_only && !inputs.engine_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/runner-release.yml
     with:
       baseline_run: ${{ inputs.baseline_run }}
@@ -76,16 +103,16 @@ jobs:
       manager_only_update: ${{ inputs.manager_only_update }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
       manifest_schema: ${{ needs.qualification.outputs.release_schema }}
-      publish: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      publish: false
+      prepare_release: ${{ inputs.production_prepare }}
     permissions:
       contents: read
       actions: read
-      packages: write
 
   build:
     name: Build engine (${{ matrix.target }})
     needs: [qualification, host-policy]
-    if: ${{ !inputs.controller_only }}
+    if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -130,9 +157,11 @@ jobs:
         run: BURRITO_TARGET=${{ matrix.target }} MIX_ENV=prod mise exec zig@0.15.2 -- mix release symphony --overwrite
 
       - name: Stage release assets
+        env:
+          PRODUCTION_PREPARE: ${{ inputs.production_prepare }}
         run: |
-          if test "$GITHUB_REF_TYPE" = "tag"; then
-            version="$GITHUB_REF_NAME"
+          if test "$GITHUB_REF_TYPE" = "tag" || test "${PRODUCTION_PREPARE:-false}" = true; then
+            version="v$(python3 ../scripts/release/manager_version.py)"
           else
             version="${GITHUB_SHA::7}"
           fi
@@ -181,9 +210,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y lsof
 
       - name: Qualify actual standalone engine
+        env:
+          PRODUCTION_PREPARE: ${{ inputs.production_prepare }}
         run: |
-          if test "$GITHUB_REF_TYPE" = "tag"; then
-            version="$GITHUB_REF_NAME"
+          if test "$GITHUB_REF_TYPE" = "tag" || test "${PRODUCTION_PREPARE:-false}" = true; then
+            version="v$(python3 scripts/release/manager_version.py)"
           else
             version="${GITHUB_SHA::7}"
           fi
@@ -212,47 +243,3 @@ jobs:
           uname -sm
           python3 -VV
           python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
-
-  release:
-    name: Publish approved engine release
-    if: ${{ !inputs.engine_only && !inputs.controller_only && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
-    needs: [build, smoke, runners]
-    environment: production-release
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download linux_x86_64
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: linux_x86_64
-          path: dist/linux_x86_64
-
-      - name: Download macos_arm64
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: macos_arm64
-          path: dist/macos_arm64
-
-      - name: Retrieve approved release packages
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: packaged-release
-          path: dist/packaged-release
-
-      - name: Create or update GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo "Refusing to alter a completed release." >&2; exit 1; }
-          else
-            gh release create "$TAG" --draft --verify-tag --generate-notes
-          fi
-          gh release upload "$TAG" dist/linux_*/* dist/macos_*/* dist/packaged-release/* --clobber
-          gh release edit "$TAG" --draft=false --prerelease=false --latest

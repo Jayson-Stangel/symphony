@@ -176,8 +176,7 @@ class ReusedPreflightSchedulingTest(unittest.TestCase):
             'runner-release.yml': {
                 'package-inputs': ['qualification'], 'component-plan': ['qualification'], 'candidate': ['qualification','component-plan'],
                 'publication-preflight':['component-plan','candidate-metadata','candidate-qualification'],
-                'publish': ['publication-preflight'],
-                'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publish'],
+                'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publication-preflight'],
                 'packaged-release': ['packaged-release-platform'],
                 'packaged-candidate': ['candidate-metadata', 'package-inputs'],
                 'packaged-candidate-metadata': ['packaged-candidate'],

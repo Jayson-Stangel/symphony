@@ -81,7 +81,7 @@ If the verified macOS helper cannot start, the installer stops before activation
 and reports that stage separately from inventory failure. Follow the
 [macOS security approval and retry guide](macos-install-security.md); a killed
 process alone does not prove Gatekeeper caused it. Keep the archive and inventory
-checks intact. Current ad-hoc signing does not establish notarized-download acceptance.
+checks intact. Ordinary candidate ad-hoc signing does not establish notarized-download acceptance. Production uses the separately protected exact-source preparation/signing/publication path described in [the release runbook](macos-release-signing.md#protected-production-preparation-and-publication).
 
 Installation needs no sudo and does not run `symphony setup` or build an image.
 New macOS archives carry only an ARM64 Apple Silicon helper and select the Linux

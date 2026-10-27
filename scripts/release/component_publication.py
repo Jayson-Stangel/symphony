@@ -84,7 +84,7 @@ def docker(*args, timeout=600):
     return subprocess.check_output(['docker',*args],text=True,stderr=subprocess.PIPE,timeout=timeout).strip()
 
 
-def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None, transfer=None, extract=None):
+def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=docker, qualify=None, transfer=None, extract=None, before_transfer=lambda: None):
     """Protected job only: transfer only missing newly built images; never retag reused images."""
     stable=prepared['manifest'];artifacts.validate(stable,require_bundle=False)
     validate_public_distribution(stable)
@@ -133,7 +133,9 @@ def publish(prepared, verify, fetch=retrieve, probe=registry_available, invoke=d
             directory=Path(folder)/('graph-'+str(index))
             extract(archive,[record],directory)
             pending.append({'record':record,'directory':directory,'image':item['image']})
-        if pending:transfer(pending)
+        if pending:
+            before_transfer()
+            transfer(pending)
         for item in pending:
             checked=qualify(item['image']) if qualify is not None else registry_available(item['image'],full=True)
             artifacts.require(checked,'new original digest blob closure is not anonymously available')
@@ -161,7 +163,10 @@ def main():
                           'publication tag/source differs')
         # The raw graph client reads credentials only after complete payload
         # preflight. No docker login, load, retag, or push can transform identity.
-        result=publish(prepared,verify)
+        from production_release import live_source
+        check_tag=lambda: live_source(revision, os.environ['GITHUB_REF_NAME'])
+        check_tag()
+        result=publish(prepared,verify,before_transfer=check_tag)
     else:
         artifacts.require(args.plan is not None and args.metadata is not None,'publication planning inputs missing')
         metadata=json.loads(args.metadata.read_text())
