@@ -10,12 +10,13 @@ import unittest
 
 
 class FirstMacInstallMixin:
-    def first_mac_environment(self):
+    def first_mac_environment(self, home_name="home"):
         env = self.environment()
         for name in list(env):
             if name.startswith('SYMPHONY_') and name != 'SYMPHONY_CONTAINER_RUNTIME':
                 env.pop(name)
-        home = Path(env['HOME'])
+        home = self.root / home_name
+        env['HOME'] = str(home)
         home.mkdir(mode=0o700)
         env.update(SHELL='/bin/zsh', CODEX_HOME=str(home / '.codex'),
                    XDG_CONFIG_HOME=str(home / '.config'))
@@ -68,9 +69,77 @@ class FirstMacInstallMixin:
         self.assertNotEqual(repeat.returncode, 0)
         self.assertIn('existing Symphony state', repeat.stderr)
         self.assertEqual(profile.read_bytes(), content)
-        self.assertOK(subprocess.run([bundle / 'install.sh', '--remove-zsh-setup'], env=env, text=True, capture_output=True))
+        # Safe removal belongs to the installed managed block, regardless of
+        # which shell or inherited startup directory invoked the command.
+        removal_env = dict(env, SHELL='/bin/bash', ZDOTDIR=str(home / 'custom-zsh'))
+        self.assertOK(subprocess.run([home / '.local/bin/symphony', 'install', '--remove-zsh-setup'],
+                                     env=removal_env, text=True, capture_output=True))
         self.assertEqual(profile.read_bytes(), original)
         self.assertEqual(profile.stat().st_mode & 0o777, 0o640)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
+    def test_default_mac_unsupported_shell_context_retains_explicit_activation(self):
+        bundle = self.bundle()
+        for name in ('bash', 'zdotdir'):
+            with self.subTest(context=name):
+                env, home = self.first_mac_environment('home-' + name)
+                if name == 'bash':
+                    env['SHELL'] = '/bin/bash'
+                else:
+                    custom = home / 'custom-zsh'; custom.mkdir()
+                    env['ZDOTDIR'] = str(custom)
+                    (custom / '.zshrc').write_bytes(b'# custom zsh profile\n')
+                originals = {home / '.zshrc': b'# unrelated zsh profile\n',
+                             home / '.bashrc': b'# unrelated bash profile\n'}
+                for profile, original in originals.items():
+                    profile.write_bytes(original); profile.chmod(0o640)
+                for flag in ('--accept-zsh-setup', '--no-shell-handoff'):
+                    refused = subprocess.run([bundle / 'install.sh', flag], env=env,
+                                             text=True, capture_output=True)
+                    self.assertNotEqual(refused.returncode, 0)
+                    self.assertIn('standard /bin/zsh without ZDOTDIR', refused.stderr)
+                    self.assertFalse((home / '.local').exists())
+                installed = subprocess.run([bundle / 'install.sh'], env=env, text=True, capture_output=True)
+                self.assertIn('No shell profiles were changed', self.assertOK(installed))
+                self.assertNotIn('zsh setup installed', installed.stdout)
+                for profile, original in originals.items():
+                    self.assertEqual(profile.read_bytes(), original)
+                    self.assertEqual(profile.stat().st_mode & 0o777, 0o640)
+                if name == 'zdotdir':
+                    self.assertEqual((custom / '.zshrc').read_bytes(), b'# custom zsh profile\n')
+                # Exercise the retained JAY-735 activation path and real command
+                # from the actual installed archive, without claiming auto setup.
+                activation = home / '.local/share/symphony/activate.sh'
+                activated = subprocess.run(['/bin/bash', '-c',
+                    '. "$1"; command -v symphony; symphony --version; symphony doctor --json',
+                    'fixture', str(activation)], env=env, text=True, capture_output=True)
+                output = self.assertOK(activated)
+                self.assertIn(str(home / '.local/bin/symphony'), output)
+                self.assertIn('"ready":true', output)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
+    def test_first_mac_explicit_default_runner_storage_preserves_context(self):
+        bundle = self.bundle(); env, home = self.first_mac_environment()
+        runner = home / '.config/symphony/runners'
+        env['SYMPHONY_RUNNER_HOME'] = str(runner)
+        installed = subprocess.run([bundle / 'install.sh', '--accept-zsh-setup', '--no-shell-handoff'],
+                                   env=env, text=True, capture_output=True)
+        self.assertIn('zsh setup installed', self.assertOK(installed))
+        clean = {k: v for k, v in env.items() if not k.startswith(('SYMPHONY_', 'DOCKER_'))}
+        for flags in ('-ic', '-lic'):
+            result = subprocess.run(['/bin/zsh', flags,
+                'command -v symphony; symphony --version; symphony doctor --json; '
+                'print -r -- "explicit=${SYMPHONY_RUNNER_HOME+x}" "$SYMPHONY_RUNNER_HOME" '
+                '"$SYMPHONY_CONFIG_HOME" "namespace=$SYMPHONY_RUNNER_NAMESPACE"; '
+                'symphony doctor --config-dir "$HOME/selected-config"'],
+                env=clean, text=True, capture_output=True)
+            output = self.assertOK(result)
+            self.assertIn(str(home / '.local/bin/symphony'), output)
+            self.assertIn('"ready":true', output)
+            self.assertIn('explicit=x\n' + str(runner), output)
+            self.assertIn('namespace=\n', output + '\n')
+            self.assertIn('Configuration: ' + str(home / 'selected-config'), output)
+            self.assertIn('Runner storage: ' + str(runner), output)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'first install is macOS only')
     def test_first_mac_unsafe_and_existing_targets_preserved(self):

@@ -372,9 +372,13 @@ package_first_mac_defaults() {
     [ "$runner_home" = "$HOME/.config/symphony/runners" ]
 }
 
+package_first_mac_shell_context() {
+  [ "${SHELL:-/bin/zsh}" = /bin/zsh ] && [ -z "${ZDOTDIR:-}" ]
+}
+
 package_first_mac_preflight() {
   local path selected shell_mode
-  [ "${SHELL:-/bin/zsh}" = /bin/zsh ] && [ -z "${ZDOTDIR:-}" ] || die 'automatic first installation requires standard /bin/zsh without ZDOTDIR'
+  package_first_mac_shell_context || die 'automatic first installation requires standard /bin/zsh without ZDOTDIR'
   [ -z "${SYMPHONY_HOME:-}" ] || die 'first installation refuses SYMPHONY_HOME; preserve the existing installation'
   for path in "$package_app_home_input" "$bin_dir" "$config_home" "$skills_dir"; do
     package_helper first-install-path-check "$HOME" "$path" || return
@@ -428,12 +432,12 @@ package_install() (
     printf 'Removed only the Symphony managed zsh block. Existing terminals and installation files are unchanged.\n'
     return
   fi
-  if ! "$stage_only" && package_first_mac_defaults; then
+  if ! "$stage_only" && package_first_mac_defaults && package_first_mac_shell_context; then
     first_mac=true
     package_first_mac_preflight || return
     package_first_mac_consent || return
   elif "$accept_zsh_setup" || "$no_shell_handoff"; then
-    die 'automatic zsh setup options require a first Mac installation at default paths'
+    die 'automatic zsh setup options require a first Mac installation at default paths with standard /bin/zsh without ZDOTDIR'
   fi
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
   package_app_home=$(package_helper canonical-path "$package_app_home")
@@ -472,7 +476,7 @@ package_install() (
     # Verify the final startup path, including .zlogin after .zshrc. Do not claim
     # readiness when user startup files skip or override the managed block.
     for shell_mode in -ic -lic; do
-      if ! /usr/bin/env -u SYMPHONY_APP_HOME -u SYMPHONY_BIN_DIR -u SYMPHONY_CONFIG_HOME -u SYMPHONY_SKILLS_DIR -u SYMPHONY_HOME -u SYMPHONY_RUNNER_HOME -u SYMPHONY_RUNNER_NAMESPACE /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && -z ${SYMPHONY_RUNNER_HOME+x} && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
+      if ! /usr/bin/env -u SYMPHONY_APP_HOME -u SYMPHONY_BIN_DIR -u SYMPHONY_CONFIG_HOME -u SYMPHONY_SKILLS_DIR -u SYMPHONY_HOME -u SYMPHONY_RUNNER_HOME -u SYMPHONY_RUNNER_NAMESPACE /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && ${SYMPHONY_RUNNER_HOME:-$SYMPHONY_CONFIG_HOME/runners} = "$HOME/.config/symphony/runners" && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
       package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
       die 'zsh startup files skipped or overrode Symphony setup; the managed block was removed. Installation files remain at the printed paths; no ready terminal handoff was made.'
       fi
