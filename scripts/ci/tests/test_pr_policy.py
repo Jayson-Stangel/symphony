@@ -182,9 +182,9 @@ class DraftGates(unittest.TestCase):
     def test_required_application_join_refuses_failed_cancelled_missing_or_wrongly_skipped_fast_work(self):
         guard = scripts(job(workflow('make-all'), 'make-all'))[0]
         good = dict(RESULT='success', CODE='false', POLICY='true', READY='true', NPM='true',
-                    READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='success')
+                    READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='success', MAC_RUNNER_RESULT='success')
         self.assertEqual(self.execute(guard, **good), 0)
-        for field in ('RESULT', 'PROCESS_RESULT'):
+        for field in ('RESULT', 'PROCESS_RESULT', 'MAC_RUNNER_RESULT'):
             for status in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.execute(guard, **(good | {field: status})), 0)
         for field in ('READY', 'NPM', 'READINESS', 'CONFIG', 'CONTRACTS'):
