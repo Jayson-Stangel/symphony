@@ -31,6 +31,13 @@ has been verified. `tart`, `prlctl` and `vfkit` were not available on PATH. Thes
 facts do not establish guest toolchain compatibility or authorize installation.
 A separate user account alone is not the isolation boundary required here.
 
+GitHub's [macOS 14 retirement notice](https://github.com/actions/runner-images/issues/13518)
+warns of longer peak-time queues during deprecation and retirement on
+2026-11-02. Its 2026-10-26 brownout ended at 2026-10-27 00:00 UTC; that schedule
+does not establish that the observed later queues are a brownout. Review the
+normal hosted default in a separate migration before retirement. This fallback
+preserves actual Sonoma qualification and does not silently switch to macOS 15.
+
 No tested source-bound, pre-execution admission mechanism is established for this
 personal repository. **Do not register/start a runner or enable fallback routing
 until that boundary is demonstrated and the exact setup/execution is approved.**
