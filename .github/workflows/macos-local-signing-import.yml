@@ -1,0 +1,132 @@
+name: Verify locally signed production distribution
+on:
+  workflow_dispatch:
+    inputs:
+      approved_revision:
+        description: Exact promoted source approved for local import or transport probe
+        required: true
+        type: string
+      staging_release:
+        description: Private nonproduction draft release ID from local upload receipt
+        required: true
+        type: string
+      staging_asset:
+        description: Exact original GitHub staging asset ID
+        required: true
+        type: string
+      staging_digest:
+        description: Original GitHub sha256 asset digest from local upload receipt
+        required: true
+        type: string
+      transport_probe_only:
+        description: Read one small public fixture with the job token before qualification or signing
+        required: false
+        default: false
+        type: boolean
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: macos-local-signing-import
+  cancel-in-progress: false
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  transport-probe:
+    name: Probe private staging read access
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && inputs.transport_probe_only
+    environment: macos-production-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the exact private draft fixture with the normal read only job token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE: ${{ inputs.staging_release }}
+          STAGING_ASSET: ${{ inputs.staging_asset }}
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+        run: |
+          python3 scripts/release/local_distribution.py probe "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/transport-probe.json"
+      - name: Retain transport proof without signed or native admission artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: local-signing-transport-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/transport-probe.json
+          if-no-files-found: error
+  verify:
+    name: Verify locally signed distribution
+    needs: mac-runner-local-import
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
+    environment: macos-production-signing
+    # Default remains hosted Intel; an exact permit may select the isolated ARM guest.
+    # Both inspect signatures/tickets without executing the uploaded ARM64 payload.
+    runs-on: ${{ needs.mac-runner-local-import.outputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Require and report actual Mac verification hardware
+        working-directory: ${{ runner.temp }}
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-local-import.outputs.runner != 'macos-15-intel' }}
+        run: |
+          test "$(uname -s)" = Darwin
+          case "$(uname -m)" in arm64|x86_64) ;; *) echo 'Unsupported Mac inspection hardware' >&2; exit 1 ;; esac
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            test "$(uname -m)" = arm64
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
+          printf 'Native inspection hardware: %s; macOS %s\n' "$(uname -m)" "$(sw_vers -productVersion)"
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Import exact local bytes and verify qualification and native signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE: ${{ inputs.staging_release }}
+          STAGING_ASSET: ${{ inputs.staging_asset }}
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+          MACOS_SIGNING_IDENTITY_SHA1: ${{ vars.MACOS_SIGNING_IDENTITY_SHA1 }}
+          MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
+        run: |
+          python3 scripts/release/local_distribution.py import "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/local-import"
+      - name: Retain immutable locally signed bytes and native admission evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: production-local-signed-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/local-import/signed/
+            ${{ runner.temp }}/local-import/local-origin.json
+            ${{ runner.temp }}/local-import/native-verification.json
+          if-no-files-found: error
+  mac-runner-local-import:
+    name: Select backup Mac for local distribution inspection
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted Intel inspection by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-15-intel' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/macos-local-signing-import.yml
+          SELECT_JOB_KEY: verify
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"

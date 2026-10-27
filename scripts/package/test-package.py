@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
+import stat
 import unittest
 
 from first_mac_install_test import FirstMacInstallMixin
@@ -153,6 +155,27 @@ class PackageTest(FirstMacInstallMixin, PackageCommandActivationMixin, unittest.
         extracted.mkdir()
         self.assertOK(call(["tar", "-xzf", archive, "-C", extracted]))
         return extracted
+
+    def test_payload_inventory_is_identical_under_private_umask(self):
+        def inventory(path):
+            with tarfile.open(path, 'r:gz') as archive:
+                return {entry.name: (entry.type, entry.mode, archive.extractfile(entry).read() if entry.isfile() else None)
+                        for entry in archive}
+        archives = []
+        for mask in (0o022, 0o077):
+            output = self.root / ('mask-' + oct(mask))
+            result = call([ROOT / 'scripts/release/package.sh', self.file, output, HELPER], umask=mask)
+            self.assertOK(result)
+            archive = output / manifest()['bundles']['macos' if sys.platform == 'darwin' else 'linux_x86_64']['filename']
+            archives.append(archive)
+            if mask == 0o077:
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+        first, second = [inventory(path) for path in archives]
+        self.assertEqual(first, second)
+        self.assertGreater(len(first), 30)
+        self.assertTrue(all(mode == 0o755 for kind, mode, _ in second.values() if kind == tarfile.DIRTYPE))
+        self.assertTrue(all(mode in (0o644, 0o755) for kind, mode, _ in second.values() if kind == tarfile.REGTYPE))
 
     def environment(self):
         tools = self.root / "tools"

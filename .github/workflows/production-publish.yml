@@ -7,13 +7,19 @@ on:
         required: true
         type: string
       signed_run:
-        description: Successful production signing run with the assessed final bytes
+        description: Successful hosted signing or local import run with the assessed final bytes
         required: true
         type: string
       signed_attempt:
-        description: Exact successful signing attempt
+        description: Exact successful signing or local import attempt
         required: true
         type: string
+      signed_origin:
+        description: Hosted signing or independently verified local signing import
+        required: true
+        default: hosted
+        type: choice
+        options: [hosted, local]
 permissions:
   contents: read
   actions: read
@@ -38,6 +44,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SIGNED_RUN: ${{ inputs.signed_run }}
           SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
           TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release/production_release.py source "$TAG"
@@ -68,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SIGNED_RUN: ${{ inputs.signed_run }}
           SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
           TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release/production_release.py source "$TAG"
@@ -98,6 +106,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SIGNED_RUN: ${{ inputs.signed_run }}
           SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
           TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release/production_release.py source "$TAG"
