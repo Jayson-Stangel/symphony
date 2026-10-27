@@ -23,6 +23,15 @@ on:
         required: false
         default: false
         type: boolean
+      diagnostic_only:
+        description: Observe closed HTTP stages for the fixed public fixture from a reviewed feature source
+        required: false
+        default: false
+        type: boolean
+      diagnostic_fixture_revision:
+        description: Exact ancestor source targeted by the separately prepared public fixture draft
+        required: false
+        type: string
 permissions:
   contents: read
   actions: read
@@ -34,7 +43,7 @@ env:
 jobs:
   transport-probe:
     name: Probe private staging read access
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && inputs.transport_probe_only
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && inputs.transport_probe_only && !inputs.diagnostic_only
     environment: macos-production-signing
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -61,7 +70,7 @@ jobs:
   verify:
     name: Verify locally signed distribution
     needs: mac-runner-local-import
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only && !inputs.diagnostic_only
     environment: macos-production-signing
     # Default remains hosted Intel; an exact permit may select the isolated ARM guest.
     # Both inspect signatures/tickets without executing the uploaded ARM64 payload.
@@ -106,7 +115,7 @@ jobs:
           if-no-files-found: error
   mac-runner-local-import:
     name: Select backup Mac for local distribution inspection
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only && !inputs.diagnostic_only
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -130,3 +139,33 @@ jobs:
           SELECT_WORKFLOW_PATH: .github/workflows/macos-local-signing-import.yml
           SELECT_JOB_KEY: verify
         run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+  http-diagnostic:
+    name: Diagnose private fixture HTTP stages
+    # CLI fails conflicting modes and invalid feature/source bindings before GET.
+    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the diagnostic controller source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Observe read only service stages without raw API output
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_REVISION: ${{ inputs.approved_revision }}
+          FIXTURE_REVISION: ${{ inputs.diagnostic_fixture_revision }}
+          STAGING_RELEASE: ${{ inputs.staging_release }}
+          STAGING_ASSET: ${{ inputs.staging_asset }}
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+          TRANSPORT_PROBE_ONLY: ${{ inputs.transport_probe_only }}
+        run: |
+          python3 scripts/release/local_distribution.py diagnostic "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$FIXTURE_REVISION" "$RUNNER_TEMP/http-diagnostic.json" --approved-revision "$APPROVED_REVISION" --transport-probe-only "$TRANSPORT_PROBE_ONLY"
+      - name: Retain only the closed HTTP diagnostic even after refusal
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: local-signing-http-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/http-diagnostic.json
+          if-no-files-found: error

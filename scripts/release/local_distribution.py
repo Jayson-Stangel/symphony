@@ -453,7 +453,19 @@ def main():
     probe = modes.add_parser('probe')
     probe.add_argument('release_id'); probe.add_argument('asset_id'); probe.add_argument('digest')
     probe.add_argument('receipt', type=Path)
+    diagnostic = modes.add_parser('diagnostic')
+    diagnostic.add_argument('release_id'); diagnostic.add_argument('asset_id'); diagnostic.add_argument('digest')
+    diagnostic.add_argument('fixture_revision'); diagnostic.add_argument('receipt', type=Path)
+    diagnostic.add_argument('--approved-revision', required=True)
+    diagnostic.add_argument('--transport-probe-only', choices=('true', 'false'), default='false')
     args = parser.parse_args()
+    if args.mode == 'diagnostic':
+        from staging_diagnostic import diagnose
+        diagnose(ROOT, args.receipt, args.approved_revision, args.fixture_revision,
+                 args.release_id, args.asset_id, args.digest, os.environ, download_staging,
+                 conflicting=args.transport_probe_only)
+        print('Read-only HTTP diagnostic passed; no native or production admission.')
+        return
     revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
     exact_source(revision)
     if args.mode == 'probe':
