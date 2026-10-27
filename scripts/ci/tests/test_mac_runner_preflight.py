@@ -24,13 +24,16 @@ class PreparationIdentity(unittest.TestCase):
                 "id": 12, "run_attempt": 2, "repository": {"full_name": REPO},
                 "event": "pull_request", "path": WORKFLOW, "head_sha": HEAD,
                 "status": "queued", "pull_requests": [{"number": 34}],
+                "actor": {"login": "Jayson-Stangel"}, "triggering_actor": {"login": "Jayson-Stangel"},
             },
             root + "/pulls/34": {
-                "number": 34, "state": "open", "merge_commit_sha": SOURCE,
-                "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+                "number": 34, "state": "open", "merge_commit_sha": SOURCE, "user": {"login": "Jayson-Stangel"},
+                "head": {"ref": "codex/feature", "sha": HEAD, "repo": {"full_name": REPO}},
                 "base": {"sha": BASE, "ref": "dev", "repo": {"full_name": REPO}},
             },
             root + "/commits/" + SOURCE: {"sha": SOURCE, "parents": [{"sha": BASE}, {"sha": HEAD}]},
+            root + "/git/ref/heads/main": {"object": {"sha": BASE}},
+            root + "/git/ref/heads/dev": {"object": {"sha": HEAD}},
         }
 
     def inspect(self, documents=None, **kw):
@@ -78,6 +81,8 @@ class PreparationIdentity(unittest.TestCase):
 
     def test_missing_or_malformed_metadata_fails_closed(self):
         for endpoint in self.documents:
+            if "/git/ref/heads/" in endpoint:
+                continue
             for value in (None, [], {}, "invalid"):
                 with self.subTest(endpoint=endpoint, value=value):
                     changed = copy.deepcopy(self.documents)

@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 
-from mac_runner_preflight import Refusal, REPOSITORY, SHA, github_read, inspect_run
+from mac_runner_preflight import Refusal, REPOSITORY, SHA, github_read, inspect_run, supported_pr_route
 
 TARGETS = {
     ".github/workflows/make-all.yml": {"platform-contracts"},
@@ -39,7 +39,7 @@ LABEL = re.compile(r"symphony-backup-mac-[a-f0-9]{32}\Z")
 OWNER = "Jayson-Stangel"
 
 
-def verify_live(permit, read=github_read):
+def verify_live(permit, read=github_read, expected_pr_base_ref=None, expected_pr_head_ref=None):
     if permit["event_name"] == "pull_request":
         report = inspect_run(permit["run_id"], permit["run_attempt"], permit["pr_number"],
                              permit["pr_head"], permit["source_sha"], permit["controller_workflow"],
@@ -47,6 +47,9 @@ def verify_live(permit, read=github_read):
         if (report.get("identity_checked") is not True or report.get("base_sha") != permit["base_sha"]
                 or any(report.get(key) != OWNER for key in ("run_actor", "triggering_actor", "pr_author"))):
             raise Refusal("live PR source identity is not verified")
+        if ((expected_pr_base_ref is not None and report.get("pr_base_ref") != expected_pr_base_ref)
+                or (expected_pr_head_ref is not None and report.get("pr_head_ref") != expected_pr_head_ref)):
+            raise Refusal("live PR branch route differs from the reviewed event")
         return
     root = "repos/" + REPOSITORY
     run = read(f"{root}/actions/runs/{permit['run_id']}/attempts/{permit['run_attempt']}")
@@ -131,9 +134,9 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
                     or permit["pr_head"] != pr["head"]["sha"] or permit["base_sha"] != pr["base"]["sha"]
                     or not SHA.fullmatch(permit["pr_head"]) or not SHA.fullmatch(permit["base_sha"])
                     or pr["head"]["repo"]["full_name"] != REPOSITORY
-                    or pr["base"]["repo"]["full_name"] != REPOSITORY or pr["base"]["ref"] != "dev"
+                    or pr["base"]["repo"]["full_name"] != REPOSITORY or not supported_pr_route(pr)
                     or context["GITHUB_REF"] != f"refs/pull/{permit['pr_number']}/merge"):
-                raise Refusal("routing permit requires the exact owner PR and current dev base")
+                raise Refusal("routing permit requires the exact owner feature-to-dev or dev-to-main CI source")
         elif permit["event_name"] in {"push", "workflow_dispatch"}:
             if not context["GITHUB_REF"].startswith("refs/heads/"):
                 raise Refusal("backup routing does not admit tag publication events")
@@ -144,7 +147,11 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
     except (KeyError, TypeError):
         raise Refusal("selector event/context is incomplete") from None
     # Validate all matching-run permits, including consumers omitted by classification.
-    verify(permit)
+    if permit["event_name"] == "pull_request":
+        verify(permit, expected_pr_base_ref=event["pull_request"]["base"]["ref"],
+               expected_pr_head_ref=event["pull_request"]["head"].get("ref"))
+    else:
+        verify(permit)
     return selected or "macos-14"
 
 

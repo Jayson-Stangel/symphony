@@ -46,6 +46,17 @@ def github_read(path):
         raise Refusal("GitHub returned invalid JSON") from None
 
 
+def supported_pr_route(pr):
+    """Feature CI targets dev; promotion CI is only same-repo dev into main.
+
+    This route check grants no merge, production promotion or rollout authority.
+    Repository/owner/source identity checks remain required separately.
+    """
+    return pr.get("base", {}).get("ref") == "dev" or (
+        pr.get("base", {}).get("ref") == "main" and pr.get("head", {}).get("ref") == "dev"
+    )
+
+
 def _inspect_run(run_id, attempt, pr_number, head, source, workflow, read, require_admin):
     """Verify live source/run identity and report missing execution boundaries.
 
@@ -75,13 +86,24 @@ def _inspect_run(run_id, attempt, pr_number, head, source, workflow, read, requi
         (pr.get("number") == pr_number and pr.get("state") == "open", "PR is not the selected open PR"),
         (pr.get("head", {}).get("repo", {}).get("full_name") == REPOSITORY, "fork source is refused"),
         (pr.get("base", {}).get("repo", {}).get("full_name") == REPOSITORY, "PR base repository differs"),
-        (pr.get("base", {}).get("ref") == "dev", "PR must target dev"),
+        (supported_pr_route(pr), "PR must target dev, or be the same-repository dev-to-main promotion CI"),
+        (pr.get("user", {}).get("login") == "Jayson-Stangel", "PR author differs from the approved owner"),
+        (run.get("actor", {}).get("login") == "Jayson-Stangel", "run actor differs from the approved owner"),
+        (run.get("triggering_actor", {}).get("login") == "Jayson-Stangel", "run triggering actor differs from the approved owner"),
         (pr.get("head", {}).get("sha") == head, "PR head advanced or differs"),
         (pr.get("merge_commit_sha") == source, "current tested merge source differs"),
         (any(item.get("number") == pr_number for item in run.get("pull_requests", [])), "run is not associated with the selected PR"),
         (commit.get("sha") == source, "tested source commit differs"),
         ([item.get("sha") for item in commit.get("parents", [])] == [pr.get("base", {}).get("sha"), head], "tested source does not bind the current base and PR head"),
     ]
+    if pr.get("base", {}).get("ref") == "main":
+        # A cached PR/merge snapshot must not admit stale main or dev refs.
+        main_ref = read(f"{root}/git/ref/heads/main")
+        dev_ref = read(f"{root}/git/ref/heads/dev")
+        checks.extend([
+            (main_ref.get("object", {}).get("sha") == pr.get("base", {}).get("sha"), "promotion main base advanced or differs"),
+            (dev_ref.get("object", {}).get("sha") == head, "promotion dev head advanced or differs"),
+        ])
     failures = [message for valid, message in checks if not valid]
     if failures:
         raise Refusal("; ".join(failures))
@@ -106,6 +128,8 @@ def _inspect_run(run_id, attempt, pr_number, head, source, workflow, read, requi
         "pr_number": pr_number,
         "pr_head": head,
         "base_sha": pr["base"]["sha"],
+        "pr_base_ref": pr["base"].get("ref"),
+        "pr_head_ref": pr["head"].get("ref"),
         "expected_tested_merge_sha": source,
         "workflow_path": workflow,
         "job_display": WORKFLOWS[workflow]["job"],

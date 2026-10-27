@@ -33,7 +33,7 @@ class Selection(unittest.TestCase):
         }
         self.event = {'number': 34, 'pull_request': {
             'user': {'login': 'Jayson-Stangel'},
-            'head': {'sha': HEAD, 'repo': {'full_name': REPO}},
+            'head': {'ref': 'codex/feature', 'sha': HEAD, 'repo': {'full_name': REPO}},
             'base': {'sha': BASE, 'ref': 'dev', 'repo': {'full_name': REPO}},
         }}
         self.permit = {
@@ -63,7 +63,7 @@ class Selection(unittest.TestCase):
 
     def test_exact_owner_pr_permit_selects_one_label_after_live_source_check(self):
         self.assertEqual(self.select(), LABEL)
-        self.inspect.assert_called_once_with(self.permit)
+        self.inspect.assert_called_once_with(self.permit, expected_pr_base_ref='dev', expected_pr_head_ref='codex/feature')
         self.workflow = '.github/workflows/package-checks.yml'
         self.permit['targets'] = [{'consumer_workflow': self.workflow, 'job_key': 'native-host-package', 'runner_label': LABEL}]
         self.permit.update(controller_workflow=self.workflow,
@@ -173,6 +173,83 @@ class Selection(unittest.TestCase):
             self.assertNotIn(': write', header, consumer)
             self.assertIn('  contents: read', header, consumer)
             self.assertIn('  actions: read', header, consumer)
+
+    def promotion_documents(self):
+        root = 'repos/' + REPO
+        self.event['pull_request']['head']['ref'] = 'dev'
+        self.event['pull_request']['base']['ref'] = 'main'
+        documents = {
+            root: {'full_name': REPO, 'owner': {'type': 'User'}, 'visibility': 'public'},
+            root + '/actions/runs/12/attempts/2': {
+                'id': 12, 'run_attempt': 2, 'repository': {'full_name': REPO},
+                'event': 'pull_request', 'path': self.workflow, 'head_sha': HEAD,
+                'status': 'in_progress', 'pull_requests': [{'number': 34}],
+                'actor': {'login': 'Jayson-Stangel'}, 'triggering_actor': {'login': 'Jayson-Stangel'},
+            },
+            root + '/pulls/34': dict(copy.deepcopy(self.event['pull_request']),
+                                     number=34, state='open', merge_commit_sha=SOURCE),
+            root + '/commits/' + SOURCE: {'sha': SOURCE, 'parents': [{'sha': BASE}, {'sha': HEAD}]},
+            root + '/git/ref/heads/main': {'object': {'sha': BASE}},
+            root + '/git/ref/heads/dev': {'object': {'sha': HEAD}},
+        }
+        return documents
+
+    def select_using_real_live_verifier(self, documents):
+        # Only GitHub transport is replaced; exercise select -> verify_live ->
+        # inspect_run and every real source/route/actor check together.
+        return selector.select_runner(json.dumps(self.permit), self.context, self.event,
+            self.workflow, selector.TARGETS[self.workflow].copy().pop(), NOW,
+            verify=lambda permit, **kwargs: selector.verify_live(permit, read=documents.__getitem__, **kwargs))
+
+    def test_genuine_dev_to_main_ci_uses_actual_live_inspector_for_both_required_workflows(self):
+        for workflow_path, key in (('.github/workflows/make-all.yml', 'platform-contracts'),
+                                   ('.github/workflows/package-checks.yml', 'native-host-package')):
+            self.workflow = workflow_path
+            self.context['GITHUB_WORKFLOW_REF'] = REPO + '/' + workflow_path + '@refs/pull/34/merge'
+            self.permit.update(controller_workflow=workflow_path, workflow_ref=self.context['GITHUB_WORKFLOW_REF'],
+                targets=[{'consumer_workflow': workflow_path, 'job_key': key, 'runner_label': LABEL}])
+            documents = self.promotion_documents()
+            with self.subTest(workflow=workflow_path):
+                self.assertEqual(self.select_using_real_live_verifier(documents), LABEL)
+
+    def test_promotion_ci_refuses_feature_to_main_fork_and_nonowner_event(self):
+        for branch, key, value in (('head', 'ref', 'codex/feature'),
+                                    ('head', 'repo', {'full_name': 'untrusted/fork'}),
+                                    ('user', 'login', 'untrusted')):
+            documents = self.promotion_documents()
+            self.event['pull_request'][branch][key] = value
+            with self.subTest(branch=branch, key=key), self.assertRaises(selector.Refusal):
+                self.select_using_real_live_verifier(documents)
+            # Reset fixture for the next case, including user/repository identity.
+            self.event['pull_request']['user']['login'] = 'Jayson-Stangel'
+            self.event['pull_request']['head']['repo']['full_name'] = REPO
+
+    def test_promotion_ci_refuses_stale_refs_route_actors_and_source_via_actual_inspector(self):
+        root = 'repos/' + REPO
+        original = self.promotion_documents()
+        cases = [
+            (root + '/git/ref/heads/main', ('object', 'sha'), 'd' * 40),
+            (root + '/git/ref/heads/dev', ('object', 'sha'), 'd' * 40),
+            (root + '/pulls/34', ('base', 'sha'), 'd' * 40),
+            (root + '/pulls/34', ('head', 'sha'), 'd' * 40),
+            (root + '/pulls/34', ('head', 'ref'), 'codex/feature'),
+            (root + '/pulls/34', ('head', 'repo', 'full_name'), 'untrusted/fork'),
+            (root + '/pulls/34', ('base', 'ref'), 'dev'),
+            (root + '/pulls/34', ('user', 'login'), 'untrusted'),
+            (root + '/actions/runs/12/attempts/2', ('actor', 'login'), 'untrusted'),
+            (root + '/actions/runs/12/attempts/2', ('triggering_actor', 'login'), 'untrusted'),
+            (root + '/actions/runs/12/attempts/2', ('run_attempt',), 1),
+            (root + '/actions/runs/12/attempts/2', ('path',), '.github/workflows/package-checks.yml'),
+            (root + '/commits/' + SOURCE, ('parents',), [{'sha': 'd' * 40}, {'sha': HEAD}]),
+        ]
+        for endpoint, keys, value in cases:
+            documents = copy.deepcopy(original)
+            target = documents[endpoint]
+            for key in keys[:-1]:
+                target = target[key]
+            target[keys[-1]] = value
+            with self.subTest(endpoint=endpoint, keys=keys), self.assertRaises(selector.Refusal):
+                self.select_using_real_live_verifier(documents)
 
     def test_required_wrappers_reject_failed_selector_even_when_mac_work_is_omitted(self):
         app = scripts(job(workflow('make-all'), 'make-all'))[0]

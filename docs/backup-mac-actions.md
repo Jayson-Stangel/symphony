@@ -86,7 +86,10 @@ For package CI select `.github/workflows/package-checks.yml`. Values must be the
 reviewed full lowercase SHAs, not a branch name or abbreviated revision. The
 preflight performs bounded GET requests only. It reads repository identity/admin
 permission, the selected run attempt, the current PR, and the proposed tested
-merge commit. It refuses forks, a changed head/base, a different run/attempt,
+merge commit. Feature PRs must target `dev`; only same-repository `dev` into
+`main` promotion CI is additionally supported, with live main/dev ref freshness
+and owner author/actor checks. This is not promotion or merge approval. It refuses
+forks, a changed head/base, a different run/attempt,
 a different workflow, a completed/cancelled run, or a merge commit that does not
 have exactly the current base and reviewed head as parents. It never reads or
 prints a token, registers a runner, changes a job, reruns CI or posts a status.
@@ -155,8 +158,15 @@ The top-level controllers allowed by the validator are `make-all.yml`,
 `github.workflow_sha`, while each target separately names its consumer workflow.
 A permitted branch push or manual run must match the live exact source/run/attempt
 and owner actor/triggering actor; tag events are refused. PR routing additionally
-requires the owner-authored same-repository PR targeting `dev`, exact current
-head/base/merge parents and live run association. All selectors use only existing
+requires the owner-authored same-repository feature PR targeting `dev`, or the
+narrow promotion CI route with same-repository `head.ref == dev` targeting `main`.
+Both routes bind the exact reviewed head, current base, tested merge parents,
+controller, run/attempt and live association; promotion CI additionally refreshes
+both live `main` and `dev` branch refs and refuses stale snapshots. Feature PRs
+cannot use a `main` base. The live branch route must still match the reviewed
+webhook event, even when two branches temporarily have identical SHAs. This
+supports required CI only: it grants no merge, promotion, production execution
+or stable rollout authority. All selectors use only existing
 read-only contents/actions permissions; live public PR read access must be proven
 with the actual workflow token during approved execution, not an administrator
 fixture token. No extra pull-request scope is added to reusable call chains.
