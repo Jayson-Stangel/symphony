@@ -427,6 +427,61 @@ the resulting source, and qualify that source before the one local signing pass.
 All existing final-byte native, fresh-account, installed update/rollback and
 public-reference acceptance obligations above still apply.
 
+### Prove private staging access before qualification or signing
+
+Before spending a new qualification/signing run, use the optional transport-only
+mode to prove that the real read-only Actions job token can fetch a private draft
+asset. A successful operator `gh` request does not prove that job-token access:
+the two authenticated identities and permissions differ. Permission denial stops
+this probe; do not make staging public or grant `contents:write` to bypass it.
+
+With separate bounded approval, create one unique nonproduction draft at the
+exact reviewed main revision and upload only the fixed public probe fixture. For
+the approved operator's own Terminal, the fixture can be prepared outside the
+checkout without accessing credentials:
+
+```sh
+probe_dir=$(mktemp -d)
+python3 - "$probe_dir/permission-probe.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w', compression=zipfile.ZIP_STORED) as archive:
+    entry = zipfile.ZipInfo('permission-probe.txt', date_time=(1980, 1, 1, 0, 0, 0))
+    entry.external_attr = 0o100644 << 16
+    archive.writestr(entry, b'Symphony local signing staging permission probe. Public fixture. No credentials or candidate package.\n')
+PY
+shasum -a 256 "$probe_dir/permission-probe.zip"
+```
+
+This is exactly 240 bytes, SHA256
+`bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1`.
+The later approved staging operation uses a new
+`local-signing-FULL_REVISION-RANDOM_32_HEX` draft tag, `target_commitish` equal to
+that full revision, and one asset named `permission-probe.zip`. Retain its
+original release ID, asset ID, server digest and size. These are test data, not
+signed candidate packages. Do not reuse a production draft, move a tag or publish
+the staging draft.
+
+Dispatch `macos-local-signing-import.yml` on `main`, supplying the exact
+`approved_revision`, `staging_release`, `staging_asset`, `staging_digest` and
+**`transport_probe_only=true`**, then approve its normal existing
+`macos-production-signing` environment gate. The Ubuntu job uses the same
+`contents:read`/`actions:read` token and source/asset checks as actual import. It
+downloads only the original ID/digest-bound blob with a separate 4 KiB ceiling,
+checks the fixed name/240-byte digest, and never parses, unpacks or executes its
+contents. It needs no qualification, Mac runner, signing secret or Apple action.
+
+Its receipt and `local-signing-transport-probe-...` Actions artifact prove
+transport access only. The native verification job is skipped. Even an overall
+green probe run is **refused** by the production importer because the mandatory
+`Verify locally signed distribution` job did not succeed; no signed-package
+artifact or native/Apple/cleanup receipt is fabricated. Keep the successful probe
+receipt before qualification/local signing. With explicitly approved cleanup,
+remove only the just-created verified probe draft/asset; preserve its service
+IDs and proof. No workflow or environment permission change is implied.
+
+Normal local import keeps `transport_probe_only=false` (the default) and still
+requires all qualification and native checks below.
+
 ### Sign once on the operator's Apple Silicon Mac
 
 Use a clean isolated checkout at the exact approved `main` source and retain

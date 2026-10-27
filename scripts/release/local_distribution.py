@@ -34,6 +34,9 @@ import package_diagnostics
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_BYTES = production.MAX_BYTES
+MAX_PROBE_BYTES = 4096
+PROBE_DIGEST = 'sha256:bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1'
+PROBE_SIZE = 240
 EVIDENCE = {'keychain-diagnostics.json', 'package-diagnostics.json', 'payload-log.json',
             'payload-submission.json', 'notary-log.json', 'notary-submission.json', 'package-source.txt'}
 KEYCHAIN_STAGES = {'keychain.' + name for name in ('snapshot-search-list', 'decode-p12', 'create',
@@ -380,9 +383,11 @@ def upload(folder, revision, archive_path, invoke=subprocess.run, fetch=api):
             'name': asset['name'], 'staging_tag': tag}
 
 
-def import_local(release_id, asset_id, digest, revision, destination, identity, team, fetch=staging_api, native=verify_native):
+def download_staging(release_id, asset_id, digest, revision, fetch=staging_api, max_bytes=MAX_BYTES):
+    """Shared original-asset admission for real import and the read-only probe."""
     require(re.fullmatch(r'[1-9][0-9]*', str(release_id)) and re.fullmatch(r'[1-9][0-9]*', str(asset_id))
-            and re.fullmatch(r'sha256:[a-f0-9]{64}', digest or ''), 'invalid local staging selection')
+            and re.fullmatch(r'sha256:[a-f0-9]{64}', digest or '')
+            and re.fullmatch(r'[a-f0-9]{40}', revision or ''), 'invalid local staging selection')
     release = fetch('releases/' + str(release_id))
     require(release['draft'] is True and release['target_commitish'] == revision and
             re.fullmatch('local-signing-' + revision + r'-[a-f0-9]{32}', release['tag_name']),
@@ -392,7 +397,8 @@ def import_local(release_id, asset_id, digest, revision, destination, identity, 
     binding = ('id', 'name', 'state', 'size', 'digest', 'created_at')
     require(all(asset.get(k) == release['assets'][0].get(k) for k in binding)
             and asset['state'] == 'uploaded' and asset['digest'] == digest
-            and 0 < asset['size'] <= MAX_BYTES and Path(asset['name']).name == asset['name'],
+            and type(asset['size']) is int and 0 < asset['size'] <= max_bytes
+            and Path(asset['name']).name == asset['name'],
             'staging asset changed or oversized')
     age = datetime.now(timezone.utc) - instant(asset['created_at'])
     require(timedelta(minutes=-5) <= age <= timedelta(days=7), 'staging asset expired or from future')
@@ -400,6 +406,27 @@ def import_local(release_id, asset_id, digest, revision, destination, identity, 
     raw = fetch('releases/assets/' + str(asset_id), binary=True)
     require(len(raw) == asset['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == digest,
             'downloaded staging asset differs')
+    origin = {'schema': 1, 'origin': 'local', 'repository': REPOSITORY,
+              'source_revision': revision, 'release_id': int(release_id), 'asset_id': int(asset_id),
+              'digest': digest, 'size': asset['size'], 'name': asset['name'], 'staging_tag': release['tag_name']}
+    return raw, origin
+
+
+def probe_transport(release_id, asset_id, digest, revision, destination, fetch=staging_api):
+    """Prove this job token can read a tiny public fixture, never signed inputs."""
+    require(not destination.exists(), 'probe receipt already exists')
+    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch, MAX_PROBE_BYTES)
+    # The probe only hashes the fixed public blob. Never parse, unpack or run it.
+    require(origin['name'] == 'permission-probe.zip' and len(raw) == PROBE_SIZE and
+            origin['digest'] == PROBE_DIGEST, 'probe requires the exact named public fixture')
+    proof = dict(origin, origin='transport-probe',
+                 scope='read-only job-token staging access; not qualification, signing or native evidence')
+    write_json(destination, proof)
+    return proof
+
+
+def import_local(release_id, asset_id, digest, revision, destination, identity, team, fetch=staging_api, native=verify_native):
+    raw, origin = download_staging(release_id, asset_id, digest, revision, fetch)
     unpack(raw, destination / 'signed')
     folder = destination / 'signed'
     transport_files(folder)
@@ -408,9 +435,7 @@ def import_local(release_id, asset_id, digest, revision, destination, identity, 
     production.verify_retained(destination, revision, fetch)
     proof = native(folder, identity, team, destination / 'qualified')
     write_json(destination / 'native-verification.json', proof)
-    write_json(destination / 'local-origin.json', {'schema': 1, 'origin': 'local', 'repository': REPOSITORY,
-               'source_revision': revision, 'release_id': int(release_id), 'asset_id': int(asset_id),
-               'digest': digest, 'size': asset['size'], 'name': asset['name'], 'staging_tag': release['tag_name']})
+    write_json(destination / 'local-origin.json', origin)
 
 
 def retained_local(run_id, attempt, revision, destination, fetch=api):
@@ -450,10 +475,17 @@ def main():
     receive = modes.add_parser('import')
     receive.add_argument('release_id'); receive.add_argument('asset_id'); receive.add_argument('digest')
     receive.add_argument('destination', type=Path)
+    probe = modes.add_parser('probe')
+    probe.add_argument('release_id'); probe.add_argument('asset_id'); probe.add_argument('digest')
+    probe.add_argument('receipt', type=Path)
     args = parser.parse_args()
     revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
     exact_source(revision)
-    if args.mode == 'import':
+    if args.mode == 'probe':
+        production.source(revision)
+        probe_transport(args.release_id, args.asset_id, args.digest, revision, args.receipt)
+        print('Read-only staging probe passed; this is not signing or native admission.')
+    elif args.mode == 'import':
         production.source(revision)
         import_local(args.release_id, args.asset_id, args.digest, revision, args.destination,
                      os.environ['MACOS_SIGNING_IDENTITY_SHA1'], os.environ['MACOS_TEAM_ID'])

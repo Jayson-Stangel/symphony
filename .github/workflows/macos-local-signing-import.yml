@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       approved_revision:
-        description: Exact promoted source already qualified and signed locally
+        description: Exact promoted source approved for local import or transport probe
         required: true
         type: string
       staging_release:
@@ -18,6 +18,11 @@ on:
         description: Original GitHub sha256 asset digest from local upload receipt
         required: true
         type: string
+      transport_probe_only:
+        description: Read one small public fixture with the job token before qualification or signing
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
   actions: read
@@ -27,9 +32,35 @@ concurrency:
 env:
   PYTHONDONTWRITEBYTECODE: '1'
 jobs:
+  transport-probe:
+    name: Probe private staging read access
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && inputs.transport_probe_only
+    environment: macos-production-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the exact private draft fixture with the normal read only job token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RELEASE: ${{ inputs.staging_release }}
+          STAGING_ASSET: ${{ inputs.staging_asset }}
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+        run: |
+          python3 scripts/release/local_distribution.py probe "$STAGING_RELEASE" "$STAGING_ASSET" "$STAGING_DIGEST" "$RUNNER_TEMP/transport-probe.json"
+      - name: Retain transport proof without signed or native admission artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: local-signing-transport-probe-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/transport-probe.json
+          if-no-files-found: error
   verify:
     name: Verify locally signed distribution
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha && !inputs.transport_probe_only
     environment: macos-production-signing
     # Inspect signatures/tickets on Intel; do not execute the ARM64 payload.
     # This avoids depending on ARM64 signing-runner capacity for the fallback.
