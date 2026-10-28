@@ -35,6 +35,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 jobs:
   changes:
@@ -323,27 +324,32 @@ jobs:
           echo "Selected current-source checks passed: helper/package macOS=$MACOS, Linux=$LINUX; process/updater fixtures=$FIXTURES. Unselected checks intentionally omitted, not executed. This is fixture proof; selected-environment image qualification and installed composition are separate explicit integration." >> "$GITHUB_STEP_SUMMARY"
 
   mac-runner:
-    name: Select backup Mac for native host package
+    name: Select owned Mac first for native host package
+    needs: [changes, qualification, host-policy]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && (needs.host-policy.result == 'success' || (needs.changes.outputs.native == 'false' && needs.host-policy.result == 'skipped')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true' }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/package-checks.yml
+          SELECT_JOB_KEY: native-host-package
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true' }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/package-checks.yml
           SELECT_JOB_KEY: native-host-package
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"

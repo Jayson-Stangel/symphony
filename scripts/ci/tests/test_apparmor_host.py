@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 PROFILE = 'symphony-codex-candidate-b6261d4c613296dd'
@@ -112,7 +113,7 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         self.driver.chmod(0o755)
 
     def run_command(self, *args, success=True, status=None):
-        env=dict(os.environ,PATH=str(self.bin),FIXTURE=str(self.root),OPTIONS=json.dumps(self.options))
+        env=dict(os.environ,PATH=str(self.bin),SYMPHONY_HOME=str(self.bundle),FIXTURE=str(self.root),OPTIONS=json.dumps(self.options))
         env.pop('DOCKER_CONTEXT',None);env.pop('DOCKER_HOST',None)
         if self.options.get('no_apparmor'):env['NO_APPARMOR']='yes'
         result=subprocess.run([str(self.driver),*args],env=env,text=True,capture_output=True)
@@ -191,6 +192,26 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         self.driver.write_bytes((ROOT / 'scripts/symphony').read_bytes())
         shutil.copyfile(ROOT / 'scripts/symphony-environment.sh',
                         self.bundle / 'scripts/symphony-environment.sh')
+
+    def test_real_launcher_cannot_source_an_inherited_foreign_home(self):
+        self.use_real_launcher()
+        foreign = self.root / 'foreign installation'
+        (foreign / 'scripts').mkdir(parents=True)
+        shutil.copyfile(ROOT / 'scripts/symphony-environment.sh',
+                        foreign / 'scripts/symphony-environment.sh')
+        marker = self.root / 'foreign-home-module-executed'
+        (foreign / 'scripts/symphony-apparmor.sh').write_text(
+            'printf foreign > "$FIXTURE/foreign-home-module-executed"\n'
+            'printf "foreign SYMPHONY_HOME module executed\\n" >&2\nexit 93\n')
+        inherited_home = os.environ.get('HOME')
+        with patch.dict(os.environ, SYMPHONY_HOME=str(foreign)):
+            output = self.run_command('runner', 'apparmor', '--apply', '--daemon-id', 'daemon-id')
+            self.assertEqual(os.environ['SYMPHONY_HOME'], str(foreign))
+            self.assertEqual(os.environ.get('HOME'), inherited_home)
+        self.assertIn('exact owned policy loaded', output)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.destination().read_bytes(),
+                         (ROOT / 'scripts/codex-apparmor.profile').read_bytes())
 
     def test_real_launcher_namespace_prepares_and_repeats(self):
         # Keep the complete shipped launcher: its install() command must coexist
