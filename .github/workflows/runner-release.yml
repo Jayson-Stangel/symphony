@@ -877,11 +877,6 @@ jobs:
         env:
           PACKAGE_SOURCE_REVISION: ${{ inputs.diagnostic_package_source_revision }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
-          PREPARE_RELEASE: ${{ inputs.prepare_release }}
-          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
-          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
-          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
-          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
         run: python3 scripts/release/package-lifecycle.py packages runners evidence
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1036,7 +1031,7 @@ jobs:
           final_only=false
           if [ "${PREPARE_RELEASE:-false}" = true ]; then
             test "${COMPOSE_PACKAGES:-true}" != false
-            if [ -z "${PREVIOUS_ARTIFACT_RUN:-}" ] && [ -z "${LEGACY_ARTIFACT_RUN:-}" ] && [ "${MANAGER_ONLY_UPDATE:-false}" != true ]; then
+            if [ -z "${PREVIOUS_REVISION:-}" ] && [ -z "${PREVIOUS_ARTIFACT_RUN:-}" ] && [ -z "${LEGACY_ARTIFACT_RUN:-}" ] && [ "${MANAGER_ONLY_UPDATE:-false}" != true ]; then
               final_only=true
             fi
           fi

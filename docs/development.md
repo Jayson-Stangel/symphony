@@ -679,6 +679,8 @@ candidate cohort to be intentionally skipped and the final package join to have
 succeeded. Failed, cancelled, missing or incomplete final producers cannot pass.
 The preparation metadata gate independently requires successful component/helper
 inputs and the exact build-versus-reuse result, avoiding a dependency cycle.
+Raw prior-source revision composition remains refused before fanout; select a
+verified historical package artifact for supported update/rollback acceptance.
 Requested candidate/prior-package/legacy/manager-only lifecycle modes retain their
 candidate archives and real lifecycle consumers; final production preparation
 still cannot succeed after a failed requested lifecycle. No signing, publication

@@ -130,7 +130,7 @@ class WorkflowGuardTest(unittest.TestCase):
                         {'LEGACY_ARTIFACT_RUN': '123'}, {'MANAGER_ONLY_UPDATE': 'true'}):
             self.assertEqual(self.guard('runner-release.yml', name, dict(good, **changed), outputs=True),
                              (0, {'final_only': 'false'}))
-        for changed in ({'COMPOSE_PACKAGES': 'false'}, {'LOCAL_RESULT': 'failure'}):
+        for changed in ({'COMPOSE_PACKAGES': 'false'}, {'LOCAL_RESULT': 'failure'}, {'PREVIOUS_REVISION': 'b'*40}):
             code, output = self.guard('runner-release.yml', name, dict(good, **changed), outputs=True)
             self.assertNotEqual(code, 0)
             self.assertEqual(output, {})
@@ -145,6 +145,11 @@ class WorkflowGuardTest(unittest.TestCase):
                         {'FINAL_PACKAGES': 'skipped'}, {'BUNDLES': 'success'}, {'FINAL_ONLY': ''},
                         {'LIFECYCLE': 'success'}, {'METADATA': 'failure'}, {'PACKAGES': 'skipped'}):
             self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **changed)), 0)
+        lifecycle = dict(good, FINAL_ONLY='false', BUNDLES='success', PREVIOUS_ARTIFACT_RUN='123',
+                         LIFECYCLE='success')
+        self.assertEqual(self.guard('runner-release.yml', name, lifecycle), 0)
+        for state in ('skipped', 'failure', 'cancelled', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(lifecycle, LIFECYCLE=state)), 0)
         before = 'Require qualified component inputs before preparing final metadata'
         self.assertEqual(self.guard('runner-release.yml', before, dict(HAS_BUILDS='false', RUNNERS='skipped')), 0)
         for result in ('failure', 'cancelled', 'skipped', ''):
