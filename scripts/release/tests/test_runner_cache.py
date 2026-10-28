@@ -196,6 +196,29 @@ class CacheComparisonWorkflowTest(unittest.TestCase):
                                         env=dict(good, **changes), capture_output=True)
                 self.assertEqual(result.returncode == 0, passed)
 
+    def test_filtered_matrix_cannot_add_unselected_architecture_allocations(self):
+        import itertools, json, re
+        workflow = (ROOT/'.github/workflows/runner-release.yml').read_text()
+        probe = workflow.split('  cache-probe:\n', 1)[1].split('  packaged-candidate:\n', 1)[0]
+        # GitHub include adds unmatched rows. There must be no include expansion
+        # after dimensions are filtered; derive the runner directly instead.
+        self.assertNotIn('        include:', probe)
+        self.assertIn("matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04'", probe)
+        dimensions = {}
+        for key in ('provider', 'architecture', 'cache_mode'):
+            line = re.search(r'^        '+key+r': (.+)$', probe, re.M).group(1)
+            dimensions[key] = [json.loads(raw) for raw in re.findall(r"fromJSON\('([^']+)'\)", line)]
+        for provider, architecture, comparison, expected in (
+                ('all', 'all', False, 4), ('claude', 'arm64', False, 1),
+                ('claude', 'arm64', True, 2), ('codex', 'x86_64', True, 2)):
+            providers = dimensions['provider'][-1] if provider == 'all' else [provider]
+            arches = dimensions['architecture'][-1] if architecture == 'all' else [architecture]
+            modes = dimensions['cache_mode'][0 if comparison else -1]
+            rows = list(itertools.product(providers, arches, modes))
+            self.assertEqual(len(rows), expected)
+            if architecture != 'all':
+                self.assertEqual({row[1] for row in rows}, {architecture})
+
     def test_existing_probe_bounds_comparison_without_changing_production_default(self):
         action = (ROOT/'.github/actions/build-runner/action.yml').read_text()
         workflow = (ROOT/'.github/workflows/runner-release.yml').read_text()

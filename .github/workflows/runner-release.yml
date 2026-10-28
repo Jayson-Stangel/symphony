@@ -483,7 +483,7 @@ jobs:
     name: Measure runner cache (${{ matrix.provider }}, ${{ matrix.architecture }}, ${{ matrix.cache_mode }})
     needs: qualification
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && inputs.resume_native_run == '' && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -491,11 +491,6 @@ jobs:
         provider: ${{ inputs.cache_probe_provider && inputs.cache_probe_provider != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_provider)) || fromJSON('["codex","claude"]') }}
         architecture: ${{ inputs.cache_probe_architecture && inputs.cache_probe_architecture != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_architecture)) || fromJSON('["arm64","x86_64"]') }}
         cache_mode: ${{ inputs.cache_probe_export_comparison && fromJSON('["max","min"]') || fromJSON('["max"]') }}
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
