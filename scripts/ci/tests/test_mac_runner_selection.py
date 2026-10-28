@@ -51,6 +51,17 @@ class Selection(unittest.TestCase):
         return selector.select_runner(json.dumps(self.permit) if raw is None else raw,
                                       self.context, self.event, self.workflow, selector.TARGETS[self.workflow].copy().pop(), NOW, self.inspect)
 
+    def test_retired_engine_smoke_and_unused_native_workflow_cannot_acquire_a_runner(self):
+        for workflow, key in (('.github/workflows/burrito-release.yml', 'smoke'),
+                              ('.github/workflows/release-native.yml', 'native')):
+            with self.subTest(workflow=workflow, key=key):
+                with self.assertRaises(selector.Refusal):
+                    selector.select_runner('', self.context, self.event, workflow, key, NOW, self.inspect)
+                self.permit['targets'] = [{'consumer_workflow': workflow, 'job_key': key, 'runner_label': LABEL}]
+                with self.assertRaises(selector.Refusal):
+                    self.select()
+        self.inspect.assert_not_called()
+
     def test_hosted_default_other_run_and_reusable_callers_do_not_read_live_metadata(self):
         self.assertEqual(self.select(''), 'macos-14')
         self.permit['run_id'] = 13

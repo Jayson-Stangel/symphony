@@ -443,7 +443,6 @@ to both helper consumers even when their own unit suite is portable.
 | --- | --- |
 | `release-preflight / portable` | Full portable policy/version/schema gate for caller-selected candidates; full Git history for retained-source fixtures. |
 | `host-policy / select` | Cheap validation of exactly native Linux x86-64 and macOS ARM64; platform filter preserves this policy. Container architectures remain separate. |
-| `release-native / host-policy`, `native` | Full native fixtures for explicit engine-only qualification; package-checks now runs its native fixtures inside its helper allocation instead of calling a second matrix. |
 | `native-manager-helpers / host-policy`, `helper`, `qualification` | Explicit integration needs actual exact-source native helpers; verifies source/platform/contracts and emits a receipt only after the complete matrix succeeds. |
 | `current-manager-package / host-policy`, `package`, `metadata` | Assemble selected manager packages from exact-source qualified helpers; verify original checksums before executable permission, selected metadata and both native archives before joining. |
 | `component-plan / plan` | Explicit composition: source-bound original evidence discovery; selected component build/reuse decisions, never manager-change-implies-image-rebuild. |
@@ -565,7 +564,6 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 | `native-manager-helpers` | `host-policy` → Select native hosts; `helper` → Build manager helper (platform); `qualification` → Bind qualified manager helpers |
 | `package-checks` | `changes` → Classify changes; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `native-host-package` → Native helpers and fixtures (platform); `package-qualification` → Package qualification |
 | `pr-description-lint` | `validate-pr-description` → PR description |
-| `release-native` | `host-policy` → Select native hosts; `native` → Native process fixtures (platform) |
 | `release-preflight` | `portable` → Portable preflight |
 | `runner-integration` | `changes` → Classify changes; `chromium` → Browser qualification; `portable` → Portable preflight; `helpers` → Qualify manager helpers; `reference-node-smoke` → Reference Node images; `plan` → Plan components; `runners` → Qualify runner components; `manager-inputs` → Bind selected component inputs; `manager-package` → Build current manager packages; `listener-and-cleanup` → Installed manager integration |
 | `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-probe` → Measure runner cache (provider, architecture); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
@@ -692,8 +690,16 @@ outside the source tree with an explicit environment and system-only PATH. It
 refuses a PATH exposing Erlang/Elixir/Mix/Zig so the preceding build cannot mask
 a missing standalone runtime tool. Python/lsof remain controller dependencies;
 startup, attributable health, missing-provider readiness, graceful stop and
-owned-descendant cleanup remain actual executable checks. Engine-only controller fixtures run in the same native build allocation, retaining
-full Git history and the identical suite. The controller-only
+owned-descendant cleanup remain actual executable checks. Engine-only controller
+fixtures run in the same native build allocation, retaining full Git history and
+the identical suite. The controller-only
 mode selects only its own Mac route. Unselected build/controller routes allocate
 no selector job; the obsolete tag-only no-op trigger is removed. Saved queue
 intervals overlap other work and are not additive deployment-time savings.
+
+The former `release-native.yml` reusable workflow has no remaining consumer and
+is removed together with its `native` route; the separate `smoke` route is also
+retired. New source-bound permits target the combined `build` job. Historical
+runs, source revisions, permits and receipts retain their original meaning and
+are not reinterpreted through the new allowlist. Native compatibility fixtures
+still require full Git history and the same retained source ancestry authorities.

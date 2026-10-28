@@ -219,9 +219,7 @@ class EngineOnlyCoverageTest(unittest.TestCase):
         self.assertIn('needs: production-source', selector)
         self.assertIn("needs.production-source.result == 'success'", selector)
         self.assertIn('fetch-depth: 0', block)
-        native = (root / '.github/workflows/release-native.yml').read_text()
-        self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', native)
-        self.assertIn('python3 scripts/ci/release_tests.py native', native)
+        self.assertFalse((root / '.github/workflows/release-native.yml').exists())
         self.assertNotIn('test_engine_smoke.py', RELEASE.PORTABLE)
         self.assertIn('test_engine_smoke.py', [path.name for path in (root / 'scripts/release/tests').glob('test_*.py')])
 
