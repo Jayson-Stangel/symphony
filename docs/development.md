@@ -662,3 +662,33 @@ release mutation also checks it before each mutation. This removes one upload
 and one retained artifact per run, while retaining cross-job original retrieval
 and integrity checks. No publication timing saving is claimed without a real
 separately authorized production run.
+
+### Bounded cache export comparison
+
+JAY-769's existing `runner-release.yml` cache probe accepts one selected provider
+and native architecture plus `cache_probe_export_comparison=true`. Validation
+refuses `all` dimensions in comparison mode, so max/min need exactly two native
+allocations. Each runs cold, warm and changed-input phases through a fresh
+Buildx builder per invocation, retaining its original builder reference; a reused
+local builder refuses remote-cache proof. Max/min use separate branch/trust and
+architecture scopes and disable unrelated trusted cache fallback. Ordinary
+builds keep their existing max export/fallback policy until comparative evidence
+justifies a change. Changed-recipe diagnostics retain the existing no-export
+policy and disclose it in the build receipt.
+
+Every phase records exact committed Docker input identity/source/image labels,
+BuildKit cache import/export and image export/load vertex intervals, complete
+build elapsed time, actual-user runtime qualification, loopback registry push/
+pull, archive export/compression/checksum and small evidence upload. Vertex
+intervals overlap and must not be summed as cost or end-to-end saving; upload
+step elapsed time comes from the completed Actions job receipt. The probe uses
+level-one gzip consistently with delivered payload export. Large diagnostic
+archives are deleted; only owned registries/builders and small receipts remain.
+
+Historical run 39865529840 has valid warm/changed receipts, but its retained
+artifacts do not establish a cold baseline. A new exact-source comparison is
+needed before changing the default; no claimed saving is inferred from those
+old timings or the separate 178.9-second production cache-export observation.
+The bounded hosted diagnostic requires its exact source/input/job/resource plan
+to be authorized before dispatch. It performs no customer release, signing,
+production settings or provider/model requests.
