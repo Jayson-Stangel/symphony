@@ -184,12 +184,23 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read the canonical pinned Node version
+        id: node-toolchain
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          from pathlib import Path
+          import re, tomllib
+          version = tomllib.loads(Path('elixir/mise.toml').read_text())['tools']['node']
+          if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise ValueError('Claude checks require a complete pinned Node version')
+          print('version=' + version)
+          PY
       - name: Set up only the Node toolchain
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
-          tool_versions: node 24.18.0
+          tool_versions: node ${{ steps.node-toolchain.outputs.version }}
       - name: Verify independent Claude family
         run: make -C elixir claude-ci
 

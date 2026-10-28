@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +14,24 @@ from test_pr_policy import History
 
 
 class ApplicationFamilies(unittest.TestCase):
+    def test_node_only_job_uses_the_changed_canonical_pin_and_refuses_mutable_versions(self):
+        block = job(workflow('make-all'), 'claude-checks')
+        command = scripts(block)[0]
+        self.assertIn('tool_versions: node ${{ steps.node-toolchain.outputs.version }}', block)
+        self.assertNotIn('working_directory: elixir', block)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); (root / 'elixir').mkdir()
+            (root / 'bin').mkdir()
+            (root / 'bin/python3').symlink_to(sys.executable)
+            for version, valid in (('24.19.0', True), ('25.0.1', True), ('24', False), ('latest', False)):
+                (root / 'elixir/mise.toml').write_text('[tools]\nnode = "' + version + '"\n')
+                output = root / 'outputs'; output.write_text('')
+                result = subprocess.run(['bash', '-e', '-c', command], cwd=root,
+                                        env=dict(os.environ, GITHUB_OUTPUT=str(output),
+                                                 PATH=str(root / 'bin') + os.pathsep + os.environ['PATH']), capture_output=True)
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+                self.assertEqual(output.read_text(), 'version=' + version + '\n' if valid else '')
+
     def test_full_event_ranges_select_only_independent_families(self):
         with tempfile.TemporaryDirectory() as folder:
             history = History(folder)
