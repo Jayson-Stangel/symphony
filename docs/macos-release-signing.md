@@ -327,9 +327,12 @@ these settings changes; workflow source cannot create or enforce them.
   publisher verifies anonymous exact manifest/config/blob availability and
   preserves digests. Package visibility/token permission was not established by
   the planning chat's token (`read:packages` was unavailable); verify it for the
-  final execution. Only the registry job receives `packages:write`; only final
-  GitHub publication receives `contents:write`. The signer has read-only token
-  permissions and disposable hosted Apple Silicon execution.
+  final execution. Only the registry job receives `packages:write`. Final GitHub
+  publication and the protected Ubuntu private-staging ingress job receive
+  job-local `contents:write`; the latter needs that capability to read private
+  drafts, not to publish them. The signer and Mac verifier retain read-only
+  token permissions. Review the ingress capability risk described below before
+  approving its exact source and execution.
 
 ### Source freeze and exact execution order
 
@@ -408,3 +411,222 @@ repeated merely because the manager version changes; repeat only when consumed
 provider inputs or an observed failure justify it. Final-byte native acceptance
 above remains required. No real production qualification/signing/publication or
 stable rollout was executed by adding this tooling.
+
+## Local signing with GitHub delivery
+
+Local signing is an alternative producer of the same final packages, not an
+alternative production approval path. The local operator signs once, uploads
+those exact bytes to private draft staging, and a credential-free Mac job
+independently verifies them. The existing tag publisher consumes the admitted
+immutable Actions artifact without building, packaging, signing or notarizing
+again. Both `production-release` environment approvals remain required.
+
+This path must already exist in the candidate's exact source **before** its
+qualification and local signing. A previously frozen source whose tag points to
+the old workflow does not acquire these commands by merging a later controller.
+Do not move its tag, relabel old qualification, or claim that later controller
+code was part of its signed package. Integrate/review/promote this change, freeze
+the resulting source, and qualify that source before the one local signing pass.
+All existing final-byte native, fresh-account, both-provider setup/task,
+installed update/rollback and public-reference acceptance obligations above still
+apply.
+
+### Private staging capability and transport evidence
+
+The supported import uses three jobs: protected main-only Ubuntu staging ingress,
+read-only Mac verification, and the read-only Mac runner selector. The Ubuntu
+job has **job-local `contents:write` and `actions:read`**, behind the existing
+`macos-production-signing` environment review. Its code performs reads only:
+it downloads the original private draft asset by ID, verifies source, nonce tag,
+age, size and digest, and retains the opaque ZIP plus a closed manifest in an
+immutable Actions artifact. It never unpacks or executes the uploaded ZIP and
+does not reference signing/notary secrets, a PAT or public staging.
+
+The token's capability is broader than those reads: `contents:write` can mutate
+repository contents and releases. Exact reviewed main source, the protected
+environment approval, and the prohibition on executing uploaded code therefore
+remain required. This is an explicit permission decision within the approved
+promotion/import scope; successful transport evidence does not authorize another
+dispatch, qualification, Apple submission, publication or stable rollout.
+
+Actual HTTP diagnostics observed private-draft access refused with the read-only
+job token (`403`) and accepted with the explicitly approved write capability
+(`200`). The final transport proof in [run40581169862](https://github.com/Jayson-Stangel/symphony/actions/runs/40581169862)
+used the same archive-staging and handoff cores: a fixed 240-byte public fixture
+was uploaded privately, read by the write-capability producer, retained as an
+immutable artifact, and read unchanged by a separate read-only consumer. Its
+SHA256 was `bcd7136193af68bb874051656edae4326f8dacd0deca505580a5035c6e2875c1`.
+This proves transport for that fixture and source, not a full signed-package
+import, final-source qualification, Apple acceptance, native installation or
+customer lifecycle. Temporary feature proof/HTTP jobs and the unsupported
+read-only private-draft probe are not production entry points.
+
+### Retain an incomplete signing attempt without changing its bytes
+
+Before the first notarization upload, signing compares the staged signed archive against
+the original qualified package: full directories, file modes and unchanged source
+bytes must match. Production, dev and local signing supply that original archive
+via `--qualified-package`; missing or mismatched inputs refuse progression. Secure
+timestamp service contact has already occurred during signature creation. Payload
+construction uses canonical public permissions inside a private stage, extraction
+preserves those permissions, and DMG instructions are explicitly mode0644. The
+caller's private umask still governs outer archives/checkpoints/credentials.
+
+Before the first Apple upload, signing retains the already signed updater tar
+and the exact payload ZIP in a new sibling `OUTPUT.checkpoint` directory. The
+directory is exclusive, owned and mode0700; the fixed receipt binds actual source,
+input-manifest SHA256, original qualified helper and retained-file hashes. It
+does not invent a qualification run identity. No P12, keychain, passwords or
+arbitrary temporary files are copied. Copies and metadata are synchronized before
+upload; retention failure stops progression. Apple submission IDs/status are
+recorded as soon as the matching response arrives, before later log or ticket
+checks can fail. The actual payload submission reads the retained ZIP, and the
+eventual final tar is copied from those retained bytes without repacking.
+
+Both post-Accepted helper checks retain fixed stage/category/exit diagnostics in
+that private receipt, never raw command output or paths. An explicit unmet
+notarization requirement can receive at most three verification-only checks in
+60 seconds, after strict signature/certificate/runtime checks and unchanged
+helper hashes. Signature, certificate, trust, lookup/network, timeout and unknown
+failures stop; no propagation cause is assumed. Rechecks never sign, build or
+submit again. The second helper check additionally requires the DMG's Accepted
+submission. Temporary credential cleanup and keychain-search-list restoration
+remain mandatory even when verification or retention fails.
+
+Failure/cancellation leaves this checkpoint available for operator assessment;
+the hosted production signer attempts to retain only its three fixed files as
+a distinct private `production-signing-checkpoint-...` artifact. This is not a
+ready distribution or an automatic resume path, and authorizes no further Apple
+action. It adds no files to the completed public asset set. A successful build
+still requires every existing signature, ticket, assessment, provenance and
+cleanup check before writing the normal ready receipt.
+
+### Sign once on the operator's Apple Silicon Mac
+
+Use a clean isolated checkout at the exact approved `main` source and retain
+successful production preparation `Q` and its exact attempt. If a hosted signing
+run was attempted, first inspect its steps, artifacts and Apple receipts: failure
+can happen after an Accepted submission. Do not start local signing while a
+hosted pass is active or after one succeeded. The local command enforces this
+serialization and refuses an existing output directory instead of retrying.
+
+With explicit approval for the exact source, qualification, existing credential
+use and both Apple submissions, run:
+
+```sh
+python3 scripts/release/local_distribution.py sign Q Q_ATTEMPT /absolute/private/local-signing --authorize-apple-upload
+```
+
+Replace `Q`, `Q_ATTEMPT` and the output path. In your own interactive Terminal,
+the command asks for the existing successful P12 file path, its export password,
+the Apple Developer email and app-specific password (credential values hidden),
+then the public pinned certificate SHA1 and Team ID. The current intended pin is
+`6696C74960AEAE2B4061B0410CD29E46E243321D`, team `UVKZ67Z7UT`; the import job
+also checks them against the protected environment's public variables.
+Unavailable hidden input fails closed. Never put private values in command
+arguments, shell history, tickets or chat.
+
+The established controller creates a disposable private keychain, imports the
+existing identity, temporarily changes and restores its search list, signs,
+submits the payload and DMG to Apple, staples/assesses, and removes its temporary
+credential material. No new certificate, login-keychain identity installation or
+global configuration change is needed. Retain sanitized failure/cleanup evidence
+and stop after a failure; a fresh attempt needs renewed exact approval.
+
+### Upload and independently admit the final bytes
+
+With explicit staging-upload approval, run from the same clean source:
+
+```sh
+python3 scripts/release/local_distribution.py upload /absolute/private/local-signing/signed /absolute/private/local-signing-upload.zip --authorize-staging-upload
+```
+
+This performs fresh original-Q checks and native verification, then uploads an
+allowlisted ZIP to a **draft** whose unique tag begins `local-signing-`, never
+`v`. This is private transport visible to repository maintainers, not a completed
+release, latest release, registry publication or stable update. The upload
+uses the shared `stage_archive` path: structured creation captures the original
+release ID, and reads before and after upload use that ID with exact private
+draft/source/nonce and sole-asset checks. Drafts are not discovered through the
+published-release by-tag endpoint. The receipt records source, original release
+and asset IDs, GitHub's SHA256 digest and size. The ZIP contains packages and
+sanitized receipts only—no P12, password, keychain or arbitrary logs. Never publish
+this staging draft or use `--clobber` to replace an asset.
+
+If creation or upload has an uncertain outcome, stop without an automatic retry.
+Preserve the archive, source, any returned original IDs and the service ledger;
+reconcile the exact draft/asset before a separately approved retry. Changing the
+archive path or creating another nonce draft is not uncertainty recovery.
+
+The command writes a sibling `.receipt.json` with exact inputs for
+`macos-local-signing-import.yml`. Dispatch that workflow on `main` only after
+bounded approval, supplying `approved_revision`, `staging_release`,
+`staging_asset` and `staging_digest` from the receipt. Approve its existing
+`macos-production-signing` environment deployments after reviewing the Ubuntu
+ingress write capability and the Mac inspection effects separately. The Mac job
+explicitly keeps `contents:read`/`actions:read` and references only public
+identity/team variables, not signing or notary secrets. It depends on successful
+staging ingress and the unchanged runner selector. By default it runs on hosted
+`macos-15-intel`; an exact source/run/attempt-bound backup permit may route only
+this credential-free inspection job to the isolated macOS 14 ARM64 guest. The
+Ubuntu ingress is not a backup-Mac consumer. The Mac reports its actual hardware
+and verifies the guest architecture/version, inspecting the uploaded ARM64
+package without executing it. This routing admits no signing job or Apple
+credentials to the guest.
+
+The Mac reads only the exact Actions artifact ID, derived name and service
+digest returned by the ingress job in the **same current run, attempt and
+source**. Admission requires one uniquely identified successful ingress job;
+artifact creation must fall within that producer job's start/completion times.
+The whole workflow is still running at this handoff, so neither whole-run
+completion nor the mutable run `updated_at` establishes artifact provenance.
+The opaque ZIP and closed manifest must bind the original release/asset IDs,
+size and digest before the existing unpacking, qualification and native checks.
+There is no latest/name-only, cross-run or cross-attempt fallback.
+
+Admission refuses mismatched source/Q/attempt, replaced or expired draft assets,
+unsafe archives, incomplete Apple or cleanup attestations, changed source files,
+or wrong signatures/tickets. It compares the signed executable to the actual
+qualified helper with only validated Mach-O signing-size fields/signature bytes
+excluded; every other byte and offset is bound. The signed tar's source files,
+permissions and inventory must match qualification. It also mounts the DMG
+read-only, checks its exact root instructions and payload against the signed tar,
+then detaches only that owned mount. Native signature, pinned certificate/team,
+runtime, timestamp, online notarization, staple and Gatekeeper checks must pass.
+Local cleanup receipts are operator attestations; the hosted verifier cannot
+inspect the operator's former temporary keychain. Intel inspection is not ARM64
+execution, fresh-account installation or authenticated provider acceptance.
+
+The successful import retains `production-local-signed-P-RUN-ATTEMPT` with an
+honest `origin: local` receipt and byte-bound native verification. Subsequent
+publication reads that original immutable Actions artifact, not the mutable
+staging draft; later draft mutation cannot substitute accepted bytes. Retention
+expiry still refuses publication. Unlike the earlier same-run transport handoff,
+publication requires the **whole import run to have completed successfully**,
+including the mandatory native producer. Ingress alone never proves native
+acceptance. Keep the original staging upload receipt, ingress artifact identity
+and import run/attempt with the final acceptance ledger.
+
+### Publish the already signed packages through the existing gates
+
+After final native acceptance and the separate exact tag/publication approval,
+dispatch `production-publish.yml` on the exact approved `vVERSION` tag, setting
+`signed_origin=local`, `signed_run=IMPORT_RUN`,
+`signed_attempt=IMPORT_ATTEMPT` and `approved_revision=P`. The importer requires a
+successful same-source `macos-local-signing-import.yml` run and all original-Q,
+native and immutable-artifact bindings. Its normal registry and final-release
+jobs each revalidate original inputs after their existing protected approval.
+No package bytes are rebuilt, resigned or renotarized after local signing.
+
+The publisher also retains the original production draft ID. A retry uses a
+bounded release inventory and requires one exact-tag draft; ambiguous/incomplete
+inventory or an already completed release stops publication. New creation uses
+one structured POST with no blind retry after an uncertain result. Subsequent
+reads and final completion PATCH use the original ID, with unchanged asset
+hash/size checks and live source/tag revalidation before each mutation. For an
+existing Git tag, `target_commitish` is opaque stable service metadata, not proof
+of source: the peeled immutable tag and approved-source ancestry remain binding.
+
+Hosted signing remains supported with `signed_origin=hosted` (the default).
+Neither origin grants production publication or stable rollout authority merely
+by producing or uploading a signed package.

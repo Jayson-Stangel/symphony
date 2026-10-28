@@ -61,6 +61,55 @@ class Selection(unittest.TestCase):
         self.inspect.reset_mock()
         self.inspect.assert_not_called()
 
+    def test_local_import_retains_intel_default_and_exact_live_main_permit(self):
+        self.workflow = '.github/workflows/macos-local-signing-import.yml'
+        self.context.update(GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
+                            GITHUB_WORKFLOW_REF=REPO + '/' + self.workflow + '@refs/heads/main')
+        self.event = {}
+        self.permit.update(event_name='workflow_dispatch', controller_workflow=self.workflow,
+                           workflow_ref=self.context['GITHUB_WORKFLOW_REF'], pr_number=None,
+                           pr_head=None, base_sha=None, pr_author=None,
+                           targets=[{'consumer_workflow': self.workflow, 'job_key': 'verify', 'runner_label': LABEL}])
+        self.assertEqual(self.select(''), 'macos-15-intel')
+        self.permit['run_id'] = 13
+        self.assertEqual(self.select(), 'macos-15-intel')
+        self.inspect.assert_not_called()
+        self.permit['run_id'] = 12
+        root = 'repos/' + REPO
+        docs = {root + '/actions/runs/12/attempts/2': {
+            'id': 12, 'run_attempt': 2, 'repository': {'full_name': REPO},
+            'event': 'workflow_dispatch', 'path': self.workflow, 'head_sha': SOURCE,
+            'status': 'in_progress', 'actor': {'login': 'Jayson-Stangel'},
+            'triggering_actor': {'login': 'Jayson-Stangel'}},
+            root + '/commits/' + SOURCE: {'sha': SOURCE}}
+        self.inspect = lambda permit: selector.verify_live(permit, read=docs.__getitem__)
+        self.assertEqual(self.select(), LABEL)
+        self.permit['source_sha'] = HEAD
+        with self.assertRaises(selector.Refusal):
+            self.select()
+
+    def test_private_ingress_bypasses_mac_selector_and_native_gates_stay_exact(self):
+        text = workflow('macos-local-signing-import')
+        ingress = job(text, 'staging-ingress')
+        native = job(text, 'verify')
+        route = job(text, 'mac-runner-local-import')
+        self.assertIn('runs-on: ubuntu-24.04', ingress)
+        self.assertNotIn('needs:', ingress)
+        self.assertNotIn('SYMPHONY_BACKUP_MAC_PERMIT', ingress)
+        for block in (native, route, ingress):
+            self.assertIn("github.ref == 'refs/heads/main'", block)
+            self.assertIn('inputs.approved_revision == github.sha', block)
+        self.assertIn('needs: [mac-runner-local-import, staging-ingress]', native)
+        self.assertIn('runs-on: ${{ needs.mac-runner-local-import.outputs.runner }}', native)
+        self.assertIn('environment: macos-production-signing', native)
+        self.assertIn('name: Verify locally signed distribution', native)
+        self.assertIn('runner=macos-15-intel', route)
+        self.assertIn('SELECT_JOB_KEY: verify', route)
+        self.assertIn('test "$(uname -m)" = arm64', native)
+        self.assertIn('14.*)', native)
+        self.assertNotIn('secrets.', text)
+        self.assertNotIn('.github/workflows/macos-production-signing.yml', selector.TARGETS)
+
     def test_exact_owner_pr_permit_selects_one_label_after_live_source_check(self):
         self.assertEqual(self.select(), LABEL)
         self.inspect.assert_called_once_with(self.permit, expected_pr_base_ref='dev', expected_pr_head_ref='codex/feature')

@@ -164,6 +164,8 @@ PORTABLE_RELEASE = {
     'runner-startup.sh',
     'runner_reuse.py',
     'test_registry.py',
+    'staging_archive.py',
+    'staging_ingress.py',
     'verify-prior-source.py',
 }
 
@@ -243,7 +245,7 @@ def consumer_selection(path):
             return {'portable'}, 'release controller with audited portable tests'
         if relative in {'macos_signing_inputs.py', 'production_release.py'}:
             return {'portable'}, 'portable signing or package diagnostic policy; Apple work remains explicit'
-        if relative in {'macos_distribution.py', 'package_diagnostics.py', 'package-diagnostics.sh'}:
+        if relative in {'macos_distribution.py', 'signing_payload.py', 'package_diagnostics.py', 'package-diagnostics.sh'}:
             return PACKAGES, 'native manager assembly and diagnostic dependency; no application or process fixtures'
         if relative in {
             'artifacts.py', 'build-host-helper.sh', 'package.sh', 'component_provenance.py',

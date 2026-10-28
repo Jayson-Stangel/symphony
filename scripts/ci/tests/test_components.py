@@ -224,6 +224,23 @@ class Consumers(unittest.TestCase):
                     if dependency.is_file():
                         pending.append(str(dependency.relative_to(ROOT)))
 
+    def test_signing_payload_dependency_is_native_without_publication_imports(self):
+        shared = 'scripts/release/signing_payload.py'
+        self.assertEqual(classifier.consumers(shared), {'portable', 'package_macos', 'package_linux'})
+        tree = ast.parse((ROOT / shared).read_text())
+        names = set()
+        for node in ast.walk(tree):
+            names.update(item.name for item in node.names) if isinstance(node, ast.Import) else None
+            if isinstance(node, ast.ImportFrom):
+                names.add(node.module)
+        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'tarfile'})
+        distribution = ast.parse((ROOT / 'scripts/release/macos_distribution.py').read_text())
+        imports = {node.module for node in ast.walk(distribution) if isinstance(node, ast.ImportFrom)}
+        self.assertIn('signing_payload', imports)
+        self.assertTrue(imports.isdisjoint({'local_distribution', 'production_release'}))
+        for filename in ('production_release.py', 'component_publication.py', 'graph_publication.py', 'registry_closure.py'):
+            self.assertEqual(classifier.consumers('scripts/release/' + filename), {'portable'})
+
     def test_native_work_cannot_bypass_portable_preflight(self):
         guard = scripts(job(workflow('package-checks'), 'qualification'))[0]
         for key in ('MACOS', 'LINUX', 'FIXTURES'):

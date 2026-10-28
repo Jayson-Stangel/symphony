@@ -74,7 +74,7 @@ jobs:
           MACOS_SIGNING_IDENTITY_SHA1: ${{ vars.MACOS_SIGNING_IDENTITY_SHA1 }}
           MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
         run: |
-          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/signing-inputs/internal/release.json" "$RUNNER_TEMP/signing-inputs/helper/symphony-host" "$RUNNER_TEMP/signed-candidate" --authorize-apple-upload
+          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/signing-inputs/internal/release.json" "$RUNNER_TEMP/signing-inputs/helper/symphony-host" "$RUNNER_TEMP/signed-candidate" --qualified-package "$RUNNER_TEMP"/signing-inputs/packages/*-macos.tar.gz --authorize-apple-upload
       - name: Preserve Linux bytes and finalize the existing updater metadata contract
         run: |
           cp "$RUNNER_TEMP"/signing-inputs/packages/*-linux_x86_64.tar.gz "$RUNNER_TEMP/signed-candidate/"

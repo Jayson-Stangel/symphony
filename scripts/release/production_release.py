@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from macos_distribution import checksum, require, write_json
 from manager_envelope import load_release
 import manager_version
+from signing_payload import helper_hash
 
 MAX_BYTES = 512 * 1024 * 1024
 
@@ -42,6 +43,7 @@ def completed_run(run_id, attempt, revision, workflow, fetch=api):
     required = (['Candidate qualification', 'Build release package (macos)', 'Build release package (linux_x86_64)',
                  'Assemble release packages', 'Verify engine (linux_x86_64)', 'Verify engine (macos_arm64)',
                  'Verify production preparation source'] if workflow == 'burrito-release.yml' else
+                ['Verify locally signed distribution'] if workflow == 'macos-local-signing-import.yml' else
                 ['Sign exact production preparation'])
     for suffix in required:
         matches = [job for job in jobs['jobs'] if job['name'] == suffix or job['name'].endswith(' / ' + suffix)]
@@ -84,14 +86,6 @@ def download(run_id, attempt, revision, name, destination, fetch=api):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(entry))
     return {key: item[key] for key in ('id', 'name', 'digest')}
-
-
-def helper_hash(archive):
-    with tarfile.open(archive, 'r:gz') as bundle:
-        entries = [e for e in bundle if e.name in ('./libexec/symphony-host', 'libexec/symphony-host')]
-        require(len(entries) == 1 and entries[0].isfile() and entries[0].size <= MAX_BYTES,
-                'production archive helper missing')
-        return hashlib.sha256(bundle.extractfile(entries[0]).read()).hexdigest()
 
 
 def same_manifest(left, right):
@@ -215,6 +209,13 @@ def signed(run_id, attempt, revision, destination, fetch=api):
                       destination / 'signed', fetch)
     qualified = json.loads((destination / 'signed/qualification.json').read_text())
     qualification(str(qualified['run_id']), str(qualified['run_attempt']), revision, destination / 'qualified', fetch)
+    verify_retained(destination, revision, fetch)
+    write_json(destination / 'signed-origin.json', record)
+
+
+def verify_retained(destination, revision, fetch=api):
+    """The same byte/evidence admission for hosted and imported local signing."""
+    qualified = json.loads((destination / 'signed/qualification.json').read_text())
     verify_signed(destination / 'signed', destination / 'qualified', revision)
     sums = (destination / 'signed/SHA256SUMS').read_text().splitlines()
     expected_files = {p.name: checksum(p) for p in (destination / 'signed').iterdir()
@@ -240,7 +241,6 @@ def signed(run_id, attempt, revision, destination, fetch=api):
                              'source_revision': revision, 'target': target}, 'engine source/checksum differs')
         require((folder / (filename + '.sha256')).read_text().strip() == checksum(folder / filename) + '  ' + filename,
                 'engine checksum receipt differs')
-    write_json(destination / 'signed-origin.json', record)
 
 
 def release_files(retained):
@@ -307,19 +307,62 @@ def live_source(revision, tag=None, fetch=api):
 def publish_release(retained, tag, invoke=subprocess.run, verify_tag=None):
     files = release_files(retained)
     verify_tag = verify_tag or (lambda: live_source(os.environ["GITHUB_SHA"], tag))
-    def state():
-        result = invoke(['gh', 'api', f'repos/{REPOSITORY}/releases/tags/{tag}'], capture_output=True, text=True, check=False)
-        value = json.loads(result.stdout)
-        if result.returncode:
-            require(isinstance(value, dict) and str(value.get('status')) == '404', 'release inventory unavailable')
-            return None
-        require(value.get('tag_name') == tag, 'release inventory tag differs')
+    candidate_manifest = retained / 'signed/release.json'
+    revision = os.environ.get('GITHUB_SHA', '')
+    require(re.fullmatch(r'[a-f0-9]{40}', revision), 'invalid production source')
+    require(json.loads(candidate_manifest.read_text())['source_revision'] == revision,
+            'retained publication source differs')
+
+    def request(path, method=None, payload=None):
+        command = ['gh', 'api', f'repos/{REPOSITORY}/' + path]
+        kwargs = {'capture_output': True, 'text': True, 'check': True}
+        if method:
+            command += ['--method', method, '--input', '-']
+            kwargs['input'] = json.dumps(payload)
+        result = invoke(command, **kwargs)
+        require(result.returncode == 0, 'production release service unavailable')
+        return json.loads(result.stdout)
+
+    def identity(value, release_id=None, original_target=None):
+        require(isinstance(value, dict) and type(value.get('id')) is int and value['id'] > 0
+                and (release_id is None or value['id'] == release_id)
+                and value.get('tag_name') == tag
+                and isinstance(value.get('target_commitish'), str) and 0 < len(value['target_commitish']) <= 256
+                and (original_target is None or value['target_commitish'] == original_target),
+                'original production release identity differs')
         return value
-    value = state()
+
+    # The by-tag endpoint only promises published releases. Reconcile a retry's
+    # original draft by a complete bounded inventory before creating anything.
+    matches = []
+    for page in range(1, 11):
+        listing = request(f'releases?per_page=100&page={page}')
+        require(isinstance(listing, list) and len(listing) <= 100
+                and all(isinstance(item, dict) for item in listing), 'invalid production release inventory')
+        matches.extend(item for item in listing if item.get('tag_name') == tag)
+        require(len(matches) <= 1, 'ambiguous original production draft')
+        if len(listing) < 100:
+            break
+    else:
+        raise ValueError('production release inventory exceeds reconciliation bound')
+    value = identity(matches[0]) if matches else None
+    if value is not None:
+        require(value.get('draft') is True, 'refusing to alter a completed release')
+    verify_tag()
     if value is None:
-        verify_tag()
-        invoke(['gh', 'release', 'create', tag, '--draft', '--verify-tag', '--generate-notes'], check=True)
-        value = state()
+        # Capture the ORIGINAL ID once. A failed/uncertain POST is not retried.
+        value = identity(request('releases', 'POST', {'tag_name': tag, 'target_commitish': revision,
+                         'draft': True, 'generate_release_notes': True}))
+        require(value.get('draft') is True, 'created production release is not a draft')
+    release_id = value['id']
+    original_target = value['target_commitish']
+
+    def state():
+        value = identity(request('releases/' + str(release_id)), release_id, original_target)
+        require(value.get('draft') is True, 'refusing to alter a completed release')
+        return value
+
+    value = state()
     present = release_inventory(value, files)
     missing = [str(p) for p in files if p.name not in present]
     if missing:
@@ -327,7 +370,10 @@ def publish_release(retained, tag, invoke=subprocess.run, verify_tag=None):
         invoke(['gh', 'release', 'upload', tag, *missing], check=True)
     release_inventory(state(), files, complete=True)
     verify_tag()
-    invoke(['gh', 'release', 'edit', tag, '--draft=false', '--prerelease=false', '--latest'], check=True)
+    completed = identity(request('releases/' + str(release_id), 'PATCH',
+                         {'draft': False, 'prerelease': False, 'make_latest': 'true'}), release_id, original_target)
+    require(completed.get('draft') is False and completed.get('prerelease') is False,
+            'production release completion differs')
 
 
 def source(revision, tag=None):
@@ -353,7 +399,14 @@ def main():
     args = parser.parse_args(); revision = os.environ['GITHUB_SHA']
     if args.mode == 'qualify': qualification(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
     elif args.mode == 'seal': seal_signed(Path(args.paths[0]), Path(args.paths[1]), revision)
-    elif args.mode == 'signed': signed(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
+    elif args.mode == 'signed':
+        origin = os.environ.get('SIGNED_ORIGIN', 'hosted')
+        require(origin in ('hosted', 'local'), 'unknown signing origin')
+        if origin == 'local':
+            from local_distribution import retained_local
+            retained_local(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
+        else:
+            signed(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
     elif args.mode == 'source': source(revision, args.paths[0] if args.paths else None)
     elif args.mode == 'public':
         from registry_closure import registry_available
