@@ -59,8 +59,8 @@ def evidence_refusal(error):
         ('untrusted_source_or_workflow', ('history', 'repository', 'controller', 'workflow', 'ancestry')),
         ('wrong_native_platform', ('native platform',)),
         ('failed_or_missing_qualification', ('did not pass', 'missing or ambiguous', 'cancelled')),
-        ('immutable_integrity_mismatch', ('checksum', 'digest', 'corrupt', 'record differs', 'origin')),
-        ('origin_service_unavailable', ('service unavailable',))):
+        ('origin_service_unavailable', ('service unavailable',)),
+        ('immutable_integrity_mismatch', ('checksum', 'digest', 'corrupt', 'record differs', 'origin'))):
         if any(word in text for word in words):
             return category
     return 'incompatible_or_unavailable_evidence'
@@ -103,10 +103,12 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
             if not compatible:
                 decision['reason'] = 'no discovered candidate for this provider/native architecture'
             for record in compatible:
+                qualification = record.get('qualification')
+                qualification = qualification if isinstance(qualification, dict) else {}
                 audit = {'source_revision': record.get('source_revision'),
                          'input_identity': record.get('input_identity'),
-                         'original_run_id': record.get('qualification', {}).get('run_id'),
-                         'original_artifact_id': record.get('qualification', {}).get('artifact_id')}
+                         'original_run_id': qualification.get('run_id'),
+                         'original_artifact_id': qualification.get('artifact_id')}
                 decision['candidate_decisions'].append(audit)
                 matches = record.get("input_identity") == current["input_identity"]
                 matches_browser = (architecture in browser and
@@ -118,7 +120,7 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                     except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):pass
                 if not matches:
                     audit['outcome'] = 'effective_inputs_differ'
-                    key = (record.get('source_revision'), provider, architecture, record.get('input_identity'))
+                    key = json.dumps(record, sort_keys=True)
                     if key not in explained:
                         try:
                             previous = previous_inputs(root, record)

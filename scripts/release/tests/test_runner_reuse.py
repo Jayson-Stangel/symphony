@@ -91,6 +91,7 @@ class ReusePlannerTest(unittest.TestCase):
                 self.assertIn('anonymous canonical', decision['reason'])
                 self.assertEqual(decision['action'], 'build')
         self.assertEqual(runner_reuse.evidence_refusal(ValueError('SECRET service URL')), 'incompatible_or_unavailable_evidence')
+        self.assertEqual(runner_reuse.evidence_refusal(ValueError('native origin service unavailable; reuse refused')), 'origin_service_unavailable')
 
     def test_mismatched_inputs_have_explicit_unavailable_source_explanation(self):
         changed = lambda *args: dict(self.inputs(*args), input_identity='f'*64)
@@ -116,6 +117,13 @@ class ReusePlannerTest(unittest.TestCase):
             self.assertEqual(decision['candidate_decisions'][0]['input_comparison'],
                              'original_source_or_recipe_unavailable')
             self.assertEqual(decision['record']['source_revision'], self.baseline['runners']['codex']['arm64']['source_revision'])
+
+    def test_untrusted_diagnostic_identity_or_qualification_shapes_cannot_crash_selection(self):
+        for mutation in ({'source_revision': []}, {'input_identity': []}, {'input_identity': {}},
+                         {'qualification': None}, {'qualification': []}):
+            broken = record(); broken['input_identity']='e'*64; broken.update(mutation)
+            result = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, candidates=[broken])
+            self.assertEqual(result['components']['codex']['arm64']['action'], 'reuse')
 
     def test_docker_snapshots_explain_changed_added_removed_and_control_inputs(self):
         from test_runner_inputs import RunnerInputsTest
