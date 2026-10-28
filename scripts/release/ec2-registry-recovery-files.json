@@ -1,0 +1,19 @@
+{
+  "SHA256SUMS": "bbfa8c4298a61c42a722f2fdd12455d9534644417b51c93ec619b94900bec2fb",
+  "evidence/keychain-diagnostics.json": "7cd095432bed00350694283c8137b2481eeba368ff96e1967f90df9f015fa121",
+  "evidence/notary-log.json": "37807c313a399d6bd1e69c3fd9807d383c3b2a7d42caabd214510171582ea88f",
+  "evidence/notary-submission.json": "a0a109ca2ea437605a4819b9af4e365d5416bef5422dd4bf654f7b1c0d716ae6",
+  "evidence/package-diagnostics.json": "db2495b43b8788f2d4ea29fce4c15ce7cc82c5aaaf44201c87d1a62e9874c15e",
+  "evidence/package-source.txt": "02a5c6a6342850fd6cd1af6877fbb42e3f63dcd23b7052b3d6408e715539dc23",
+  "evidence/payload-log.json": "21b34ea9eb626c3e0e5695a0fe0e158cdaf843042a3d88e287a8c4cde72c7b3e",
+  "evidence/payload-submission.json": "e761311670ddcbda71d18eefa2a4e14ac2939a4a39cf82be05c847c51cbe4f3a",
+  "internal-release.json": "e7f5ec7bb095cf98f362b7f2f0550e66f74807a03dcfa7745d49a95445319599",
+  "macos-distribution.json": "bb05dee2ac5a08d58251b76372fd5199cc176aff0fe89be7f45bce3e94c727de",
+  "notarization-evidence.json": "93a8462e2caf7f427a19c83344f3f2d8c991860ff14dcbf4b6c22877447ff9f5",
+  "production-plan.json": "dadbda911e85c8eefe963008f6355a2932b0cf2c5e681bc677e0803e6329ecfc",
+  "qualification.json": "f57159d2af1ff2d4ee64615ae64f1c333f333b639d671513977fbb917fb8b0f3",
+  "release.json": "6885ff6c9b9274e104c2622878a49e2709de2abcfe29f4e52bf816963999d5bc",
+  "symphony-0.0.6-linux_x86_64.tar.gz": "9f42528ae72ce297b7ccd64844dfe0d9485935e2569d86e3c27082dfbcef9d06",
+  "symphony-0.0.6-macos.dmg": "c0f74cfdbf9334146eeee15b72dac501623e23fe694a1574c8d560ead9c04268",
+  "symphony-0.0.6-macos.tar.gz": "1c1dad6f03f9f2bdddac6dac55e6739a3c2791fea384a34509142bfadedb4a20"
+}
