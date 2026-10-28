@@ -110,6 +110,20 @@ on:
         description: Only run bounded native cold/warm/changed-input cache qualification
         type: boolean
         default: false
+      cache_probe_provider:
+        description: Limit a cache diagnostic to one provider (all preserves existing full matrix)
+        type: choice
+        options: [all, codex, claude]
+        default: all
+      cache_probe_architecture:
+        description: Limit a cache diagnostic to one native architecture
+        type: choice
+        options: [all, arm64, x86_64]
+        default: all
+      cache_probe_export_comparison:
+        description: Compare max/min export in separate scopes; choose one provider/architecture for two allocations
+        type: boolean
+        default: false
       cache_probe_restore:
         description: Skip cold build and import the previous completed probe run from a fresh builder
         type: boolean
@@ -480,21 +494,17 @@ jobs:
           if-no-files-found: error
 
   cache-probe:
-    name: Measure runner cache (${{ matrix.provider }}, ${{ matrix.architecture }})
+    name: Measure runner cache (${{ matrix.provider }}, ${{ matrix.architecture }}, ${{ matrix.cache_mode }})
     needs: qualification
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && inputs.resume_native_run == '' && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        provider: [codex, claude]
-        architecture: [arm64, x86_64]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
+        provider: ${{ inputs.cache_probe_provider && inputs.cache_probe_provider != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_provider)) || fromJSON('["codex","claude"]') }}
+        architecture: ${{ inputs.cache_probe_architecture && inputs.cache_probe_architecture != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_architecture)) || fromJSON('["arm64","x86_64"]') }}
+        cache_mode: ${{ inputs.cache_probe_export_comparison && fromJSON('["max","min"]') || fromJSON('["max"]') }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -509,6 +519,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/runner-cache-measurements"
           id=$(docker run -d --label "com.symphony.cache-probe=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -p 127.0.0.1:5000:5000 registry:3)
           printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual cold production inputs before building
+        id: cold_snapshot
+        if: ${{ !inputs.cache_probe_restore }}
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/cold-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/cold-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual cold native image
         if: ${{ !inputs.cache_probe_restore }}
         uses: ./.github/actions/build-runner
@@ -518,6 +543,10 @@ jobs:
           revision: ${{ github.sha }}
           no-cache: 'true'
           evidence-name: cold
+          input-identity: ${{ steps.cold_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}', matrix.cache_mode) || '' }}
       - name: Qualify cold image and measure transfer
         if: ${{ !inputs.cache_probe_restore }}
         env:
@@ -531,6 +560,20 @@ jobs:
           git add docs/cache-probe-marker.txt
           git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe packaging-only revision'
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual warm production inputs before building
+        id: warm_snapshot
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/warm-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/warm-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual warm image at a new source revision
         uses: ./.github/actions/build-runner
         with:
@@ -538,6 +581,10 @@ jobs:
           tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
           revision: ${{ steps.warm-source.outputs.revision }}
           evidence-name: warm
+          input-identity: ${{ steps.warm_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}', matrix.cache_mode) || '' }}
       - name: Qualify warm image and measure transfer
         env:
           PROVIDER: ${{ matrix.provider }}
@@ -558,6 +605,20 @@ jobs:
           git add runner/Dockerfile
           git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe changes effective dependency build recipe'
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual changed production inputs before building
+        id: changed_snapshot
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/changed-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/changed-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual invalidated dependency build
         uses: ./.github/actions/build-runner
         with:
@@ -565,7 +626,10 @@ jobs:
           tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
           revision: ${{ steps.changed-source.outputs.revision }}
           evidence-name: changed
-          cache-variant: changed
+          input-identity: ${{ steps.changed_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}-changed', matrix.cache_mode) || 'changed' }}
           export-cache: 'false'
       - name: Qualify changed-input image and measure transfer
         env:
@@ -576,7 +640,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: runner-cache-${{ matrix.provider }}-${{ matrix.architecture }}-${{ github.sha }}
+          name: ${{ inputs.cache_probe_export_comparison && format('runner-cache-{0}-{1}-{2}-{3}', matrix.provider, matrix.architecture, matrix.cache_mode, github.sha) || format('runner-cache-{0}-{1}-{2}', matrix.provider, matrix.architecture, github.sha) }}
           path: ${{ runner.temp }}/runner-cache-measurements/**
           if-no-files-found: error
           retention-days: 30
@@ -595,7 +659,7 @@ jobs:
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: codex-apparmor-cache-${{ matrix.architecture }}
+          name: ${{ inputs.cache_probe_export_comparison && format('codex-apparmor-cache-{0}-{1}', matrix.architecture, matrix.cache_mode) || format('codex-apparmor-cache-{0}', matrix.architecture) }}
           path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
@@ -1013,6 +1077,10 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           CACHE_PROBE: ${{ inputs.cache_probe }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+          CACHE_EXPORT_COMPARISON: ${{ inputs.cache_probe_export_comparison }}
+          CACHE_PROBE_RESTORE: ${{ inputs.cache_probe_restore }}
+          CACHE_PROBE_PROVIDER: ${{ inputs.cache_probe_provider }}
+          CACHE_PROBE_ARCHITECTURE: ${{ inputs.cache_probe_architecture }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
@@ -1022,6 +1090,12 @@ jobs:
           test "${LEGACY_PUBLISH:-false}" != true || { echo 'Unsigned publication is disabled; use production-publish with signed inputs.' >&2; exit 1; }
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
           test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
+          if [ "${CACHE_EXPORT_COMPARISON:-false}" = true ]; then
+            test "${CACHE_PROBE:-false}" = true
+            test "${CACHE_PROBE_RESTORE:-false}" != true
+            case "$CACHE_PROBE_PROVIDER" in codex|claude) ;; *) echo 'Select one cache comparison provider' >&2; exit 1 ;; esac
+            case "$CACHE_PROBE_ARCHITECTURE" in arm64|x86_64) ;; *) echo 'Select one cache comparison architecture' >&2; exit 1 ;; esac
+          fi
           if [ -n "$CALLER_REVISION" ]; then
             test "$LOCAL_RESULT" = skipped
             test "$CALLER_REVISION" = "$GITHUB_SHA"

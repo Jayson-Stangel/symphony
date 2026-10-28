@@ -13,11 +13,19 @@ case "${EVENT:?}/${REF:?}" in
     ;;
   *) namespace="ref-$(printf '%s' "$REF" | shasum -a 256 | cut -c1-20)" ;;
 esac
+case "${CACHE_MODE:-max}" in min|max) ;; *) echo 'unsupported cache export mode' >&2; exit 1 ;; esac
+case "${CACHE_VARIANT:-}" in
+  export-min*) [ "${CACHE_MODE:-max}" = min ] || { echo 'cache mode and diagnostic namespace differ' >&2; exit 1; } ;;
+  export-max*) [ "${CACHE_MODE:-max}" = max ] || { echo 'cache mode and diagnostic namespace differ' >&2; exit 1; } ;;
+esac
 base_namespace=$namespace
 case "${CACHE_VARIANT:-}" in
   '') ;;
   changed) namespace="$namespace-changed" ;;
+  export-min|export-max) namespace="$namespace-$CACHE_VARIANT"; base_namespace=$namespace ;;
+  export-min-changed|export-max-changed)
+    base_namespace="$namespace-${CACHE_VARIANT%-changed}"; namespace="$namespace-$CACHE_VARIANT" ;;
   *) echo 'unsupported diagnostic cache variant' >&2; exit 1 ;;
 esac
 printf 'base_namespace=%s\nnamespace=%s\narch=%s\n' "$base_namespace" "$namespace" "$arch" >> "${GITHUB_OUTPUT:?}"
-printf '### Build layer cache\nTarget: `%s`; native platform: `linux/%s`; selected namespace: `%s`; export enabled: `%s`.\nLayer hits remain subject to exact Dockerfile, base, COPY, lockfile and build-argument keys. Missing caches build cold.\n' "$TARGET" "$arch" "$namespace" "${CACHE_EXPORT:-true}" >> "${GITHUB_STEP_SUMMARY:?}"
+printf '### Build layer cache\nTarget: `%s`; native platform: `linux/%s`; selected namespace: `%s`; export enabled: `%s`; mode: `%s`.\nLayer hits remain subject to exact Dockerfile, base, COPY, lockfile and build-argument keys. Missing caches build cold.\n' "$TARGET" "$arch" "$namespace" "${CACHE_EXPORT:-true}" "${CACHE_MODE:-max}" >> "${GITHUB_STEP_SUMMARY:?}"
