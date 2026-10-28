@@ -195,6 +195,14 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
             "SYMPHONY_INSTALL_DIR": str(root / "extract"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "C.UTF-8", "TERM": "dumb", "ERL_CRASH_DUMP": str(root / "logs" / "erl_crash.dump"),
         }
+        # A build allocation may have language/build tools installed. They must
+        # be unreachable from the standalone runtime's clean environment.
+        require(all(shutil.which(tool, path=environment['PATH']) is None
+                    for tool in ('erl', 'elixir', 'mix', 'zig')),
+                'standalone qualification PATH exposes a host build runtime')
+        result['standalone_environment'] = {
+            'path': environment['PATH'], 'host_build_runtime_absent': True,
+            'fresh_home_config_cache': True, 'source_tree_cwd': False}
         with (evidence_dir / "startup.log").open("wb") as log, (root / "ownership").open("wb") as lease:
             try:
                 process = subprocess.Popen([str(executable), "--i-understand-that-this-will-be-running-without-the-usual-guardrails",

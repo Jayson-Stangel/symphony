@@ -648,3 +648,24 @@ component records and immutable image digests, manifests/checksums, native helpe
 qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
+
+### Native engine allocation
+
+Each selected Linux x86-64/macOS ARM64 engine is built and immediately qualified
+in one native job, before its executable is uploaded. The existing `Verify
+engine (target)` evidence names now describe the combined producer, so original
+production readers still require a successful complete native job. There is no
+whole-build-matrix barrier or second smoke allocation/selector/download. A
+failed standalone check prevents the engine artifact upload; its evidence is
+retained even on failure.
+
+The controller copies exact checked bytes into a fresh temporary directory,
+uses isolated home/config/cache/extraction/workspace paths, and launches from
+outside the source tree with an explicit environment and system-only PATH. It
+refuses a PATH exposing Erlang/Elixir/Mix/Zig so the preceding build cannot mask
+a missing standalone runtime tool. Python/lsof remain controller dependencies;
+startup, attributable health, missing-provider readiness, graceful stop and
+owned-descendant cleanup remain actual executable checks. The controller-only
+mode selects only its own Mac route. Unselected build/controller routes allocate
+no selector job; the obsolete tag-only no-op trigger is removed. Saved queue
+intervals overlap other work and are not additive deployment-time savings.
