@@ -296,7 +296,8 @@ class BaselineBootstrapTest(unittest.TestCase):
             wrong=dict(self.descriptor);wrong[key]='wrong'
             with self.subTest(field=key),self.assertRaises((ValueError,TypeError)):
                 self.b.descriptor(json.dumps(wrong),self.env)
-        for value in ('{}','[]','null',json.dumps(dict(self.descriptor,extra=True))):
+        for value in ('{}','[]','null',json.dumps(dict(self.descriptor,extra=True)),
+                      json.dumps(self.descriptor)[:-1]+',\"run_id\":40588897389}') :
             with self.assertRaises(ValueError):self.b.descriptor(value,self.env)
 
     def test_owned_mac_needs_actual_successful_source_guard_and_helper_steps(self):

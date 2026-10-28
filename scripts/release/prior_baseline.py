@@ -25,13 +25,20 @@ def descriptor(raw, env=None):
         return None
     env = os.environ if env is None else env
     require(isinstance(raw, str) and len(raw) <= 2048, 'bootstrap descriptor invalid or oversized')
-    value = json.loads(raw)
+    def unique(pairs):
+        value = {}
+        for key,item in pairs:
+            require(key not in value, 'bootstrap descriptor repeats a field')
+            value[key] = item
+        return value
+    value = json.loads(raw,object_pairs_hook=unique)
     require(isinstance(value, dict) and set(value) == set(ORIGINAL) | {'candidate_source_revision'},
             'bootstrap descriptor fields differ')
     require(all(type(value[k]) is type(v) and value[k] == v for k, v in ORIGINAL.items()),
             'bootstrap original subject differs')
     require(re.fullmatch('[a-f0-9]{40}', value['candidate_source_revision'] or '') is not None
-            and value['candidate_source_revision'] == env.get('GITHUB_SHA'), 'bootstrap candidate source differs')
+            and value['candidate_source_revision'] == env.get('GITHUB_SHA')
+            and value['candidate_source_revision'] != ORIGINAL['source_revision'], 'bootstrap candidate source differs')
     require(env.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and env.get('GITHUB_REF') == 'refs/heads/dev'
             and env.get('GITHUB_REF_TYPE') == 'branch' and env.get('GITHUB_REPOSITORY') == OWNER+'/symphony'
             and env.get('GITHUB_ACTOR') == OWNER and env.get('GITHUB_TRIGGERING_ACTOR') == OWNER,
