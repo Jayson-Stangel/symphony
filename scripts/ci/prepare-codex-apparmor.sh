@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Explicit administrator preparation for disposable GitHub-hosted Linux CI only.
-# Product launchers never install host policy. This does not qualify an image.
+# Supporting image-only CI prerequisite; not installed product setup acceptance.
+# Installed/package acceptance must use the shipped runner apparmor command.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 mode=${1:?prepare or cleanup required}

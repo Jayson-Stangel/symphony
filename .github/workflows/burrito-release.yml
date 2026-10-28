@@ -4,6 +4,10 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
       production_prepare:
         description: Prepare exact main production-reference packages without publication
         type: boolean
@@ -60,6 +64,7 @@ jobs:
     steps:
       - name: Require manual main preparation
         env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
           PREPARE: ${{ inputs.production_prepare }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
@@ -67,6 +72,13 @@ jobs:
           CONTROLLER_ONLY: ${{ inputs.controller_only }}
         run: |
           test "$EVENT" = workflow_dispatch
+          if [ "$ENGINE_ONLY" != true ] && [ "$CONTROLLER_ONLY" != true ]; then
+            test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+            test "$GITHUB_ACTOR" = Jayson-Stangel
+            test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          fi
           if [ "$PREPARE" = true ]; then
             test "$REF" = refs/heads/main
             test "$ENGINE_ONLY" != true
@@ -96,6 +108,7 @@ jobs:
     if: ${{ !inputs.controller_only && !inputs.engine_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
       baseline_run: ${{ inputs.baseline_run }}
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}

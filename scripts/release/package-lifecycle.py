@@ -376,6 +376,15 @@ def main():
     try:
         selections = package_selections(packages, current_only, result["source_revision"], manager_update_only)
         current = selections[-1][1]
+        if not result["diagnostic_artifact_run"]:
+            # Verify actual current-package preparation before any installed acceptance.
+            # Authentication remains a credential-free peer; protected execution below is real.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
+            import packaged_apparmor
+            proof = packaged_apparmor.verify(packages, packages / "release.json",
+                Path(os.environ["PACKAGED_APPARMOR_EVIDENCE"]), cleanup_required=False)
+            result["packaged_host_preparation"] = {key: proof[key] for key in
+                ("source_revision", "package_sha256", "profile", "policy_sha256", "host", "daemon_id")}
         initial = selections[0][1]
         previous = selections[-2][1] if len(selections) > 1 else initial
         legacy_chain = len(selections) == 3
@@ -506,6 +515,9 @@ def main():
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
+            if current_only and not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             selected_agent = project_agents[number]
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
@@ -614,6 +626,9 @@ def main():
                 metadata[0].write_bytes(original_metadata)
         if current_only:
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
             for selected_repo, selected_name in zip(repositories, names):
                 client_run([str(command), "runner", "stop"], cwd=selected_repo)
@@ -637,6 +652,9 @@ def main():
                 unchanged()
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             retained()
             client_run([str(command), "update", "--rollback-release"], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == previous['source_revision']
@@ -650,6 +668,9 @@ def main():
             retained()
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             retained()
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
                 client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
@@ -671,6 +692,9 @@ def main():
         client_run([str(command), "update", *update_args], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+        if not result["diagnostic_artifact_run"]:
+            client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+            result["current_packaged_protected_execution"] = True
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         client_run([str(command), "update", "--rollback-release"], cwd=repo)
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
