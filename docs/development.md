@@ -648,3 +648,17 @@ component records and immutable image digests, manifests/checksums, native helpe
 qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
+
+### Production publication handoffs
+
+The initial production publisher input job is an admission gate. It does not
+upload a repacked `retained-production-inputs` artifact: neither protected
+consumer used it. Registry and release jobs independently retrieve authenticated
+original signing/helper/engine artifacts by service ID and digest after their
+separate environment approvals. Within each job the verified local material is
+used for graph transfer/comparison or release assembly without another `signed`
+retrieval. Source/tag state is checked freshly at each protected boundary;
+release mutation also checks it before each mutation. This removes one upload
+and one retained artifact per run, while retaining cross-job original retrieval
+and integrity checks. No publication timing saving is claimed without a real
+separately authorized production run.
