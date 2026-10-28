@@ -201,7 +201,6 @@ current reviewed source before preparing an execution approval.
 | `make-all.yml` / `platform-contracts` | `Fast process contracts (macos-14)` feeds required `Application checks` | `python3 runner/test_npm_cache_lifecycle.py` when npm inputs change; `python3 scripts/ci/release_tests.py contracts` when process contracts change. |
 | `package-checks.yml` / `native-host-package` | `Native helpers and fixtures (macos)` feeds required `Package qualification` | Build the ARM64 helper; assert exact revision/platform; run existing package, selected-image, environment, manager-protocol and Codex-config suites; run selected native process/updater fixtures in the same allocation. |
 | `native-manager-helpers.yml` / `helper` | `Build manager helper (macos)` joins both native helpers before `qualified_revision` | Build the real helper with `scripts/release/build-host-helper.sh --native`; run the existing exact-source shared contracts; retain the helper/checksum artifact. |
-| `release-native.yml` / `native` | `Native process fixtures (macos)` | Existing explicit `python3 scripts/ci/release_tests.py native` qualification. |
 
 The package workflow uses `release_tests.py process` for ordinary PR/non-tag push
 runs and `release_tests.py native` for its explicit qualification callers. Its
@@ -224,16 +223,16 @@ The same per-consumer mechanism covers these credential-free qualification jobs:
 
 | Consumer workflow | Exact logical `job_key` targets |
 | --- | --- |
+| `macos-local-signing-import.yml` | `verify` (existing separately protected native verification) |
 | `make-all.yml` | `platform-contracts` |
 | `package-checks.yml` | `native-host-package` |
-| `release-native.yml` | `native` |
 | `native-manager-helpers.yml` | `helper` |
 | `current-manager-package.yml` | `package` |
 | `runner-release.yml` | `packaged-candidate`, `packaged-release-platform` |
-| `burrito-release.yml` | `build`, `smoke`, `controller-diagnostics` |
+| `burrito-release.yml` | `build`, `controller-diagnostics` |
 | `macos-local-signing-import.yml` | `verify` (protected main-only inspection; no signing credential) |
 
-Only these eleven logical targets can be named; one run permit admits at most eight
+Only these nine logical targets can be named; one run permit admits at most eight
 distinct consumer/job pairs, each with a distinct label and isolated one-job
 runner. Engine/helper/package commands and artifact identities remain in their
 existing jobs. Linux candidate/cache/transfer matrices and native host policy are
@@ -700,3 +699,15 @@ This PR refreshes the runbook and readiness handoff only. The sole integration
 coordinator owns acceptance and authorized `dev` integration. No new privileged
 runner/account/settings or real-account/model operation, production promotion,
 signing, Apple submission, publication or stable update is authorized here.
+
+### Retired engine routes
+
+The combined engine `build` job retains actual standalone qualification and its
+`Verify engine (target)` evidence name. Engine-only controller fixtures run in
+that same native allocation with full Git history. The old `smoke` target and
+unconsumed `release-native.yml` / `native` target are no longer valid new permits.
+Historical source-bound permits and receipts remain evidence for their original
+controller/source/run; do not reinterpret them under this updated allowlist.
+This inventory change grants no native job, candidate, signing or publication
+authority. Existing local-import verification retains its protected approval
+boundary and gains no new access from its explicit table entry.

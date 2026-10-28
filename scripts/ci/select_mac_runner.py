@@ -21,9 +21,8 @@ TARGETS = {
     ".github/workflows/package-checks.yml": {"native-host-package"},
     ".github/workflows/native-manager-helpers.yml": {"helper"},
     ".github/workflows/current-manager-package.yml": {"package"},
-    ".github/workflows/release-native.yml": {"native"},
     ".github/workflows/runner-release.yml": {"packaged-candidate", "packaged-release-platform"},
-    ".github/workflows/burrito-release.yml": {"build", "smoke", "controller-diagnostics"},
+    ".github/workflows/burrito-release.yml": {"build", "controller-diagnostics"},
 }
 CONTROLLERS = {
     ".github/workflows/macos-local-signing-import.yml",
