@@ -701,6 +701,19 @@ qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
 
+### Production runner content
+
+The production `common` Docker stage compiles `elixir/lib`, `elixir/config` and
+`elixir/priv` against `mix.exs`/`mix.lock`. Static dashboard files and Codex
+readiness Python resources are compile-time consumers of `priv` and stay in the
+image. `elixir/WORKFLOW.md`, `elixir/AGENTS.md` and canonical `.codex/skills` remain
+behavioral inputs. The installed entrypoints execute `bin/symphony`; they do not
+invoke repository tests, documentation or the local Makefile. Those files enter
+only the explicit `claude-test` qualification stage through its full-source copy.
+`runner_inputs.py` derives each production identity from this actual stage/COPY
+closure and the Docker ignore rules, so harness edits do not invalidate either
+provider while runtime, config, assets, dependencies and skills do.
+
 ### Production publication handoffs
 
 The initial production publisher input job is an admission gate. It does not
