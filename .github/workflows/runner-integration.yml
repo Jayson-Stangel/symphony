@@ -33,6 +33,7 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'latest' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
@@ -172,6 +173,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      statuses: read
       packages: write
   manager-inputs:
     name: Bind selected component inputs
