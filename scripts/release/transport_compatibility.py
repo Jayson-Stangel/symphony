@@ -8,10 +8,11 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
-ENTRYPOINTS = ('transport_compatibility', 'staging_archive', 'staging_ingress', 'local_distribution',
+ENTRYPOINTS = ('transport_compatibility', 'transport_fixture', 'staging_archive', 'staging_ingress', 'local_distribution',
                'graph_publication', 'component_publication', 'production_release')
 WORKFLOWS = ('.github/workflows/production-publish.yml',
              '.github/workflows/macos-local-signing-import.yml')
+FIXTURE_FILES = ('scripts/release/fixtures/transport-fixture-v1.json',)
 CONTEXT_KEYS = {'actor', 'authentication', 'repository_visibility', 'configuration_digest'}
 
 
@@ -33,7 +34,7 @@ def context(value):
 
 
 def inputs(root):
-    """Hash the static local Python import closure plus consuming workflows.
+    """Hash the Python import closure, consuming workflows and fixed fixture data.
 
     Both branches of conditional imports count. Dynamic import additions require
     updating these roots/reviewing this inventory before evidence reuse.
@@ -43,7 +44,7 @@ def inputs(root):
     root = Path(root).resolve()
     directory = root / 'scripts/release'
     pending = list(ENTRYPOINTS)
-    files = set(WORKFLOWS)
+    files = set(WORKFLOWS + FIXTURE_FILES)
     while pending:
         name = pending.pop()
         path = directory / (name + '.py')

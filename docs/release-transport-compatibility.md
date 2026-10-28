@@ -52,7 +52,8 @@ python3 scripts/release/transport_compatibility.py compare --context /path/to/cu
 
 The tool hashes the static local Python import closure of the staging, ingress,
 publication and comparison entry points, plus the consuming publication/import
-workflows. It compares exact file sets as well as bytes and context. A changed
+workflows and exact fixture JSON. The fixture executor is a required entrypoint;
+missing or symlinked executor/data inputs fail closed. It compares exact file sets as well as bytes and context. A changed
 input/context exits 1; malformed or missing input exits 2. A match exits 0 and
 means only that the recorded inputs match. It is not a service-capability,
 qualification, signed-package, native-install or production-approval verdict.
@@ -94,64 +95,24 @@ original checked-out files, permissions and original receipts before reusing any
 part of that evidence. The new local tests prove routing to the same validator;
 they do not turn the old operations into a new-source real-service run.
 
-## Proposed smallest real-service decision (not authorized by this document)
+## Approved fixture execution remains a separate decision
 
-Owner: the retrospective coordinator for JAY-772, with the transport owner
-executing only the approved fixture. Account/repository: `Jayson-Stangel` /
-`Jayson-Stangel/symphony`. Registry destination: the existing allowlisted
-`ghcr.io/jayson-stangel/symphony-codex` package, **one untagged synthetic manifest**,
-one synthetic config and one synthetic compressed layer. No provider execution,
-image build, signing, Apple submission, production release/tag, main promotion,
-stable installation or package-visibility/settings change. Do not expand the
-repository allowlist to create a second transport.
+The default-off mode of the existing manual import caller now has a focused
+implementation. See [Early transport fixture](transport-fixture.md) for the exact
+165-byte ZIP, 917-byte graph, three separate Actions-token roles, source/owner
+admission, one artifact, confirmed checkpoint/continuation, cleanup and retention.
+An operator CLI token is used only for the separately approved original private
+staging allocation and cleanup; it cannot substitute for those Actions roles.
 
-Prepare the exact fixture bytes, reviewed controller revision, input snapshot,
-authentication role, manifest/config/layer digests and immutable resource budget
-in the approval request before any write. Use a tiny fixture, at most 16 KiB for
-the graph and 16 KiB for one opaque staging ZIP. Pin both inventories locally.
-The synthetic graph is transport data, never a runnable or qualified product.
+Bind the final reviewed live dev source, all executor/data/workflow hashes and
+service-effects budget before asking for one explicit live approval. The presence
+of these commands, a matching input snapshot, local tests and a dev merge grant
+no dispatch, staging/registry-write, protected production or native authority.
+New service-assigned IDs come only from the one approved original allocation,
+never from a guessed or replacement tag lookup. Preserve historical receipts at
+their actual source; do not backdate a snapshot or call an operator read fresh
+Actions capability. The production publisher's protected caller remains separate.
 
-A first bounded **operator CLI** demonstration can exercise `staging_archive.stage_archive`,
-`local_distribution.download_staging`, `graph_publication.publish_selected` and
-`registry_closure.registry_available(..., full=True)` without introducing a
-workflow. Its approval scope is one private draft with one asset, original-ID
-readback, original asset byte/digest verification, one untagged graph transfer,
-then anonymous full closure. Use the existing fixed-origin transport and the
-operator's existing approved GH credential in memory; never log/export it.
-This proves that operator role only, not an Actions job-token role.
-
-Stop once after the first confirmed blob commit but before manifest publication
-in an explicitly reviewed fixture callback. Preserve only content digests and
-confirmed original IDs, not upload URLs/state. After separately observing current
-remote digest/size state, allow **one explicit continuation** of the same graph
-through the normal publisher: it revalidates all inputs, HEADs committed blobs,
-and opens fresh sessions for absent blobs. Unknown POST/PUT results stop the
-fixture; no blind retry, guessed replacement ID or resume of secret upload state.
-A second failure stops for diagnosis, not another unchanged run.
-
-Cleanup is part of that decision: delete only the positively identified fixture
-draft and its one asset by the recorded original release ID, then verify their
-absence. No tag should have been created; verify that rather than delete an
-unknown ref. Do not delete existing package versions or shared blobs. The tiny
-untagged content-addressed graph/blobs may remain in the existing package and
-must be explicitly approved as retained fixture state (at most 16 KiB content,
-excluding service metadata). Abandoned upload sessions are service-owned state;
-report unknown residuals instead of claiming transactional rollback. If deletion
-or result verification fails, record the exact unresolved ID/effect and stop.
-
-For **hosted job-token/private-draft/immutable artifact** compatibility, reuse the
-original protected-ingress evidence only if its actual inputs/role remain valid.
-Otherwise a separate exact hosted fixture proposal is required: one producer and
-one independent reader, one immutable Actions artifact with original artifact ID,
-run/attempt/source/service digest, bounded retention and explicit cleanup. Reuse
-`staging_ingress` trusted source contracts; do not spoof `GITHUB_*`, weaken main
-production admission or route opaque fixture bytes into native acceptance. The
-current production workflow is not a cheap fixture: it also schedules native
-admission. This PR does not add or dispatch a replacement controller. A CLI-only
-result must leave this hosted-role gap explicit.
-
-Record actual request counts/elapsed time and confirmed results separately from
-local tests and historic evidence. No token/cost saving is inferred. The issue
-remains unfinished if its required service proof has not been demonstrated or
-explicitly satisfied by valid original evidence. All final artifact, native,
-source-bound qualification and production approval obligations remain in force.
+No new required context or automatic production gate is added. The fixture issue
+stays unfinished until the contract's actual service evidence and cleanup have
+been accepted; software integration alone is not completion.
