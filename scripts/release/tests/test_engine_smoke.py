@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("engine_smoke", Path(__file__).parents[1] / "engine-smoke.py")
 SMOKE = importlib.util.module_from_spec(SPEC)
@@ -113,10 +114,25 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertTrue(result["cleanup_descendants_gone"], result)
         return result
 
+    def test_host_build_runtime_cannot_mask_missing_standalone_dependency(self):
+        executable = self.root/'unexecuted-engine'
+        canary = self.root/'must-not-execute'
+        executable.write_text('#!/bin/sh\ntouch '+str(canary)+'\n')
+        actual_which = shutil.which
+        def visible(tool, **options):
+            return '/usr/bin/erl' if tool == 'erl' else actual_which(tool, **options)
+        with patch.object(SMOKE.shutil, 'which', side_effect=visible), \
+                self.assertRaisesRegex(SMOKE.SmokeFailure, 'PATH exposes a host build runtime'):
+            SMOKE.qualify(executable, self.root/'refused')
+        self.assertFalse(canary.exists())
+
     def test_actual_fixture_server_and_graceful_shutdown(self):
         result = self.execute("success")
         self.assertTrue(result["passed"])
         self.assertFalse(result["forced_cleanup"])
+        self.assertEqual(result['standalone_environment'], {
+            'path': '/usr/bin:/bin:/usr/sbin:/sbin', 'host_build_tools_not_on_path': True,
+            'fresh_home_config_cache': True, 'source_tree_cwd': False})
         self.assertEqual(result["exit_code"], 0)
         self.assertTrue(result["listener_pids"])
 
