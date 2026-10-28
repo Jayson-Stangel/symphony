@@ -32,11 +32,11 @@ class Refusal(ValueError):
     pass
 
 
-def github_read(path):
+def github_read(path, *, timeout=30):
     """Use the existing authenticated CLI for bounded GETs; never echo errors."""
     result = subprocess.run(
         ["gh", "api", "--method", "GET", "--hostname", "github.com", path],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode:
         raise Refusal("GitHub read failed; inspect authentication/permissions privately")

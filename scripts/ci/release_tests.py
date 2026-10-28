@@ -48,6 +48,7 @@ PORTABLE = {
     'test_recovery_archive.py',
     'test_registry_closure.py',
     'test_registry_ownership.py',
+    'test_registry_transport_recovery.py',
     'test_retained_compatibility.py',
     'test_reuse_payload.py',
     'test_runner_cache.py',
