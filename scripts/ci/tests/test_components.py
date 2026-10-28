@@ -53,6 +53,46 @@ def env_for(flags):
 
 
 class Consumers(unittest.TestCase):
+    def test_existing_release_modules_have_an_explicit_consumer_audit(self):
+        # Routing still falls back safely for unknown files. This audit guard
+        # asks contributors to classify new shipped modules deliberately, including
+        # controller-only recovery and signed-output importer inputs.
+        for path in sorted((ROOT / 'scripts/release').glob('*.py')):
+            selected, rule = classifier.consumer_selection(str(path.relative_to(ROOT)))
+            self.assertNotIn('unknown', rule, str(path))
+            self.assertIn('portable', selected, str(path))
+
+    def test_portable_test_imports_retain_their_executor(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('suite_inventory', ROOT / 'scripts/ci/release_tests.py')
+        suites = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(suites)
+        directory = ROOT / 'scripts/release/tests'
+        for filename in suites.PORTABLE:
+            self.assertIn('portable', classifier.consumers('scripts/release/tests/' + filename))
+            tree = ast.parse((directory / filename).read_text())
+            for node in ast.walk(tree):
+                names = ([item.name for item in node.names] if isinstance(node, ast.Import)
+                         else [node.module] if isinstance(node, ast.ImportFrom) else [])
+                for name in names:
+                    for parent in (directory, ROOT / 'scripts/release'):
+                        dependency = parent / ((name or '').split('.')[0] + '.py')
+                        if dependency.is_file():
+                            self.assertIn('portable', classifier.consumers(str(dependency.relative_to(ROOT))),
+                                          (filename, str(dependency)))
+
+    def test_release_repairs_do_not_allocate_unrelated_consumers(self):
+        for path in ('scripts/release/local_distribution.py',
+                     'scripts/release/ghcr_transport_recovery.py',
+                     'scripts/release/recover_ec2_registry.py',
+                     'scripts/release/ec2-registry-recovery-files.json',
+                     'scripts/release/tests/test_registry_transport_recovery.py',
+                     '.github/workflows/macos-local-signing-import.yml',
+                     '.github/workflows/ec2-registry-transport-repair.yml'):
+            self.assertEqual(classifier.consumers(path), {'portable'}, path)
+        self.assertEqual(classifier.consumers('scripts/ci/release_tests.py'),
+                         classifier.PACKAGES | {'fixtures', 'contracts', 'codex_config'})
+
     def test_dependency_table(self):
         cases = {
             'docs/development.md': set(),
@@ -69,7 +109,7 @@ class Consumers(unittest.TestCase):
             'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures', 'contracts', 'codex_config'},
             '.codex/skills/land/SKILL.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'elixir/WORKFLOW.md': {'portable', 'package_macos', 'package_linux', 'application'},
-            'runner/claude/runtime.mjs': {'application'},
+            'runner/claude/runtime.mjs': {'application', 'claude'},
             'runner/claude/qualification/Dockerfile': {'portable'},
             'scripts/release/tests/test_artifacts.py': {'portable'},
             'scripts/release/engine-smoke.py': {'portable', 'fixtures'},
@@ -145,8 +185,14 @@ class Consumers(unittest.TestCase):
         self.assertIn("Workflow and metadata regressions\n        if: needs.changes.outputs.policy == 'true'\n        run:", text)
         self.assertIn('"$RUNNER_TEMP/actionlint"', text)
         # Application setup follows its component; policy and workflow checks omit pure prose.
-        for step in text.split('      - name: Set up mise tools', 1)[1].split('      - name: Application qualification omission', 1)[0].split('      - '):
-            self.assertIn("if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'", step)
+        for family, output in (('elixir-checks', 'application'), ('claude-checks', 'claude')):
+            block = job(text, family)
+            self.assertIn("needs: changes", block)
+            self.assertNotIn('platform-contracts', block)
+            self.assertIn("if: needs.changes.outputs." + output + " == 'true' && needs.changes.outputs.ready == 'true'", block)
+        self.assertIn('run: make elixir-ci', job(text, 'elixir-checks'))
+        self.assertNotIn('make all', job(text, 'elixir-checks'))
+        self.assertIn('run: make -C elixir claude-ci', job(text, 'claude-checks'))
 
     def test_native_allocations_follow_transitive_inputs(self):
         text = workflow('package-checks')
