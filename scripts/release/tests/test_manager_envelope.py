@@ -20,7 +20,7 @@ REVIEWED_TARGET='88f366b069c296fe081d103ee5adfc1854effead'
 
 class NativeHistoryContract(unittest.TestCase):
     def test_native_checkout_retains_physical_compatibility_authorities(self):
-        workflow=(ROOT/'.github/workflows/release-native.yml').read_text()
+        workflow=(ROOT/'.github/workflows/burrito-release.yml').read_text().split('  build:\n',1)[1].split('  controller-diagnostics:\n',1)[0]
         checkout=workflow.split('uses: actions/checkout@',1)[1].split('      - name:',1)[0]
         self.assertIn('fetch-depth: 0',checkout,'native compatibility tests require the retained Git source trees')
         for revision in (SOURCE,REVIEWED_TARGET):

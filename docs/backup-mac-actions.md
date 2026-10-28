@@ -3,12 +3,73 @@
 JAY-763 provides an optional, source-bound fallback for existing Mac checks in a
 disposable Apple Silicon guest. [PR #143](https://github.com/Jayson-Stangel/symphony/pull/143)
 merged into `dev` at `9bed66a9a0eafd8da7e661be6a39899e6a3e6a2d` after real Mac
-process and native helper jobs passed. Hosted execution remains the default when
-no exact permit matches. Reusable capacity is retained in a private durable
+process and native helper jobs passed. The historical fallback selected hosted
+execution when no exact permit matched. Reusable capacity is retained in a private durable
 toolchain store; only disposable clones are ever registered. Both original-source
 post-PR149 Mac jobs also passed on 2026-10-28, with independently reconciled
 teardown. This runbook grants no new execution, merge, production or stable-rollout
 authority.
+
+## Owned-first ordinary qualification
+
+JAY-778 makes the requested credential-free Mac selector prefer a prepared
+owned guest on the first ordinary run attempt. The Linux selector verifies the
+owner, controller, PR head/base and tested merge source, then waits at most five
+minutes for an authenticated, exact-run capacity reply. A valid existing permit
+continues to work. Linux-only and omitted Mac qualification do not wait.
+
+The capacity reply is an owner-created commit status under
+`owned-mac/v1/<run>/<attempt>/<consumer>/<job>`, attached to the tested source
+commit. It is visibly capacity readiness, never a required test result. The
+selector retains the original immutable status ID, rejects mismatched or malformed
+matching replies, and reads with `statuses: read` through every reusable caller.
+The first real ordinary run must prove this GET using its actual workflow token;
+local fixtures do not prove API permissions or that an owned session ran.
+
+The normal host operation is one reviewed foreground command:
+
+```sh
+python3 <reviewed-owned-mac-driver>/owned_mac_session.py --plan <exact-session-plan.json> --admission <private-current-admission.json>
+```
+
+The reviewed finite driver is currently prepared as an operator artifact, not a
+repository-installed or background service. Its exact bytes, private durable base,
+current helper hashes, source/run/attempt/consumer, actual Linux selector job ID,
+expiry and fresh admission are pinned in the session plan before execution. The
+operator starts it for one already identified run while that selector is waiting.
+It acquires one shared nonblocking durable capacity lock and requires the separate
+ordinary selector probe step to have completed its real token GET. Before any
+clone, VM boot or registration, it publishes and verifies an authenticated
+PREPARING marker for this session. The service-created claim must precede the
+selection step start plus 240 seconds; no resource preparation begins after a
+late or uncertain claim. CI bounds each status GET to 20 seconds and requires
+a final observation after that claim window before a no-response hosted fallback.
+It then prepares one real offline ephemeral
+runner and publishes READY only after preparation. A PREPARING marker followed by
+crash, timeout or unverified cleanup refuses hosted fallback; only a later matching
+READY or verified clean terminal response can resolve that preparation. It starts the listener
+only for the actual exact queued private-label job, after the existing watchdog is
+armed. A late reply after hosted selection causes offline cleanup, never duplicate
+execution. There is no discovery loop, automatic chain, dispatcher or permanent
+registration. A stopped base without this foreground operation is not unattended
+capacity.
+
+An authenticated busy/offline/clean preparation failure, or no reply before the
+bounded deadline, selects hosted execution with an explicit reason. API errors,
+uncertain cleanup and invalid matching replies fail closed. Once a private label
+is selected there is no automatic hosted retry; actual test failures remain
+failures. Busy refers to this request owning no resources and must preserve the
+other healthy session. A crashed predecessor retains an unclean capacity record
+until explicitly reconciled.
+
+The existing writer/App/external-approval admission, exact one-job lease, private
+token transport, guest/host deadlines and full cleanup readbacks remain required.
+Initially only one owned session is admitted. Protected local-signing import keeps
+its existing explicit permit route; credentialed signing and tag publication are
+not newly admitted. The `runner-release/candidate` native-runner field selects
+Linux builders and is not a Mac consumer. Actual first-attempt owned execution and
+a genuine pre-execution hosted fallback still require ordinary CI evidence; prior
+recovery successes do not establish this new policy's acceptance.
 
 ## Verified feasibility and admission boundary
 
@@ -140,7 +201,6 @@ current reviewed source before preparing an execution approval.
 | `make-all.yml` / `platform-contracts` | `Fast process contracts (macos-14)` feeds required `Application checks` | `python3 runner/test_npm_cache_lifecycle.py` when npm inputs change; `python3 scripts/ci/release_tests.py contracts` when process contracts change. |
 | `package-checks.yml` / `native-host-package` | `Native helpers and fixtures (macos)` feeds required `Package qualification` | Build the ARM64 helper; assert exact revision/platform; run existing package, selected-image, environment, manager-protocol and Codex-config suites; run selected native process/updater fixtures in the same allocation. |
 | `native-manager-helpers.yml` / `helper` | `Build manager helper (macos)` joins both native helpers before `qualified_revision` | Build the real helper with `scripts/release/build-host-helper.sh --native`; run the existing exact-source shared contracts; retain the helper/checksum artifact. |
-| `release-native.yml` / `native` | `Native process fixtures (macos)` | Existing explicit `python3 scripts/ci/release_tests.py native` qualification. |
 
 The package workflow uses `release_tests.py process` for ordinary PR/non-tag push
 runs and `release_tests.py native` for its explicit qualification callers. Its
@@ -163,16 +223,16 @@ The same per-consumer mechanism covers these credential-free qualification jobs:
 
 | Consumer workflow | Exact logical `job_key` targets |
 | --- | --- |
+| `macos-local-signing-import.yml` | `verify` (existing separately protected native verification) |
 | `make-all.yml` | `platform-contracts` |
 | `package-checks.yml` | `native-host-package` |
-| `release-native.yml` | `native` |
 | `native-manager-helpers.yml` | `helper` |
 | `current-manager-package.yml` | `package` |
 | `runner-release.yml` | `packaged-candidate`, `packaged-release-platform` |
-| `burrito-release.yml` | `build`, `smoke`, `controller-diagnostics` |
+| `burrito-release.yml` | `build`, `controller-diagnostics` |
 | `macos-local-signing-import.yml` | `verify` (protected main-only inspection; no signing credential) |
 
-Only these eleven logical targets can be named; one run permit admits at most eight
+Only these nine logical targets can be named; one run permit admits at most eight
 distinct consumer/job pairs, each with a distinct label and isolated one-job
 runner. Engine/helper/package commands and artifact identities remain in their
 existing jobs. Linux candidate/cache/transfer matrices and native host policy are
@@ -639,3 +699,15 @@ This PR refreshes the runbook and readiness handoff only. The sole integration
 coordinator owns acceptance and authorized `dev` integration. No new privileged
 runner/account/settings or real-account/model operation, production promotion,
 signing, Apple submission, publication or stable update is authorized here.
+
+### Retired engine routes
+
+The combined engine `build` job retains actual standalone qualification and its
+`Verify engine (target)` evidence name. Engine-only controller fixtures run in
+that same native allocation with full Git history. The old `smoke` target and
+unconsumed `release-native.yml` / `native` target are no longer valid new permits.
+Historical source-bound permits and receipts remain evidence for their original
+controller/source/run; do not reinterpret them under this updated allowlist.
+This inventory change grants no native job, candidate, signing or publication
+authority. Existing local-import verification retains its protected approval
+boundary and gains no new access from its explicit table entry.
