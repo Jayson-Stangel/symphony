@@ -3,7 +3,7 @@
 MIX ?= mix
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, claude-setup, claude-test, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, claude-setup, claude-test, elixir-ci, claude-ci, ci"
 
 setup:
 	$(MIX) setup
@@ -52,8 +52,12 @@ elixir-ci:
 	$(MAKE) coverage
 	$(MAKE) dialyzer
 
-claude-ci: claude-setup claude-test
+claude-ci:
+	$(MAKE) claude-setup
+	$(MAKE) claude-test
 
-ci: elixir-ci claude-test
+ci:
+	$(MAKE) elixir-ci
+	$(MAKE) claude-test
 
 all: ci

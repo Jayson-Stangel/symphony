@@ -82,3 +82,15 @@ class ApplicationFamilies(unittest.TestCase):
             self.assertIn(command, result.stdout)
         self.assertEqual(result.stdout.count('npm --prefix ../runner/claude ci'), 1)
 
+    def test_parallel_make_cannot_test_before_dependency_installation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / 'npm'
+            executable.write_text('#!/bin/sh\nset -eu\n'
+                                  'if [ "$3" = ci ]; then sleep 0.1; touch "$INSTALL_RECEIPT"; '
+                                  'else test -f "$INSTALL_RECEIPT"; fi\n')
+            executable.chmod(0o755)
+            result = subprocess.run(['make', '-j8', '-C', str(ROOT / 'elixir'), 'claude-ci'],
+                env=dict(os.environ, PATH=folder + os.pathsep + os.environ['PATH'],
+                         INSTALL_RECEIPT=str(Path(folder) / 'installed')), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
