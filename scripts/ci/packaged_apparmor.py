@@ -65,6 +65,9 @@ def native_context():
             'explicit owner manual packaged host preparation consent is required')
     revision = os.environ.get('GITHUB_SHA', '')
     require(re.fullmatch('[a-f0-9]{40}', revision), 'exact workflow source is required')
+    approved = os.environ.get('PACKAGED_HOST_REVISION', '')
+    require(re.fullmatch('[a-f0-9]{40}', approved) and approved == revision,
+            'approved revision differs from actual workflow source')
     return revision
 
 
@@ -191,7 +194,7 @@ def prepare(packages, manifest, evidence, assembled):
     require(not any(row.startswith(profile + ' (') for row in profiles()), 'versioned profile already loaded')
     enabled = checked([tool('systemctl'), 'is-enabled', 'apparmor.service'], allowed=(0, 1))
     require(enabled in ('enabled', 'disabled'), 'unsupported original AppArmor service state')
-    receipt = {'schema': 1, 'source_revision': revision, 'package_sha256': checksum,
+    receipt = {'schema': 1, 'source_revision': revision, 'approved_revision': os.environ['PACKAGED_HOST_REVISION'], 'package_sha256': checksum,
                'package_filename': archive.name, 'helper_sha256': digest(helper),
                'profile': profile, 'policy_sha256': policy_sha, 'parser': parser,
                'host': hostname, 'kernel': platform.release(), 'daemon_id': daemon,
@@ -231,7 +234,7 @@ def verify(packages, manifest, evidence, assembled=False, cleanup_required=True)
     archive, checksum = selected_archive(packages, manifest, revision, assembled=assembled)
     receipt = json.loads(evidence.read_text())
     profile, policy_sha = policy_identity()
-    require(receipt['source_revision'] == revision and receipt['package_sha256'] == checksum and
+    require(receipt['source_revision'] == revision and receipt.get('approved_revision') == revision and receipt['package_sha256'] == checksum and
             receipt['package_filename'] == archive.name and receipt['profile'] == profile and
             receipt['policy_sha256'] == policy_sha and (not cleanup_required or receipt.get('cleanup') ==
             'verified owned profile/persistence removal; Docker not restarted') and all(receipt[key] is True for key in
@@ -246,7 +249,7 @@ def cleanup(evidence):
         return {'cleanup': 'no owned preparation effects'}
     receipt = json.loads(evidence.read_text())
     profile, policy_sha = policy_identity()
-    require(receipt['source_revision'] == revision and receipt['profile'] == profile and
+    require(receipt['source_revision'] == revision and receipt.get('approved_revision') == revision and receipt['profile'] == profile and
             receipt['policy_sha256'] == policy_sha and receipt['parser'] == tool('apparmor_parser'),
             'cleanup identity differs')
     require(receipt.get('service_enabled_before') in ('enabled', 'disabled') and

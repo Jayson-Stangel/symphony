@@ -4,6 +4,10 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
       packaged_host_preparation:
         description: Explicit reviewed native host preparation on an isolated owner manual run
         type: boolean
@@ -60,9 +64,23 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
       - name: Require manual main preparation
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
           PREPARE: ${{ inputs.production_prepare }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
@@ -101,6 +119,7 @@ jobs:
     uses: ./.github/workflows/runner-release.yml
     with:
       packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
+      packaged_host_revision: ${{ inputs.packaged_host_revision }}
       baseline_run: ${{ inputs.baseline_run }}
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}

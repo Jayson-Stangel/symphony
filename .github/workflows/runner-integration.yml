@@ -6,6 +6,10 @@ on:
     branches: [dev, main]
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
       packaged_host_preparation:
         description: Explicit reviewed native host preparation on an isolated owner manual run
         type: boolean
@@ -47,9 +51,23 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && !inputs.sign_macos
     runs-on: ubuntu-24.04
     steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
       - name: Refuse unconsented installed qualification
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
         run: |
           test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
@@ -188,6 +206,7 @@ jobs:
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
       packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
+      packaged_host_revision: ${{ inputs.packaged_host_revision }}
       retain_diagnostic: true
       publish: false
     permissions:
@@ -337,11 +356,13 @@ jobs:
         shell: bash
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
         run: python3 scripts/ci/packaged_apparmor.py prepare --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Execute the installed current manager with original immutable runners
         if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
           PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
       - name: Prove anonymous closure refusal with a separate tiny owned synthetic registry
@@ -372,11 +393,13 @@ jobs:
         shell: bash
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
         run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Require installed host cleanup receipt
         if: ${{ always() && steps.codex-apparmor.outcome == 'success' }}
         env:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
         run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Retain disposable host policy diagnostics
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
