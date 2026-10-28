@@ -148,7 +148,7 @@ jobs:
           if-no-files-found: error
   transport-source:
     name: Read fixed transport fixture into opaque handoff
-    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
     permissions:
       contents: write
       actions: read
@@ -189,7 +189,7 @@ jobs:
   transport-reader:
     name: Verify fixed transport fixture with read-only token
     needs: transport-source
-    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
     permissions:
       contents: read
       actions: read
@@ -219,7 +219,7 @@ jobs:
   transport-registry:
     name: Verify canonical fixture upload and explicit continuation
     needs: [transport-source, transport-reader]
-    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    if: github.repository == 'Jayson-Stangel/symphony' && github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
     permissions:
       contents: read
       actions: read

@@ -63,9 +63,9 @@ def bind(mode, env, fetch, invoke):
             and env.get('GITHUB_ACTOR') == 'Jayson-Stangel' and env.get('GITHUB_RUN_ATTEMPT') == '1',
             'explicit owner/source/first-attempt fixture approval required')
     bound = ingress.source_context(revision, JOBS[mode], env, invoke, contract=CONTRACT)
-    ingress.current_run(bound, fetch)
     require(env.get('STAGING_DIGEST') == PAYLOAD_DIGEST, 'fixture staging digest differs')
     ingress.positive(env.get('STAGING_RELEASE')); ingress.positive(env.get('STAGING_ASSET'))
+    ingress.current_run(bound, fetch)
     return bound
 
 

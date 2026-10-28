@@ -85,6 +85,7 @@ class StagingGlueTest(unittest.TestCase):
         self.assertIn('default: false', text.split('      transport_fixture_only:',1)[1].split('      approved_revision:',1)[0])
         for key in ('transport-source','transport-reader','transport-registry'):
             fixture=job(text,key)
+            self.assertIn("github.repository == 'Jayson-Stangel/symphony'",fixture)
             self.assertIn("github.ref == 'refs/heads/dev'",fixture)
             self.assertIn('github.run_attempt == 1',fixture)
             self.assertIn("github.actor == 'Jayson-Stangel'",fixture)

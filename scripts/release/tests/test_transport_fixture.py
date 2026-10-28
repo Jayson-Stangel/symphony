@@ -133,15 +133,14 @@ class TransportFixtureTests(unittest.TestCase):
         self.assertFalse((self.root / 'production').exists())
 
     def test_wrong_owner_optin_source_ref_event_attempt_and_digest_stop_before_api(self):
-        changes = [('GITHUB_ACTOR', 'Other'), ('TRANSPORT_FIXTURE_ONLY', 'false'),
+        changes = [('GITHUB_REPOSITORY', 'foreign/repo'), ('GITHUB_ACTOR', 'Other'), ('TRANSPORT_FIXTURE_ONLY', 'false'),
             ('APPROVED_REVISION', 'f' * 40), ('GITHUB_REF', 'refs/heads/main'),
             ('GITHUB_EVENT_NAME', 'push'), ('GITHUB_RUN_ATTEMPT', '2'),
             ('GITHUB_WORKFLOW_SHA', 'f' * 40), ('GITHUB_JOB', 'verify'), ('STAGING_DIGEST', 'sha256:' + 'f' * 64)]
         for key, value in changes:
             self.calls.clear(); env = self.env('stage');env[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):self.execute('stage', env=env)
-            # Digest is checked after the read-only current-run identity reads.
-            if key != 'STAGING_DIGEST':self.assertEqual(self.calls, [])
+            self.assertEqual(self.calls, [])
             self.assertFalse((self.root / 'stage').exists())
 
     def test_private_fixture_changed_name_or_bytes_cannot_be_staged(self):
