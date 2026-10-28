@@ -661,3 +661,17 @@ only the explicit `claude-test` qualification stage through its full-source copy
 `runner_inputs.py` derives each production identity from this actual stage/COPY
 closure and the Docker ignore rules, so harness edits do not invalidate either
 provider while runtime, config, assets, dependencies and skills do.
+
+### Production publication handoffs
+
+The initial production publisher input job is an admission gate. It does not
+upload a repacked `retained-production-inputs` artifact: neither protected
+consumer used it. Registry and release jobs independently retrieve authenticated
+original signing/helper/engine artifacts by service ID and digest after their
+separate environment approvals. Within each job the verified local material is
+used for graph transfer/comparison or release assembly without another `signed`
+retrieval. Source/tag state is checked freshly at each protected boundary;
+release mutation also checks it before each mutation. This removes one upload
+and one retained artifact per run, while retaining cross-job original retrieval
+and integrity checks. No publication timing saving is claimed without a real
+separately authorized production run.
