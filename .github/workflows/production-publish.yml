@@ -49,12 +49,9 @@ jobs:
         run: |
           python3 scripts/release/production_release.py source "$TAG"
           python3 scripts/release/production_release.py signed "$SIGNED_RUN" "$SIGNED_ATTEMPT" retained
-      - name: Retain verified production inputs
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: retained-production-inputs
-          path: retained/
-          if-no-files-found: error
+      # This job is a read-only admission gate, not a byte handoff. Each protected
+      # job below independently verifies the original service IDs/digests after
+      # its environment approval; no consumer downloaded a repacked copy here.
   registry:
     name: Publish exact qualified component graphs
     needs: inputs
