@@ -14,6 +14,46 @@ ACTION = 'name: Old action\ndescription: Stable\nruns:\n  using: composite\n  st
 
 
 class PresentationOnly(unittest.TestCase):
+    def test_added_deleted_audited_workflows_parse_existing_side_and_remain_behavioral(self):
+        path = '.github/workflows/macos-local-signing-import.yml'
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], stderr=subprocess.PIPE).decode().strip()
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+            target = Path(folder) / path
+            target.parent.mkdir(parents=True)
+            recipe = Path(folder) / 'runner/Dockerfile'
+            recipe.parent.mkdir()
+            recipe.write_text('FROM example/base@sha256:' + 'a' * 64 +
+                              ' AS browser-tools\nCOPY runner/browser/ /browser/\n')
+            git('add', '--all'); git('commit', '-qm', 'baseline')
+            base = git('rev-parse', 'HEAD')
+            target.write_text(WORKFLOW)
+            git('add', '--all'); git('commit', '-qm', 'add audited workflow')
+            added = git('rev-parse', 'HEAD')
+            target.unlink()
+            git('add', '--all'); git('commit', '-qm', 'delete audited workflow')
+            deleted = git('rev-parse', 'HEAD')
+            target.write_text('malformed: [')
+            git('add', '--all'); git('commit', '-qm', 'malformed addition')
+            malformed = git('rev-parse', 'HEAD')
+            original = os.getcwd(); os.chdir(folder)
+            try:
+                for before, after in ((base, added), (added, deleted)):
+                    event = dict(before=before, after=after)
+                    paths = classifier.changed_paths(event, 'push')
+                    route, _, _, presentation, fallback = classifier.event_routing(paths, event, 'push')
+                    self.assertEqual({key for key in classifier.COMPONENTS if route[key]}, {'portable'})
+                    self.assertFalse(presentation or fallback)
+                    self.assertFalse(classifier.browser_required(paths, event, 'push'))
+                event = dict(before=deleted, after=malformed)
+                route, _, _, _, fallback = classifier.event_routing([path], event, 'push')
+                self.assertTrue(all(route[key] for key in classifier.COMPONENTS))
+                self.assertTrue(fallback)
+                self.assertTrue(classifier.browser_required([path], event, 'push'))
+            finally:
+                os.chdir(original)
+
     def compare(self, path, before, after):
         result = subprocess.run(['ruby', str(ROOT/'scripts/ci/presentation_only.rb')],
                                 input=json.dumps(dict(path=path, before=before, after=after)), text=True, capture_output=True)
