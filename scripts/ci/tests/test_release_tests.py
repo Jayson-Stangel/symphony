@@ -127,10 +127,13 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertEqual(self.guard('runner-release.yml', name, good, outputs=True),
                          (0, {'final_only': 'true'}))
         for changed in ({'PREPARE_RELEASE': 'false'}, {'PREVIOUS_ARTIFACT_RUN': '123'},
-                        {'LEGACY_ARTIFACT_RUN': '123'}, {'MANAGER_ONLY_UPDATE': 'true'}):
+                        {'LEGACY_ARTIFACT_RUN': '123', 'PREVIOUS_ARTIFACT_RUN': '124', 'MANAGER_ONLY_UPDATE': 'true'},
+                        {'MANAGER_ONLY_UPDATE': 'true', 'PREVIOUS_ARTIFACT_RUN': '123'}):
             self.assertEqual(self.guard('runner-release.yml', name, dict(good, **changed), outputs=True),
                              (0, {'final_only': 'false'}))
-        for changed in ({'COMPOSE_PACKAGES': 'false'}, {'LOCAL_RESULT': 'failure'}, {'PREVIOUS_REVISION': 'b'*40}):
+        for changed in ({'COMPOSE_PACKAGES': 'false'}, {'LOCAL_RESULT': 'failure'}, {'PREVIOUS_REVISION': 'b'*40},
+                        {'MANAGER_ONLY_UPDATE': 'true'}, {'LEGACY_ARTIFACT_RUN': '123'},
+                        {'MANAGER_ONLY_UPDATE': 'true', 'LEGACY_ARTIFACT_RUN': '123', 'PREVIOUS_ARTIFACT_RUN': '123'}):
             code, output = self.guard('runner-release.yml', name, dict(good, **changed), outputs=True)
             self.assertNotEqual(code, 0)
             self.assertEqual(output, {})

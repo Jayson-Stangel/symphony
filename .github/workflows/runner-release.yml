@@ -1028,6 +1028,14 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
+          if [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
+          if [ "${MANAGER_ONLY_UPDATE:-false}" = true ]; then test -n "${PREVIOUS_ARTIFACT_RUN:-}"; fi
+          if [ -n "${LEGACY_ARTIFACT_RUN:-}" ]; then
+            [[ "$LEGACY_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1
+            test "${MANAGER_ONLY_UPDATE:-false}" = true
+            test -n "${PREVIOUS_ARTIFACT_RUN:-}"
+            test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
           final_only=false
           if [ "${PREPARE_RELEASE:-false}" = true ]; then
             test "${COMPOSE_PACKAGES:-true}" != false
