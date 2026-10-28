@@ -91,6 +91,9 @@ jobs:
             'scripts/release/tests/test_readiness_stages.py': {'contracts'},
             'scripts/release/tests/codex_config_fixture.py': {'contracts'},
             'scripts/ci/tests/test_pr_policy.py': set(),
+            'scripts/ci/tests/test_packaged_apparmor.py': set(),
+            'scripts/ci/packaged_apparmor.py': {'portable'},
+            'scripts/codex-apparmor.profile': {'portable', 'package_macos', 'package_linux', 'application'},
             'scripts/release/macos_signing_inputs.py': {'portable'},
             '.github/workflows/macos-signing.yml': {'portable'},
         }
