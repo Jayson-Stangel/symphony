@@ -109,7 +109,7 @@ class Consumers(unittest.TestCase):
             'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures', 'contracts', 'codex_config'},
             '.codex/skills/land/SKILL.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'elixir/WORKFLOW.md': {'portable', 'package_macos', 'package_linux', 'application'},
-            'runner/claude/runtime.mjs': {'application'},
+            'runner/claude/runtime.mjs': {'application', 'claude'},
             'runner/claude/qualification/Dockerfile': {'portable'},
             'scripts/release/tests/test_artifacts.py': {'portable'},
             'scripts/release/engine-smoke.py': {'portable', 'fixtures'},
@@ -185,8 +185,14 @@ class Consumers(unittest.TestCase):
         self.assertIn("Workflow and metadata regressions\n        if: needs.changes.outputs.policy == 'true'\n        run:", text)
         self.assertIn('"$RUNNER_TEMP/actionlint"', text)
         # Application setup follows its component; policy and workflow checks omit pure prose.
-        for step in text.split('      - name: Set up mise tools', 1)[1].split('      - name: Application qualification omission', 1)[0].split('      - '):
-            self.assertIn("if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'", step)
+        for family, output in (('elixir-checks', 'application'), ('claude-checks', 'claude')):
+            block = job(text, family)
+            self.assertIn("needs: changes", block)
+            self.assertNotIn('platform-contracts', block)
+            self.assertIn("if: needs.changes.outputs." + output + " == 'true' && needs.changes.outputs.ready == 'true'", block)
+        self.assertIn('run: make elixir-ci', job(text, 'elixir-checks'))
+        self.assertNotIn('make all', job(text, 'elixir-checks'))
+        self.assertIn('run: make -C elixir claude-ci', job(text, 'claude-checks'))
 
     def test_native_allocations_follow_transitive_inputs(self):
         text = workflow('package-checks')

@@ -88,7 +88,10 @@ def browser_selection(paths, event=None, name=None):
         if 'conservative full qualification' in consumer_selection(path)[1]:
             triggers.append({'path': path, 'rule': 'unknown consumer: conservative browser qualification'})
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
-                path in ('scripts/ci/presentation_only.rb', 'scripts/ci/prepare-codex-apparmor.sh') or
+                (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
+                 and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
+                                  'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                                  'scripts/ci/select_mac_runner.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -126,11 +129,12 @@ def browser_required(paths, event=None, name=None):
 
 
 # Ordinary consumers. Full manual/tag/candidate calls never use a diff omission.
-COMPONENTS = ('application', 'portable', 'package_macos', 'package_linux', 'fixtures',
+COMPONENTS = ('application', 'claude', 'portable', 'package_macos', 'package_linux', 'fixtures',
               'npm', 'readiness', 'codex_config', 'contracts')
 ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
+    'test_application_families.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
@@ -195,7 +199,7 @@ def consumer_selection(path):
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
     if path == '.github/workflows/make-all.yml':
-        return {'application', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
+        return {'application', 'claude', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
     if path.startswith('.github/workflows/'):
         # Native package/release controls can affect portable and native evidence;
         # manual-only image controllers are validated by portable contract tests.
@@ -215,6 +219,12 @@ def consumer_selection(path):
         return PACKAGES | {'application'}, 'packaged behavioral skills or runtime workflow'
     if path == 'elixir/mix.exs':
         return {'application', 'portable'}, 'application and release-version input'
+    if path in ('elixir/Makefile', 'elixir/mise.toml'):
+        return {'application', 'claude'}, 'shared application command grouping or Node/Elixir toolchain'
+    if path.startswith('elixir/lib/symphony_elixir/claude/') or path in (
+            'elixir/test/symphony_elixir/claude_adapter_test.exs',
+            'elixir/test/symphony_elixir/claude_environment_test.exs'):
+        return {'application', 'claude'}, 'shared Elixir/Claude transport, protocol or integration fixtures'
     if path == 'elixir/priv/codex_readiness.py':
         return {'application', 'readiness', 'codex_config'}, 'packaged Codex readiness implementation and its fast contracts'
     if path in ('elixir/priv/codex_config_boundary.py', 'elixir/priv/codex_config_snapshot.py',
@@ -274,8 +284,14 @@ def consumer_selection(path):
         return PACKAGES | {'application'}, 'packaged team environment template'
     if path.startswith('runner/claude/qualification/'):
         return {'portable'}, 'explicit reference harness input'
-    if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
-        return {'application'}, 'Claude runtime or runner entrypoint input'
+    if path.startswith('runner/claude/'):
+        if path in ('runner/claude/auth.mjs', 'runner/claude/entrypoint.sh',
+                    'runner/claude/git-credential.sh', 'runner/claude/smoke.sh') or (
+                path.startswith('runner/claude/test/') and not path.startswith('runner/claude/test/fixtures/')):
+            return {'claude'}, 'independent Claude commands or Node-only test suite'
+        return {'application', 'claude'}, 'production Claude modules/dependencies and peers consumed by full ExUnit integration'
+    if path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
+        return {'application'}, 'runner entrypoint consumed by Elixir launcher integration'
     if path in ('runner/test_npm_cache.py', 'runner/test_npm_cache_lifecycle.py'):
         return {'npm'}, 'npm configuration semantics and cross-platform native process ownership tests'
     if path == 'runner/npm-cache.npmrc':

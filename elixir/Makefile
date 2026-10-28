@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e claude-setup claude-test
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci elixir-ci claude-ci dialyzer e2e claude-setup claude-test
 
 MIX ?= mix
 
@@ -43,14 +43,17 @@ dialyzer:
 e2e:
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
 
-ci:
+elixir-ci:
 	$(MAKE) setup
 	$(MAKE) build
 	$(MAKE) fmt-check
 	$(MAKE) lint
 	$(MAKE) claude-setup
-	$(MAKE) claude-test
 	$(MAKE) coverage
 	$(MAKE) dialyzer
+
+claude-ci: claude-setup claude-test
+
+ci: elixir-ci claude-test
 
 all: ci

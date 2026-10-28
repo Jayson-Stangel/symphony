@@ -164,7 +164,7 @@ class DraftGates(unittest.TestCase):
         application = scripts(text)[0]
         for selected in ('true', 'false'):
             for ready in ('true', 'false'):
-                self.assertEqual(self.execute(application, APPLICATION=selected, READY=ready) == 0,
+                self.assertEqual(self.execute(application, APPLICATION=selected, CLAUDE='false', READY=ready) == 0,
                                  selected == 'false' or ready == 'true')
         browser = scripts(job(workflow('runner-integration'), 'chromium'))[0]
         for selected in ('true', 'false'):
@@ -182,7 +182,8 @@ class DraftGates(unittest.TestCase):
     def test_required_application_join_refuses_failed_cancelled_missing_or_wrongly_skipped_fast_work(self):
         guard = scripts(job(workflow('make-all'), 'make-all'))[0]
         good = dict(RESULT='success', CODE='false', POLICY='true', READY='true', NPM='true',
-                    READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='success', MAC_RUNNER_RESULT='success')
+                    READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='success', MAC_RUNNER_RESULT='success',
+                    CLAUDE='false', ELIXIR_RESULT='skipped', CLAUDE_RESULT='skipped')
         self.assertEqual(self.execute(guard, **good), 0)
         for field in ('RESULT', 'PROCESS_RESULT', 'MAC_RUNNER_RESULT'):
             for status in ('failure', 'cancelled', 'skipped', ''):

@@ -304,7 +304,8 @@ class Selection(unittest.TestCase):
         app = scripts(job(workflow('make-all'), 'make-all'))[0]
         package = '\n'.join(scripts(job(workflow('package-checks'), 'package-qualification'))[:2])
         app_env = dict(RESULT='success', CODE='false', POLICY='false', READY='true', NPM='false',
-                       READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped')
+                       READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped',
+                       CLAUDE='false', ELIXIR_RESULT='skipped', CLAUDE_RESULT='skipped')
         package_env = env_for(('false',) * 4)
         for command, env in ((app, app_env), (package, package_env)):
             for status in ('success', 'failure', 'cancelled', 'skipped', ''):
