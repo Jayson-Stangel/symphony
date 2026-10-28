@@ -75,6 +75,54 @@ class ReusePlannerTest(unittest.TestCase):
         empty = runner_reuse.plan(self.root, {"runners": {}}, self.verify, self.inputs)
         self.assertTrue(all(item["action"] == "build" for group in empty["components"].values() for item in group.values()))
 
+    def test_precise_candidate_refusals_do_not_change_fail_closed_selection(self):
+        def expired(record):
+            raise ValueError('artifact payload has expired')
+        value = runner_reuse.plan(self.root, self.baseline, expired, self.inputs)
+        for group in value['components'].values():
+            for decision in group.values():
+                self.assertEqual(decision['candidate_decisions'][0]['outcome'], 'original_evidence_refused')
+                self.assertEqual(decision['candidate_decisions'][0]['refusal'], 'expired_or_missing_payload')
+                self.assertEqual(decision['action'], 'build')
+        value = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, reusable=lambda r: False)
+        for group in value['components'].values():
+            for decision in group.values():
+                self.assertEqual(decision['candidate_decisions'][0]['outcome'], 'production_public_reference_unavailable')
+                self.assertIn('anonymous canonical', decision['reason'])
+                self.assertEqual(decision['action'], 'build')
+        self.assertEqual(runner_reuse.evidence_refusal(ValueError('SECRET service URL')), 'incompatible_or_unavailable_evidence')
+
+    def test_mismatched_inputs_have_explicit_unavailable_source_explanation(self):
+        changed = lambda *args: dict(self.inputs(*args), input_identity='f'*64)
+        value = runner_reuse.plan(self.root, self.baseline, self.verify, changed)
+        for group in value['components'].values():
+            for decision in group.values():
+                audit = decision['candidate_decisions'][0]
+                self.assertEqual(audit['outcome'], 'effective_inputs_differ')
+                self.assertEqual(audit['input_comparison'], 'original_source_or_recipe_unavailable')
+                self.assertEqual(audit['input_identity'], 'd'*64)
+                self.assertEqual(decision['input_identity'], 'f'*64)
+        self.assertEqual(self.calls, [])
+
+    def test_docker_snapshots_explain_changed_added_removed_and_control_inputs(self):
+        from test_runner_inputs import RunnerInputsTest
+        fixture = RunnerInputsTest(); fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        before = runner_reuse.identity(fixture.root, 'codex', 'arm64')
+        source = fixture.git('rev-parse', 'HEAD').decode().strip()
+        original = record(); original.update(source_revision=source, input_identity=before['input_identity'])
+        original['dependencies']['build_options'] = before['inputs']['build_args']
+        fixture.write('elixir/lib/engine.ex', 'real changed runtime')
+        fixture.write('elixir/priv/asset', 'real added asset')
+        (fixture.root/'elixir/WORKFLOW.md').unlink()
+        fixture.commit()
+        current = runner_reuse.identity(fixture.root, 'codex', 'arm64')
+        reconstructed = runner_reuse.previous_inputs(fixture.root, original)
+        self.assertEqual(reconstructed, before)
+        delta = runner_reuse.input_delta(reconstructed, current)
+        self.assertEqual(delta['changed_effective_paths'], ['elixir/WORKFLOW.md', 'elixir/lib/engine.ex', 'elixir/priv/asset'])
+        self.assertIn('directories', delta['changed_input_controls'])
+
     def test_browser_reuse_requires_matching_root_and_agent_user_original_qualifications(self):
         for group in self.baseline['runners'].values():
             for original in group.values():
