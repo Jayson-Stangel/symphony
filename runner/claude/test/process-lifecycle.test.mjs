@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -55,10 +55,30 @@ test('fallback cleanup repeats the same formerly-live record without affecting a
     try { peer.helper.kill('SIGKILL'); } catch {}
     if (peer.owned) signalOwnedGroup(peer.owned, 'SIGKILL');
   } });
+  // Keep this longer-lived peer private to the Node regression: the four-second
+  // background-probe fixture is also consumed by the Elixir adapter tests.
+  const probe = `
+    import { serve } from ${JSON.stringify(new URL('../helper.mjs', import.meta.url).href)};
+    class Background {
+      constructor({ options }) {
+        const child = options.spawnClaudeCodeProcess({ command: '/bin/sh', args: ['-c',
+          'trap "" TERM; sleep 30; printf leaked > "$1"', 'probe', process.argv[2]], env: process.env, cwd: process.cwd() });
+        child.stdout.resume();
+      }
+      initializationResult() { return Promise.resolve({}); }
+      [Symbol.asyncIterator]() { return this; }
+      next() { return new Promise(() => {}); }
+      close() {}
+    }
+    serve({ binary: '/unused', env: {}, identity: { profile: 'a'.repeat(64) } },
+      { makeTemporary: () => ({ path: '/tmp', cleanup() {} }), makeQuery: options => new Background(options), graceMs: 20, killMs: 20 });
+  `;
+  const probePath = join(root, 'long-lived-peer.mjs');
+  writeFileSync(probePath, probe);
   for (let n = 0; n < 2; n++) {
     const sentinel = join(root, `delayed-${n}`);
     // Both real helper sessions must outlive two fallback cleanup grace periods.
-    const helper = spawn(process.execPath, [new URL('./fixtures/background-probe.mjs', import.meta.url).pathname, sentinel, '30'], { cwd: root });
+    const helper = spawn(process.execPath, [probePath, sentinel], { cwd: root });
     helper.stderr.resume();
     const peer = { helper, sentinel, owned: null };
     peers.push(peer);

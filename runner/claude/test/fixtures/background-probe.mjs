@@ -2,7 +2,7 @@ import { serve } from '../../helper.mjs';
 class Background {
   constructor({ options }) {
     const child = options.spawnClaudeCodeProcess({ command: '/bin/sh', args: ['-c',
-      'trap "" TERM; sleep "$2"; printf leaked > "$1"', 'probe', process.argv[2], process.argv[3] ?? '4'], env: process.env, cwd: process.cwd() });
+      'trap "" TERM; sleep 4; printf leaked > "$1"', 'probe', process.argv[2]], env: process.env, cwd: process.cwd() });
     child.stdout.resume();
   }
   initializationResult() { return Promise.resolve({}); }
