@@ -88,8 +88,7 @@ def browser_selection(paths, event=None, name=None):
         if 'conservative full qualification' in consumer_selection(path)[1]:
             triggers.append({'path': path, 'rule': 'unknown consumer: conservative browser qualification'})
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
-                (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
-                 and path != 'scripts/ci/check_pr_body.py') or
+                path in ('scripts/ci/presentation_only.rb', 'scripts/ci/prepare-codex-apparmor.sh') or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -136,6 +135,7 @@ CI_POLICY_TESTS = {
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
     'test_presentation.py', 'test_pr_policy.py', 'test_release_tests.py', 'test_workflow_names.py',
+    'test_mac_runner_preflight.py', 'test_mac_runner_selection.py', 'test_mac_runner_watchdog.py',
 }
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
@@ -150,6 +150,10 @@ PORTABLE_RELEASE = {
     'export-image.py',
     'finalize-manager-packages.py',
     'graph_publication.py',
+    'local_distribution.py',
+    'ghcr_transport_recovery.py',
+    'recover_ec2_registry.py',
+    'ec2-registry-recovery-files.json',
     'package-lifecycle.py',
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
@@ -183,6 +187,11 @@ def consumer_selection(path):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
             return set(), 'cheap CI policy regression; executed by the always-on policy suite'
         return ALL, 'unknown CI regression input: conservative full qualification'
+    if path == 'scripts/ci/release_tests.py':
+        return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
+    if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                'scripts/ci/select_mac_runner.py'):
+        return {'portable'}, 'Mac admission policy covered by always-on policy tests and portable workflow contracts'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
     if path == '.github/workflows/make-all.yml':
@@ -198,7 +207,8 @@ def consumer_selection(path):
             return PACKAGES | {'fixtures'}, 'portable/native package qualification workflow control'
         if p.stem == 'browser-smoke':
             return {'portable'}, 'browser workflow migration control'
-        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish'):
+        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish',
+                       'macos-local-signing-import', 'ec2-registry-transport-repair'):
             return {'portable'}, 'explicit signing workflow policy; no ordinary Apple operation'
         return ALL, 'unknown workflow: conservative full qualification'
     if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
@@ -336,8 +346,13 @@ def workflow_comparison(path, base, head):
             path.startswith('.github/actions/') and PurePosixPath(path).name in ('action.yml', 'action.yaml')):
         return {}
     try:
-        payload = {'path': path, 'before': git('show', base + ':' + path).decode(),
-                   'after': git('show', head + ':' + path).decode()}
+        def contents(revision):
+            # An added/deleted audited workflow is behavioral, but absence is
+            # not malformed YAML. Parse every existing side; the consumer map
+            # still selects all executors controlled by that workflow.
+            names = git('ls-tree', '--name-only', revision, '--', path).decode().splitlines()
+            return git('show', revision + ':' + path).decode() if path in names else None
+        payload = {'path': path, 'before': contents(base), 'after': contents(head)}
         process = subprocess.run(['ruby', str(Path(__file__).with_name('presentation_only.rb'))],
                                  input=json.dumps(payload), text=True, capture_output=True, timeout=10)
         if process.returncode:

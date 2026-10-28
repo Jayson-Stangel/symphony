@@ -439,6 +439,25 @@ consumers until their dependencies are reviewed. Tests imported by native helper
 fixtures (including component provenance and original manager metadata) fan out
 to both helper consumers even when their own unit suite is portable.
 
+The JAY-764 follow-up audits signed-output ingress and frozen registry recovery:
+`local_distribution.py`, the staging modules, `ghcr_transport_recovery.py`,
+`recover_ec2_registry.py`, its exact-file manifest, and their manual-only ingress
+and recovery workflows select portable controller tests. These tests use local
+archives and mocked service responses; ordinary CI never performs Apple operations,
+private staging writes or registry publication. The registry recovery suite is
+portable and runs in the ordinary release-policy executor. Changing that suite
+must not leave its sole executor omitted.
+
+Mac admission/preflight/watchdog controllers select their dependency-free policy
+tests and portable workflow contracts. Changing their unit tests runs the policy
+suite without native helper or browser builds. The release suite inventory itself
+selects portable, both package hosts, native process fixtures, launcher contracts
+and Codex configuration tests because it controls those executors; it does not
+change Elixir, Claude or browser execution. Classifier/comparison algorithms and
+unknown inputs retain broad fail-closed qualification. Browser qualification still
+follows actual Docker stages/COPY inputs and shared build/trust controls; a suite
+inventory edit alone is not a browser runtime input.
+
 | Explicit manual/reusable/release workflow / jobs | Dependency/event reason (no ordinary diff shortcut) |
 | --- | --- |
 | `release-preflight / portable` | Full portable policy/version/schema gate for caller-selected candidates; full Git history for retained-source fixtures. |
