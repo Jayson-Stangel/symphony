@@ -1105,6 +1105,7 @@ jobs:
           BUNDLES: ${{ needs.packaged-candidate-metadata.result }}
           FINAL_ONLY: ${{ needs.qualification.outputs.final_only }}
           FINAL_PACKAGES: ${{ needs.packaged-release.result }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
           LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
@@ -1113,6 +1114,11 @@ jobs:
           test "$PACKAGES" = success
           case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac
           test "$METADATA" = success
+          case "$PREPARE_RELEASE" in
+            true) test "$FINAL_PACKAGES" = success ;;
+            false) test "$FINAL_PACKAGES" = skipped ;;
+            *) exit 1 ;;
+          esac
           case "$FINAL_ONLY" in
             true) test "$BUNDLES" = skipped; test "$FINAL_PACKAGES" = success ;;
             false) test "$BUNDLES" = success ;;

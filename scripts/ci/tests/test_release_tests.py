@@ -141,7 +141,7 @@ class WorkflowGuardTest(unittest.TestCase):
     def test_final_package_failure_cannot_be_hidden_by_intentionally_skipped_candidates(self):
         good = dict(PREFLIGHT='success', PACKAGES='success', HAS_BUILDS='false', RUNNERS='skipped',
                     METADATA='success', BUNDLES='skipped', LIFECYCLE='skipped', PREVIOUS_REVISION='',
-                    PREVIOUS_ARTIFACT_RUN='', FINAL_ONLY='true', FINAL_PACKAGES='success')
+                    PREVIOUS_ARTIFACT_RUN='', FINAL_ONLY='true', FINAL_PACKAGES='success', PREPARE_RELEASE='true')
         name = 'Require all requested candidate work without accepting omitted failures'
         self.assertEqual(self.guard('runner-release.yml', name, good), 0)
         for changed in ({'FINAL_PACKAGES': 'failure'}, {'FINAL_PACKAGES': 'cancelled'},
@@ -153,6 +153,8 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertEqual(self.guard('runner-release.yml', name, lifecycle), 0)
         for state in ('skipped', 'failure', 'cancelled', ''):
             self.assertNotEqual(self.guard('runner-release.yml', name, dict(lifecycle, LIFECYCLE=state)), 0)
+        for state in ('skipped', 'failure', 'cancelled', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(lifecycle, FINAL_PACKAGES=state)), 0)
         before = 'Require qualified component inputs before preparing final metadata'
         self.assertEqual(self.guard('runner-release.yml', before, dict(HAS_BUILDS='false', RUNNERS='skipped')), 0)
         for result in ('failure', 'cancelled', 'skipped', ''):
@@ -172,14 +174,14 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
         name = 'Require all requested candidate work without accepting omitted failures'
-        good = dict(HAS_BUILDS='true', PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40, FINAL_ONLY='false', FINAL_PACKAGES='skipped')
+        good = dict(HAS_BUILDS='true', PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40, FINAL_ONLY='false', FINAL_PACKAGES='skipped', PREPARE_RELEASE='false')
         self.assertEqual(self.guard('runner-release.yml', name, good), 0)
         self.assertEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false', RUNNERS='skipped')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false')), 0)
         self.assertEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='skipped')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='success')), 0)
         for key in good:
-            if key in ('PREVIOUS_REVISION', 'FINAL_ONLY', 'FINAL_PACKAGES'):
+            if key in ('PREVIOUS_REVISION', 'FINAL_ONLY', 'FINAL_PACKAGES', 'PREPARE_RELEASE'):
                 continue
             for result in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **{key: result})), 0)
