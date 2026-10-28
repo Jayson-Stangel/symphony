@@ -667,7 +667,7 @@ separately authorized production run.
 
 JAY-769's existing `runner-release.yml` cache probe accepts one selected provider
 and native architecture plus `cache_probe_export_comparison=true`. Validation
-refuses `all` dimensions in comparison mode, so max/min need exactly two native
+refuses `all` dimensions and restore-only runs in comparison mode, so max/min need exactly two native
 allocations. Each runs cold, warm and changed-input phases through a fresh
 Buildx builder per invocation, retaining its original builder reference; a reused
 local builder refuses remote-cache proof. Max/min use separate branch/trust and

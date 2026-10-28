@@ -650,7 +650,7 @@ jobs:
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: codex-apparmor-cache-${{ matrix.architecture }}
+          name: ${{ inputs.cache_probe_export_comparison && format('codex-apparmor-cache-{0}-{1}', matrix.architecture, matrix.cache_mode) || format('codex-apparmor-cache-{0}', matrix.architecture) }}
           path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
@@ -1066,6 +1066,7 @@ jobs:
           CACHE_PROBE: ${{ inputs.cache_probe }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
           CACHE_EXPORT_COMPARISON: ${{ inputs.cache_probe_export_comparison }}
+          CACHE_PROBE_RESTORE: ${{ inputs.cache_probe_restore }}
           CACHE_PROBE_PROVIDER: ${{ inputs.cache_probe_provider }}
           CACHE_PROBE_ARCHITECTURE: ${{ inputs.cache_probe_architecture }}
         run: |
@@ -1074,6 +1075,7 @@ jobs:
           test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
           if [ "${CACHE_EXPORT_COMPARISON:-false}" = true ]; then
             test "${CACHE_PROBE:-false}" = true
+            test "${CACHE_PROBE_RESTORE:-false}" != true
             case "$CACHE_PROBE_PROVIDER" in codex|claude) ;; *) echo 'Select one cache comparison provider' >&2; exit 1 ;; esac
             case "$CACHE_PROBE_ARCHITECTURE" in arm64|x86_64) ;; *) echo 'Select one cache comparison architecture' >&2; exit 1 ;; esac
           fi

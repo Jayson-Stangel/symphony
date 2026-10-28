@@ -191,7 +191,7 @@ class CacheComparisonWorkflowTest(unittest.TestCase):
                         CACHE_PROBE_PROVIDER='claude', CACHE_PROBE_ARCHITECTURE='arm64')
             for changes, passed in (({}, True), ({'CACHE_PROBE_PROVIDER': 'all'}, False),
                                     ({'CACHE_PROBE_ARCHITECTURE': 'all'}, False),
-                                    ({'CACHE_PROBE': 'false'}, False)):
+                                    ({'CACHE_PROBE': 'false'}, False), ({'CACHE_PROBE_RESTORE': 'true'}, False)):
                 result = subprocess.run(['bash', '-e', '-c', '\n'.join(lines)], cwd=directory,
                                         env=dict(good, **changes), capture_output=True)
                 self.assertEqual(result.returncode == 0, passed)
@@ -214,5 +214,7 @@ class CacheComparisonWorkflowTest(unittest.TestCase):
         self.assertEqual(probe.count('trusted-cache-fallback:'), 3)
         self.assertEqual(probe.count('runner_inputs.py --provider'), 3)
         self.assertEqual(probe.count('input-identity:'), 3)
+        self.assertIn("format('codex-apparmor-cache-{0}-{1}', matrix.architecture, matrix.cache_mode)", probe)
+        self.assertIn("format('codex-apparmor-cache-{0}', matrix.architecture)", probe)
         self.assertIn("inputs.cache_probe_export_comparison && 'false' || 'true'", probe)
         self.assertIn("export-cache: 'false'", probe)  # changed diagnostic stays read-only
