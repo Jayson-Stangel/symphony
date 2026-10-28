@@ -12,8 +12,11 @@ on:
         description: Whether actual browser inputs or validation controls require shared qualification
         value: ${{ jobs.classify.outputs.browser }}
       application:
-        description: Ordinary consumer decision for application
+        description: Full Elixir quality/build/coverage family (legacy application output)
         value: ${{ jobs.classify.outputs.application }}
+      claude:
+        description: Independent Claude Node syntax and test family
+        value: ${{ jobs.classify.outputs.claude }}
       portable:
         description: Ordinary consumer decision for portable
         value: ${{ jobs.classify.outputs.portable }}
@@ -58,6 +61,7 @@ jobs:
       policy: ${{ steps.changes.outputs.policy }}
       browser: ${{ steps.changes.outputs.browser }}
       application: ${{ steps.changes.outputs.application }}
+      claude: ${{ steps.changes.outputs.claude }}
       portable: ${{ steps.changes.outputs.portable }}
       package_macos: ${{ steps.changes.outputs.package_macos }}
       package_linux: ${{ steps.changes.outputs.package_linux }}

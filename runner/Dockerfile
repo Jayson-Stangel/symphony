@@ -45,7 +45,13 @@ WORKDIR /opt/symphony/elixir
 COPY elixir/mix.exs elixir/mix.lock ./
 RUN mix local.hex --force && mix local.rebar --force && MIX_ENV=prod mix deps.get --only prod \
   && MIX_ENV=prod mix deps.compile
-COPY elixir ./
+# Runtime compilation consumes source, config and embedded priv assets. Keep the
+# behavioral defaults/instructions available, but ship no test/docs/build harness.
+# claude-test below adds its full source tree explicitly for qualification.
+COPY elixir/lib ./lib
+COPY elixir/config ./config
+COPY elixir/priv ./priv
+COPY elixir/WORKFLOW.md elixir/AGENTS.md ./
 RUN MIX_ENV=prod mix escript.build
 
 COPY .codex/skills /opt/symphony/skills
