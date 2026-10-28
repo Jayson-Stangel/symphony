@@ -81,12 +81,6 @@ jobs:
     if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/host-policy.yml
 
-  engine-fixtures:
-    name: Qualify native engine fixtures
-    needs: qualification
-    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
-    uses: ./.github/workflows/release-native.yml
-
   runners:
     name: Qualify runner components
     needs: qualification
@@ -133,6 +127,8 @@ jobs:
           fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Set up mise tools
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
@@ -150,6 +146,11 @@ jobs:
       - name: Verify macOS archive utility
         if: runner.os == 'macOS'
         run: command -v xz || brew install xz
+
+      - name: Retain engine-only native controller coverage in this allocation
+        if: inputs.engine_only
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/ci/release_tests.py native
 
       - name: Install Mix dependencies
         run: |

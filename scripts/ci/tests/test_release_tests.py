@@ -203,11 +203,12 @@ class EngineOnlyCoverageTest(unittest.TestCase):
     def test_engine_only_retains_native_controller_regressions_after_preflight(self):
         root = Path(__file__).resolve().parents[3]
         text = (root / '.github/workflows/burrito-release.yml').read_text()
-        block = text.split('  engine-fixtures:\n', 1)[1].split('\n  runners:', 1)[0]
-        self.assertIn('needs: qualification', block)
-        self.assertIn("needs.qualification.result == 'success'", block)
-        self.assertIn('inputs.engine_only && !inputs.controller_only', block)
-        self.assertIn('uses: ./.github/workflows/release-native.yml', block)
+        block = text.split('  build:\n', 1)[1].split('\n  controller-diagnostics:', 1)[0]
+        self.assertIn('needs: [qualification, host-policy, mac-runner-build]', block)
+        self.assertIn('if: inputs.engine_only', block)
+        self.assertIn('python3 scripts/ci/release_tests.py native', block)
+        self.assertNotIn('  engine-fixtures:', text)
+        self.assertIn('fetch-depth: 0', block)
         native = (root / '.github/workflows/release-native.yml').read_text()
         self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', native)
         self.assertIn('python3 scripts/ci/release_tests.py native', native)

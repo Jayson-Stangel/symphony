@@ -665,7 +665,8 @@ outside the source tree with an explicit environment and system-only PATH. It
 refuses a PATH exposing Erlang/Elixir/Mix/Zig so the preceding build cannot mask
 a missing standalone runtime tool. Python/lsof remain controller dependencies;
 startup, attributable health, missing-provider readiness, graceful stop and
-owned-descendant cleanup remain actual executable checks. The controller-only
+owned-descendant cleanup remain actual executable checks. Engine-only controller fixtures run in the same native build allocation, retaining
+full Git history and the identical suite. The controller-only
 mode selects only its own Mac route. Unselected build/controller routes allocate
 no selector job; the obsolete tag-only no-op trigger is removed. Saved queue
 intervals overlap other work and are not additive deployment-time savings.
