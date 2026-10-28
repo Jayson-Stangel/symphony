@@ -362,6 +362,10 @@ class BaselineBootstrapTest(unittest.TestCase):
         self.assertIn('python3 scripts/release/package-lifecycle.py "${args[@]}" packages runners evidence',workflow)
         self.assertIn('python3 scripts/release/prior_baseline.py verify-result evidence',workflow)
         self.assertIn('needs.ubuntu-package-lifecycle.outputs.bootstrap_qualified',workflow)
+        caller=(Path(__file__).parents[3]/'.github/workflows/burrito-release.yml').read_text()
+        before=caller.split('  production-source:\n',1)[1].split('  qualification:',1)[0]
+        self.assertIn('python3 scripts/release/prior_baseline.py validate',before)
+        self.assertIn('needs: production-source',caller.split('  qualification:',1)[1].split('  host-policy:',1)[0])
 
     def test_inner_package_source_architecture_inventory_and_manifest_before_execution(self):
         import struct

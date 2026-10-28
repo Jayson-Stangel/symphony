@@ -82,6 +82,23 @@ jobs:
             test "$CONTROLLER_ONLY" != true
           fi
 
+      - name: Check out exact pending-baseline controller before native fanout
+        if: inputs.bootstrap_previous != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate pinned pending baseline before any native fanout
+        if: inputs.bootstrap_previous != ''
+        env:
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.production_prepare }}
+          COMPOSE_PACKAGES: 'true'
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: python3 scripts/release/prior_baseline.py validate
+
   qualification:
     name: Validate preflight inputs
     needs: production-source
