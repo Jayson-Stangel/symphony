@@ -701,6 +701,28 @@ qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
 
+### Component rebuild explanations
+
+The retained component plan records each provider/platform candidate's original
+source/input identity and run/artifact IDs, plus its actual selection outcome.
+Input mismatch is separate from matching evidence refused for payload expiry,
+source/workflow trust, native platform, qualification, integrity or service
+availability. Production-only anonymous canonical availability has its own
+outcome; a valid private artifact alone cannot satisfy it. Missing candidates
+are distinguished from discovered incompatible ones.
+
+When an old source commit is already available locally, the controller checks it
+out into a disposable clone, parses the actual Docker closure without executing
+old code, and compares file bytes/modes and recipe/argument/ignore/directory
+controls. It records changed effective paths, including removed inputs. Missing
+local history, unsupported old recipes or snapshots that cannot reproduce the
+recorded identity are explicit comparison gaps. Diagnostics never fetch more
+history, expand discovery limits or authorize reuse; original evidence and all
+existing refusal rules remain decisive. Plans with matching verified originals
+retain original records and schedule no image build/export/upload. Actual hosted
+execution and payload savings must be credited from the corresponding consumer
+run, not inferred from a fixture or from an unavailable original.
+
 ### Production runner content
 
 The production `common` Docker stage compiles `elixir/lib`, `elixir/config` and
@@ -727,3 +749,27 @@ release mutation also checks it before each mutation. This removes one upload
 and one retained artifact per run, while retaining cross-job original retrieval
 and integrity checks. No publication timing saving is claimed without a real
 separately authorized production run.
+
+### One final package cohort for production preparation
+
+Validated inputs select `final_only=true` only for production preparation with
+package composition enabled and no prior-package, legacy migration or manager-only
+lifecycle request. That path skips the candidate platform archives, their metadata
+join and the unused candidate Mac selector. Qualified component records and the
+original native helpers still feed one immutable production distribution plan,
+then exactly one final manager archive per native host. The existing finalizer
+binds actual archive hashes; `production_release.verify_packages` then checks the
+exact final bytes, prepared manifest, source and stable references before upload.
+
+`Candidate qualification` is a terminal join: in final-only mode it requires the
+candidate cohort to be intentionally skipped and the final package join to have
+succeeded. Failed, cancelled, missing or incomplete final producers cannot pass.
+The preparation metadata gate independently requires successful component/helper
+inputs and the exact build-versus-reuse result, avoiding a dependency cycle.
+Raw prior-source revision composition remains refused before fanout; select a
+verified historical package artifact for supported update/rollback acceptance.
+Requested candidate/prior-package/legacy/manager-only lifecycle modes retain their
+candidate archives and real lifecycle consumers; final production preparation
+still cannot succeed after a failed requested lifecycle. No signing, publication
+or production settings are invoked by these routing changes. Production workflow
+execution and final-byte native acceptance remain separate from fixture tests.
