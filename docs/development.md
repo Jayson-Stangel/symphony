@@ -701,6 +701,28 @@ qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
 
+### Component rebuild explanations
+
+The retained component plan records each provider/platform candidate's original
+source/input identity and run/artifact IDs, plus its actual selection outcome.
+Input mismatch is separate from matching evidence refused for payload expiry,
+source/workflow trust, native platform, qualification, integrity or service
+availability. Production-only anonymous canonical availability has its own
+outcome; a valid private artifact alone cannot satisfy it. Missing candidates
+are distinguished from discovered incompatible ones.
+
+When an old source commit is already available locally, the controller checks it
+out into a disposable clone, parses the actual Docker closure without executing
+old code, and compares file bytes/modes and recipe/argument/ignore/directory
+controls. It records changed effective paths, including removed inputs. Missing
+local history, unsupported old recipes or snapshots that cannot reproduce the
+recorded identity are explicit comparison gaps. Diagnostics never fetch more
+history, expand discovery limits or authorize reuse; original evidence and all
+existing refusal rules remain decisive. Plans with matching verified originals
+retain original records and schedule no image build/export/upload. Actual hosted
+execution and payload savings must be credited from the corresponding consumer
+run, not inferred from a fixture or from an unavailable original.
+
 ### Production runner content
 
 The production `common` Docker stage compiles `elixir/lib`, `elixir/config` and
