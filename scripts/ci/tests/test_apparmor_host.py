@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 PROFILE = 'symphony-codex-candidate-b6261d4c613296dd'
@@ -111,12 +112,13 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
 '''.replace('DIGEST',digest).replace('PROFILE',PROFILE))
         self.driver.chmod(0o755)
 
-    def run_command(self, *args, success=True):
-        env=dict(os.environ,PATH=str(self.bin),FIXTURE=str(self.root),OPTIONS=json.dumps(self.options))
+    def run_command(self, *args, success=True, status=None):
+        env=dict(os.environ,PATH=str(self.bin),SYMPHONY_HOME=str(self.bundle),FIXTURE=str(self.root),OPTIONS=json.dumps(self.options))
         env.pop('DOCKER_CONTEXT',None);env.pop('DOCKER_HOST',None)
         if self.options.get('no_apparmor'):env['NO_APPARMOR']='yes'
         result=subprocess.run([str(self.driver),*args],env=env,text=True,capture_output=True)
         self.assertEqual(result.returncode==0,success,result.stdout+result.stderr)
+        if status is not None:self.assertEqual(result.returncode,status,result.stdout+result.stderr)
         self.assertEqual((self.root/'etc/systemd/system/sentinel').read_text(),'user-owned')
         self.assertIn('unrelated (enforce)',(self.root/'sys/kernel/security/apparmor/profiles').read_text())
         return result.stdout+result.stderr
@@ -185,6 +187,59 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         self.assertIn('exact owned policy loaded',self.apply())
         self.assertIn('following protected command',self.run_command('doctor'))
         self.assertFalse(any('restart' in v or '--remove' in v for v in self.calls()))
+
+    def use_real_launcher(self):
+        self.driver.write_bytes((ROOT / 'scripts/symphony').read_bytes())
+        shutil.copyfile(ROOT / 'scripts/symphony-environment.sh',
+                        self.bundle / 'scripts/symphony-environment.sh')
+
+    def test_real_launcher_cannot_source_an_inherited_foreign_home(self):
+        self.use_real_launcher()
+        foreign = self.root / 'foreign installation'
+        (foreign / 'scripts').mkdir(parents=True)
+        shutil.copyfile(ROOT / 'scripts/symphony-environment.sh',
+                        foreign / 'scripts/symphony-environment.sh')
+        marker = self.root / 'foreign-home-module-executed'
+        (foreign / 'scripts/symphony-apparmor.sh').write_text(
+            'printf foreign > "$FIXTURE/foreign-home-module-executed"\n'
+            'printf "foreign SYMPHONY_HOME module executed\\n" >&2\nexit 93\n')
+        inherited_home = os.environ.get('HOME')
+        with patch.dict(os.environ, SYMPHONY_HOME=str(foreign)):
+            output = self.run_command('runner', 'apparmor', '--apply', '--daemon-id', 'daemon-id')
+            self.assertEqual(os.environ['SYMPHONY_HOME'], str(foreign))
+            self.assertEqual(os.environ.get('HOME'), inherited_home)
+        self.assertIn('exact owned policy loaded', output)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.destination().read_bytes(),
+                         (ROOT / 'scripts/codex-apparmor.profile').read_bytes())
+
+    def test_real_launcher_namespace_prepares_and_repeats(self):
+        # Keep the complete shipped launcher: its install() command must coexist
+        # with the host policy utility. Only the daemon/kernel peers and absolute
+        # host paths are synthetic, as in the unit fixture above.
+        self.use_real_launcher()
+        self.assertFalse((self.bundle / '.git').exists())
+        command = ('runner', 'apparmor', '--apply', '--daemon-id', 'daemon-id')
+        self.assertIn('exact owned policy loaded', self.run_command(*command))
+        self.assertEqual(self.destination().read_bytes(),
+                         (ROOT / 'scripts/codex-apparmor.profile').read_bytes())
+        self.assertEqual(self.destination().stat().st_mode & 0o777, 0o644)
+        self.assertIn('exact owned policy loaded', self.run_command(*command))
+        self.assertFalse(any('restart' in call or '--remove' in call for call in self.calls()))
+
+    def test_real_launcher_propagates_system_install_failure_before_boot_setup(self):
+        self.use_real_launcher()
+        utility = self.bin / 'install'
+        utility.unlink()
+        utility.write_text('#!/bin/sh\nexit 37\n')
+        utility.chmod(0o755)
+        self.run_command('runner', 'apparmor', '--apply', '--daemon-id', 'daemon-id', success=False, status=37)
+        self.assertFalse(self.destination().exists())
+        self.assertFalse((self.root / 'etc/apparmor.d' / ('.' + PROFILE + '.symphony')).exists())
+        self.assertFalse((self.root / 'etc/systemd/system/docker.service.d').exists())
+        self.assertFalse(any(call[0] == 'systemctl' and call[1] in ('enable', 'daemon-reload')
+                             for call in self.calls()))
+        self.assertFalse(any(call[0] == 'apparmor_parser' and '--replace' in call for call in self.calls()))
 
     def test_no_apparmor_no_mutation(self):
         self.options['no_apparmor']=True

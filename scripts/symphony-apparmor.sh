@@ -165,7 +165,9 @@ runner_apparmor() (
   "$aa_parser" --skip-kernel-load --skip-cache "$stage/policy" || { apparmor_fail imports 'Policy compilation failed; inspect kernel/parser/import compatibility.'; return 1; }
   # All conflicts and prerequisites checked before persistent mutation. Retain a
   # partial owned install on operational failure so an explicit retry is safe.
-  install -m 0644 "$stage/policy" "$aa_destination"
+  # The launcher also defines install(); invoke the system utility on the
+  # fixed privileged PATH rather than dispatching Symphony installation.
+  command install -m 0644 "$stage/policy" "$aa_destination"
   apparmor_receipt > "$aa_receipt"
   if [ ! -d "$aa_dropdir" ]; then mkdir "$aa_dropdir"; fi
   apparmor_boot_guard > "$aa_dropin"
