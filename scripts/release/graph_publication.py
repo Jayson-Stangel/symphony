@@ -7,13 +7,25 @@ import os
 from pathlib import Path
 import re
 import time
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import urlencode
 
 import qualified_graph as graph
 
 HOST = 'ghcr.io'
 REPOSITORIES = {'jayson-stangel/symphony-codex', 'jayson-stangel/symphony-claude'}
 MAX_TOKEN = 65536
+
+
+def upload_target(repository, location, digest):
+    # Import after module initialization: the frozen recovery adapter subclasses
+    # GHCR and must also remain independently usable with its original candidate.
+    from ghcr_transport_recovery import upload_target as validated_target
+    return validated_target(repository, location, digest)
+
+
+def valid_resource(method, suffix):
+    from ghcr_transport_recovery import valid_resource as validated_resource
+    return validated_resource(method, suffix)
 
 
 class GHCR:
@@ -60,9 +72,8 @@ class GHCR:
         finally: client.close()
 
     def request(self, method, suffix, body=None, size=None, expected=(200,), maximum=graph.MAX_METADATA, content_type=None):
-        graph.require(method in ('HEAD', 'GET', 'POST', 'PUT'), 'unsupported publication method')
-        # Every caller resource is content addressed or an exact upload session.
-        graph.require(re.fullmatch(r'/(?:blobs/sha256:[a-f0-9]{64}|manifests/sha256:[a-f0-9]{64}|blobs/uploads/(?:[A-Za-z0-9-]+(?:\?[^#\r\n]{1,16384})?)?)', suffix), 'invalid publication resource')
+        graph.require(type(suffix) is str and len(suffix) <= 20000 and
+                      valid_resource(method, suffix), 'invalid publication resource')
         start = body.tell() if hasattr(body, 'tell') else None
         for attempt in range(2):
             graph.require(self.clock() < self.deadline, 'publication request deadline exceeded')
@@ -87,16 +98,7 @@ class GHCR:
         raise ValueError('qualified graph: bounded registry reauthorization failed')
 
     def upload_location(self, location, digest):
-        graph.require(type(location) is str and len(location) <= 16384, 'invalid publication upload location')
-        value = urlsplit(location)
-        graph.require(not value.fragment and not value.username and not value.password and
-                      ((not value.scheme and not value.netloc) or (value.scheme == 'https' and value.netloc == HOST)), 'foreign publication upload location')
-        prefix = '/v2/' + self.repository + '/blobs/uploads/'
-        graph.require(value.path.startswith(prefix) and re.fullmatch('[A-Za-z0-9-]+', value.path[len(prefix):]), 'upload outside selected repository')
-        try:query = parse_qsl(value.query, keep_blank_values=True, strict_parsing=True)
-        except ValueError:raise ValueError('qualified graph: invalid publication upload state') from None
-        graph.require(len(query) <= 1 and all(key == '_state' and len(item) <= 8192 for key,item in query), 'invalid publication upload state')
-        return value.path[len('/v2/' + self.repository):] + '?' + urlencode(query + [('digest',digest)])
+        return upload_target(self.repository, location, digest)
 
 
 class Upload:
