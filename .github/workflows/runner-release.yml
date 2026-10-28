@@ -3,6 +3,10 @@ name: Runner release
 on:
   workflow_call:
     inputs:
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -53,6 +57,10 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -179,9 +187,11 @@ jobs:
           MANIFEST_SCHEMA: ${{ inputs.manifest_schema }}
           SELECTED_PLAN_ARTIFACT: ${{ inputs.component_plan_artifact }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
         run: |
           test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
           if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
@@ -803,6 +813,8 @@ jobs:
 
   ubuntu-package-lifecycle:
     name: Installed package lifecycle
+    outputs:
+      bootstrap_qualified: ${{ steps.baseline-proof.outputs.qualified }}
     if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && (inputs.previous_revision != '' || inputs.previous_artifact_run != '') }}
     needs: [component-plan, packaged-candidate-metadata]
     runs-on: ubuntu-24.04
@@ -815,8 +827,12 @@ jobs:
       - name: Record exact lifecycle request before artifact retrieval
         env:
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           mkdir -p evidence
           python3 - <<'PYCODE'
@@ -848,7 +864,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           args=()
           if [ -n "$LEGACY_ARTIFACT_RUN" ]; then args+=(--package-only); fi
@@ -863,10 +884,30 @@ jobs:
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
         env:
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
         run: |
           args=()
           if [ "$MANAGER_ONLY_UPDATE" = true ]; then args+=(--manager-only-update); fi
           python3 scripts/release/package-lifecycle.py "${args[@]}" packages runners evidence
+      - name: Require fresh pending baseline proof after actual lifecycle cleanup
+        id: baseline-proof
+        if: inputs.bootstrap_previous != ''
+        env:
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          python3 scripts/release/prior_baseline.py verify-result evidence
+          echo 'qualified=true' >> "$GITHUB_OUTPUT"
       - name: Retain small actual lifecycle, origin and cleanup receipts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -1067,6 +1108,11 @@ jobs:
     if: ${{ always() && inputs.resume_native_run == '' }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out exact bootstrap validation controller
+        if: inputs.bootstrap_previous != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require exact successful local or caller-owned preflight
         id: validated
         env:
@@ -1084,6 +1130,7 @@ jobs:
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
         run: |
@@ -1110,6 +1157,9 @@ jobs:
             test "${MANAGER_ONLY_UPDATE:-false}" = true
             test -n "${PREVIOUS_ARTIFACT_RUN:-}"
             test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
+          if [ -n "${BOOTSTRAP_PREVIOUS:-}" ]; then
+            python3 scripts/release/prior_baseline.py validate
           fi
           final_only=false
           if [ "${PREPARE_RELEASE:-false}" = true ]; then
@@ -1139,7 +1189,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then
             python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --check-only early-subjects/previous.json
@@ -1182,8 +1237,14 @@ jobs:
           FINAL_PACKAGES: ${{ needs.packaged-release.result }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
+          BOOTSTRAP_REQUESTED: ${{ inputs.bootstrap_previous != '' }}
+          BOOTSTRAP_PROOF: ${{ needs.ubuntu-package-lifecycle.outputs.bootstrap_qualified }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
         run: |
           test "$PREFLIGHT" = success
           test "$PACKAGES" = success
@@ -1201,6 +1262,7 @@ jobs:
           esac
           if [ -n "$PREVIOUS_REVISION" ] || [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then test "$LIFECYCLE" = success
           else test "$LIFECYCLE" = skipped; fi
+          if [ "${BOOTSTRAP_REQUESTED:-false}" = true ]; then test "$BOOTSTRAP_PROOF" = true; fi
           echo 'Exact-head preflight, native fixtures, selected provider/platform components and requested final native archive cohort succeeded. Candidate archives are intentionally omitted only for production preparation without lifecycle consumers. Requested lifecycle must succeed.' >> "$GITHUB_STEP_SUMMARY"
   retained-transfer-timing:
     name: Measure retained transfer

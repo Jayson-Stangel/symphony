@@ -20,6 +20,7 @@ import tarfile
 import time
 import urllib.request
 import uuid
+import prior_baseline
 
 
 # Only exact native account entrypoints are replaced. This fixture grants no
@@ -292,6 +293,8 @@ def main():
     storages = set()
     owned_volumes = set()
     log = (evidence / "commands.log").open("w")
+    bootstrap = prior_baseline.descriptor(os.environ.get('BOOTSTRAP_PREVIOUS',''))
+    bootstrap_subject = json.loads((evidence/'previous-package-subject.json').read_text()) if bootstrap else None
     result = {"source_revision": os.environ.get("GITHUB_SHA"), "os_arch": os.uname().sysname + "/" + os.uname().machine,
               "nativeAuth": "STUB login entrypoints and native account status ONLY; no account/model requests",
               "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
@@ -470,8 +473,11 @@ def main():
         client_run(["tar", "-xzf", str(first_archive), "-C", str(download)])
         client_run([str(download / "install.sh")]); client_run([str(download / "install.sh")])
         command = root / "bin/symphony"
-        client_run([str(command), "--version"])
-        assert json.loads(client_run([str(command), "doctor", "--json"]).stdout)["ready"] is True
+        initial_version = json.loads(client_run([str(command), "--version"]).stdout)
+        initial_doctor = json.loads(client_run([str(command), "doctor", "--json"]).stdout)
+        assert initial_doctor["ready"] is True
+        if bootstrap:
+            assert initial_version["source_revision"] == initial["source_revision"], "bootstrap initial installed source differs"
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
         repositories = [root / "one/service", root / "two/service"]
         identifiers, names, ports = [], [], []
@@ -516,6 +522,16 @@ def main():
                 dashboard = response.read().decode()
             assert "Symphony" in dashboard and "<html" in dashboard.lower(), dashboard[:200]
             (evidence / f"dashboard-{number}.html").write_text(dashboard)
+        if bootstrap:
+            # Reached only after BOTH real B listeners, immutable-image and dashboard checks.
+            projects = []
+            for repo in repositories:
+                assert (repo/'tracked-project-canary').read_text().endswith('dirty project change\n')
+                assert (repo/'untracked-project-canary').read_text() == 'untracked project evidence\n'
+                projects.append(dict(listener=True,image_bound=True,canaries=True))
+            result['bootstrap_initial'] = prior_baseline.initial_proof(bootstrap_subject,current['source_revision'],
+                initial_version['source_revision'],initial_doctor,projects)
+            record('fresh exact-original baseline repeat install, source, doctor, two listeners/images and project canaries before candidate activation')
         assert identifiers[0] != identifiers[1]
         assert inspect(names[0], '{{index .Config.Labels "com.symphony.storage"}}') != inspect(names[1], '{{index .Config.Labels "com.symphony.storage"}}')
         name, repo, port = names[0], repositories[0], ports[0]
@@ -734,6 +750,8 @@ def main():
         calls = (root / "docker-calls.log").read_text()
         assert " build " not in " " + calls
         assert "unexpected host dependency" not in (evidence / "commands.log").read_text()
+        if bootstrap:
+            result["bootstrap_transition_complete"] = True
         result["passed"] = True
         record("credential-free candidate acceptance complete; authenticated login/inference intentionally unperformed")
     finally:
@@ -778,6 +796,12 @@ def main():
         result["cleanup"] = {"verified_absent": removed, "errors": cleanup_errors}
         if cleanup_errors:
             result["passed"] = False
+        if bootstrap and result.get('passed') and not cleanup_errors:
+            try:
+                result['fresh_baseline_qualification'] = prior_baseline.completed_proof(result,bootstrap_subject,current['source_revision'])
+            except Exception as error:
+                result['passed'] = False
+                cleanup_errors.append('baseline proof: '+str(error))
         (evidence / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         log.close()
         if cleanup_errors:

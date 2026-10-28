@@ -164,6 +164,7 @@ PORTABLE_RELEASE = {
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
     'previous-package-subject.py',
+    'prior_baseline.py',
     'probe-registry-closure.py',
     'record.py',
     'recover_native_record.py',

@@ -831,3 +831,35 @@ candidate archives and real lifecycle consumers; final production preparation
 still cannot succeed after a failed requested lifecycle. No signing, publication
 or production settings are invoked by these routing changes. Production workflow
 execution and final-byte native acceptance remain separate from fixture tests.
+
+### Pending original baseline qualification
+
+The ordinary prior-package selector still requires successful historical installed
+lifecycle proof. A separate default-empty `bootstrap_previous` descriptor permits
+only one explicit owner-triggered, nonproduction combined candidate on `dev` to
+use original run `40588897389`, attempt 3, source `ec2be6e1c21c7dc7f7d7d8536bcac1ce06f3202b`,
+package artifact `12774063336` with service digest
+`sha256:6347428eaa08c972eb43090af41460c0d73c9d84776351f2b91c80d407bdc446`.
+The descriptor also pins the approved current candidate source and historical
+skipped lifecycle job `122501814533`. This is a pending test subject, never a
+claim that the skipped historical lifecycle passed. Production/main/tag and
+ambiguous, mismatched, failed or expired subjects refuse.
+
+Before executing its installer, the actual Ubuntu lifecycle verifies original
+service and inner archive hashes, manifest/core/source/component identity and
+helper architecture. Owned Mac provenance requires its actual source's native
+OS/CPU/version guard, successful ordered helper/package steps and a bounded
+original helper receipt whose bytes match the packaged helper. A private label
+or capacity-ready status alone proves neither native execution nor qualification.
+
+The existing `scripts/release/package-lifecycle.py` consumer must repeat-install
+that exact original baseline as an ordinary user, assert its installed source,
+pass doctor, and run both isolated projects with attributable listeners, original
+images and preserved canaries before activating the new candidate. Full update,
+rollback, refusal/retry and cleanup must then pass. The existing terminal join
+also requires fresh same-run baseline proof; missing or failed proof refuses.
+Fresh proof names both original and current identities and preserves the old
+`skipped` result. The descriptor grants no execution authority: exact candidate
+source, complete change inventory, prior subject and native effects still require
+operator approval before the single combined candidate. No version bump or
+production promotion is needed for this nonpublishing dev path.

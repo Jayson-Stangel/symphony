@@ -12,6 +12,10 @@ on:
         description: Exact explicitly authorized original native-record run for nonpublishing manual composition
         type: string
         default: ''
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -59,12 +63,19 @@ jobs:
       - name: Require manual main preparation
         env:
           PREPARE: ${{ inputs.production_prepare }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           ENGINE_ONLY: ${{ inputs.engine_only }}
           CONTROLLER_ONLY: ${{ inputs.controller_only }}
         run: |
           test "$EVENT" = workflow_dispatch
+          if [ -n "${BOOTSTRAP_PREVIOUS:-}" ]; then
+            test "$PREPARE" = false
+            test "$REF" = refs/heads/dev
+            test "$ENGINE_ONLY" = false
+            test "$CONTROLLER_ONLY" = false
+          fi
           if [ "$PREPARE" = true ]; then
             test "$REF" = refs/heads/main
             test "$ENGINE_ONLY" != true
@@ -92,6 +103,7 @@ jobs:
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
       previous_artifact_run: ${{ inputs.previous_artifact_run }}
+      bootstrap_previous: ${{ inputs.bootstrap_previous }}
       legacy_artifact_run: ${{ inputs.legacy_artifact_run }}
       manager_only_update: ${{ inputs.manager_only_update }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}

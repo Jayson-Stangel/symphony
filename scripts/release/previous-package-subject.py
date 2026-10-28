@@ -15,6 +15,7 @@ import tempfile
 import zipfile
 
 import artifacts
+import prior_baseline
 import component_provenance as proof
 from reuse_payload import checksum,download
 MAX_PACKAGE=512*1024*1024
@@ -35,7 +36,8 @@ def within(artifact,stage):
                       'historical artifact does not belong to the selected successful attempt')
 
 
-def select(run_id,root,fetch=proof.api):
+def select(run_id,root,fetch=proof.api,bootstrap=None):
+    bootstrap = prior_baseline.descriptor(bootstrap)
     artifacts.require(type(run_id) is int and run_id>0,'invalid historical package run')
     controller=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
     artifacts.require(os.environ.get('GITHUB_REPOSITORY')==proof.REPOSITORY and os.environ.get('GITHUB_SHA')==controller,
@@ -48,20 +50,34 @@ def select(run_id,root,fetch=proof.api):
     except ValueError:
         trusted=False
         artifacts.require(os.environ.get('GITHUB_EVENT_NAME')=='workflow_dispatch','pre-merge historical subject requires exact manual selection')
+    artifacts.require(not bootstrap or trusted, 'bootstrap requires verified trusted original lineage')
     artifacts.require(subprocess.run(['git','-C',str(root),'merge-base','--is-ancestor',source,controller],
                                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,
                       'historical subject is outside this manager lineage')
     inventory=fetch(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")
     artifacts.require(inventory.get('total_count',0)<=100,'historical stage discovery incomplete')
-    jobs=inventory['jobs'];native={}
+    jobs=inventory['jobs'];native={};helper_receipts={};owned_mac_package=False
     metadata=job(jobs,'candidate-metadata');packaged=job(jobs,'packaged-candidate-metadata')
-    lifecycle=job(jobs,'ubuntu-package-lifecycle')
+    if bootstrap:
+        values=[item for item in jobs if item['name'] in artifacts.candidate_job_names('ubuntu-package-lifecycle')]
+        artifacts.require(run_id==bootstrap['run_id'] and run['run_attempt']==bootstrap['run_attempt']
+                          and source==bootstrap['source_revision'] and len(values)==1
+                          and values[0].get('id')==bootstrap['lifecycle_job_id']
+                          and values[0].get('status')=='completed' and values[0].get('conclusion')=='skipped',
+                          'bootstrap historical skipped lifecycle identity differs')
+        lifecycle=values[0]
+    else:
+        lifecycle=job(jobs,'ubuntu-package-lifecycle')
     for platform,runner in (('macos','macos-14'),('linux_x86_64','ubuntu-24.04')):
         names=(f'packaged-candidate ({platform}, {runner})', f'runners / packaged-candidate ({platform}, {runner})',
                f'Build candidate package ({platform})', f'Qualify runner components / Build candidate package ({platform})')
         found=[item for item in jobs if item['name'] in names]
-        artifacts.require(len(found)==1 and found[0]['status']=='completed' and found[0]['conclusion']=='success' and
-                          runner in found[0].get('labels',[]),'historical actual native manager package missing')
+        artifacts.require(len(found)==1 and found[0]['status']=='completed' and found[0]['conclusion']=='success',
+                          'historical actual native manager package missing')
+        if runner not in found[0].get('labels',[]):
+            artifacts.require(platform=='macos' and trusted, 'historical native manager platform differs')
+            prior_baseline.owned_mac_job(found[0],source,root)
+            owned_mac_package=True
     listing=fetch(f'actions/runs/{run_id}/artifacts?per_page=100')
     artifacts.require(listing.get('total_count',0)<=100,'historical artifact discovery incomplete')
     def artifact(name,maximum,stage):
@@ -89,6 +105,7 @@ def select(run_id,root,fetch=proof.api):
             manifest=normalize_document(manifest,core_bytes)
     artifacts.validate(manifest,require_bundle=False)
     artifacts.require(manifest['source_revision']==source,'historical manager must be the actual selected current source')
+    artifacts.require(not owned_mac_package or manifest['schema_version']==2, 'owned Mac prior requires original helper-bound schema2 provenance')
     originals=manifest.get('original_components',manifest['runners']);origins={};helper_jobs={}
     if manifest['schema_version']==2:
         from component_selection import records_from_join,manual_verifier,JOIN_STEP
@@ -109,8 +126,13 @@ def select(run_id,root,fetch=proof.api):
                    f'Qualify package inputs / Native helpers and fixtures ({platform})',
                    f'Qualify runner components / Qualify package inputs / Native helpers and fixtures ({platform})')
             found=[item for item in jobs if item['name'] in names]
-            artifacts.require(len(found)==1 and found[0].get('status')=='completed' and found[0].get('conclusion')=='success' and
-                              runner in found[0].get('labels',[]),'schema2 prior manager native helper qualification missing')
+            artifacts.require(len(found)==1 and found[0].get('status')=='completed' and found[0].get('conclusion')=='success',
+                              'schema2 prior manager native helper qualification missing')
+            if runner not in found[0].get('labels',[]):
+                artifacts.require(platform=='macos' and trusted, 'historical helper platform differs')
+                prior_baseline.owned_mac_job(found[0],source,root,helper=True)
+                item=artifact('native-host-helper-macos-'+source,2*1024*1024,found[0])
+                helper_receipts[platform]=prior_baseline.mac_helper_receipt(fetch(f"actions/artifacts/{item['id']}/zip",binary=True),item,source)
             helper_jobs[platform]=found[0]['id']
         payloads={}
         for provider in artifacts.PROVIDERS:
@@ -136,10 +158,15 @@ def select(run_id,root,fetch=proof.api):
                         candidate_run=(run_id if not trusted and run.get('event')=='workflow_dispatch' else None))
         payloads={provider:artifact(f'runner-candidate-{provider}-x86_64',MAX_PAYLOAD,native[provider+'-x86_64']) for provider in artifacts.PROVIDERS}
     package=artifact('packaged-candidate',MAX_PACKAGE,packaged)
+    if bootstrap:
+        artifacts.require(package['id']==bootstrap['package_artifact_id'] and package['digest']==bootstrap['package_artifact_digest'],
+                          'bootstrap original package identity differs')
     return {'run_id':run_id,'run_attempt':run['run_attempt'],'source_revision':source,'role':'current',
+            'baseline_status':prior_baseline.PENDING if bootstrap else 'HISTORICALLY_QUALIFIED',
+            'bootstrap_descriptor':bootstrap,
             'native_jobs':{key:value['id'] for key,value in native.items()},'lifecycle_job':lifecycle['id'],
             'metadata_artifact':meta,'package_artifact':package,'payload_artifacts':payloads,'manifest':manifest,
-            'original_native_origins':origins,'manager_helper_jobs':helper_jobs,'raw_manifest':raw_manifest,
+            'original_native_origins':origins,'manager_helper_jobs':helper_jobs,'manager_helper_receipts':helper_receipts,'raw_manifest':raw_manifest,
             'manager_core_ascii':core_bytes.decode('ascii') if core_bytes is not None else None}
 
 
@@ -168,6 +195,7 @@ def bounded_payload(artifact,path):
 
 def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,selection='previous',package_only=False):
     artifacts.require(selection in ('previous','legacy'),'unknown historical package selection slot')
+    artifacts.require(not selected.get('bootstrap_descriptor') or (selection=='previous' and not package_only), 'bootstrap requires the complete prior package and images')
     artifacts.require(not (packages/selection).exists() and not (images/selection).exists(),'historical destinations already exist')
     packages.mkdir(parents=True,exist_ok=True);images.mkdir(parents=True,exist_ok=True);evidence.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.previous-subject-',dir=packages.parent) as folder:
@@ -197,6 +225,20 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
             with archive.open(name) as source,(previous/name).open('xb') as output:shutil.copyfileobj(source,output,1024*1024)
             artifacts.require(checksum(previous/name)==bundle['sha256'],'historical Linux bundle checksum differs')
             (previous/'release.json').write_bytes(raw)
+        if selected.get('bootstrap_descriptor'):
+            prior_baseline.package_inventory(previous/name,selected['source_revision'],expected_manifest=manifest)
+        if selected.get('manager_helper_receipts',{}).get('macos'):
+            # Bind the actual packaged helper, not merely a sibling named artifact.
+            mac=manifest['bundles']['macos']
+            with zipfile.ZipFile(package_zip) as archive:
+                artifacts.require(archive.namelist().count(mac['filename'])==1
+                                  and archive.getinfo(mac['filename']).file_size<=MAX_PACKAGE,'original Mac bundle missing or oversized')
+                mac_bytes=archive.read(mac['filename'])
+            artifacts.require(hashlib.sha256(mac_bytes).hexdigest()==mac['sha256'],'original Mac bundle checksum differs')
+            mac_archive=staging/'original-macos.tar.gz';mac_archive.write_bytes(mac_bytes)
+            contents=prior_baseline.package_inventory(mac_archive,selected['source_revision'],'macos',manifest)
+            artifacts.require(hashlib.sha256(contents['libexec/symphony-host'][0]).hexdigest()==
+                              selected['manager_helper_receipts']['macos']['helper_sha256'], 'original packaged Mac helper differs from native producer')
         package_zip.unlink()
         old_images=staging/'previous-images';old_images.mkdir();observed={}
         for provider,artifact in (() if package_only else selected['payload_artifacts'].items()):
@@ -223,7 +265,7 @@ def retrieve(selected,packages,images,evidence,fetch_payload=bounded_payload,sel
             if 'image_config' in record:artifacts.require(record['image_config']==actual['image_config'],'historical recorded config differs')
             observed[provider]=dict(actual,image=record['image'],archive_sha256=match[1],payload_artifact_id=artifact['id'],payload_artifact_digest=artifact['digest'])
         (evidence/(selection+'-package-subject.json')).write_text(json.dumps(dict(selected,observed_x86_64=observed,
-            qualification_kind='historical verified manager package integration subject; original native qualification retained',
+            qualification_kind=('UNQUALIFIED_PENDING fresh baseline lifecycle' if selected.get('bootstrap_descriptor') else 'historical verified manager package integration subject; original native qualification retained'),
             prior_image_build_executed=False,prior_image_export_executed=False,prior_large_upload_executed=False,
             package_only=package_only),indent=2,sort_keys=True)+'\n')
         previous.rename(packages/selection)
@@ -236,7 +278,8 @@ def main():
     parser.add_argument('--images',type=Path);parser.add_argument('--evidence',type=Path);parser.add_argument('--selection',choices=('previous','legacy'),default='previous')
     parser.add_argument('--package-only',action='store_true',help='retrieve only the actual manager package; current selected component payloads are already present')
     parser.add_argument('--check-only',type=Path,help='retain verified small metadata only; never download package/image payloads')
-    args=parser.parse_args();selected=select(args.run_id,args.root)
+    parser.add_argument('--bootstrap-descriptor',default=os.environ.get('BOOTSTRAP_PREVIOUS',''),help='explicit pinned manual dev bootstrap; historical lifecycle remains unqualified')
+    args=parser.parse_args();selected=select(args.run_id,args.root,bootstrap=args.bootstrap_descriptor)
     if args.check_only:
         args.check_only.parent.mkdir(parents=True,exist_ok=True)
         args.check_only.write_text(json.dumps(selected,indent=2,sort_keys=True)+'\n')
