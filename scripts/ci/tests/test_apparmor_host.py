@@ -186,6 +186,22 @@ if [ "${1:-}" = doctor ]; then apparmor_doctor docker; else runner_apparmor "$@"
         self.assertIn('following protected command',self.run_command('doctor'))
         self.assertFalse(any('restart' in v or '--remove' in v for v in self.calls()))
 
+    def test_real_launcher_namespace_prepares_and_repeats(self):
+        # Keep the complete shipped launcher: its install() command must coexist
+        # with the host policy utility. Only the daemon/kernel peers and absolute
+        # host paths are synthetic, as in the unit fixture above.
+        self.driver.write_bytes((ROOT / 'scripts/symphony').read_bytes())
+        shutil.copyfile(ROOT / 'scripts/symphony-environment.sh',
+                        self.bundle / 'scripts/symphony-environment.sh')
+        self.assertFalse((self.bundle / '.git').exists())
+        command = ('runner', 'apparmor', '--apply', '--daemon-id', 'daemon-id')
+        self.assertIn('exact owned policy loaded', self.run_command(*command))
+        self.assertEqual(self.destination().read_bytes(),
+                         (ROOT / 'scripts/codex-apparmor.profile').read_bytes())
+        self.assertEqual(self.destination().stat().st_mode & 0o777, 0o644)
+        self.assertIn('exact owned policy loaded', self.run_command(*command))
+        self.assertFalse(any('restart' in call or '--remove' in call for call in self.calls()))
+
     def test_no_apparmor_no_mutation(self):
         self.options['no_apparmor']=True
         self.assertIn('no host changes',self.apply())
