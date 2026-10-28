@@ -17,6 +17,7 @@ from mac_runner_preflight import Refusal
 OWNER = 'Jayson-Stangel'
 REPOSITORY = OWNER + '/symphony'
 MAX_WAIT_SECONDS = 300
+CLAIM_CUTOFF_SECONDS = 240  # Host claims before this; final reads observe beyond it.
 MAX_READS = 15  # At most two status pages per read: <=30 HTTP GETs total.
 FIELDS = {'schema', 'repository', 'event_name', 'controller_workflow', 'workflow_sha', 'source_sha',
           'head_sha', 'base_sha', 'pr_number', 'run_id', 'run_attempt', 'consumer_workflow', 'job_key',
@@ -166,13 +167,17 @@ def response(statuses, request, now):
 def await_response(request, read_statuses, *, clock=time.monotonic, pause=time.sleep,
                    utcnow=lambda: datetime.datetime.now(datetime.timezone.utc)):
     """Before ANY Mac allocation. Read errors never masquerade as unavailable."""
-    deadline = clock() + MAX_WAIT_SECONDS
+    started = clock()
+    deadline = started + MAX_WAIT_SECONDS
+    last_observation_started = None
     preparation = None
     for _ in range(MAX_READS):
         if clock() >= deadline:
             break
         try:
+            observation_started = clock()
             rows = read_statuses(request['source_sha'], timeout=max(0, deadline - clock()))
+            last_observation_started = observation_started
             # Slow API delivery cannot turn an expired handoff into a private
             # allocation after the ordinary hosted decision deadline.
             result = response(rows, request, utcnow())
@@ -199,6 +204,8 @@ def await_response(request, read_statuses, *, clock=time.monotonic, pause=time.s
                         raise Refusal('owned preparation terminal identity differs; no hosted fallback')
                 return result
         pause(min(MAX_WAIT_SECONDS / MAX_READS, max(0, deadline - clock())))
+    if last_observation_started is None or last_observation_started < started + CLAIM_CUTOFF_SECONDS:
+        raise Refusal('no post-claim-window capacity observation; no hosted fallback')
     if preparation is not None:
         raise Refusal('owned preparation timed out with cleanup unverified; no hosted fallback')
     return dict(path='hosted', runner=None, reason='owned-handoff-timeout; no owned label allocated', original_status_id=None)

@@ -78,7 +78,7 @@ def read_statuses(source, read=github_read, *, timeout=None):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise Refusal('status inventory deadline exhausted')
-            rows = read(path, timeout=min(30, remaining))
+            rows = read(path, timeout=min(20, remaining))
         if (not isinstance(rows, list) or len(rows) > 100
                 or any(not isinstance(item, dict) for item in rows)):
             raise Refusal('status inventory is invalid')

@@ -40,7 +40,11 @@ operator starts it for one already identified run while that selector is waiting
 It acquires one shared nonblocking durable capacity lock and requires the separate
 ordinary selector probe step to have completed its real token GET. Before any
 clone, VM boot or registration, it publishes and verifies an authenticated
-PREPARING marker for this session. It then prepares one real offline ephemeral
+PREPARING marker for this session. The service-created claim must precede the
+selection step start plus 240 seconds; no resource preparation begins after a
+late or uncertain claim. CI bounds each status GET to 20 seconds and requires
+a final observation after that claim window before a no-response hosted fallback.
+It then prepares one real offline ephemeral
 runner and publishes READY only after preparation. A PREPARING marker followed by
 crash, timeout or unverified cleanup refuses hosted fallback; only a later matching
 READY or verified clean terminal response can resolve that preparation. It starts the listener

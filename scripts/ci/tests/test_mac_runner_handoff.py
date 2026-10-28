@@ -144,3 +144,9 @@ class Handoff(unittest.TestCase):
         record,payload=status();payload.update(outcome='refused',reason='cleanup-unverified',runner_id=None)
         record.update(state='error',target_url=handoff.ready_url(payload))
         with self.assertRaisesRegex(handoff.Refusal,'cleanup unverified'):handoff.response([record],REQUEST,NOW)
+
+    def test_slow_empty_snapshot_cannot_hide_preparation_after_claim_cutoff(self):
+        clock=[0]
+        def read(source, **kwargs):clock[0]=301;return []
+        with self.assertRaisesRegex(handoff.Refusal,'post-claim-window'):
+            handoff.await_response(REQUEST,read,clock=lambda:clock[0],pause=lambda _:None,utcnow=lambda:NOW)
