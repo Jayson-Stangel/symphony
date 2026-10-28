@@ -125,6 +125,31 @@ class ReusePlannerTest(unittest.TestCase):
             result = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, candidates=[broken])
             self.assertEqual(result['components']['codex']['arm64']['action'], 'reuse')
 
+    def test_diagnostic_checkout_cannot_execute_global_hooks_or_source_selected_filters(self):
+        from test_runner_inputs import RunnerInputsTest
+        fixture = RunnerInputsTest(); fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.write('.gitattributes', 'elixir/lib/engine.ex filter=diagnostic-sideeffect\n')
+        fixture.commit()
+        before = runner_reuse.identity(fixture.root, 'codex', 'arm64')
+        original = record(); original.update(source_revision=fixture.git('rev-parse', 'HEAD').decode().strip(),
+                                              input_identity=before['input_identity'])
+        original['dependencies']['build_options'] = before['inputs']['build_args']
+        directory = self.root/'git-settings'; directory.mkdir()
+        canary = directory/'executed'
+        hooks = directory/'hooks'; hooks.mkdir()
+        for script in (hooks/'post-checkout', directory/'filter'):
+            script.write_text('#!/bin/sh\nprintf executed > '+str(canary)+'\ncat\n')
+            script.chmod(0o755)
+        config = directory/'config'
+        fixture.git('config', '--file', str(config), 'core.hooksPath', str(hooks))
+        fixture.git('config', '--file', str(config), 'filter.diagnostic-sideeffect.smudge', str(directory/'filter'))
+        fixture.git('config', '--file', str(config), 'filter.diagnostic-sideeffect.required', 'true')
+        with patch.dict(os.environ, GIT_CONFIG_GLOBAL=str(config), GIT_CONFIG_NOSYSTEM='1'):
+            reconstructed = runner_reuse.previous_inputs(fixture.root, original)
+        self.assertEqual(reconstructed, before)
+        self.assertFalse(canary.exists(), 'read-only diagnostics executed a global Git hook/filter')
+
     def test_docker_snapshots_explain_changed_added_removed_and_control_inputs(self):
         from test_runner_inputs import RunnerInputsTest
         fixture = RunnerInputsTest(); fixture.setUp()

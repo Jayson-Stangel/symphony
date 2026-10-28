@@ -38,13 +38,17 @@ def previous_inputs(root, record):
     artifacts.require(isinstance(options, dict) and
                       all(isinstance(k, str) and isinstance(v, str) for k, v in options.items()),
                       'invalid diagnostic build options')
+    # Source snapshots are data, not a checkout that may invoke developer hooks
+    # or source-selected global smudge filters. Do not inherit Git overrides.
+    environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
     subprocess.run(['git', '-C', str(root), 'cat-file', '-e', revision + '^{commit}'],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
     with tempfile.TemporaryDirectory(prefix='symphony-input-diagnostic-') as folder:
-        subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(root), folder],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(['git', '-C', folder, 'checkout', '--quiet', '--detach', revision],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['git', '-c', 'core.hooksPath='+os.devnull, 'clone', '--quiet', '--shared', '--no-checkout', str(root), folder],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+        subprocess.run(['git', '-c', 'core.hooksPath='+os.devnull, '-C', folder, 'checkout', '--quiet', '--no-recurse-submodules', '--detach', revision],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
         options = {k: v for k, v in options.items()
                    if k != 'TARGETARCH'}
         return identity(folder, record['provider'], record['architecture'], options)
