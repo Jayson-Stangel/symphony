@@ -185,7 +185,9 @@ class CacheComparisonWorkflowTest(unittest.TestCase):
                 break
             lines.append(line[10:])
         with tempfile.TemporaryDirectory() as directory:
-            good = dict(os.environ, GITHUB_SHA='a'*40, LOCAL_RESULT='success', LOCAL_REVISION='a'*40,
+            good = dict(os.environ, GITHUB_SHA='a'*40, GITHUB_OUTPUT=str(Path(directory)/'outputs'),
+                        PREPARE_RELEASE='false', PREVIOUS_ARTIFACT_RUN='', LEGACY_ARTIFACT_RUN='',
+                        MANAGER_ONLY_UPDATE='false', LOCAL_RESULT='success', LOCAL_REVISION='a'*40,
                         CALLER_REVISION='', PREVIOUS_REVISION='', CACHE_PROBE='true',
                         DIAGNOSTIC_ARTIFACT_RUN='', CACHE_EXPORT_COMPARISON='true',
                         CACHE_PROBE_PROVIDER='claude', CACHE_PROBE_ARCHITECTURE='arm64')

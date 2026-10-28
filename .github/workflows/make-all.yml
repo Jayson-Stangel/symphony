@@ -15,6 +15,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 jobs:
   changes:
@@ -205,27 +206,32 @@ jobs:
         run: make -C elixir claude-ci
 
   mac-runner:
-    name: Select backup Mac for platform contracts
+    name: Select owned Mac first for platform contracts
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true' }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
+          SELECT_JOB_KEY: platform-contracts
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true' }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
           SELECT_JOB_KEY: platform-contracts
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"

@@ -91,7 +91,8 @@ def browser_selection(paths, event=None, name=None):
                 (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
                  and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
                                   'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
-                                  'scripts/ci/select_mac_runner.py')) or
+                                  'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                                  'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -139,6 +140,7 @@ CI_POLICY_TESTS = {
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
     'test_presentation.py', 'test_pr_policy.py', 'test_release_tests.py', 'test_workflow_names.py',
+    'test_mac_runner_handoff.py', 'test_mac_runner_request.py', 'test_mac_runner_capacity.py',
     'test_mac_runner_preflight.py', 'test_mac_runner_selection.py', 'test_mac_runner_watchdog.py',
 }
 # These controllers/tests have no native-helper or native process consumer.
@@ -194,7 +196,8 @@ def consumer_selection(path):
     if path == 'scripts/ci/release_tests.py':
         return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
     if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
-                'scripts/ci/select_mac_runner.py'):
+                'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py'):
         return {'portable'}, 'Mac admission policy covered by always-on policy tests and portable workflow contracts'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
