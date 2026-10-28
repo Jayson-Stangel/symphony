@@ -70,6 +70,12 @@ end
 
 begin
   input = JSON.parse(STDIN.read)
+  if input['before'].nil? || input['after'].nil?
+    raise 'both workflow sides absent' if input['before'].nil? && input['after'].nil?
+    presentation(parsed(input['before'] || input.fetch('after')), input.fetch('path'))
+    puts JSON.generate({'presentation_only' => false})
+    exit 0
+  end
   before = presentation(parsed(input.fetch('before')), input.fetch('path'))
   after = presentation(parsed(input.fetch('after')), input.fetch('path'))
   result = {'presentation_only' => before == after}
