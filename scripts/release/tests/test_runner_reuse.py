@@ -104,6 +104,19 @@ class ReusePlannerTest(unittest.TestCase):
                 self.assertEqual(decision['input_identity'], 'f'*64)
         self.assertEqual(self.calls, [])
 
+    def test_malformed_untrusted_diagnostic_options_cannot_block_valid_original(self):
+        source = subprocess.check_output(['git', '-C', str(self.root), 'rev-parse', 'HEAD'], text=True).strip()
+        for dependencies in (None, [], {'build_options': None}, {'build_options': []},
+                             {'build_options': {'CODEX_VERSION': []}}):
+            broken = record(); broken.update(source_revision=source, input_identity='e'*64,
+                                              dependencies=dependencies)
+            result = runner_reuse.plan(self.root, self.baseline, self.verify, self.inputs, candidates=[broken])
+            decision = result['components']['codex']['arm64']
+            self.assertEqual(decision['action'], 'reuse')
+            self.assertEqual(decision['candidate_decisions'][0]['input_comparison'],
+                             'original_source_or_recipe_unavailable')
+            self.assertEqual(decision['record']['source_revision'], self.baseline['runners']['codex']['arm64']['source_revision'])
+
     def test_docker_snapshots_explain_changed_added_removed_and_control_inputs(self):
         from test_runner_inputs import RunnerInputsTest
         fixture = RunnerInputsTest(); fixture.setUp()

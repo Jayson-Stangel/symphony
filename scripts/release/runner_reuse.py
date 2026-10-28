@@ -32,6 +32,12 @@ def previous_inputs(root, record):
     """
     revision = record.get('source_revision', '')
     artifacts.require(re.fullmatch(r'[a-f0-9]{40}', revision) is not None, 'invalid diagnostic source')
+    dependencies = record.get('dependencies', {})
+    artifacts.require(isinstance(dependencies, dict), 'invalid diagnostic dependencies')
+    options = dependencies.get('build_options', {})
+    artifacts.require(isinstance(options, dict) and
+                      all(isinstance(k, str) and isinstance(v, str) for k, v in options.items()),
+                      'invalid diagnostic build options')
     subprocess.run(['git', '-C', str(root), 'cat-file', '-e', revision + '^{commit}'],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with tempfile.TemporaryDirectory(prefix='symphony-input-diagnostic-') as folder:
@@ -39,7 +45,7 @@ def previous_inputs(root, record):
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(['git', '-C', folder, 'checkout', '--quiet', '--detach', revision],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        options = {k: v for k, v in record.get('dependencies', {}).get('build_options', {}).items()
+        options = {k: v for k, v in options.items()
                    if k != 'TARGETARCH'}
         return identity(folder, record['provider'], record['architecture'], options)
 
