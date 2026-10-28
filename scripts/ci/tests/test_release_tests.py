@@ -113,6 +113,13 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
 
+    def test_invalid_production_controller_mode_refuses_before_selector_fanout(self):
+        mode = dict(PREPARE='true', EVENT='workflow_dispatch', REF='refs/heads/main',
+                    ENGINE_ONLY='false', CONTROLLER_ONLY='true')
+        self.assertNotEqual(self.guard('burrito-release.yml', 'Require manual main preparation', mode), 0)
+        self.assertEqual(self.guard('burrito-release.yml', 'Require manual main preparation',
+                                   dict(mode, PREPARE='false')), 0)
+
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'
         docs = dict(NATIVE_REQUIRED='false', PORTABLE='success', PACKAGE='skipped')
@@ -208,6 +215,9 @@ class EngineOnlyCoverageTest(unittest.TestCase):
         self.assertIn('if: inputs.engine_only', block)
         self.assertIn('python3 scripts/ci/release_tests.py native', block)
         self.assertNotIn('  engine-fixtures:', text)
+        selector = text.split('  mac-runner-controller-diagnostics:\n', 1)[1]
+        self.assertIn('needs: production-source', selector)
+        self.assertIn("needs.production-source.result == 'success'", selector)
         self.assertIn('fetch-depth: 0', block)
         native = (root / '.github/workflows/release-native.yml').read_text()
         self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', native)

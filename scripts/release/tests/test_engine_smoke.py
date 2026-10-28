@@ -131,7 +131,7 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertFalse(result["forced_cleanup"])
         self.assertEqual(result['standalone_environment'], {
-            'path': '/usr/bin:/bin:/usr/sbin:/sbin', 'host_build_runtime_absent': True,
+            'path': '/usr/bin:/bin:/usr/sbin:/sbin', 'host_build_tools_not_on_path': True,
             'fresh_home_config_cache': True, 'source_tree_cwd': False})
         self.assertEqual(result["exit_code"], 0)
         self.assertTrue(result["listener_pids"])

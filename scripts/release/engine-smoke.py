@@ -201,7 +201,7 @@ def qualify(artifact, evidence_dir, startup_timeout=120, shutdown_timeout=30, ho
                     for tool in ('erl', 'elixir', 'mix', 'zig')),
                 'standalone qualification PATH exposes a host build runtime')
         result['standalone_environment'] = {
-            'path': environment['PATH'], 'host_build_runtime_absent': True,
+            'path': environment['PATH'], 'host_build_tools_not_on_path': True,
             'fresh_home_config_cache': True, 'source_tree_cwd': False}
         with (evidence_dir / "startup.log").open("wb") as log, (root / "ownership").open("wb") as lease:
             try:

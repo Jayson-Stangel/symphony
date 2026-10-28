@@ -274,7 +274,8 @@ jobs:
 
   mac-runner-controller-diagnostics:
     name: Select backup Mac for controller diagnostics
-    if: ${{ inputs.controller_only && github.event_name == 'workflow_dispatch' }}
+    needs: production-source
+    if: ${{ always() && !cancelled() && needs.production-source.result == 'success' && inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

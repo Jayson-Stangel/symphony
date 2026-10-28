@@ -451,8 +451,8 @@ to both helper consumers even when their own unit suite is portable.
 | `runner-integration / reference-node-smoke` | Only explicit `reference_node_smoke`: build and test both reference harness Docker contexts and their Node/CLI controls. No ordinary allocation. |
 | `runner-integration / runners`, `manager-inputs`, `manager-package` | Build only component plan's affected provider/architecture entries, bind original immutable records and assemble matching current manager packages. |
 | `runner-integration / listener-and-cleanup` | Strict selected-component/package join and actual installed lifecycle, original-payload verification, owned-resource cleanup and retained evidence. Distribution alias probe only when explicitly requested. |
-| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. Tag pushes perform no expensive or mutating work. |
-| `burrito-release / engine-fixtures`, `build`, `smoke`, `controller-diagnostics` | Selected explicit engine/controller diagnostic or full candidate: both supported native engines and actual standalone acceptance; controller-only runs only native controller fixtures. |
+| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. There is no tag trigger. |
+| `burrito-release / build`, `controller-diagnostics` | Each supported engine build immediately qualifies exact standalone bytes; engine-only fixtures share that allocation. Controller-only runs only its selected native fixtures after source validation. |
 | `burrito-release / runners` | Manual full candidates request runner/package composition; production preparation retains stable-reference native packages without publication. Legacy unsigned publication is disabled. |
 | `macos-production-signing / sign` | Explicit main-only protected signing of successful exact-source production Q; retains final assessed artifacts, no registry or GitHub release writes. |
 | `production-publish / inputs`, `registry`, `release` | Explicit exact-tag import of completed Q/S attempts; source/artifact/refusal validation before protected registry transfer and separately protected final GitHub completion. |
@@ -556,7 +556,7 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 
 | Workflow file (without `.yml`) | Internal job ID → display name |
 | --- | --- |
-| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `engine-fixtures` → Qualify native engine fixtures; `runners` → Qualify runner components; `build` → Build engine (target); `smoke` → Verify engine (target); `controller-diagnostics` → Diagnose release controller; `release` → Publish approved engine release |
+| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `runners` → Qualify runner components; `build` → Verify engine (target), including build, selected native fixtures and standalone smoke; `controller-diagnostics` → Diagnose release controller |
 | `change-classification` | `classify` → Classify event inputs |
 | `component-plan` | `plan` → Plan selected components |
 | `current-manager-package` | `host-policy` → Select native hosts; `package` → Build manager package (platform); `metadata` → Assemble manager package metadata |
