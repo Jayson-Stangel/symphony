@@ -4,8 +4,11 @@ JAY-763 provides an optional, source-bound fallback for existing Mac checks in a
 disposable Apple Silicon guest. [PR #143](https://github.com/Jayson-Stangel/symphony/pull/143)
 merged into `dev` at `9bed66a9a0eafd8da7e661be6a39899e6a3e6a2d` after real Mac
 process and native helper jobs passed. Hosted execution remains the default when
-no exact permit matches. No persistent runner is left registered. This runbook
-grants no new execution, merge, production or stable-rollout authority.
+no exact permit matches. Reusable capacity is retained in a private durable
+toolchain store; only disposable clones are ever registered. Both original-source
+post-PR149 Mac jobs also passed on 2026-10-28, with independently reconciled
+teardown. This runbook grants no new execution, merge, production or stable-rollout
+authority.
 
 ## Verified feasibility and admission boundary
 
@@ -32,7 +35,9 @@ release owner subsequently reported a booted macOS 14.8.7 ARM64 guest, Swift 6.0
 durable Python 3.13.18 and runner bundle 2.338.0, strict public HTTPS/DNS, no host
 shares, and verified shutdown. These preparation observations are not Actions
 job, admission, artifact or installed-product acceptance.
-A separate user account alone is not the isolation boundary required here.
+A separate user account alone is not the isolation boundary required here. The
+2026-10-28 durable-store and CI results below supersede the initial preparation
+gaps; they do not turn this guest into a physical-Mac Docker acceptance host.
 
 ### Operator-selected standard NAT first pass
 
@@ -165,8 +170,9 @@ The same per-consumer mechanism covers these credential-free qualification jobs:
 | `current-manager-package.yml` | `package` |
 | `runner-release.yml` | `packaged-candidate`, `packaged-release-platform` |
 | `burrito-release.yml` | `build`, `smoke`, `controller-diagnostics` |
+| `macos-local-signing-import.yml` | `verify` (protected main-only inspection; no signing credential) |
 
-Only these ten logical targets can be named; one run permit admits at most eight
+Only these eleven logical targets can be named; one run permit admits at most eight
 distinct consumer/job pairs, each with a distinct label and isolated one-job
 runner. Engine/helper/package commands and artifact identities remain in their
 existing jobs. Linux candidate/cache/transfer matrices and native host policy are
@@ -176,7 +182,8 @@ All original caller guards and required source/artifact qualifications still app
 
 The top-level controllers allowed by the validator are `make-all.yml`,
 `package-checks.yml`, `runner-integration.yml`, `runner-release.yml` and
-`burrito-release.yml`. Reused jobs bind the top-level `github.workflow_ref` and
+`burrito-release.yml`, plus the protected `macos-local-signing-import.yml`
+controller. Reused jobs bind the top-level `github.workflow_ref` and
 `github.workflow_sha`, while each target separately names its consumer workflow.
 A permitted branch push or manual run must match the live exact source/run/attempt
 and owner actor/triggering actor; tag events are refused. PR routing additionally
@@ -193,11 +200,16 @@ read-only contents/actions permissions; live public PR read access must be prove
 with the actual workflow token during approved execution, not an administrator
 fixture token. No extra pull-request scope is added to reusable call chains.
 
-JAY-742/PR140 owns local signing and protected distribution verification. This
-change neither copies its unmerged ingress nor routes its signing/verification
-jobs. Any additional credential-free verification integration must use its
-reviewed interface and exact separately approved source. No new candidate
-execution or duplicate qualification is authorized by adding selectors.
+JAY-742/PR140 and the later private-ingress repair own local signing and protected
+distribution verification. The shipped import selector keeps `macos-15-intel` as
+its hosted default and routes only the credential-free `verify` job when an exact
+permit selects the isolated ARM guest. Its protected main-only Ubuntu ingress job
+has job-local `contents: write` to retrieve the original private asset; the Mac
+inspection job explicitly retains `contents: read` and `actions: read`. No elevated
+Ubuntu token is forwarded to the guest. The immutable same-run ingress artifact
+and original release/asset IDs remain part of native provenance. This routing
+interface does not authorize signing, environment approval, import, publication,
+a new candidate or duplicate qualification. See [the signing runbook](macos-release-signing.md).
 
 ## Source-bound routing permit
 
@@ -267,20 +279,38 @@ admits any matching job and confuses the hosted/backup execution boundary.
 A workflow containing the reviewed fallback must first exist in the exact source
 under test. A natural same-source run provides its service run ID, but its selector
 may already have emitted the hosted value before an operator can install a permit.
-The supported staged proposal is: inspect that run and current source, obtain
-explicit approval to cancel that exact run and rerun all its jobs at the next known
-attempt, prepare/read back the permit for that next attempt, then perform only the
-approved cancellation/rerun. The rerun must use the same reviewed workflow that
-already contains these selectors; an older pre-selector run cannot bootstrap this.
-Revalidate current PR base/head/merge binding before starting. A moved baseline
-requires fresh review/approval rather than borrowing an older passing check.
-Ordinary GitHub check association is retained by rerunning the actual workflow,
-subject to the unchanged required gates. Do not copy a green check
-from another source, create a synthetic success, silently omit the Mac job or
-waive a failed/pending required check to bootstrap this PR. If Mac capacity
-prevents the required checks, the PR stays unmerged until real qualifying proof
-is available. A different trusted CI topology requires a reviewed design and
-explicit approval for its external effects, not an improvised second dispatcher.
+For ordinary CI, use the smallest authorized rerun: install/read back the exact
+next-attempt permit, then rerun the successful Mac-selector job and its dependent
+jobs on that same workflow handle. The original workflow must already contain
+these selectors. Re-running only a failed Mac job retains the earlier selector
+output; it does not establish new routing. A selector/dependent rerun may include
+Linux matrix siblings and the required wrapper; retain their original successful
+results separately and do not claim they were reused if GitHub reran them.
+Unrelated Browser qualification need not be restarted.
+
+GitHub supports [re-running a job and its dependent jobs](https://docs.github.com/en/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run).
+Observe the actual new attempt and exact private label before exposing a guest.
+If the POST result is uncertain, reconcile the same handle; do not repeat it or
+treat the previous completed attempt as closure of the requested one. A complete
+workflow rerun remains a separately reviewed recovery choice when the narrower
+route cannot satisfy the dependency graph; it is not the default first step.
+For an active job, confirm it is queued/unassigned with zero steps before any
+approved cancellation. Leave a healthy assigned hosted job alone.
+
+When hosted Mac capacity is impaired, use the already approved local path after
+that check rather than waiting for predictable acquisition failure. Hosted stays
+the repository default. Before rerunning an old `dev` push, inventory all active
+statuses and check the workflow's `dev` concurrency group: it can cancel another
+owner's newer run. Coordinate completion or hold; never cancel unrelated work.
+An original-source rerun can remain bound to its historical commit after `dev`
+advances; do not move `dev` backwards or relabel proof as the new tip. PR reruns
+still require fresh live base/head/merge-parent checks, including both refs for
+promotion CI.
+
+Ordinary check association is retained on the actual GitHub run. Never copy a
+green check, synthesize success, omit a required Mac job or waive a failed/pending
+check. If capacity or admission cannot satisfy the gates, leave the check honest
+and record the precise blocker. A different CI topology needs its own review.
 
 ## Selected host setup and per-window approval
 
@@ -357,6 +387,67 @@ This document grants no new authority. The operator's recorded guest setup and
 standard NAT instruction apply; registration and job execution still require
 the exact source/controller/run/attempt/targets, admission window and teardown.
 
+## Durable capacity and restoration
+
+On 2026-10-28 the operator explicitly requested durable retention. The release
+owner created and verified the private store at
+`~/Library/Application Support/Symphony Mac CI`, outside temporary directories,
+the stable installation and default `~/.tart`. The store remains mode `0700` and
+contains pinned Tart/archive, public image cache, a clean **stopped, unregistered**
+base, bootstrap/receipt material and `bootstrap/reference-25a/` source references.
+There is no persistent runner service, registration, token, permit or job workspace.
+Per-job cleanup must reject this store, all its ancestors/descendants, stable
+paths and default `~/.tart`; it may remove only the exact disposable UUID home.
+
+The accepted persistence helper uses `clonefile(2)` with errors propagated; it
+cannot silently fall back to a large ordinary copy. It refuses an existing or
+partial destination, links and unexpected special files, and preserves partial
+output for review instead of overwriting/deleting it. Disk verification is
+**size-only**: 26 of the current 28 inventoried files have full SHA-256 checks;
+the two disk images do not. Clean guest state relies on the controlled stopped
+base and setup receipts, not an offline inspection of the disk for credentials.
+APFS clones share storage. This protects routine retention, not device failure,
+user deletion or arbitrary mutation; a separate backup policy is not established.
+The earlier temporary assets disappeared for an unknown reason.
+
+Current local verification entry point, for this prepared host only:
+
+```sh
+python3 "$HOME/Library/Application Support/Symphony Mac CI/bootstrap/persist-runtime.py" verify
+```
+
+This performs local integrity/signature/state inspection, not a boot or source
+qualification. macOS security assessment may consult its assessment service.
+Read the retained inventory and current helper before using it; historical
+bootstrap/controller copies are provenance, not permission to replay old handles.
+The 2026-10-28 observed README SHA-256 is
+`a28153e44188ee5749fc4cdce0c44ecfe52ee371a749ce15217b12a343795e1f`;
+inventory SHA-256 is
+`13332296c4eccf26611aeaa81dc7dc74f5233223cdbc1b34c548e5600b511e4f`.
+Both are observations of that revision, not immutable promises after a later
+reviewed store update. Its `source_bound_qualification` field is `false`.
+
+If restoration is needed, use a fresh private staging root and explicit
+`TART_HOME` with `TART_NO_AUTO_PRUNE=1`. Verify the exact archive hash, Cirrus team
+`9M2P8L4D89`, notarization and public image digest before a stopped clone:
+
+| Public artifact | Verified pin |
+| --- | --- |
+| [Tart 2.41.1 archive](https://github.com/cirruslabs/tart/releases/download/2.41.1/tart.tar.gz) | 22,959,557 bytes; SHA-256 `e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2`; archive top level is `LICENSE` and `tart.app`, without links. The release API redirected to the same pinned asset under `openai/tart`; identity was verified by bytes and signing team. |
+| Sonoma image | `ghcr.io/cirruslabs/macos-sonoma-base@sha256:e2ebdfc4d354b336fe00d729c11a8136a019b8046f41cc183a2fe51b85d18f49` |
+| [Python 3.13.18 ARM64 standalone](https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-apple-darwin-install_only_stripped.tar.gz) | SHA-256 `8392b6ea51d94391befb2c31ebe75463f045d0b69dfcf5e1bb3234e1f5fa3405` |
+| [Actions runner 2.338.0 ARM64](https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-osx-arm64-2.338.0.tar.gz) | SHA-256 `df4cebda25c86a886ed204e49fee63f5c2e7cec5f447b5c98440a826bbdf9df2` |
+
+Use the app-bundle binary at `tart.app/Contents/MacOS/tart`. After the approved
+bounded standard-NAT builder boot, provision public tools through `tart exec -i`
+stdin, verify tools/no host shares/no registration state, then stop/reap and
+inventory the base before cloning job guests. Do not blindly execute a historical
+bootstrap with expired paths. Standalone Node/npm are not prerequisites of these
+Mac process-contract jobs: the npm-lifecycle suite uses Python subprocess fixtures;
+actual npm semantics execute on Ubuntu. Preserve the runner bundle's own action
+runtime. `lsof` remains required by real native socket-ownership fixtures.
+Tool upgrades require a newly reviewed base and inventory, not in-place drift.
+
 ## Fresh guest and single-job registration sequence
 
 Seal the stopped, standalone public-toolchain base **before any registration**;
@@ -390,6 +481,9 @@ runner ID and exact queued/unassigned provider job ID/sole label, prepare its
 private lease, and require the host watchdog's `armed` receipt **before** the
 bounded `run.sh --once` listener starts.
 
+Never boot or register the durable base itself. Bind the host controller and
+selector/preflight/watchdog helper files to the exact tested source; an older
+checkout with a matching function body can still lack newly shipped targets.
 The watchdog stops/deregisters/deletes the exact guest. The foreground Tart owner
 must independently reap its exact process and bind expected VM absence to that
 matching final watchdog receipt/lease, not call a fixed base-VM supervisor on an
@@ -457,7 +551,7 @@ kill or resource-name cleanup is supported.
 
 ## Owned cleanup and acceptance ledger
 
-A future approved launcher must retain owned resource identities before mutation.
+Each approved controller must retain owned resource identities before mutation.
 On success/failure/cancellation, stop only its runner/guest, deregister the exact
 owned runner ID and verify absence through GitHub, destroy the exact guest/disk,
 remove its privileged helper if installed by this operation and verify no owned
@@ -471,7 +565,8 @@ The following proof was recorded on 2026-10-27 for reviewed head
 `c731aa0da506247b86cf56190d9e8bf4bd7c6473`, PR merge source
 `c573f97676ac7ee67716e78ada2d6d17417d9e32`, and base
 `b4c90f3a08f82027bffaafcdd7b94a4d8886192d`. Each job used its own fresh guest
-and one-job registration; both guests were stopped/deleted before the next job.
+and one-job registration; the first guest was stopped/deleted before the second
+job and the second was stopped/deleted at closeout.
 
 | Proof | Observed result |
 | --- | --- |
@@ -492,7 +587,55 @@ The inner helper SHA-256 was
 Private owner receipts retain resource identities and independent verification;
 public logs must not expose host addresses, routes or credentials.
 
-These observations do not establish installed-product acceptance, arbitrary-fork
-safety or permission for a later source/run. JAY-763 remains unfinished while the
-runbook follow-up is pending. Production promotion, stable rollout, signing and
-release ownership retain their separate approval and validation boundaries.
+## Original-source recovery proof on 2026-10-28
+
+The later operator-authorized window tested the original PR149 post-merge source
+`25a4307ca53094050d78771225d85e260d49f19d`, despite later `dev` advancement. The
+initial Mac jobs had no runner or steps. The approved recovery reran the source-bound
+selectors/dependents on the same handles, using fresh disposable guests and the
+verified Python 3.13.18 / runner 2.338.0 base. The operator explicitly held other
+coding writers, installed writer Apps and external Actions approvals idle.
+
+| Real result | Original GitHub evidence |
+| --- | --- |
+| Application workflow and Mac process job: success | [Run `40719836698`, attempt 2](https://github.com/Jayson-Stangel/symphony/actions/runs/40719836698/attempts/2), Mac job `122965337886`, runner ID `47`. |
+| Package workflow and native Mac helper/fixture job: success | [Run `40719836696`, attempt 2](https://github.com/Jayson-Stangel/symphony/actions/runs/40719836696/attempts/2), Mac job `122968522281`, runner ID `48`. |
+| Original native artifact | Service ID `12836330563`, `native-host-helper-macos-25a4307ca53094050d78771225d85e260d49f19d`, 191,750 bytes; service SHA-256 `e65c21fb8704ba0799dccbf7df043728cbef7d235de759720ddff7a05b7e69b5`. |
+
+The workflow/job conclusions and artifact service metadata were independently
+read back from GitHub. The release owner additionally verified the downloaded
+archive digest, inner checksum, ARM64 format and exact source marker. That native
+content verification is owner-reported here, not a second execution of the
+artifact by the documentation author. No new job or test was run for this refresh.
+
+The first session policy-restoration readback reported **unverified**. Fresh
+independent API reads subsequently confirmed the original `first_time_contributors`
+policy, zero runners and actual permit HTTP 404. Preserve the initial report and
+its reconciliation; neither a stale failure nor a prediction is final proof.
+Both guest/process/registration cleanups were independently reconciled, the
+durable store passed post-job verification, and only then was the writer freeze
+released. Do not rerun successful tests or repeat a settings write solely because
+an earlier readback was uncertain. Private owned receipts retain the reconciliation;
+public logs must omit credentials, host addresses and routes.
+
+## Remaining readiness and acceptance contract
+
+Later proof supersedes the initial unexecuted-CI and temporary-retention gaps.
+Keep the following distinctions when reviewing JAY-763; merging this prose alone
+cannot close a still-required acceptance gap.
+
+| Scope | Current proof and next boundary |
+| --- | --- |
+| Existing Mac checks, real architecture, ordinary required wrappers and artifacts | Demonstrated in both recorded windows, with exact source/run/attempt and original artifacts. Reuse those receipts for those sources; never relabel them as a newer revision. |
+| Guest lifecycle and settings restoration | Real successful teardown and failed-attempt recovery were demonstrated. The 2026-10-28 readback reconciliation is part of that proof. No persistent runner remains. |
+| Retained capacity | Durable store created/verified and reverified after job cleanup. Before each future window verify integrity/state and provision fresh job clones. It is not qualification, backup against device loss or standing execution authority. |
+| Wrong/unapproved source and hostile workflow exclusion | Strict source/identity/refusal fixtures and readonly preflight exist; real approved source/token execution is proven. General adversarial service exclusion is not demonstrated by those successes. This personal repository still relies on the exact operator-established writer/fork/approval/queue window. No hostile fork workload was executed to manufacture proof. |
+| Remaining JAY-763 acceptance | The integration coordinator must compare the current issue's refusal/admission criterion with this narrow demonstrated boundary. If an additional live negative-admission proof remains required, record the smallest concrete experiment and its separate authority; do not silently mark the criterion satisfied from fixtures or claim this PR supplies that live proof. |
+| Next CI window | Refresh source/helpers, controller/run/attempt/targets, App/writer permissions and explicit freeze, all active statuses/concurrency, actual guest identities and settings readbacks. Use local-first recovery promptly for unassigned capacity queues; never duplicate an assigned healthy hosted job. |
+| Physical-Mac installed/container acceptance | Separate from these CI guests. Reuse the owning chat's valid installed evidence; any new acceptance target must have its account, Docker and provider access checked before a deadline promise. Do not forward host Docker sockets into this guest or treat it as a physical-host substitute. |
+| Hosted Sonoma retirement | The recorded November 2 retirement needs its own reviewed hosted-default migration. This fallback does not silently change test OS or weaken required checks. |
+
+This PR refreshes the runbook and readiness handoff only. The sole integration
+coordinator owns acceptance and authorized `dev` integration. No new privileged
+runner/account/settings or real-account/model operation, production promotion,
+signing, Apple submission, publication or stable update is authorized here.
