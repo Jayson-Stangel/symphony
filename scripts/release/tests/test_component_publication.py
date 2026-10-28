@@ -131,15 +131,15 @@ class PublicationTest(unittest.TestCase):
 
     def test_workflow_uses_plan_transfers_and_complete_stable_manifest(self):
         import re
-        text=(Path(__file__).resolve().parents[3]/'.github/workflows/runner-release.yml').read_text()
-        block=re.search(r'^  publish:\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
+        text=(Path(__file__).resolve().parents[3]/'.github/workflows/production-publish.yml').read_text()
+        block=re.search(r'^  registry:\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
         self.assertNotIn('matrix:',block)
-        self.assertIn('component_publication.py --prepared prepared/publication-plan.json',block)
+        self.assertIn('component_publication.py --prepared retained/signed/production-plan.json',block)
         self.assertIn('environment: production-release',block)
-        self.assertIn("vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'",block)
-        self.assertIn('name: runner-stable-metadata',block)
+        self.assertIn("vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'",text)
+        self.assertIn('production_release.py compare',block)
         self.assertNotIn('pattern: runner-stable-*',text)
-        self.assertIn('finalize-manager-packages.py metadata/release.json dist',text)
+        self.assertNotIn('build-manager-package.sh',text)
 
     def test_every_transfer_origin_destination_and_availability_precedes_any_mutation(self):
         plan,metadata=self.fixture()

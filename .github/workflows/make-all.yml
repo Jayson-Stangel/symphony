@@ -2,6 +2,7 @@ name: Application checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches:
       - main
@@ -11,13 +12,49 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   changes:
     name: Classify changes
     uses: ./.github/workflows/change-classification.yml
+  platform-contracts:
+    name: Fast process contracts (${{ matrix.os }})
+    needs: [changes, mac-runner]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.mac-runner.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os == 'macos-14' && needs.mac-runner.outputs.runner || matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.os == 'macos-14'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
+      - name: Require supported fast contract prerequisites
+        run: python3 -c 'import sys; assert sys.version_info >= (3, 11), "fast contracts require Python 3.11+"'
+      - name: Npm process ownership regressions
+        if: needs.changes.outputs.npm == 'true'
+        run: python3 runner/test_npm_cache_lifecycle.py
+      - name: Launcher credential and lock contracts
+        if: needs.changes.outputs.contracts == 'true'
+        run: python3 scripts/ci/release_tests.py contracts
   make-all:
     name: Application checks
-    needs: changes
+    needs: [changes, platform-contracts, mac-runner]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -26,11 +63,30 @@ jobs:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.application }}
           POLICY: ${{ needs.changes.outputs.policy }}
+          READY: ${{ needs.changes.outputs.ready }}
+          NPM: ${{ needs.changes.outputs.npm }}
+          READINESS: ${{ needs.changes.outputs.readiness }}
+          CONFIG: ${{ needs.changes.outputs.codex_config }}
+          CONTRACTS: ${{ needs.changes.outputs.contracts }}
+          PROCESS_RESULT: ${{ needs.platform-contracts.result }}
+          MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
+          test "$MAC_RUNNER_RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
+          for flag in "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
+            case "$flag" in true|false) ;; *) exit 1 ;; esac
+          done
           if [ "$CODE" = true ]; then test "$POLICY" = true; fi
+          if [ "$NPM" = true ] || [ "$READINESS" = true ] || [ "$CONFIG" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$POLICY" = true
+          fi
+          if [ "$NPM" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$PROCESS_RESULT" = success
+          else
+            test "$PROCESS_RESULT" = skipped
+          fi
       - name: Check out source
         if: needs.changes.outputs.policy == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,20 +103,34 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
 
+      - name: Codex readiness regressions
+        if: needs.changes.outputs.readiness == 'true'
+        run: python3 runner/test_codex_readiness.py
+      - name: Codex file and mount policy regressions
+        if: needs.changes.outputs.codex_config == 'true'
+        run: python3 scripts/ci/release_tests.py codex-config
+      - name: Npm configuration semantics
+        if: needs.changes.outputs.npm == 'true'
+        run: python3 runner/test_npm_cache.py
+      - name: Require ready application qualification
+        env:
+          APPLICATION: ${{ needs.changes.outputs.application }}
+          READY: ${{ needs.changes.outputs.ready }}
+        run: |
+          if [ "$APPLICATION" = true ] && [ "$READY" = false ]; then
+            echo 'Draft PR: affected Elixir qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Set up mise tools
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
           working_directory: elixir
 
-      - name: Codex protected-command failure regressions
-        if: needs.changes.outputs.application != 'false'
-        run: python3 runner/test_codex_readiness.py
-
       - name: Cache deps and build
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -71,7 +141,7 @@ jobs:
             ${{ runner.os }}-mix-
 
       - name: Verify make all
-        if: needs.changes.outputs.application != 'false'
+        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         working-directory: elixir
         run: make all
       - name: Application qualification omission
@@ -80,3 +150,29 @@ jobs:
       - name: Documentation policy omission
         if: needs.changes.outputs.policy == 'false'
         run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+
+  mac-runner:
+    name: Select backup Mac for platform contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
+          SELECT_JOB_KEY: platform-contracts
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"

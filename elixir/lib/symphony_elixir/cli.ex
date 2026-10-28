@@ -3,7 +3,8 @@ defmodule SymphonyElixir.CLI do
   Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
   """
 
-  alias SymphonyElixir.{Codex.SandboxReadiness, LogFile}
+  alias SymphonyElixir.Codex.{ConfigSnapshot, SandboxReadiness}
+  alias SymphonyElixir.LogFile
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, agent: [:string, :keep]]
@@ -26,6 +27,18 @@ defmodule SymphonyElixir.CLI do
 
   @doc false
   @spec main([String.t()], (-> ensure_started_result())) :: no_return()
+  def main(["--codex-config-snapshot"], _ensure_all_started) do
+    case ConfigSnapshot.run() do
+      {:ok, value} ->
+        IO.puts(Jason.encode!(value))
+        System.halt(0)
+
+      {:error, code} ->
+        IO.puts(Jason.encode!(%{schema: 1, mode: "codex-config-snapshot", error: code}))
+        System.halt(1)
+    end
+  end
+
   def main(args, ensure_all_started) do
     if match?(["--check-codex-sandbox", _], args) do
       [_, workflow] = args

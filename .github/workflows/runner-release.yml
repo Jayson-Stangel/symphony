@@ -43,7 +43,12 @@ on:
         description: Exact successful caller-owned portable preflight output; empty runs it here
         type: string
         default: ''
+      prepare_release:
+        description: Retain production-reference packages without publishing; main only
+        type: boolean
+        default: false
       publish:
+        description: Legacy publication is refused; use the signed production publisher
         type: boolean
         default: false
   workflow_dispatch:
@@ -161,6 +166,7 @@ jobs:
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
         run: |
           test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
           if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
@@ -172,6 +178,7 @@ jobs:
           fi
           if [ "$MANAGER_ONLY_UPDATE" = true ]; then test -n "$PREVIOUS_ARTIFACT_RUN"; fi
           args=()
+          if [ "${PREPARE_RELEASE:-false}" = true ]; then args+=(--production); fi
           if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--compatible-originals); fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
           if [ -n "$SELECTED_PLAN_ARTIFACT" ]; then
@@ -290,7 +297,7 @@ jobs:
 
   publication-preflight:
     name: Validate publication inputs
-    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
+    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.prepare_release && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: [component-plan, candidate-metadata, candidate-qualification]
     runs-on: ubuntu-24.04
     steps:
@@ -317,39 +324,6 @@ jobs:
         with:
           name: runner-distribution-plan
           path: prepared/publication-plan.json
-          if-no-files-found: error
-
-  publish:
-    name: Publish qualified runners
-    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' && inputs.publish && startsWith(github.ref, 'refs/tags/v') && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled' }}
-    needs: publication-preflight
-    environment: production-release
-    permissions:
-      contents: read
-      actions: read
-      packages: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Retrieve artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: runner-distribution-plan
-          path: prepared
-      - name: Transfer only missing new components and preserve original image identities
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SYMPHONY_PRODUCTION_RELEASES: ${{ vars.SYMPHONY_PRODUCTION_RELEASES }}
-        run: python3 scripts/release/component_publication.py --prepared prepared/publication-plan.json --output stable/release.json
-      - name: Retain artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: runner-stable-metadata
-          path: stable/release.json
           if-no-files-found: error
 
   candidate-metadata:
@@ -392,8 +366,8 @@ jobs:
 
   packaged-release-platform:
     name: Build release package (${{ matrix.platform }})
-    if: ${{ always() && !cancelled() && needs.publish.result == 'success' }}
-    needs: publish
+    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' && needs.mac-runner-packaged-release-platform.result == 'success' }}
+    needs: [publication-preflight, mac-runner-packaged-release-platform]
     strategy:
       fail-fast: false
       matrix:
@@ -402,9 +376,19 @@ jobs:
             runner: macos-14
           - platform: linux_x86_64
             runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
-    environment: production-release
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-packaged-release-platform.outputs.runner || matrix.runner }}
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-packaged-release-platform.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -412,8 +396,8 @@ jobs:
       - name: Retrieve artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: runner-stable-metadata
-          path: metadata
+          name: runner-distribution-plan
+          path: prepared
       - name: Retrieve artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -425,6 +409,10 @@ jobs:
           if command -v sha256sum >/dev/null 2>&1; then sha256sum --check symphony-host.sha256
           else shasum -a 256 --check symphony-host.sha256; fi
           chmod 755 symphony-host
+      - name: Select immutable prepared production metadata
+        run: |
+          mkdir -p metadata
+          python3 -c 'import json,pathlib; p=json.load(open("prepared/publication-plan.json")); pathlib.Path("metadata/release.json").write_text(json.dumps(p["manifest"],sort_keys=True)+"\n")'
       - name: Assemble native manager archive from tested stable image identities
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -443,23 +431,27 @@ jobs:
   packaged-release:
     name: Assemble release packages
     if: ${{ always() && !cancelled() && needs.packaged-release-platform.result == 'success' }}
-    needs: packaged-release-platform
+    needs: [packaged-release-platform, publication-preflight]
     runs-on: ubuntu-24.04
-    environment: production-release
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Retrieve artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: runner-stable-metadata
-          path: metadata
+          name: runner-distribution-plan
+          path: prepared
       - name: Retrieve artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: packaged-release-platform-*
           path: dist
           merge-multiple: true
+      - name: Select immutable prepared production metadata
+        run: |
+          mkdir -p metadata
+          cp prepared/publication-plan.json dist/production-plan.json
+          python3 -c 'import json,pathlib; p=json.load(open("prepared/publication-plan.json")); pathlib.Path("metadata/release.json").write_text(json.dumps(p["manifest"],sort_keys=True)+"\n")'
       - name: Bind matching Linux and legacy macOS manager archives
         run: |
           python3 scripts/release/manager_version.py
@@ -596,8 +588,8 @@ jobs:
 
   packaged-candidate:
     name: Build candidate package (${{ matrix.platform }})
-    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages }}
-    needs: [candidate-metadata, package-inputs]
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages && needs.mac-runner-packaged-candidate.result == 'success' }}
+    needs: [candidate-metadata, package-inputs, mac-runner-packaged-candidate]
     strategy:
       fail-fast: false
       matrix:
@@ -606,9 +598,20 @@ jobs:
             runner: macos-14
           - platform: linux_x86_64
             runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-packaged-candidate.outputs.runner || matrix.runner }}
     timeout-minutes: 45
     steps:
+      - name: Require actual native Mac prerequisites
+        working-directory: ${{ runner.temp }}
+        if: matrix.platform == 'macos'
+        env:
+          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-packaged-candidate.outputs.runner != 'macos-14' }}
+        run: |
+          test "$(uname -s)/$(uname -m)" = Darwin/arm64
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
+          if [ "$BACKUP_MAC_SELECTED" = true ]; then
+            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
+          fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -989,10 +992,12 @@ jobs:
           LOCAL_RESULT: ${{ needs.portable.result }}
           LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
           CALLER_REVISION: ${{ inputs.preflight_revision }}
+          LEGACY_PUBLISH: ${{ inputs.publish }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           CACHE_PROBE: ${{ inputs.cache_probe }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
         run: |
+          test "${LEGACY_PUBLISH:-false}" != true || { echo 'Unsigned publication is disabled; use production-publish with signed inputs.' >&2; exit 1; }
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
           test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
           if [ -n "$CALLER_REVISION" ]; then
@@ -1251,3 +1256,55 @@ jobs:
           path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
+
+  mac-runner-packaged-candidate:
+    name: Select backup Mac for packaged candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-candidate
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+
+  mac-runner-packaged-release-platform:
+    name: Select backup Mac for packaged release platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+    steps:
+      - name: Retain hosted execution by default
+        id: hosted
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
+        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
+      - name: Check out source for an explicit routing permit
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the exact credential free Mac routing permit
+        id: selected
+        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-release-platform
+        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"

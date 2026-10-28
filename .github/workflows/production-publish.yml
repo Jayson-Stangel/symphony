@@ -1,0 +1,119 @@
+name: Publish retained signed production release
+on:
+  workflow_dispatch:
+    inputs:
+      approved_revision:
+        description: Exact promoted source approved for this tag and publication
+        required: true
+        type: string
+      signed_run:
+        description: Successful hosted signing or local import run with the assessed final bytes
+        required: true
+        type: string
+      signed_attempt:
+        description: Exact successful signing or local import attempt
+        required: true
+        type: string
+      signed_origin:
+        description: Hosted signing or independently verified local signing import
+        required: true
+        default: hosted
+        type: choice
+        options: [hosted, local]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: production-publication
+  cancel-in-progress: false
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  inputs:
+    name: Verify retained production inputs before mutation
+    if: github.repository == 'Jayson-Stangel/symphony' && startsWith(github.ref, 'refs/tags/v') && inputs.approved_revision == github.sha && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact tag and immutable completed qualification and signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_RUN: ${{ inputs.signed_run }}
+          SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release/production_release.py source "$TAG"
+          python3 scripts/release/production_release.py signed "$SIGNED_RUN" "$SIGNED_ATTEMPT" retained
+      - name: Retain verified production inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: retained-production-inputs
+          path: retained/
+          if-no-files-found: error
+  registry:
+    name: Publish exact qualified component graphs
+    needs: inputs
+    environment: production-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck source and signed artifacts after environment approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_RUN: ${{ inputs.signed_run }}
+          SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release/production_release.py source "$TAG"
+          python3 scripts/release/production_release.py signed "$SIGNED_RUN" "$SIGNED_ATTEMPT" retained
+      - name: Transfer immutable graphs after signed artifacts and native acceptance approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYMPHONY_PRODUCTION_RELEASES: ${{ vars.SYMPHONY_PRODUCTION_RELEASES }}
+        run: |
+          python3 scripts/release/component_publication.py --prepared retained/signed/production-plan.json --output published/release.json
+          python3 scripts/release/production_release.py compare retained/signed/production-plan.json published/release.json
+  release:
+    name: Complete release after final public-reference and native acceptance
+    needs: [inputs, registry]
+    environment: production-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate original bytes and completed release refusal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_RUN: ${{ inputs.signed_run }}
+          SIGNED_ATTEMPT: ${{ inputs.signed_attempt }}
+          SIGNED_ORIGIN: ${{ inputs.signed_origin }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release/production_release.py source "$TAG"
+          python3 scripts/release/production_release.py signed "$SIGNED_RUN" "$SIGNED_ATTEMPT" retained
+          python3 scripts/release/production_release.py public retained/signed/production-plan.json
+      - name: Publish assessed packages and independently qualified engine assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/release/production_release.py publish retained

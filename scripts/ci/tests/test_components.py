@@ -46,10 +46,10 @@ def env_for(flags):
     platform = 'all'
     if fixtures == 'false' and macos != linux:
         platform = 'macos' if macos == 'true' else 'linux_x86_64'
-    return dict(RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
+    return dict(MAC_RUNNER_RESULT='success', RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
                 MACOS=macos, LINUX=linux, FIXTURES=fixtures, NATIVE_REQUIRED=str(native).lower(),
                 PLATFORM=platform, PORTABLE='success', PACKAGE='success' if native else 'skipped',
-                GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
+                READY='true', GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
 
 
 class Consumers(unittest.TestCase):
@@ -63,9 +63,10 @@ class Consumers(unittest.TestCase):
             'runner/browser/package-lock.json': {'portable'},
             'scripts/package/linux/Package.resolved': {'portable', 'package_linux'},
             'scripts/package/host.swift': {'portable', 'package_macos', 'package_linux'},
-            'scripts/symphony-runner-import.sh': {'portable', 'package_macos', 'package_linux', 'application'},
+            'scripts/symphony-apparmor.sh': {'portable', 'package_macos', 'package_linux', 'application', 'contracts'},
+            'scripts/symphony-runner-import.sh': {'portable', 'package_macos', 'package_linux', 'application', 'contracts'},
             'scripts/package/runner_import_test.py': {'portable', 'package_macos', 'package_linux'},
-            'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures'},
+            'scripts/symphony-package-update.sh': {'portable', 'package_macos', 'package_linux', 'application', 'fixtures', 'contracts', 'codex_config'},
             '.codex/skills/land/SKILL.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'elixir/WORKFLOW.md': {'portable', 'package_macos', 'package_linux', 'application'},
             'runner/claude/runtime.mjs': {'application'},
@@ -145,7 +146,7 @@ class Consumers(unittest.TestCase):
         self.assertIn('"$RUNNER_TEMP/actionlint"', text)
         # Application setup follows its component; policy and workflow checks omit pure prose.
         for step in text.split('      - name: Set up mise tools', 1)[1].split('      - name: Application qualification omission', 1)[0].split('      - '):
-            self.assertIn("if: needs.changes.outputs.application != 'false'", step)
+            self.assertIn("if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'", step)
 
     def test_native_allocations_follow_transitive_inputs(self):
         text = workflow('package-checks')
@@ -156,9 +157,9 @@ class Consumers(unittest.TestCase):
             route = classifier.decisions([path])
             values = {'needs.changes.outputs.native': str(route['native']).lower(),
                       'needs.changes.result': 'success', 'needs.qualification.result': 'success',
-                      'needs.host-policy.result': 'success'}
+                      'needs.host-policy.result': 'success', 'needs.mac-runner.result': 'success', 'needs.changes.outputs.ready': 'true'}
             self.assertEqual(expression(condition, values), route['native'], path)
-            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result'):
+            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result', 'needs.mac-runner.result'):
                 for status in ('failure', 'cancelled', 'skipped', ''):
                     self.assertFalse(expression(condition, dict(values, **{key: status})), (path, key, status))
             if path == 'scripts/package/linux/Package.resolved':
@@ -223,6 +224,23 @@ class Consumers(unittest.TestCase):
                     if dependency.is_file():
                         pending.append(str(dependency.relative_to(ROOT)))
 
+    def test_signing_payload_dependency_is_native_without_publication_imports(self):
+        shared = 'scripts/release/signing_payload.py'
+        self.assertEqual(classifier.consumers(shared), {'portable', 'package_macos', 'package_linux'})
+        tree = ast.parse((ROOT / shared).read_text())
+        names = set()
+        for node in ast.walk(tree):
+            names.update(item.name for item in node.names) if isinstance(node, ast.Import) else None
+            if isinstance(node, ast.ImportFrom):
+                names.add(node.module)
+        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'tarfile'})
+        distribution = ast.parse((ROOT / 'scripts/release/macos_distribution.py').read_text())
+        imports = {node.module for node in ast.walk(distribution) if isinstance(node, ast.ImportFrom)}
+        self.assertIn('signing_payload', imports)
+        self.assertTrue(imports.isdisjoint({'local_distribution', 'production_release'}))
+        for filename in ('production_release.py', 'component_publication.py', 'graph_publication.py', 'registry_closure.py'):
+            self.assertEqual(classifier.consumers('scripts/release/' + filename), {'portable'})
+
     def test_native_work_cannot_bypass_portable_preflight(self):
         guard = scripts(job(workflow('package-checks'), 'qualification'))[0]
         for key in ('MACOS', 'LINUX', 'FIXTURES'):
@@ -236,8 +254,8 @@ class Consumers(unittest.TestCase):
     def test_manual_and_release_requests_remain_complete(self):
         self.assertNotIn('outputs.application', workflow('runner-release'))
         self.assertNotIn('outputs.native', workflow('burrito-release'))
-        self.assertIn('environment: production-release', workflow('burrito-release'))
-        self.assertIn('SYMPHONY_PRODUCTION_RELEASES', workflow('runner-release'))
+        self.assertNotIn('environment: production-release', workflow('burrito-release'))
+        self.assertIn('SYMPHONY_PRODUCTION_RELEASES', workflow('production-publish'))
         self.assertIn("cancel-in-progress: ${{ github.event_name != 'workflow_dispatch'", workflow('runner-integration'))
         self.assertIn("github.event_name == 'workflow_dispatch' && github.run_id", workflow('runner-integration'))
 

@@ -471,11 +471,24 @@ shutil.copyfile(mapping[url], args[args.index('--output')+1])
     def test_real_launcher_retains_prior_runner_when_package_activation_fails(self):
         # Execute the repository's real transition and rollback functions. Only
         # Docker/readiness/activation boundaries are peers; ordering is real.
+        # Use Claude-to-Claude for this provider-independent activation fixture.
+        # Qualified Codex snapshot/runtime tuples are exercised by lifecycle tests.
         script = r'''
 set -euo pipefail
 source "$1/scripts/symphony" --help >/dev/null
 packaged_install=true
-runner_home="$2/runners"; mkdir "$runner_home"
+# Model the existing native helper's storage guard, not an unconditional success.
+package_helper() {
+  [ "$#" = 2 ] && [ "$1" = selection-storage-directory ] || return 90
+  if [ -n "${SYMPHONY_TEST_HOST_HELPER:-}" ]; then "$SYMPHONY_TEST_HOST_HELPER" "$@"; return; fi
+  python3 - "$2" <<'FIXTURESTORAGE'
+import os, stat, sys
+info = os.lstat(sys.argv[1])
+if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    sys.exit('unsafe or foreign fixture runner storage')
+FIXTURESTORAGE
+}
+runner_home="$2/runners"; (umask 077; mkdir "$runner_home")
 printf old >"$2/current"
 printf 'SYMPHONY_RUNNER_IMAGE_ID=old\n' >"$runner_home/project.env"
 container_runtime() { echo fixture_runtime; }
@@ -498,10 +511,10 @@ fixture_runtime() {
       case "${!#}" in
         project-before-update)
           [ -f "$fixture/backup" ] || return 1
-          case "$*" in *State.Running*) echo false ;; *com.symphony.agent*) echo codex ;; *'{{.Image}}'*) cat "$fixture/backup" ;; esac ;;
+          case "$*" in *State.Running*) echo false ;; *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/backup" ;; esac ;;
         project)
           [ -f "$fixture/current" ] || return 1
-          case "$*" in *com.symphony.agent*) echo codex ;; *'{{.Image}}'*) cat "$fixture/current" ;; esac ;;
+          case "$*" in *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/current" ;; esac ;;
       esac ;;
     rename)
       if [ "$2" = project ]; then mv "$fixture/current" "$fixture/backup"
@@ -515,7 +528,7 @@ fixture_runtime() {
 fixture=$2
 # Explicit positional root lets runner_status avoid ambient process cwd.
 runner_status() { if [ -f "$fixture/current" ]; then echo true; else echo missing; fi; }
-if runner_transition "$fixture" codex; then exit 20; fi
+if runner_transition "$fixture" claude; then exit 20; fi
 [ -f "$fixture/backup" ] && [ ! -e "$fixture/removed-backup" ]
 package_finish_transition() { :; }
 runner_rollback "$fixture"

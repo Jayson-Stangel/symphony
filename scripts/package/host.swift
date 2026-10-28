@@ -397,6 +397,61 @@ func validateRelease(_ path: String) throws -> [String: Any] {
     return normalized
 }
 
+// Relocation changes only the temporary transport authority, never graph identity.
+func runnerReference(_ manifest: [String: Any], provider: String, arch: String, reference: String? = nil) -> String {
+    guard ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch) else { fail("invalid runner provider/platform") }
+    let original = object(object(object(manifest["runners"])[provider])[arch])["image"] as? String ?? ""
+    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? original
+    guard let reference = reference else { return selected }
+    if reference == selected { return reference }
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          selected == original, matches(original, "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$"),
+          matches(reference, "^127[.]0[.]0[.]1:[1-9][0-9]{0,4}/symphony-\(provider)@sha256:[a-f0-9]{64}$"),
+          let authority = reference.split(separator: "/").first,
+          let port = Int(authority.split(separator: ":").last ?? ""), (1024...65535).contains(port),
+          reference.split(separator: "@").last == original.split(separator: "@").last else { fail("runtime image is outside selected qualified release") }
+    return reference
+}
+
+// Private receipts remember a digest-qualified transport reference, never a config-ID alias.
+func runnerImportReceipt(_ manifest: [String: Any], provider: String, arch: String, root: String, storing: String? = nil) throws -> String {
+    let selected = runnerReference(manifest, provider: provider, arch: arch)
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          matches(selected, "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$") else {
+        guard storing == nil else { fail("only original loopback candidates accept import receipts") }; return selected
+    }
+    var folder = root
+    for part in ["", "runner-imports", String(selected.split(separator: "@").last!).replacingOccurrences(of: ":", with: "-")] {
+        if !part.isEmpty { folder += "/" + part }
+        var info = stat()
+        if lstat(folder, &info) != 0 {
+            guard errno == ENOENT else { fail("cannot inspect candidate import receipt directory") }
+            if storing == nil { return selected }
+            guard mkdir(folder, 0o700) == 0 || errno == EEXIST else { fail("cannot create candidate import receipt directory") }
+        }
+        _ = checkedInfo(folder, directory: true)
+    }
+    let path = folder + "/" + provider + "-" + arch
+    var info = stat()
+    if lstat(path, &info) == 0 {
+        let checked = checkedInfo(path)
+        guard checked.st_size <= 256, checked.st_mode & 0o077 == 0 else { fail("candidate import receipt must be private and bounded") }
+    } else {
+        guard errno == ENOENT else { fail("cannot inspect candidate import receipt") }
+        if storing == nil { return selected }
+    }
+    if let reference = storing {
+        let previousMask = umask(0o077)
+        defer { umask(previousMask) }
+        _ = runnerReference(manifest, provider: provider, arch: arch, reference: reference)
+        try Data((reference + "\n").utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        guard chmod(path, 0o600) == 0 else { fail("cannot protect candidate import receipt") }
+        return reference
+    }
+    guard let text = String(data: try read(path), encoding: .utf8), text.hasSuffix("\n"), !text.dropLast().contains("\n") else { fail("invalid candidate import receipt") }
+    return runnerReference(manifest, provider: provider, arch: arch, reference: String(text.dropLast()))
+}
+
 // A qualified OCI digest binds its original config cryptographically. Classic
 // daemons expose that config as Id; manifest stores expose the manifest as Id.
 // Never confuse an archive transport manifest with the qualified OCI identity.
@@ -405,8 +460,8 @@ func validateRuntimeImage(_ manifest: [String: Any], provider: String, arch: Str
           ["arm64", "x86_64"].contains(arch), data.count <= 1024 * 1024,
           let values = try json(data) as? [[String: Any]], values.count == 1 else { fail("invalid qualified runtime image receipt") }
     let original = object(object(object(manifest["runners"])[provider])[arch])
-    let selected = object(object(manifest["distribution"])[provider])[arch] as? String ?? original["image"] as? String
-    guard reference == selected, let qualified = original["image"] as? String,
+    _ = runnerReference(manifest, provider: provider, arch: arch, reference: reference)
+    guard let qualified = original["image"] as? String,
           let config = original["image_config"] as? String else { fail("runtime image is outside selected qualified release") }
     let receipt = values[0], labels = object(object(receipt["Config"])["Labels"])
     guard receipt["Os"] as? String == "linux", receipt["Architecture"] as? String == (arch == "arm64" ? "arm64" : "amd64"),
@@ -719,10 +774,606 @@ func prepareRunnerImport(_ manifest: [String: Any], provider: String, arch: Stri
     print(image)
 }
 
-let arity = ["prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
+// Actions payloads use upload-artifact compression-level: 0. Read only the
+// selected stored member, including ZIP64 sizes; never extract paths from ZIP.
+func candidateRecord(_ manifest: [String: Any], _ provider: String, _ arch: String) -> [String: Any] {
+    guard manifest["channel"] as? String == "candidate", integer(manifest["schema_version"]) == 2,
+          ["codex", "claude"].contains(provider), ["arm64", "x86_64"].contains(arch) else { fail("automatic acquisition requires a schema2 candidate provider/platform") }
+    let record = object(object(object(manifest["runners"])[provider])[arch])
+    guard (object(object(manifest["distribution"])[provider])[arch] as? String ?? record["image"] as? String) == record["image"] as? String,
+          matches(record["image"] as? String ?? "", "^localhost:5000/symphony-\(provider)@sha256:[a-f0-9]{64}$") else { fail("automatic companion acquisition requires the original selected candidate graph") }
+    return record
+}
+func validateCandidateArtifact(_ manifest: [String: Any], _ provider: String, _ arch: String, _ path: String) throws {
+    let proof = object(candidateRecord(manifest, provider, arch)["qualification"])
+    let info = checkedInfo(path)
+    guard info.st_size > 0, info.st_size <= 1024 * 1024 else { fail("candidate artifact metadata exceeds bound") }
+    let metadata = object(try json(read(path))), run = object(metadata["workflow_run"])
+    let formatter = ISO8601DateFormatter()
+    guard integer(metadata["id"]) == integer(proof["artifact_id"]), metadata["name"] as? String == proof["artifact_name"] as? String,
+          metadata["digest"] as? String == proof["artifact_digest"] as? String,
+          integer(run["id"]) == integer(proof["run_id"]), run["head_sha"] as? String == proof["controller_revision"] as? String,
+          isBool(metadata["expired"], false), let expires = metadata["expires_at"] as? String,
+          let date = formatter.date(from: expires), date > Date(),
+          let size = integer(metadata["size_in_bytes"]), size > 0, UInt64(size) <= 32 << 30 else { fail("selected candidate artifact is unavailable, expired or differs from its sealed identity; use an available reviewed candidate or offline original companion") }
+    print(size)
+}
+func zipNumber(_ data: Data, _ offset: Int, _ length: Int) -> UInt64 {
+    guard offset >= 0, offset + length <= data.count else { fail("truncated candidate ZIP metadata") }
+    return (0..<length).reduce(UInt64(0)) { $0 | UInt64(data[offset + $1]) << ($1 * 8) }
+}
+func extractCandidateArtifact(_ manifest: [String: Any], _ provider: String, _ arch: String, _ archive: String, _ destination: String) throws {
+    let proof = object(candidateRecord(manifest, provider, arch)["qualification"])
+    let info = checkedInfo(archive)
+    guard info.st_size > 0, UInt64(info.st_size) <= 32 << 30 else { fail("candidate ZIP size exceeds bound") }
+    let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: archive)); defer { try? input.close() }
+    guard "sha256:" + (try streamDigest(input, maximum: 32 << 30).0) == proof["artifact_digest"] as? String else { fail("candidate ZIP checksum differs from sealed artifact") }
+    func at(_ offset: UInt64, _ count: Int) throws -> Data {
+        guard offset <= UInt64(info.st_size), UInt64(count) <= UInt64(info.st_size) - offset else { fail("candidate ZIP offset exceeds bound") }
+        try input.seek(toOffset: offset); return try importRead(input, count)
+    }
+    let tailSize = min(Int(info.st_size), 65557), tail = try at(UInt64(info.st_size) - UInt64(tailSize), tailSize)
+    guard tailSize >= 22, let end = stride(from: tailSize - 22, through: 0, by: -1).first(where: { zipNumber(tail, $0, 4) == 0x06054b50 && $0 + 22 + Int(zipNumber(tail, $0 + 20, 2)) == tailSize }) else { fail("candidate ZIP directory missing") }
+    guard zipNumber(tail, end + 4, 4) == 0 else { fail("split candidate ZIP refused") }
+    var count = zipNumber(tail, end + 10, 2), length = zipNumber(tail, end + 12, 4), offset = zipNumber(tail, end + 16, 4)
+    if count == 65535 || length == 0xffffffff || offset == 0xffffffff {
+        let location = UInt64(info.st_size) - UInt64(tailSize) + UInt64(end)
+        guard location >= 20 else { fail("candidate ZIP64 locator missing") }
+        let locator = try at(location - 20, 20)
+        guard zipNumber(locator, 0, 4) == 0x07064b50, zipNumber(locator, 4, 4) == 0, zipNumber(locator, 16, 4) == 1 else { fail("invalid candidate ZIP64 locator") }
+        let directory = try at(zipNumber(locator, 8, 8), 56)
+        guard zipNumber(directory, 0, 4) == 0x06064b50, zipNumber(directory, 16, 8) == 0 else { fail("split candidate ZIP64 refused") }
+        count = zipNumber(directory, 32, 8); length = zipNumber(directory, 40, 8); offset = zipNumber(directory, 48, 8)
+    }
+    guard count > 0, count <= 1024, length <= 4 * 1024 * 1024 else { fail("candidate ZIP directory exceeds bound") }
+    let directory = try at(offset, Int(length))
+    var cursor = 0, selected: (UInt64, UInt64, Data)?
+    for _ in 0..<Int(count) {
+        guard zipNumber(directory, cursor, 4) == 0x02014b50 else { fail("invalid candidate ZIP entry") }
+        let nameLength = Int(zipNumber(directory, cursor + 28, 2)), extraLength = Int(zipNumber(directory, cursor + 30, 2)), commentLength = Int(zipNumber(directory, cursor + 32, 2))
+        let next = cursor + 46 + nameLength + extraLength + commentLength
+        guard next <= directory.count else { fail("truncated candidate ZIP entry") }
+        let name = directory.subdata(in: cursor + 46..<cursor + 46 + nameLength)
+        if String(data: name, encoding: .utf8) == proof["archive_filename"] as? String {
+            guard selected == nil, zipNumber(directory, cursor + 10, 2) == 0, zipNumber(directory, cursor + 8, 2) & 1 == 0 else { fail("selected candidate ZIP member is duplicate, encrypted or compressed; obtain its original offline companion") }
+            var size = zipNumber(directory, cursor + 24, 4), compressed = zipNumber(directory, cursor + 20, 4), local = zipNumber(directory, cursor + 42, 4)
+            var extra = cursor + 46 + nameLength
+            let extraEnd = extra + extraLength
+            while extra + 4 <= extraEnd {
+                let kind = zipNumber(directory, extra, 2), n = Int(zipNumber(directory, extra + 2, 2)); extra += 4
+                guard extra + n <= extraEnd else { fail("invalid candidate ZIP extra field") }
+                if kind == 1 {
+                    var i = extra
+                    func wide() -> UInt64 { guard i + 8 <= extra + n else { fail("truncated candidate ZIP64 field") }; defer { i += 8 }; return zipNumber(directory, i, 8) }
+                    if size == 0xffffffff { size = wide() }; if compressed == 0xffffffff { compressed = wide() }; if local == 0xffffffff { local = wide() }
+                }
+                extra += n
+            }
+            guard size > 0, size <= 32 << 30, size == compressed else { fail("candidate ZIP member exceeds bound") }
+            selected = (local, size, name)
+        }
+        cursor = next
+    }
+    guard cursor == directory.count, let (local, size, name) = selected else { fail("candidate ZIP lacks its exact original archive member") }
+    let header = try at(local, 30)
+    guard zipNumber(header, 0, 4) == 0x04034b50, zipNumber(header, 8, 2) == 0, zipNumber(header, 6, 2) & 1 == 0 else { fail("invalid candidate ZIP local member") }
+    let nameLength = Int(zipNumber(header, 26, 2)), extraLength = zipNumber(header, 28, 2)
+    guard try at(local + 30, nameLength) == name else { fail("candidate ZIP member identity differs") }
+    let start = local + 30 + UInt64(nameLength) + extraLength
+    guard start <= offset, size <= offset - start else { fail("candidate ZIP member overlaps its directory") }
+    let fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    guard fd >= 0 else { fail("candidate archive destination exists or cannot be created") }
+    let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    defer { try? output.close() }
+    try input.seek(toOffset: start)
+    var remaining = size, hash = SHA256()
+    while remaining > 0 {
+        let data = try importRead(input, Int(min(remaining, 1024 * 1024)))
+        try output.write(contentsOf: data); hash.update(data: data); remaining -= UInt64(data.count)
+    }
+    guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == proof["archive_sha256"] as? String else { fail("candidate archive checksum differs from selected original qualification") }
+}
+
+// Manager-held project lock serializes this small content-addressed store.
+// Only sealed copies live here; original native home/auth are never inspected.
+enum ConfigStoreError: Error { case unsafe }
+func storeRequire(_ condition: Bool) throws { if !condition { throw ConfigStoreError.unsafe } }
+func storeDigest(_ value: Any?) throws -> String {
+    guard let digest = value as? String, matches(digest, "^[a-f0-9]{64}$") else { throw ConfigStoreError.unsafe }
+    return digest
+}
+func storeIdentity(_ info: stat) -> String {
+#if canImport(Darwin)
+    let times = "\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec)"
+#else
+    let times = "\(info.st_mtim.tv_sec):\(info.st_mtim.tv_nsec):\(info.st_ctim.tv_sec):\(info.st_ctim.tv_nsec)"
+#endif
+    return "\(info.st_dev):\(info.st_ino):\(info.st_uid):\(info.st_gid):\(info.st_mode):\(info.st_nlink):\(info.st_size):" + times
+}
+func storeInfo(_ path: String, directory: Bool = false, privateMode: Bool = true) throws -> stat {
+    var info = stat()
+    try storeRequire(lstat(path, &info) == 0)
+    let mode = info.st_mode & 0o7777
+    try storeRequire(info.st_uid == geteuid() && (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG))
+    try storeRequire(privateMode ? mode == (directory ? 0o700 : 0o600) : mode & 0o022 == 0)
+    try storeRequire(directory || info.st_nlink == 1)
+    guard let canonical = realpath(path, nil) else { throw ConfigStoreError.unsafe }
+    defer { free(canonical) }
+    try storeRequire(String(cString: canonical) == path)
+    return info
+}
+func storeRead(_ path: String, maximum: Int) throws -> Data {
+    let before = try storeInfo(path)
+    let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    try storeRequire(descriptor >= 0)
+    defer { close(descriptor) }
+    var current = stat()
+    try storeRequire(fstat(descriptor, &current) == 0 && storeIdentity(before) == storeIdentity(current) && before.st_size >= 0 && before.st_size <= maximum)
+    var data = Data(), buffer = [UInt8](repeating: 0, count: 65536)
+    while data.count <= maximum {
+        let count = read(descriptor, &buffer, min(buffer.count, maximum + 1 - data.count))
+        try storeRequire(count >= 0)
+        if count == 0 { break }
+        data.append(contentsOf: buffer.prefix(count))
+    }
+    try storeRequire(data.count == before.st_size && data.count <= maximum)
+    try storeRequire(fstat(descriptor, &current) == 0 && storeIdentity(before) == storeIdentity(current))
+    try storeRequire(lstat(path, &current) == 0 && storeIdentity(before) == storeIdentity(current))
+    return data
+}
+func storeReceipt(_ value: Any, full: Bool) throws -> [String: Any] {
+    guard let receipt = value as? [String: Any] else { throw ConfigStoreError.unsafe }
+    var keys = Set(["schema", "mode", "profile", "sha256", "source"])
+    if full { keys.insert("config_base64") }
+    try storeRequire(Set(receipt.keys) == keys && integer(receipt["schema"]) == 1 && receipt["mode"] as? String == "codex-config-snapshot" && receipt["profile"] as? String == "trust-ro-v2")
+    _ = try storeDigest(receipt["sha256"])
+    guard let source = receipt["source"] as? [String: Any] else { throw ConfigStoreError.unsafe }
+    if isBool(source["present"], true) {
+        let fields = Set(["uid", "gid", "mode", "device", "inode", "size", "mtime_ns", "ctime_ns"])
+        try storeRequire(Set(source.keys) == fields.union(["present"]))
+        for field in fields { guard let value = integer(source[field]), value >= 0 else { throw ConfigStoreError.unsafe } }
+        let mode = integer(source["mode"])!, size = integer(source["size"])!
+        try storeRequire(mode <= 0o7777 && mode & 0o022 == 0 && size <= 65536)
+    } else { try storeRequire(Set(source.keys) == Set(["present"]) && isBool(source["present"], false)) }
+    return receipt
+}
+func storeLexicalPath(_ path: String) -> Bool {
+    if path == "/" { return true }
+    if !path.hasPrefix("/") || path.contains("\0") { return false }
+    return path.dropFirst().split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+}
+func storeRoot(_ path: String, create: Bool) throws -> String {
+    try storeRequire(storeLexicalPath(path))
+    let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
+    _ = try storeInfo(parent, directory: true, privateMode: false)
+    var info = stat()
+    if create && lstat(path, &info) != 0 {
+        try storeRequire(errno == ENOENT && mkdir(path, 0o700) == 0)
+        try storeSync(parent, privateMode: false)
+    }
+    _ = try storeInfo(path, directory: true)
+    return path
+}
+func storeVerify(_ root: String, _ digest: String) throws {
+    _ = try storeDigest(digest)
+    let directory = root + "/" + digest
+    _ = try storeInfo(directory, directory: true)
+    try storeRequire(Set(try FileManager.default.contentsOfDirectory(atPath: directory)) == Set(["config.toml", "receipt.json"]))
+    let data = try storeRead(directory + "/config.toml", maximum: 65536)
+    let receipt = try storeReceipt(json(storeRead(directory + "/receipt.json", maximum: 4096)), full: false)
+    try storeRequire(receipt["sha256"] as? String == digest && SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == digest)
+    let source = object(receipt["source"])
+    try storeRequire(isBool(source["present"], true) ? integer(source["size"]) == data.count : data.isEmpty)
+}
+func storeSync(_ path: String, privateMode: Bool = true) throws {
+    _ = try storeInfo(path, directory: true, privateMode: privateMode)
+    let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+    try storeRequire(descriptor >= 0)
+    defer { close(descriptor) }
+    try storeRequire(fsync(descriptor) == 0)
+}
+func storeTransient(_ root: String, _ name: String) throws -> [String] {
+    let stage = matches(name, "^\\.stage-[0-9a-f]{32}$")
+    let retire = matches(name, "^\\.retire-[0-9a-f]{64}-[0-9a-f]{32}$")
+    try storeRequire(stage || retire)
+    let directory = root + "/" + name
+    _ = try storeInfo(directory, directory: true)
+    let names = try FileManager.default.contentsOfDirectory(atPath: directory)
+    try storeRequire(Set(names).isSubset(of: Set(["config.toml", "receipt.json"])))
+    for child in names {
+        let data = try storeRead(directory + "/" + child, maximum: child == "config.toml" ? 65536 : 4096)
+        if retire {
+            let digest = String(name.dropFirst(8).prefix(64))
+            if child == "config.toml" { try storeRequire(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == digest) }
+            else { try storeRequire(storeReceipt(json(data), full: false)["sha256"] as? String == digest) }
+        }
+    }
+    return names
+}
+func storeRemoveTransient(_ root: String, _ name: String) throws {
+    let directory = root + "/" + name
+    for child in try storeTransient(root, name) { try storeRequire(unlink(directory + "/" + child) == 0) }
+    try storeSync(directory)
+    try storeRequire(rmdir(directory) == 0)
+    try storeSync(root)
+}
+func storeInventory(_ root: String) throws -> [String] {
+    let names = try FileManager.default.contentsOfDirectory(atPath: root)
+    try storeRequire(names.count <= 128)
+    var artifacts: [String] = [], leftovers: [String] = []
+    for name in names {
+        if matches(name, "^[0-9a-f]{64}$") { try storeVerify(root, name); artifacts.append(name) }
+        else { _ = try storeTransient(root, name); leftovers.append(name) }
+    }
+    try storeRequire(artifacts.count <= 64 && leftovers.count <= 64)
+    for name in leftovers { try storeRemoveTransient(root, name) }
+    return artifacts
+}
+func storeRename(_ source: String, _ destination: String) throws {
+    var info = stat()
+    try storeRequire(lstat(destination, &info) != 0 && errno == ENOENT)
+    try storeRequire(rename(source, destination) == 0)
+}
+func storeWriteFile(_ path: String, _ data: Data) throws {
+    let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    try storeRequire(descriptor >= 0)
+    defer { close(descriptor) }
+    try data.withUnsafeBytes { pointer in
+        var offset = 0
+        while offset < data.count {
+            let count = write(descriptor, pointer.baseAddress!.advanced(by: offset), data.count - offset)
+            try storeRequire(count > 0)
+            offset += count
+        }
+    }
+    try storeRequire(fsync(descriptor) == 0)
+}
+func storeInput(_ maximum: Int) throws -> Data {
+    var input = Data()
+    while input.count <= maximum {
+        guard let part = try FileHandle.standardInput.read(upToCount: maximum + 1 - input.count), !part.isEmpty else { break }
+        input.append(part)
+    }
+    try storeRequire(input.count <= maximum)
+    return input
+}
+func storeContainer(_ root: String, _ digest: String, _ uid: String, _ authVolume: String, _ hostOS: String, _ data: Data) throws {
+    try storeRequire(matches(uid, "^(0|[1-9][0-9]{0,9})$") && (UInt64(uid) ?? UInt64.max) <= 4294967294)
+    try storeRequire(matches(authVolume, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$") && ["Darwin", "Linux"].contains(hostOS))
+    guard let states = try json(data) as? [[String: Any]], states.count == 1,
+          let config = states[0]["Config"] as? [String: Any], let mounts = states[0]["Mounts"] as? [[String: Any]],
+          let environment = config["Env"] as? [String], let labels = config["Labels"] as? [String: Any] else { throw ConfigStoreError.unsafe }
+    let expected = ["HOME": "/root", "CODEX_HOME": "/root/.codex", "SYMPHONY_CODEX_CONFIG_PROFILE": "trust-ro-v2",
+                    "SYMPHONY_CODEX_CONFIG_SHA256": digest, "SYMPHONY_CODEX_CONFIG_OWNER": uid, "SYMPHONY_CONTAINERIZED": "1"]
+    for (name, value) in expected {
+        try storeRequire(environment.filter { $0.components(separatedBy: "=")[0] == name } == [name + "=" + value])
+    }
+    for (key, value) in ["profile": "trust-ro-v2", "sha256": digest, "owner": uid] {
+        try storeRequire(labels["com.symphony.codex.config." + key] as? String == value)
+    }
+    let source = root + "/" + digest + "/config.toml"
+    let sources = hostOS == "Darwin" ? [source, "/host_mnt" + source] : [source]
+    var authCount = 0, snapshotCount = 0
+    for mount in mounts {
+        guard let destination = mount["Destination"] as? String else { throw ConfigStoreError.unsafe }
+        try storeRequire(storeLexicalPath(destination))
+        if destination == "/root/.codex" {
+            authCount += 1
+            try storeRequire(mount["Type"] as? String == "volume" && mount["Name"] as? String == authVolume && isBool(mount["RW"], true))
+        } else if destination == "/root/.codex/config.toml" {
+            snapshotCount += 1
+            try storeRequire(mount["Type"] as? String == "bind" && sources.contains(mount["Source"] as? String ?? "") && isBool(mount["RW"], false))
+        } else { try storeRequire(!["/", "/root"].contains(destination) && !destination.hasPrefix("/root/.codex/")) }
+    }
+    try storeRequire(authCount == 1 && snapshotCount == 1)
+}
+
+func selectionRecord(_ image: String, _ digest: String, _ owner: String) throws -> Data {
+    try storeRequire(matches(image, "^sha256:[0-9a-f]{64}$") && matches(owner, "^(0|[1-9][0-9]{0,9})$") && (UInt64(owner) ?? UInt64.max) <= 4294967294)
+    _ = try storeDigest(digest)
+    return Data(("codex-config-v2\t" + image + "\t" + digest + "\t" + owner + "\n").utf8)
+}
+func selectionRead(_ path: String) throws -> Data {
+    let data = try storeRead(path, maximum: 256)
+    guard let line = String(data: data, encoding: .ascii) else { throw ConfigStoreError.unsafe }
+    let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+    try storeRequire(fields.count == 4 && fields[0] == "codex-config-v2" && fields[3].hasSuffix("\n"))
+    try storeRequire(selectionRecord(String(fields[1]), String(fields[2]), String(fields[3].dropLast())) == data)
+    return data
+}
+func selectionOperation(_ args: [String]) throws {
+    let operation = args[0]
+    try storeRequire(["selection-stage", "selection-read", "selection-publish", "selection-abort"].contains(operation))
+    try storeRequire(args.count == (operation == "selection-read" ? 2 : 5))
+    let path = args[1], url = URL(fileURLWithPath: path), parent = url.deletingLastPathComponent().path
+    try storeRequire(storeLexicalPath(path) && (operation == "selection-read" ? ["image", "image.next"] : ["image"]).contains(url.lastPathComponent))
+    _ = try storeInfo(parent, directory: true)
+    if operation == "selection-read" { FileHandle.standardOutput.write(try selectionRead(path)); return }
+    let expected = try selectionRecord(args[2], args[3], args[4]), next = parent + "/image.next"
+    var info = stat()
+    let current = lstat(path, &info) == 0 ? try selectionRead(path) : nil
+    if current == nil { try storeRequire(errno == ENOENT) }
+    let proposed = lstat(next, &info) == 0 ? try selectionRead(next) : nil
+    if proposed == nil { try storeRequire(errno == ENOENT) }
+    var leftovers: [String] = []
+    for name in try FileManager.default.contentsOfDirectory(atPath: parent) where name.hasPrefix(".image.stage-") {
+        try storeRequire(matches(name, "^\\.image\\.stage-[0-9a-f]{32}$"))
+        _ = try storeRead(parent + "/" + name, maximum: 256)
+        leftovers.append(parent + "/" + name)
+    }
+    try storeRequire(leftovers.count <= 64 && (proposed == nil || proposed == expected))
+    if operation == "selection-publish" && proposed == nil { try storeRequire(current == expected) }
+    for leftover in leftovers { try storeRequire(unlink(leftover) == 0) }
+    if !leftovers.isEmpty { try storeSync(parent) }
+    if operation == "selection-stage" && proposed == nil {
+        let stage = parent + "/.image.stage-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        defer {
+            if lstat(stage, &info) == 0, (try? storeRead(stage, maximum: 256)) != nil {
+                _ = unlink(stage); try? storeSync(parent)
+            }
+        }
+        try storeWriteFile(stage, expected)
+        try storeRename(stage, next)
+        try storeSync(parent)
+    } else if operation == "selection-publish" && proposed != nil {
+        // Both source and replacement were validated under the manager's lock.
+        try storeRequire(rename(next, path) == 0)
+        try storeSync(parent)
+    } else if operation == "selection-abort" && proposed != nil {
+        try storeRequire(unlink(next) == 0)
+        try storeSync(parent)
+    }
+    // Reconfirm durability on idempotent retry after an uncertain parent fsync.
+    try storeSync(parent)
+    FileHandle.standardOutput.write(expected)
+}
+
+func codexConfigStore(_ args: [String]) throws {
+    if let operation = args.first, operation.hasPrefix("selection-") { try selectionOperation(args); return }
+    try storeRequire(args.count >= 2)
+    let operation = args[0], path = args[1]
+    try storeRequire(["write", "verify", "cleanup", "container"].contains(operation))
+    if operation == "write" {
+        try storeRequire(args.count == 2)
+        let input = try storeInput(98304)
+        var receipt = try storeReceipt(json(input), full: true)
+        guard let encoded = receipt["config_base64"] as? String, encoded.utf8.count <= 87384,
+              let data = Data(base64Encoded: encoded), data.count <= 65536, data.base64EncodedString() == encoded else { throw ConfigStoreError.unsafe }
+        let digest = try storeDigest(receipt["sha256"]), source = object(receipt["source"])
+        try storeRequire(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == digest)
+        try storeRequire(isBool(source["present"], true) ? integer(source["size"]) == data.count : data.isEmpty)
+        let root = try storeRoot(path, create: true), names = try storeInventory(root)
+        if names.contains(digest) { print(digest); return }
+        try storeRequire(names.count < 64)
+        let stage = root + "/.stage-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        try storeRequire(mkdir(stage, 0o700) == 0)
+        defer {
+            var info = stat()
+            if lstat(stage, &info) == 0 { try? storeRemoveTransient(root, URL(fileURLWithPath: stage).lastPathComponent) }
+        }
+        receipt.removeValue(forKey: "config_base64")
+        for (name, content) in [("config.toml", data), ("receipt.json", try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]))] {
+            let file = stage + "/" + name
+            try storeWriteFile(file, content)
+        }
+        var existing = stat()
+        try storeRequire(lstat(root + "/" + digest, &existing) != 0 && errno == ENOENT)
+        try storeSync(stage)
+        try storeRename(stage, root + "/" + digest)
+        try storeSync(root)
+        print(digest)
+    } else if operation == "container" {
+        try storeRequire(args.count == 6)
+        let root = try storeRoot(path, create: false), digest = try storeDigest(args[2])
+        _ = try storeInventory(root)
+        try storeVerify(root, digest)
+        try storeContainer(root, digest, args[3], args[4], args[5], storeInput(1048576))
+        print(digest)
+    } else if operation == "verify" {
+        try storeRequire(args.count == 3)
+        let root = try storeRoot(path, create: false)
+        _ = try storeInventory(root)
+        let digest = try storeDigest(args[2])
+        try storeVerify(root, digest)
+        print(digest)
+    } else {
+        try storeRequire(args.count <= 66)
+        let keep = try Set(args.dropFirst(2).map { try storeDigest($0) })
+        let root = try storeRoot(path, create: false), names = try storeInventory(root)
+        try storeRequire(keep.isSubset(of: Set(names)))
+        for name in names where !keep.contains(name) {
+            let retired = ".retire-" + name + "-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            try storeRename(root + "/" + name, root + "/" + retired)
+            try storeSync(root)
+            try storeRemoveTransient(root, retired)
+        }
+    }
+}
+
+
+// Only the normal first-time Mac installer owns this one zsh startup block.
+// Hold the home directory and profile descriptors while preparing a replacement;
+// never follow a profile symlink or truncate an existing file in place.
+enum ZshSetupError: Error { case unsafe }
+func zshRequire(_ condition: Bool) throws { if !condition { throw ZshSetupError.unsafe } }
+func zshSafeACL(_ descriptor: Int32) throws {
+    #if canImport(Darwin)
+    guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+        try zshRequire(errno == ENOENT) // No extended ACL is installed.
+        return
+    }
+    defer { acl_free(UnsafeMutableRawPointer(acl)) }
+    var entry: acl_entry_t?
+    var position = ACL_FIRST_ENTRY
+    while true {
+        let result = acl_get_entry(acl, Int32(position.rawValue), &entry)
+        if result == -1 && errno == EINVAL { break } // Darwin marks end-of-ACL with EINVAL.
+        try zshRequire(result == 0)
+        position = ACL_NEXT_ENTRY
+        var tag = acl_tag_t(0)
+        try zshRequire(acl_get_tag_type(entry, &tag) == 0)
+        if tag == ACL_EXTENDED_ALLOW {
+            var permissions: acl_permset_t?
+            try zshRequire(acl_get_permset(entry, &permissions) == 0)
+            // Conservatively refuse ACL write grants, regardless of principal;
+            // Unix owner write access already suffices for installer updates.
+            for permission in [ACL_WRITE_DATA, ACL_APPEND_DATA, ACL_DELETE, ACL_DELETE_CHILD, ACL_WRITE_ATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER] {
+                try zshRequire(acl_get_perm_np(permissions, permission) == 0)
+            }
+        }
+    }
+    #endif
+}
+func zshHome(_ path: String) throws -> Int32 {
+    try zshRequire(storeLexicalPath(path) && path != "/")
+    var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    try zshRequire(descriptor >= 0)
+    do {
+        let components = path.split(separator: "/")
+        for (index, component) in components.enumerated() {
+            let child = openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            try zshRequire(child >= 0)
+            close(descriptor); descriptor = child
+            var info = stat()
+            try zshRequire(fstat(descriptor, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR)
+            try zshSafeACL(descriptor)
+            let last = index == components.count - 1
+            let trustedTemporary = !last && info.st_uid == 0 && info.st_mode & S_ISVTX != 0
+            try zshRequire((info.st_uid == geteuid() || (!last && info.st_uid == 0)) && (info.st_mode & 0o022 == 0 || trustedTemporary))
+        }
+        return descriptor
+    } catch { close(descriptor); throw error }
+}
+func firstInstallPathCheck(home path: String, target: String) throws {
+    try zshRequire(storeLexicalPath(target) && target.hasPrefix(path + "/"))
+    var descriptor = try zshHome(path)
+    defer { close(descriptor) }
+    for component in target.dropFirst(path.count + 1).split(separator: "/") {
+        let child = openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        if child < 0 { try zshRequire(errno == ENOENT); return }
+        close(descriptor); descriptor = child
+        var info = stat()
+        try zshRequire(fstat(descriptor, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == geteuid() && info.st_mode & 0o022 == 0)
+        try zshSafeACL(descriptor)
+    }
+}
+func zshProfile(_ home: Int32) throws -> (Int32, stat?, Data) {
+    var before = stat()
+    if fstatat(home, ".zshrc", &before, AT_SYMLINK_NOFOLLOW) != 0 {
+        try zshRequire(errno == ENOENT)
+        return (-1, nil, Data())
+    }
+    try zshRequire(before.st_mode & S_IFMT == S_IFREG && before.st_uid == geteuid() && before.st_nlink == 1 && before.st_mode & 0o022 == 0 && before.st_mode & 0o7000 == 0 && before.st_size >= 0 && before.st_size <= 1024 * 1024)
+    let descriptor = openat(home, ".zshrc", O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    try zshRequire(descriptor >= 0)
+    do {
+        try zshSafeACL(descriptor)
+        try zshRequire(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+        var current = stat()
+        try zshRequire(fstat(descriptor, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let count = read(descriptor, &buffer, buffer.count)
+            try zshRequire(count >= 0 && data.count + max(count, 0) <= 1024 * 1024)
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        try zshRequire(data.count == before.st_size && fstat(descriptor, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        return (descriptor, before, data)
+    } catch { close(descriptor); throw error }
+}
+func zshSetup(_ operation: String, home path: String, activation: String) throws {
+    try zshRequire(storeLexicalPath(activation) && !activation.contains("\n") && !activation.contains("\r"))
+    let home = try zshHome(path)
+    defer { close(home) }
+    let (profile, before, original) = try zshProfile(home)
+    defer { if profile >= 0 { close(profile) } }
+    let start = "# >>> Symphony managed zsh setup v1 >>>"
+    let end = "# <<< Symphony managed zsh setup v1 <<<"
+    let quoted = "'" + activation.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    // The leading separator belongs to us, so removal restores even a profile
+    // whose original final line did not end with a newline, byte for byte.
+    let block = Data(("\n" + start + "\n[ ! -r " + quoted + " ] || . " + quoted + "\n" + end + "\n").utf8)
+    var replacement = original
+    if operation == "zsh-setup-remove" || operation == "zsh-setup-status" {
+        guard let range = replacement.range(of: block) else { throw ZshSetupError.unsafe }
+        replacement.removeSubrange(range)
+        try zshRequire(replacement.range(of: Data(start.utf8)) == nil && replacement.range(of: Data(end.utf8)) == nil)
+        if operation == "zsh-setup-status" { return }
+    } else {
+        try zshRequire(original.range(of: Data(start.utf8)) == nil && original.range(of: Data(end.utf8)) == nil)
+        if operation == "zsh-setup-check" { return }
+        replacement.append(block)
+    }
+    let temporary = ".symphony-zsh-" + UUID().uuidString.lowercased()
+    let output = openat(home, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    try zshRequire(output >= 0)
+    defer { close(output); unlinkat(home, temporary, 0) }
+    // Keep existing macOS access-control entries as well as Unix permissions.
+    #if canImport(Darwin)
+    if profile >= 0 { try zshRequire(fcopyfile(profile, output, nil, copyfile_flags_t(COPYFILE_ACL | COPYFILE_XATTR)) == 0) }
+    #endif
+    if let before {
+        // A temporary file inherits the home's group; preserving only mode
+        // could otherwise grant access to a different group on a 0640 profile.
+        try zshRequire(fchown(output, before.st_uid, before.st_gid) == 0)
+    }
+    try zshRequire(fchmod(output, before.map { $0.st_mode & 0o777 } ?? 0o600) == 0)
+    try replacement.withUnsafeBytes { bytes in
+        var offset = 0
+        while offset < bytes.count {
+            let count = write(output, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+            try zshRequire(count > 0); offset += count
+        }
+    }
+    try zshRequire(fsync(output) == 0)
+    var current = stat()
+    if let before {
+        try zshRequire(fstatat(home, ".zshrc", &current, AT_SYMLINK_NOFOLLOW) == 0 && storeIdentity(current) == storeIdentity(before))
+        try zshRequire(fstat(profile, &current) == 0 && storeIdentity(current) == storeIdentity(before))
+        try zshRequire(renameat(home, temporary, home, ".zshrc") == 0)
+    } else {
+        // Hard-link publication is no-overwrite even if a new profile appeared.
+        try zshRequire(linkat(home, temporary, home, ".zshrc", 0) == 0)
+    }
+    try zshRequire(fsync(home) == 0)
+}
+
+let arity = ["first-install-path-check": 3, "zsh-setup-status": 3, "zsh-setup-check": 3, "zsh-setup-install": 3, "zsh-setup-remove": 3, "validate-candidate-artifact": 5, "extract-candidate-artifact": 6, "runner-import-endpoint": 1, "validate-runner-reference": 5, "resolve-runner-import": 5, "store-runner-import": 6, "prepare-runner-import": 6, "selection-storage-directory": 2, "validate-selected-image": 4, "validate-environment-selection": 2, "validate-runtime-image": 5, "validate-release": 2, "validate-manager": 2, "manager-revision": 2, "manager-base-version": 2, "release-get": 3, "validate-manifest": 2, "get": 3, "repository-root": 2, "repository-remote": 2, "hash-blob": 2, "lock-directory": 2, "lock": 3, "legacy-lock": 2, "identity-migration": 1, "verify-files": 2, "json": 2, "replace-link": 3, "owned-directory": 2, "build-revision": 1, "canonical-path": 2, "owned-file": 2, "ensure-link": 3, "sha256": 2, "host-platform": 1, "host-architecture": 1]
 guard let command = args.first, args.count >= (arity[command] ?? 1) else { fail("host helper requires an operation") }
 do {
     switch command {
+    case "first-install-path-check":
+        do { try firstInstallPathCheck(home: args[1], target: args[2]) }
+        catch { fail("unsafe first-install path; preserve existing storage and inspect ownership, permissions and symlinks") }
+    case "zsh-setup-check", "zsh-setup-install", "zsh-setup-remove", "zsh-setup-status":
+        do { try zshSetup(command, home: args[1], activation: args[2]) }
+        catch { fail("unsafe or existing managed zsh shell setup; preserve ~/.zshrc and inspect its ownership, permissions and Symphony block") }
+    case "runner-import-endpoint":
+        let data = FileHandle.standardInput.readData(ofLength: 65537)
+        guard data.count <= 65536, let text = String(data: data, encoding: .utf8) else { fail("invalid candidate registry startup receipt") }
+        let endpoints = text.split(separator: "\n").compactMap { line -> String? in
+            guard let value = try? json(Data(line.utf8)), let message = object(value)["msg"] as? String,
+                  message.hasPrefix("listening on ") else { return nil }
+            return String(message.dropFirst("listening on ".count))
+        }
+        guard endpoints.count == 1, let endpoint = endpoints.first,
+              matches(endpoint, "^127[.]0[.]0[.]1:[1-9][0-9]{0,4}$"),
+              let port = Int(endpoint.split(separator: ":").last ?? ""), (1024...65535).contains(port) else { fail("candidate registry has no unique allocated loopback endpoint") }
+        print(endpoint)
+    case "validate-runner-reference":
+        print(runnerReference(try validateRelease(args[1]), provider: args[2], arch: args[3], reference: args[4]))
+    case "resolve-runner-import":
+        print(try runnerImportReceipt(validateRelease(args[1]), provider: args[2], arch: args[3], root: args[4]))
+    case "store-runner-import":
+        print(try runnerImportReceipt(validateRelease(args[1]), provider: args[2], arch: args[3], root: args[4], storing: args[5]))
+    case "codex-config-store":
+        do { try codexConfigStore(Array(args.dropFirst())) }
+        catch { fail("unsafe Codex config snapshot store") }
+    case "validate-candidate-artifact":
+        try validateCandidateArtifact(validateRelease(args[1]), args[2], args[3], args[4])
+    case "extract-candidate-artifact":
+        try extractCandidateArtifact(validateRelease(args[1]), args[2], args[3], args[4], args[5])
     case "prepare-runner-import":
         try prepareRunnerImport(validateRelease(args[1]), provider: args[2], arch: args[3], archive: args[4], destination: args[5])
     case "canonical-path":

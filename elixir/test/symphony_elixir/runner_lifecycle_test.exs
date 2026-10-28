@@ -34,7 +34,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
     esac
     case "$1" in
+      context) printf 'ssh://fixture-daemon\\n' ;;
       info)
+        case "${!#}" in
+          '{{.ID}}') printf 'fixture-daemon-id\\n'; exit 0 ;;
+          '{{.Name}}') printf 'fixture-daemon-host\\n'; exit 0 ;;
+        esac
         [ "${FIXTURE_INFO_FAIL:-false}" != true ] || exit 1
         [ "${FIXTURE_SECURITY_EMPTY:-false}" != true ] || exit 0
         printf '%s\\n' "${FIXTURE_SECURITY_OPTIONS-name=seccomp,profile=builtin}" ;;
@@ -49,6 +54,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *com.symphony.port*)
             if [ "$(cat "$state.agent")" = '<no value>' ]; then echo '<no value>'; else cat "$state.port"; fi ;;
           *com.symphony.codex.runtime*) cat "$state.codex-runtime" ;;
+          *com.symphony.codex.config.sha256*) cat "$state.config-sha" ;;
+          *com.symphony.codex.config.owner*) cat "$state.config-owner" ;;
+          *com.symphony.codex.config.profile*) echo trust-ro-v2 ;;
           *com.symphony.claude.runtime*) cat "$state.claude-runtime" ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
@@ -64,10 +72,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             case "$*" in
               *'{{range .Mounts}}'*) if [ -n "${FIXTURE_MOUNT_PADDING_FILE:-}" ]; then cat "$FIXTURE_MOUNT_PADDING_FILE"; fi ;;
             esac ;;
+          *) cat "$state.inspect" ;;
         esac ;;
       image)
         if [ -n "${FIXTURE_TAG_CHANGED_FILE:-}" ] && [ -f "$FIXTURE_TAG_CHANGED_FILE" ]; then
-          case "$*" in *'{{.Id}}'*runner-codex:*) echo unqualified-image; exit 0 ;; esac
+          case "$*" in *'{{.Id}}'*runner-codex:*) echo sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd; exit 0 ;; esac
         fi
         case "$*" in
           *com.symphony.agent*)
@@ -76,7 +85,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *)
             case "$*" in
               *runner-claude*|*fixture-claude-image*) echo "${FIXTURE_CLAUDE_IMAGE_ID:-fixture-claude-image}" ;;
-              *) echo "${FIXTURE_IMAGE_ID:-fixture-image}" ;;
+              *) echo "${FIXTURE_IMAGE_ID:-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
             esac ;;
         esac ;;
       build) [ "${FIXTURE_FAIL_BUILD:-false}" != true ] ;;
@@ -93,11 +102,39 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
+          *--codex-config-snapshot*)
+            [ "${FIXTURE_CONFIG_FAIL:-false}" != true ] || { echo '{"error":"sandbox_unqualified_config"}'; exit 1; }
+            if [ -n "${FIXTURE_CONFIG_JSON:-}" ]; then printf '%s\\n' "$FIXTURE_CONFIG_JSON"
+            else printf '%s\\n' '{"schema":1,"mode":"codex-config-snapshot","profile":"trust-ro-v2","config_base64":"","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","source":{"present":false}}'; fi ;;
+          *'/usr/bin/stat'*) id -u ;;
+
           *--check-codex-sandbox*)
-            if [ -n "${FIXTURE_TAG_CHANGED_FILE:-}" ]; then touch "$FIXTURE_TAG_CHANGED_FILE"; fi
-            case "$*" in *unqualified-image*) echo sandbox_namespace_denied; exit 1 ;; esac
-            [ "${FIXTURE_SANDBOX_FAIL:-false}" != true ] || { echo sandbox_namespace_denied; exit 1; } ;;
+            if [ -n "${FIXTURE_TAG_CHANGED_FILE:-}" ]; then
+              count=0
+              [ ! -f "$FIXTURE_TAG_CHANGED_FILE.count" ] || count=$(cat "$FIXTURE_TAG_CHANGED_FILE.count")
+              count=$((count + 1)); printf '%s' "$count" > "$FIXTURE_TAG_CHANGED_FILE.count"
+              # The first check proves the retained rollback source, not the candidate.
+              [ "$count" -lt 2 ] || touch "$FIXTURE_TAG_CHANGED_FILE"
+            fi
+            case "$*" in *sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd*) echo sandbox_namespace_denied; exit 1 ;; esac
+            [ "${FIXTURE_SANDBOX_FAIL:-false}" != true ] || { printf '%s\\n' "${FIXTURE_SANDBOX_CODE:-sandbox_namespace_denied}"; exit 1; } ;;
           *--detach*)
+            python3 - "$FIXTURE_STATE.inspect" "$@" <<'INSPECTPY'
+    import json,sys
+    args=sys.argv[2:]; env=[]; labels={}; mounts=[]
+    for i,arg in enumerate(args[:-1]):
+        value=args[i+1]
+        if arg=='--env' and '=' in value: env.append(value)
+        if arg=='--label':
+            key,content=value.split('=',1); labels[key]=content
+        if arg=='--mount':
+            spec=dict(part.split('=',1) for part in value.split(',') if '=' in part)
+            mounts.append({'Type':spec['type'],'Source':spec['source'],'Destination':spec['target'],'RW':'readonly' not in value.split(',')})
+        if arg=='--volume' and ':' in value:
+            source,target,*options=value.split(':')
+            mounts.append({'Type':'bind' if source.startswith('/') else 'volume','Name':source,'Source':source,'Destination':target,'RW':'ro' not in options})
+    with open(sys.argv[1],'w') as stream: json.dump([{'Config':{'Env':env,'Labels':labels},'Mounts':mounts}],stream)
+    INSPECTPY
             echo true > "$FIXTURE_STATE"
             printf '%s' "${!#}" > "$FIXTURE_STATE.image"
             for arg in "$@"; do
@@ -105,6 +142,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.storage=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.storage" ;;
                 com.symphony.agent=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.agent" ;;
                 com.symphony.port=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.port" ;;
+                com.symphony.codex.config.sha256=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.config-sha" ;;
+                com.symphony.codex.config.owner=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.config-owner" ;;
                 com.symphony.codex.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.codex-runtime" ;;
                 com.symphony.claude.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.claude-runtime" ;;
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
@@ -163,7 +202,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
         case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
-        for suffix in '' .agent .port .profile .image .storage .codex-runtime .claude-runtime; do
+        for suffix in '' .agent .port .profile .image .storage .codex-runtime .claude-runtime .config-sha .config-owner .inspect; do
           if [ -f "$from$suffix" ]; then mv "$from$suffix" "$to$suffix"; fi
         done ;;
     esac
@@ -297,7 +336,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     calls = File.read!(ctx.log) |> String.split("\n", trim: true)
     assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
     refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
-    refute Enum.any?(calls, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
+    before_creation = Enum.take_while(calls, &(not String.contains?(&1, "--detach")))
+    refute Enum.any?(before_creation, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
@@ -358,32 +398,30 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"], env)
   end
 
-  test "legacy listeners require explicit updater pause and migrate to either provider", ctx do
-    env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}]
+  test "legacy Codex refuses every new provider transition before mutation while running or stopped", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".agent", "<no value>")
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    File.write!(metadata, "SYMPHONY_RUNNER_PORT=4010\n")
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
+    original_inspect = File.read!(ctx.state <> ".inspect")
 
-    for agent <- ["claude", "codex"] do
-      assert {_, 0} = launch_args(ctx, ["run"], env)
-      File.write!(ctx.state <> ".agent", "<no value>")
-      File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-      curl = Path.join(ctx.root, "curl")
-      File.write!(curl, "#!/bin/sh\nprintf '%s' '{\"agent\":{\"draining\":false,\"readiness\":{\"ready\":true},\"admission\":{\"ready\":true}}}'\n")
-      File.chmod!(curl, 0o755)
-      env = env ++ [{"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
+    for state <- ["true\n", "false\n"], agent <- ["claude", "codex"] do
+      File.write!(ctx.state, state)
       File.write!(ctx.log, "")
-      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
-      assert message =~ "use symphony update --pause-runner"
-      refute File.read!(ctx.log) =~ "stop\t"
-      refute File.read!(ctx.log) =~ "rename\t"
-      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
-      assert message =~ "Legacy listener has no drain API"
-      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], env)
-      assert message =~ "Runner transition complete: #{agent}"
-      assert File.read!(ctx.state <> ".agent") == agent
-      refute File.read!(ctx.log) =~ "volume\trm"
-      # Reset the disposable fixture through its supported stop operation.
-      assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
-      File.rm!(ctx.state)
-      File.rm!(Path.join(ctx.config, "runners/#{@project_id}.env"))
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      assert message =~ "fresh packaged install"
+      assert File.read!(ctx.state) == state
+      assert File.read!(ctx.state <> ".agent") == "<no value>"
+      assert File.read!(ctx.state <> ".inspect") == original_inspect
+      assert File.read!(metadata) == "SYMPHONY_RUNNER_PORT=4010\n"
+      assert File.read!(credentials) == original_credentials
+      refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+
+      for operation <- ["stop\t", "rename\t", "build\t", "--codex-config-snapshot", "--check-codex-sandbox", "--detach", "volume\trm"] do
+        refute File.read!(ctx.log) =~ operation
+      end
     end
   end
 
@@ -427,27 +465,37 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.mkdir_p!(journal)
     File.write!(Path.join(journal, "target"), "codex\n")
     File.write!(Path.join(journal, "port"), "4010\n")
-    File.write!(Path.join(journal, "image"), "fixture-image\n")
+    File.write!(Path.join(journal, "image"), "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
     File.write!(ctx.log, "")
     File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
     # Exercise the ordinary transition after source handoff, without invoking the source updater.
     script = ~s|source "$1" --help >/dev/null; runner_transition "$(repo_root)" codex false|
     assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
+    assert message =~ "pending transition has no qualified Codex settings"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
+
+    record =
+      Enum.join(["codex-config-v2", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", File.read!(ctx.state <> ".config-sha"), File.read!(ctx.state <> ".config-owner")], "\t") <>
+        "\n"
+
+    File.chmod!(journal, 0o700)
+    File.write!(Path.join(journal, "image"), record)
+    File.chmod!(Path.join(journal, "image"), 0o600)
+    assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
     assert message =~ "use symphony update --pause-runner"
     refute message =~ "candidate recovery refused"
     refute File.read!(ctx.log) =~ "stop\t"
     refute File.read!(ctx.log) =~ "rename\t"
     assert String.trim(File.read!(ctx.state)) == "true"
-    assert File.read!(Path.join(journal, "image")) == "fixture-image\n"
+    assert File.read!(Path.join(journal, "image")) == record
   end
 
-  test "failed legacy migration rolls back through the old state API without resume support", ctx do
+  test "pre-existing pending transition refuses incompatible legacy rollback and preserves both containers", ctx do
     env = [{"SYMPHONY_RUNNER_NAMESPACE", ctx.namespace}, {"PATH", ctx.root <> ":" <> System.fetch_env!("PATH")}]
     assert {_, 0} = launch_args(ctx, ["run"], env)
-    File.write!(ctx.state <> ".agent", "<no value>")
-    File.write!(Path.join(ctx.config, "runners/#{@project_id}.env"), "SYMPHONY_RUNNER_PORT=4010\n")
-    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
+    assert {_, 0} = launch_args(ctx, ["runner", "stop"], env)
     curl = Path.join(ctx.root, "curl")
 
     File.write!(curl, """
@@ -464,25 +512,38 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.chmod!(curl, 0o755)
     assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "candidate is not ready"
+    # Model a transition retained by an older manager. New intents now refuse
+    # incompatible sources before mutation; pending old-install recovery stays deferred.
+    File.write!(ctx.state <> ".backup.agent", "<no value>")
     File.write!(Path.join(ctx.root, "curl-calls"), "")
-    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
-    assert message =~ "Prior runner restored"
-    assert File.read!(ctx.state <> ".agent") == "<no value>"
-    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--pause-runner"], env)
-    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
-    assert message =~ "candidate is not ready"
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert message =~ "legacy Codex runtime cannot safely reuse retained settings"
+    assert File.read!(ctx.state <> ".agent") == "claude"
+    assert File.read!(ctx.state <> ".backup.agent") == "<no value>"
+    assert File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rm\t"
+    refute File.read!(ctx.log) =~ "volume\trm"
+  end
+
+  test "compatible rollback retains image identity and retries a failed prior start", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    fault = Path.join(ctx.root, "create-once")
+    File.write!(fault, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"FIXTURE_FAIL_CREATE_FILE", fault}])
     previous = Path.join(ctx.config, "runners/#{@project_id}.transition/previous.env")
     image_keys = File.read!(previous) |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "SYMPHONY_RUNNER_IMAGE_ID="))
-    assert image_keys == ["SYMPHONY_RUNNER_IMAGE_ID=fixture-image"]
-    File.write!(Path.join(ctx.root, "curl-calls"), "")
+    assert image_keys == ["SYMPHONY_RUNNER_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
     fail_start = Path.join(ctx.root, "fail-start-once")
     File.write!(fail_start, "")
-    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env ++ [{"FIXTURE_FAIL_START_FILE", fail_start}])
-    assert File.read!(ctx.state <> ".agent") == "<no value>"
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], [{"FIXTURE_FAIL_START_FILE", fail_start}])
+    assert File.read!(ctx.state <> ".agent") == "codex"
+    assert File.read!(ctx.state) |> String.trim() == "false"
     refute File.exists?(ctx.state <> ".backup")
-    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"])
     assert message =~ "Prior runner restored"
-    refute File.read!(Path.join(ctx.root, "curl-calls")) =~ "/agent/resume"
     refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
     refute File.read!(ctx.log) =~ "volume\trm"
   end
@@ -617,7 +678,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert calls =~ "stop\t--time\t30\tsymphony-#{ctx.namespace}-service"
     assert calls =~ "tag\tfixture-claude-image-new\tsymphony-#{ctx.namespace}-runner-claude:local"
     refute calls =~ "volume\trm"
-    assert previous =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image"
+    assert previous =~ "SYMPHONY_RUNNER_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   end
 
   test "retry repairs metadata after candidate creation interrupts before metadata publication", ctx do
@@ -935,13 +996,17 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     # Keep the recorded image as rollback evidence; provider/profile are derived cache fields.
-    File.write!(Path.join(journal, "previous.env"), "SYMPHONY_RUNNER_PORT=4010\nSYMPHONY_RUNNER_AGENT=claude\nSYMPHONY_RUNNER_IMAGE_ID=fixture-image\nSYMPHONY_RUNNER_PROFILE=stale\n")
+    File.write!(
+      Path.join(journal, "previous.env"),
+      "SYMPHONY_RUNNER_PORT=4010\nSYMPHONY_RUNNER_AGENT=claude\nSYMPHONY_RUNNER_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nSYMPHONY_RUNNER_PROFILE=stale\n"
+    )
+
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     assert metadata =~ "SYMPHONY_RUNNER_AGENT=codex\n"
     assert metadata =~ "SYMPHONY_RUNNER_PROFILE=none\n"
-    assert metadata =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-image\n"
+    assert metadata =~ "SYMPHONY_RUNNER_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
   end
 
   test "failed development rebuild leaves the pending image, container and rollback metadata intact", ctx do
@@ -1075,11 +1140,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert message =~ "candidate is not ready"
     assert File.read!(Path.join(journal, "image")) == "fixture-claude-image-new\n"
     assert File.read!(Path.join(journal, "previous.env")) == previous
-    assert File.read!(ctx.state <> ".backup.image") == "fixture-image"
+    assert File.read!(ctx.state <> ".backup.image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     ready_curl!(ctx)
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], env)
     assert message =~ "Prior runner restored"
-    assert File.read!(ctx.state <> ".image") == "fixture-image"
+    assert File.read!(ctx.state <> ".image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   end
 
   test "development refresh recovers a journal after the old candidate committed and backup was removed", ctx do
@@ -1157,29 +1222,296 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert first == third
   end
 
-  test "selected daemon AppArmor policy is shared by preflight and listener and binds reuse", ctx do
-    apparmor = [{"FIXTURE_SECURITY_OPTIONS", "name=apparmor,profile=default\nname=seccomp,profile=builtin"}]
+  test "normal transition refuses unknown staging before manager activation or backup removal", ctx do
+    ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"])
-    original = File.read!(ctx.state <> ".codex-runtime")
-    assert original == "9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b"
+
+    script = """
+    source "$1" --help >/dev/null
+    root=$(repo_root)
+    # Inject an interruption at the completed candidate's commit boundary.
+    # Startup and ownership/preflight still use the actual manager functions.
+    runner_record_observed_metadata() {
+      journal="$runner_home/$(project_id "$root").transition"
+      printf unknown > "$journal/.image.stage-foreign-name"
+      chmod 600 "$journal/.image.stage-foreign-name"
+      packaged_install=true
+    }
+    package_helper() {
+      case "$1" in codex-config-store) shift; python3 -I "$symphony_home/scripts/codex-config-store.py" "$@" ;; *) return 1 ;; esac
+    }
+    package_finish_transition() { printf activated > "$FIXTURE_ACTIVATION_CANARY"; }
+    runner_transition "$root" codex true
+    """
+
+    canary = Path.join(ctx.root, "manager-activation")
+    env = [{"FIXTURE_IMAGE_ID", "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, {"FIXTURE_ACTIVATION_CANARY", canary} | ctx.env]
+    assert {_, 1} = System.cmd("bash", ["-euc", script, "fixture", @launcher], cd: ctx.repo, env: env, stderr_to_stdout: true)
+    refute File.exists?(canary)
+    assert File.exists?(ctx.state <> ".backup")
+    assert File.read!(ctx.state <> ".backup.image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert File.read!(ctx.state <> ".image") == "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    assert File.dir?(journal)
+    assert File.read!(Path.join(journal, ".image.stage-foreign-name")) == "unknown"
+    refute File.exists?(journal <> ".complete")
+  end
+
+  for unknown <- [false, true] do
+    @unknown unknown
+    test "journal settles interrupted refresh before completion unknown=#{unknown}", ctx do
+      script = """
+      source "$1" --help >/dev/null
+      root=$(repo_root); runtime=$(container_runtime)
+      runner_project_lock "$root"
+      journal="$runner_home/$(project_id "$root").transition"
+      mkdir -m 700 "$journal"
+      printf codex > "$journal/target"; printf 4010 > "$journal/port"; printf metadata > "$journal/previous.env"
+      codex_config_select "$root" "$runtime" sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      codex_config_journal_write "$root" sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$journal"
+      codex_config_store selection-stage "$(codex_config_selection_path "$journal")" sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc "$codex_config_sha" "$codex_config_owner" >/dev/null
+      temporary="$journal/.image.stage-#{if @unknown, do: "foreign-name", else: String.duplicate("a", 32)}"
+      printf 'codex-config-v2' > "$temporary"; chmod 600 "$temporary"
+      runner_finish_journal "$journal"
+      """
+
+      {_, code} = System.cmd("bash", ["-euc", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
+      journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+
+      if @unknown do
+        assert code == 1
+        assert File.dir?(journal)
+        assert File.read!(Path.join(journal, ".image.stage-foreign-name")) == "codex-config-v2"
+        assert File.exists?(Path.join(journal, "image.next"))
+        assert File.exists?(Path.join(journal, "image"))
+        refute File.exists?(journal <> ".complete")
+      else
+        assert code == 0
+        refute File.exists?(journal)
+        refute File.exists?(journal <> ".complete")
+      end
+    end
+  end
+
+  test "snapshot cleanup preserves current and staged journal references without a backup", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    bytes = "[projects.\"/workspaces/retired-fixture\"]\ntrust_level = \"trusted\"\n"
+    digest = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+    export =
+      Jason.encode!(%{
+        schema: 1,
+        mode: "codex-config-snapshot",
+        profile: "trust-ro-v2",
+        config_base64: Base.encode64(bytes),
+        sha256: digest,
+        source: %{
+          present: true,
+          uid: 0,
+          gid: 0,
+          mode: 0o600,
+          device: 1,
+          inode: 1,
+          size: byte_size(bytes),
+          mtime_ns: 0,
+          ctime_ns: 0
+        }
+      })
+
+    script = """
+    source "$1" --help >/dev/null
+    root=$(repo_root); runtime=$(container_runtime); name=$(runner_id "$root")
+    runner_project_lock "$root"
+    journal="$runner_home/$(project_id "$root").transition"
+    mkdir -m 700 "$journal"; printf codex > "$journal/target"
+    codex_config_observe "$root" "$runtime" "$name" sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    codex_config_journal_write "$root" sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$journal"
+    codex_config_select "$root" "$runtime" sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    codex_config_store selection-stage "$(codex_config_selection_path "$journal")" sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc "$codex_config_sha" "$codex_config_owner" >/dev/null
+    codex_config_cleanup "$root" "$runtime"
+    """
+
+    env = [{"FIXTURE_CONFIG_JSON", export} | ctx.env]
+    assert {_, 0} = System.cmd("bash", ["-euc", script, "fixture", @launcher], cd: ctx.repo, env: env, stderr_to_stdout: true)
+    root = Path.join(ctx.config, "runners/symphony-#{ctx.namespace}-#{@project_id}-codex-config")
+    assert File.read!(Path.join(root, digest <> "/config.toml")) == bytes
+    assert File.exists?(Path.join(root, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/config.toml"))
+  end
+
+  test "new same-image Codex update captures current trust once and replaces snapshot", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    previous = File.read!(ctx.state <> ".config-sha")
+    bytes = "[projects.\"/workspaces/new-trust-fixture\"]\ntrust_level = \"trusted\"\n"
+    digest = Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+    export =
+      Jason.encode!(%{
+        schema: 1,
+        mode: "codex-config-snapshot",
+        profile: "trust-ro-v2",
+        config_base64: Base.encode64(bytes),
+        sha256: digest,
+        source: %{
+          present: true,
+          uid: 0,
+          gid: 0,
+          mode: 0o600,
+          device: 1,
+          inode: 1,
+          size: byte_size(bytes),
+          mtime_ns: 0,
+          ctime_ns: 0
+        }
+      })
+
     File.write!(ctx.log, "")
-    assert {message, 1} = launch_args(ctx, ["run"], apparmor)
-    assert message =~ "runtime profile differs"
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_CONFIG_JSON", export}])
+    assert File.read!(ctx.state <> ".config-sha") == digest
+    refute previous == digest
+    assert File.read!(ctx.state <> ".image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert length(Regex.scan(~r/--codex-config-snapshot/, File.read!(ctx.log))) == 1
+    assert File.read!(ctx.log) =~ "rename\t"
+    refute File.exists?(ctx.state <> ".backup")
+  end
+
+  test "Codex development refresh pins one atomic tuple across interrupted replacement", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    create_fault = Path.join(ctx.root, "create-once")
+    File.write!(create_fault, "")
+    first = "sha256:" <> String.duplicate("c", 64)
+    replacement = "sha256:" <> String.duplicate("e", 64)
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_IMAGE_ID", first}, {"FIXTURE_FAIL_CREATE_FILE", create_fault}])
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    before = File.read!(Path.join(journal, "image"))
+    assert before =~ "codex-config-v2\t#{first}\t"
+    remove_fault = Path.join(ctx.root, "remove-once")
+    File.write!(remove_fault, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_IMAGE_ID", replacement}, {"FIXTURE_FAIL_RM_FILE", remove_fault}])
+    assert File.read!(Path.join(journal, "image")) == before
+    assert File.read!(Path.join(journal, "image.next")) =~ "codex-config-v2\t#{replacement}\t"
+    assert File.read!(ctx.state <> ".backup.image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    File.write!(ctx.log, "")
+    assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_IMAGE_ID", replacement}])
+    refute File.read!(ctx.log) =~ "--codex-config-snapshot"
+    assert File.read!(ctx.state <> ".image") == replacement
+    refute File.exists?(journal)
+    refute File.exists?(ctx.state <> ".backup")
+  end
+
+  test "Codex sealed settings override project selectors and survive ordinary stopped restart", ctx do
+    project_env = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project_env, "GH_TOKEN=fixture\nHOME=/foreign\nCODEX_HOME=/foreign\nSYMPHONY_CODEX_CONFIG_PROFILE=foreign\n")
+    assert {_, 0} = launch_args(ctx, ["run"])
+    [container] = Jason.decode!(File.read!(ctx.state <> ".inspect"))
+    assert "HOME=/root" in container["Config"]["Env"]
+    assert "CODEX_HOME=/root/.codex" in container["Config"]["Env"]
+    assert "SYMPHONY_CODEX_CONFIG_PROFILE=trust-ro-v2" in container["Config"]["Env"]
+    digest = File.read!(ctx.state <> ".config-sha")
+    assert {_, 0} = launch(ctx, "stop")
+    File.write!(ctx.log, "")
+    assert {_, 0} = launch(ctx, "start")
+    assert File.read!(ctx.state <> ".config-sha") == digest
+    refute File.read!(ctx.log) =~ "--codex-config-snapshot"
+  end
+
+  test "stopped Codex refuses altered actual snapshot mount before replacement", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    assert {_, 0} = launch(ctx, "stop")
+    [container] = Jason.decode!(File.read!(ctx.state <> ".inspect"))
+
+    mounts =
+      Enum.map(container["Mounts"], fn mount ->
+        if mount["Destination"] == "/root/.codex/config.toml", do: Map.put(mount, "RW", true), else: mount
+      end)
+
+    File.write!(ctx.state <> ".inspect", Jason.encode!([Map.put(container, "Mounts", mounts)]))
+    File.write!(ctx.log, "")
+    assert {output, 1} = launch(ctx, "start")
+    assert output =~ "actual Codex settings mounts or selectors differ"
+    refute File.read!(ctx.log) =~ "rm\t"
+    assert File.read!(ctx.state) == "false\n"
+  end
+
+  test "invalid native settings export refuses updater before drain or journal", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+    assert {output, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_CONFIG_FAIL", "true"}])
+    assert output =~ "native Codex settings snapshot refused"
     refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
+    refute File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    assert File.read!(ctx.state) == "true\n"
+  end
+
+  test "legacy Codex rollback refuses before removing the working candidate", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
     ready_curl!(ctx)
     fault = Path.join(ctx.root, "create-fault")
     File.write!(fault, "")
-    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_FAIL_CREATE_FILE", fault} | apparmor])
-    recipe = File.read!(ctx.state <> ".codex-runtime")
-    assert recipe =~ original <> ":apparmor:symphony-codex-candidate-b6261d4c613296dd:"
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], [{"FIXTURE_FAIL_CREATE_FILE", fault}])
+    assert File.exists?(ctx.state <> ".backup")
+    # Already-pending old-install recovery remains refused. New transitions
+    # cannot create this incompatible rollback source.
+    File.write!(ctx.state <> ".backup.codex-runtime", "old-profile")
+    File.write!(ctx.log, "")
+    assert {output, 1} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"])
+    assert output =~ "rollback refused before stopping candidate"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rm\t"
+    assert File.read!(ctx.state) == "true\n"
+  end
+
+  test "selected daemon AppArmor profile binds fresh preflight listener and migration refusal", ctx do
+    apparmor = [{"FIXTURE_SECURITY_OPTIONS", "name=apparmor,profile=default\nname=seccomp,profile=builtin"}]
+    assert {_, 0} = launch_args(ctx, ["run"], apparmor)
+    original = File.read!(ctx.state <> ".codex-runtime")
+    assert original =~ "9a6ad788ecdd9e43e5d4d029dab0a76d467777f56428ae0e9f04cb5501a7311b:config-trust-ro-v2:apparmor:symphony-codex-candidate-b6261d4c613296dd:"
     calls = File.read!(ctx.log) |> String.split("\n")
 
     for call <- Enum.filter(calls, &(String.contains?(&1, "--check-codex-sandbox") or String.contains?(&1, "--detach"))) do
       assert call =~ "--security-opt\tapparmor=symphony-codex-candidate-b6261d4c613296dd"
     end
 
-    assert {_, 0} = launch_args(ctx, ["update", "--rollback-runner"], apparmor)
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["run"])
+    assert message =~ "runtime profile differs"
+    ready_curl!(ctx)
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"])
+    assert message =~ "fresh packaged install"
     assert File.read!(ctx.state <> ".codex-runtime") == original
+    refute File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
+    refute File.read!(ctx.log) =~ "--detach"
+  end
+
+  test "older Codex migration refuses either target before journal preflight build or shutdown", ctx do
+    assert {_, 0} = launch_args(ctx, ["run"])
+    File.write!(ctx.state <> ".codex-runtime", "old-runtime-profile")
+    metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    original_metadata = File.read!(metadata)
+    original_inspect = File.read!(ctx.state <> ".inspect")
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
+
+    for agent <- ["codex", "claude"] do
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      assert message =~ "before journal or listener shutdown"
+      assert String.trim(File.read!(ctx.state)) == "true"
+      assert File.read!(ctx.state <> ".codex-runtime") == "old-runtime-profile"
+      assert File.read!(ctx.state <> ".inspect") == original_inspect
+      assert File.read!(metadata) == original_metadata
+      assert File.read!(credentials) == original_credentials
+      refute File.dir?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+
+      for operation <- ["stop\t", "rename\t", "build\t", "--codex-config-snapshot", "--check-codex-sandbox", "--detach", "volume\trm"] do
+        refute File.read!(ctx.log) =~ operation
+      end
+    end
   end
 
   test "unavailable or malformed daemon security cannot reuse an empty recipe label", ctx do
@@ -1207,7 +1539,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     script = ~S"""
     source "$1" --help >/dev/null
     symphony_home=$2
-    runner_codex_run "$SYMPHONY_CONTAINER_RUNTIME" --rm fixture-image
+    runner_codex_run "$SYMPHONY_CONTAINER_RUNTIME" --rm sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     """
 
     env = [{"FIXTURE_SECURITY_OPTIONS", "name=apparmor"} | ctx.env]
@@ -1306,7 +1638,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     end
 
     File.write!(ctx.state, "true")
-    assert {message, 1} = launch_args(ctx, ["run"], [{"FIXTURE_IMAGE_ID", "changed-image"}])
+    assert {message, 1} = launch_args(ctx, ["run"], [{"FIXTURE_IMAGE_ID", "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}])
     assert message =~ "listener image differs"
     calls = File.read!(ctx.log)
     refute calls =~ "stop\t"
@@ -1351,6 +1683,35 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     end
   end
 
+  test "doctor reports launch stage remedies without authentication startup or image rebuild", ctx do
+    credentials = Path.join(ctx.config, "projects/#{@project_id}.env")
+    original_credentials = File.read!(credentials)
+    workflow = Path.join(ctx.repo, "WORKFLOW.md")
+    original_workflow = File.read!(workflow)
+
+    for {code, stage} <- [
+          {"sandbox_toolchain_unqualified", "Project toolchain refused after wrapper setup"},
+          {"sandbox_wrapper_failed", "Project wrapper/bootstrap failed before protected launch"},
+          {"sandbox_launch_receipt_invalid", "Project launch receipt was invalid"}
+        ] do
+      File.write!(ctx.log, "")
+      assert {output, 1} = launch_args(ctx, ["runner", "doctor"], [{"FIXTURE_SANDBOX_FAIL", "true"}, {"FIXTURE_SANDBOX_CODE", code}])
+      assert output =~ code
+      assert output =~ stage
+      assert output =~ "retry"
+      refute String.downcase(output) =~ "rebuild"
+      refute File.exists?(ctx.state)
+      assert File.read!(credentials) == original_credentials
+      assert File.read!(workflow) == original_workflow
+      calls = File.read!(ctx.log)
+      assert calls =~ "--check-codex-sandbox"
+
+      for operation <- ["login\tstatus", "--detach", "build\t", "git-preflight", "auth.mjs", "volume\trm"] do
+        refute calls =~ operation
+      end
+    end
+  end
+
   test "candidate sandbox refusal preserves usable runner and user files before drain", ctx do
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"])
@@ -1371,44 +1732,70 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute calls =~ "--detach"
   end
 
-  test "packaged pending journal retry checks sandbox before draining retained source", ctx do
-    assert {_, 0} = launch_args(ctx, ["run"])
-    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
-    File.mkdir!(journal)
-    fields = %{"target" => "codex", "port" => "4010", "image" => "fixture-image", "package.revision" => "fixture-revision"}
-    Enum.each(fields, fn {name, value} -> File.write!(Path.join(journal, name), value) end)
-    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
-    File.write!(Path.join(journal, "previous.env"), metadata)
-    File.write!(ctx.log, "")
-    # Exercise the actual packaged retry control flow with prepared immutable
-    # image metadata. Native manifest/host-helper validation has separate tests.
-    script = """
-    source "$1" --help >/dev/null
-    runner_project_lock "$2"
-    packaged_install=true
-    project_id() { printf '%s' "$FIXTURE_PROJECT_ID"; }
-    legacy_project_id() { printf service; }
-    source_revision() { printf fixture-revision; }
-    package_image() { printf fixture-image; }
-    package_transition_image() { printf fixture-image; }
-    package_release_image() { return 0; }
-    package_transition_image_compatible() { return 0; }
-    package_helper() {
-      case "$1" in lock-directory) return 0 ;; sha256) shasum -a 256 "$2" | cut -d ' ' -f 1 ;; *) return 1 ;; esac
-    }
-    runner_transition "$2" codex false
-    """
+  for packaged <- [false, true] do
+    @packaged packaged
+    test "pending journal retry preflights exact settings before draining source packaged=#{packaged}", ctx do
+      assert {_, 0} = launch_args(ctx, ["run"])
+      journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+      File.mkdir!(journal)
+      File.chmod!(journal, 0o700)
 
-    env = Map.merge(Map.new(ctx.env), %{"FIXTURE_PROJECT_ID" => @project_id, "FIXTURE_SANDBOX_FAIL" => "true"}) |> Enum.to_list()
-    assert {output, 1} = System.cmd("bash", ["-euc", script, "retry", @launcher, ctx.repo], env: env, cd: ctx.repo, stderr_to_stdout: true)
-    assert output =~ "sandbox_namespace_denied"
-    assert File.read!(ctx.state) |> String.trim() == "true"
-    assert File.read!(Path.join(journal, "previous.env")) == metadata
-    Enum.each(fields, fn {name, value} -> assert File.read!(Path.join(journal, name)) == value end)
-    calls = File.read!(ctx.log)
-    refute calls =~ "stop\t"
-    refute calls =~ "rename\t"
-    refute calls =~ "--detach"
+      record =
+        Enum.join(
+          ["codex-config-v2", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", File.read!(ctx.state <> ".config-sha"), File.read!(ctx.state <> ".config-owner")],
+          "\t"
+        ) <> "\n"
+
+      fields = %{"target" => "codex", "port" => "4010", "image" => record, "package.revision" => "fixture-revision"}
+      Enum.each(fields, fn {name, value} -> File.write!(Path.join(journal, name), value) end)
+      File.chmod!(Path.join(journal, "image"), 0o600)
+      metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
+      File.write!(Path.join(journal, "previous.env"), metadata)
+      File.write!(ctx.log, "")
+      # Exercise the actual packaged retry control flow with prepared immutable
+      # image metadata. Native manifest/host-helper validation has separate tests.
+      script = """
+      source "$1" --help >/dev/null
+      runner_project_lock "$2"
+      packaged_install=#{@packaged}
+      project_id() { printf '%s' "$FIXTURE_PROJECT_ID"; }
+      legacy_project_id() { printf service; }
+      source_revision() { printf fixture-revision; }
+      package_image() { printf sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
+      package_transition_image() { printf sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
+      package_release_image() { return 0; }
+      package_transition_image_compatible() { return 0; }
+      package_helper() {
+        case "$1" in
+          lock-directory) return 0 ;;
+          selection-storage-directory)
+            python3 - "$2" <<'PYSTORAGE'
+      import os, stat, sys
+      info = os.lstat(sys.argv[1])
+      if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+          sys.exit(1)
+      PYSTORAGE
+            ;;
+          sha256) shasum -a 256 "$2" | cut -d ' ' -f 1 ;;
+          codex-config-store) shift; python3 -I "$symphony_home/scripts/codex-config-store.py" "$@" ;;
+          *) return 1 ;;
+        esac
+      }
+      runner_transition "$2" codex false
+      """
+
+      env = Map.merge(Map.new(ctx.env), %{"FIXTURE_PROJECT_ID" => @project_id, "FIXTURE_SANDBOX_FAIL" => "true"}) |> Enum.to_list()
+      assert {output, 1} = System.cmd("bash", ["-euc", script, "retry", @launcher, ctx.repo], env: env, cd: ctx.repo, stderr_to_stdout: true)
+      assert output =~ "sandbox_namespace_denied"
+      assert File.read!(ctx.state) |> String.trim() == "true"
+      assert File.read!(Path.join(journal, "previous.env")) == metadata
+      Enum.each(fields, fn {name, value} -> assert File.read!(Path.join(journal, name)) == value end)
+      calls = File.read!(ctx.log)
+      refute calls =~ "stop\t"
+      refute calls =~ "rename\t"
+      refute calls =~ "--detach"
+      refute calls =~ "--codex-config-snapshot"
+    end
   end
 
   test "foreign native volumes and active profile removal fail before native mutation", ctx do
@@ -1463,21 +1850,29 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     changed = Path.join(ctx.root, "tag-changed")
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"], [{"FIXTURE_TAG_CHANGED_FILE", changed}])
     assert File.exists?(changed)
-    assert File.read!(ctx.state <> ".image") == "fixture-image"
+    assert File.read!(ctx.state <> ".image") == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   end
 
-  test "same-image transition replaces an old runtime profile instead of recovering it", ctx do
+  test "same-image update refuses a deferred old Codex profile before disrupting the listener", ctx do
     ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["run"])
     File.write!(ctx.state <> ".codex-runtime", "old-profile")
+    metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
+    image = File.read!(ctx.state <> ".image")
     File.write!(ctx.log, "")
-    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"])
-    assert message =~ "Runner transition complete"
-    refute message =~ "Previously completed"
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "codex"])
+    assert message =~ "fresh packaged install"
     calls = File.read!(ctx.log)
-    assert calls =~ "rename\t"
-    assert calls =~ "--detach"
-    refute File.read!(ctx.state <> ".codex-runtime") == "old-profile"
+
+    for mutation <- ["rename\t", "stop\t", "rm\t", "--detach", "agent-draining", "build\t"] do
+      refute calls =~ mutation
+    end
+
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    assert String.trim(File.read!(ctx.state)) == "true"
+    assert File.read!(ctx.state <> ".codex-runtime") == "old-profile"
+    assert File.read!(ctx.state <> ".image") == image
+    assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.env")) == metadata
   end
 
   test "same-image reuse refuses a changed runtime profile without touching the runner", ctx do

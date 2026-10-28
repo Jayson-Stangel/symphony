@@ -17,7 +17,8 @@ defmodule SymphonyElixir.UpdaterTest do
     File.write!(stub, fixture_launcher())
     File.chmod!(stub, 0o755)
     File.cp!(Path.join(Path.dirname(@launcher), "symphony-environment.sh"), Path.join(seed, "scripts/symphony-environment.sh"))
-    git!(seed, ["add", "scripts/symphony", "scripts/symphony-environment.sh"])
+    File.cp!(Path.join(Path.dirname(@launcher), "symphony-apparmor.sh"), Path.join(seed, "scripts/symphony-apparmor.sh"))
+    git!(seed, ["add", "scripts/symphony", "scripts/symphony-environment.sh", "scripts/symphony-apparmor.sh"])
     commit!(seed, "Initial installation")
     git!(seed, ["remote", "add", "origin", remote])
     git!(seed, ["push", "origin", "main"])
@@ -507,6 +508,9 @@ defmodule SymphonyElixir.UpdaterTest do
     container_runtime() { printf false; }
     runner_status() { printf true; }
     runner_owned() { :; }
+    # This source-lock fixture models an already-qualified retained source;
+    # lifecycle tests own real engine/provider/configuration preflight behavior.
+    codex_config_migration_preflight() { :; }
     runner_is_legacy() { return 1; }
     runner_update_port() { printf 4010; }
     runner_build_image() {

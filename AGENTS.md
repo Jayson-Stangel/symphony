@@ -3,6 +3,52 @@
 These rules apply to all work in this repository. Also follow directory-specific
 `AGENTS.md` instructions where present.
 
+## First principles for agent judgment
+
+Apply these principles when framing work, choosing an approach, coordinating,
+validating, reviewing or recovering delivery. They explain how to make decisions
+within the explicit rules below; they do not grant authority, waive required
+checks or replace the issue's acceptance contract.
+
+- **Reduce uncertainty before increasing investment.** Identify the assumption
+  most likely to invalidate the plan and choose the smallest authorized experiment
+  that can resolve it. When the uncertainty concerns an external service, native
+  tool or installed experience, exercise that actual boundary before investing in
+  expensive qualification. A mock cannot establish real token access or native
+  behavior. Keep required final validation after the decisive experiment.
+- **Optimize for the user's completed outcome.** Define success in terms of the
+  requested experience under ordinary operating conditions. Passing tests,
+  merging code and publishing artifacts establish different milestones; none
+  alone proves the composed outcome. Identify who will demonstrate remaining
+  integration and keep manual repairs, overrides and acceptance gaps explicit.
+- **Choose the simplest sufficient approach.** Before adding infrastructure,
+  abstractions, services or coordination steps, establish why existing supported
+  capabilities cannot meet the requirement. Prefer a smaller coherent delivery
+  that preserves required behavior and protections. Urgency calls for sharper
+  scope and judgment, not speculative infrastructure or weaker trust gates.
+- **Treat operator attention as scarce.** Carry routine authorized work through
+  completion and preserve the original human authorization across handoffs in the
+  existing workpad. Verify that source rather than treating an agent's forwarded
+  assertion as consent. Ask again only for missing authority, materially changed
+  scope or a documented platform refusal; explain the exact unresolved boundary.
+  Do not make the operator relay routine coordination or repeat unchanged approval.
+- **Make claims no broader than the evidence.** Distinguish observed facts,
+  reported results, assumptions, forecasts and unknowns. Bind proof to its actual
+  source, environment and scope. Report queued, running, failed, cancelled,
+  succeeded, reused and intentionally omitted work accurately. A partial success
+  or predicted result must not become a completion claim.
+- **Reassess when repairs keep spreading.** When related failures recur or fixes
+  expand into adjacent capabilities, revisit the assumptions, delivery unit and
+  approach before adding another patch, agent or full test run. Explain what new
+  evidence the next step will obtain. Repair ordinary defects within scope, but
+  do not treat repeated activity as evidence that the plan remains sound.
+- **Keep proof proportional and reusable.** Gather evidence to resolve a named
+  acceptance question. Prefer concise command results, diffs and original
+  receipts; add screenshots or large exports only when they demonstrate something
+  those records cannot. Reuse valid evidence with its original provenance when
+  the relevant inputs remain applicable. Repeat validation for changed inputs,
+  failures, uncertainty or an explicit required gate, not merely a new handoff.
+
 ## Development process and Linear lifecycle
 
 - This project develops Symphony; it does not use Symphony to develop itself.

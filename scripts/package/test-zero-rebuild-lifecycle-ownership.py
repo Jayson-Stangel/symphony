@@ -150,22 +150,36 @@ class ContainerIdentityTests(unittest.TestCase):
 
 
 class ProjectTransportTests(unittest.TestCase):
-    def test_placeholder_passes_actual_product_loader_without_host_tokens(self):
+    def test_placeholder_passes_actual_loader_and_environment_takes_precedence(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp); (config / "projects").mkdir()
             path = config / "projects/owned.env"
             path.write_text("# initialized fixture\nLINEAR_API_KEY=\nGH_TOKEN=\n")
-            source = (Path(__file__).parents[1] / "symphony").read_text()
-            loader = next(line.strip() for line in source.splitlines() if line.strip().startswith("git_token=$(unset GH_TOKEN GITHUB_TOKEN;"))
-            guard = next(line.strip() for line in source.splitlines() if "[ -n \"$git_token\" ] || die 'missing GITHUB_TOKEN" in line)
-            command = 'die() { echo "$*" >&2; exit 1; }; project_env=$1; ' + loader + '; ' + guard + '; printf "%s" "$git_token"'
-            def invoke():
-                return subprocess.run(["/bin/bash", "-euc", command, "fixture", str(path)],
-                    env={"GH_TOKEN":"host-must-not-be-used", "GITHUB_TOKEN":"host-must-not-be-used"}, text=True, capture_output=True)
+            (config / "WORKFLOW.md").write_text("---\ntracker:\n  kind: memory\n---\n")
+            root = Path(__file__).resolve().parents[2]
+            command = '''source "$1/scripts/symphony" --help >/dev/null
+project_id() { printf owned; }
+project_credentials_require "$config_home"
+project_credentials_export
+printf '%s' "$GH_TOKEN"
+'''
+            def invoke(exported=None):
+                environment = dict(os.environ)
+                for name in ("GH_TOKEN", "GITHUB_TOKEN", "LINEAR_API_KEY"):
+                    environment.pop(name, None)
+                environment.update(SYMPHONY_HOME=str(root), SYMPHONY_CONFIG_HOME=str(config),
+                                   SYMPHONY_RUNNER_NAMESPACE="lifecycle-credential-fixture")
+                environment.update(exported or {})
+                return subprocess.run(["/bin/bash", "-euc", command, "fixture", str(root)],
+                    env=environment, text=True, capture_output=True)
             self.assertNotEqual(invoke().returncode, 0)
             lifecycle.seed_project_transport(config, "owned")
             result = invoke(); self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "credential-free-local-memory-placeholder")
+            for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+                result = invoke({name:"explicit-fixture-environment-token"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "explicit-fixture-environment-token")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(ValueError): lifecycle.seed_project_transport(config, "owned")
 

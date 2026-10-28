@@ -29,6 +29,7 @@ package_bundle_field() {
   else printf 'bundles.linux_x86_64.%s\n' "$1"; fi
 }
 package_app_home=${SYMPHONY_APP_HOME:-"$HOME/.local/share/$runtime_prefix"}
+package_app_home_input=$package_app_home
 package_app_home=$(package_helper canonical-path "$package_app_home")
 case "$symphony_home" in */releases/*) package_app_home=$(cd "$symphony_home/../.." && pwd) ;; esac
 
@@ -37,10 +38,11 @@ package_usage() {
 Usage:
   symphony --version
   symphony doctor [--json]
-  symphony init --linear-project SLUG [--local-skill NAME]...
+  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
+  symphony runner apparmor [--apply --daemon-id ID]
   symphony runner import --agent codex|claude --archive PATH
   symphony runner start|stop|status|logs|drain|resume|recheck
   symphony update [--agent codex|claude | --rollback-runner]
@@ -53,19 +55,26 @@ agent toolchain is needed. From an existing project checkout, initialize it, edi
 the printed private credentials file, authenticate the native container login,
 and run. Runner images are pulled by immutable release digest; they never build
 locally. Use the installed updater for release changes and runner recovery.
-See the packaged installation guide for isolated candidate storage and namespaces.
+init --agent codex|claude requests setup guidance; it never switches a runner.
+Without --agent, retained state wins, then new projects default to Codex.
+Repeat init to resume setup. Resolve a conflicting retained image with explicit
+compatible environment selection before auth/doctor; update --agent owns the
+existing runner transition. See the packaged installation guide for details.
 USAGE
 }
 
-package_image() {
+package_manifest_image() {
   local image
   image=$(package_helper release-get "$symphony_home/release.json" "distribution.${1:-codex}.$package_arch" 2>/dev/null) || image=
   if [ -n "$image" ]; then printf '%s\n' "$image"
   else package_helper release-get "$symphony_home/release.json" "runners.${1:-codex}.$package_arch.image"; fi
 }
+package_image() {
+  package_helper resolve-runner-import "$symphony_home/release.json" "${1:-codex}" "$package_arch" "$package_app_home"
+}
 package_release_image() {
   local runtime=$1 image=$2 agent=$3 manager_revision=$4 platform revision inputs
-  [ "$image" = "$(package_image "$agent")" ] || die 'runner image is outside the selected release manifest'
+  package_helper validate-runner-reference "$symphony_home/release.json" "$agent" "$package_arch" "$image" >/dev/null || die 'runner image is outside the selected release manifest'
   [ "$manager_revision" = "$package_revision" ] || die 'manager revision differs from selected release'
   revision=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.source_revision")
   platform=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.platform")
@@ -177,6 +186,7 @@ package_transition_image() {
       printf '%s\n' "$image"; return
     fi
   fi
+  package_ensure_candidate_image "$agent" || return
   package_image "$agent"
 }
 
@@ -196,15 +206,17 @@ package_use_project_image() {
   if declare -F environment_use_project >/dev/null; then environment_use_project "$root" "$agent" || return; fi
   [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || return 0
   metadata=$(runner_env_file "$root")
-  [ -f "$metadata" ] || return 0
+  if [ ! -f "$metadata" ]; then package_ensure_candidate_image "$agent"; return; fi
   package_helper owned-file "$metadata" || return
   image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$metadata")
   case "$image" in sha256:*)
     [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || die 'retained runner image identity is invalid'
-    [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" = "$agent" ] || return 0
+    if [ "$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata")" != "$agent" ]; then package_ensure_candidate_image "$agent"; return; fi
     export SYMPHONY_RUNNER_IMAGE=$image
+    return 0
     ;;
   esac
+  package_ensure_candidate_image "$agent"
 }
 
 # Verify the selected home's own helper, not the currently running manager's
@@ -249,11 +261,95 @@ package_stage_bundle() {
   printf '%s\n' "$destination"
 }
 
+# This file belongs to application storage, not the immutable release. It keeps
+# install-time overrides together without editing a user's shell startup files.
+package_shell_activation_preflight() {
+  local activation="$package_app_home/activate.sh" header
+  if [ -e "$activation" ] || [ -L "$activation" ]; then
+    package_helper owned-file "$activation" || return
+    IFS= read -r header < "$activation" || header=
+    [ "$header" = '# Symphony shell activation v1' ] || die "refusing to replace existing shell activation file: $activation"
+  fi
+}
+
+package_shell_environment() {
+  local name
+  printf '# Symphony shell activation v1\n# Source in bash or zsh; generated by the per-user installer.\n'
+  printf 'unset SYMPHONY_HOME\n'
+  printf 'export SYMPHONY_APP_HOME=%q\n' "$package_app_home"
+  printf 'export SYMPHONY_BIN_DIR=%q\n' "$bin_dir"
+  printf 'export SYMPHONY_CONFIG_HOME=%q\n' "$config_home"
+  printf 'export SYMPHONY_SKILLS_DIR=%q\n' "$skills_dir"
+  # Preserve the override's provenance: a derived default must continue to
+  # follow --config-dir in later doctor/update commands after activation.
+  if [ -n "${SYMPHONY_RUNNER_HOME:-}" ]; then
+    printf 'export SYMPHONY_RUNNER_HOME=%q\n' "$runner_home"
+  else
+    printf 'unset SYMPHONY_RUNNER_HOME\n'
+  fi
+  printf 'export SYMPHONY_RUNNER_NAMESPACE=%q\n' "$runner_namespace"
+  # Only explicit engine selections are retained; never serialize credentials or
+  # the rest of the installing process's environment into a sourced file.
+  for name in SYMPHONY_CONTAINER_RUNTIME DOCKER_CONTEXT DOCKER_HOST DOCKER_CONFIG; do
+    if [ "${!name+x}" = x ]; then printf 'export %s=%q\n' "$name" "${!name}"
+    else printf 'unset %s\n' "$name"; fi
+  done
+  printf 'export PATH=%q:"$PATH"\nhash -r\n' "$bin_dir"
+}
+
+package_shell_activation_write() {
+  local temporary
+  package_shell_activation_preflight || return
+  temporary=$(mktemp "$package_app_home/.activate.XXXXXX") || return
+  if ! package_shell_environment > "$temporary"; then rm -f "$temporary"; return 1; fi
+  if ! mv -f "$temporary" "$package_app_home/activate.sh"; then rm -f "$temporary"; return 1; fi
+}
+
+package_shell_context() {
+  local selected runtime context
+  selected=$(type -P symphony) || selected=
+  printf 'Running launcher: %s/scripts/symphony\nInstalled command: %s/symphony\n' "$symphony_home" "$bin_dir"
+  printf 'PATH command (fresh lookup): %s\n' "${selected:-not found}"
+  if [ "$selected" != "$bin_dir/symphony" ]; then
+    printf 'Command activation required: PATH does not select this installation.\n'
+  fi
+  printf 'Application: %s\nConfiguration: %s\nSkills: %s\nRunner storage: %s\nNamespace: %s\n' \
+    "$package_app_home" "$config_home" "$skills_dir" "$runner_home" "${runner_namespace:-default}"
+  runtime=$(container_runtime 2>/dev/null) || runtime=
+  if [ -n "${DOCKER_CONTEXT:-}" ]; then context=$DOCKER_CONTEXT
+  elif [ -n "${DOCKER_HOST:-}" ]; then context='DOCKER_HOST override (value omitted)'
+  elif [ -n "$runtime" ]; then context=$("$runtime" context show 2>/dev/null) || context='unavailable'
+  else context=unavailable; fi
+  printf 'Container runtime: %s\nDocker context: %s\n' "${runtime:-unavailable}" "$context"
+  printf 'The parent shell may also have aliases/functions or cached commands; check with type -a symphony.\n'
+}
+
+package_shell_activation_instructions() {
+  if [ "${package_platform:-}" = macos ] && package_helper zsh-setup-status "$HOME" "$package_app_home/activate.sh" >/dev/null 2>&1; then
+    printf 'Managed zsh setup is installed in ~/.zshrc. Use this installation in a new Terminal window.\n'
+    printf 'Remove only the managed block with symphony install --remove-zsh-setup.\n'
+    return
+  fi
+  if [ ! -f "$package_app_home/activate.sh" ]; then
+    printf 'This installation has no saved activation file. For this effective context, run in bash/zsh:\n'
+    package_shell_environment
+    printf 'Explicitly retain this block in your own shell profile if wanted; no profiles were changed.\n'
+    return
+  fi
+  printf 'Activate this installation in the current bash/zsh terminal:\n  source %q\n' "$package_app_home/activate.sh"
+  printf 'For fresh terminals, explicitly add that same source line to your own ~/.zshrc (zsh) or ~/.bashrc (interactive bash); a bash login profile must source ~/.bashrc.\n'
+  printf 'For a headless shell, source it before invoking Symphony. No shell profiles were changed.\n'
+  printf 'Verify selection: type -a symphony; symphony --version\n'
+  printf 'A shell alias/function can still override PATH; inspect it before changing it.\n'
+}
+
 package_preflight_links() {
   local source target skill
+  package_shell_activation_preflight || return
   source="$package_app_home/current/scripts/symphony"; target="$bin_dir/symphony"
-  if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target"
-  elif [ -e "$target" ]; then die "refusing to replace existing command: $target"; fi
+  if [ -L "$target" ]; then
+    [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing command link: $target (expected $source). Choose a separate --bin-dir for this installation; preserve the existing command."
+  elif [ -e "$target" ]; then die "refusing to replace existing command: $target (expected link to $source). Choose a separate --bin-dir for this installation; preserve the existing command."; fi
   for skill in "${managed_skills[@]}"; do
     source="$package_app_home/current/.codex/skills/$skill"; target=$(global_skill_path "$skill")
     if [ -L "$target" ]; then [ "$(readlink "$target")" = "$source" ] || die "refusing to replace existing global skill link: $target"
@@ -265,20 +361,91 @@ package_preflight_links() {
   fi
 }
 
+# Automatic setup is deliberately limited to the standard first Mac install.
+# All other contexts retain the explicit activation contract (JAY-735).
+package_first_mac_defaults() {
+  [ "$package_platform" = macos ] && [ -z "$runner_namespace" ] &&
+    [ "$package_app_home_input" = "$HOME/.local/share/symphony" ] &&
+    [ "$bin_dir" = "$HOME/.local/bin" ] &&
+    [ "$config_home" = "$HOME/.config/symphony" ] &&
+    [ "$skills_dir" = "$HOME/.codex/skills" ] &&
+    [ "$runner_home" = "$HOME/.config/symphony/runners" ]
+}
+
+package_first_mac_shell_context() {
+  [ "${SHELL:-/bin/zsh}" = /bin/zsh ] && [ -z "${ZDOTDIR:-}" ]
+}
+
+package_first_mac_preflight() {
+  local path selected shell_mode
+  package_first_mac_shell_context || die 'automatic first installation requires standard /bin/zsh without ZDOTDIR'
+  [ -z "${SYMPHONY_HOME:-}" ] || die 'first installation refuses SYMPHONY_HOME; preserve the existing installation'
+  for path in "$package_app_home_input" "$bin_dir" "$config_home" "$skills_dir"; do
+    package_helper first-install-path-check "$HOME" "$path" || return
+  done
+  for path in "$package_app_home" "$config_home" "$bin_dir/symphony"; do
+    [ ! -e "$path" ] && [ ! -L "$path" ] || die "first installation found existing Symphony state at $path; preserved unchanged. Use the existing installation; upgrades and migration are separate."
+  done
+  selected=$(type -P symphony) || selected=
+  [ -z "$selected" ] || die "first installation found an existing Symphony command at $selected; preserved unchanged"
+  package_helper zsh-setup-check "$HOME" "$package_app_home/activate.sh" || return
+  # Read the user's normal zsh startup files without executing any Symphony
+  # command. Aliases/functions and login-profile PATH selections outrank PATH.
+  for shell_mode in -ic -lic; do
+    /bin/zsh "$shell_mode" '[[ ${ZDOTDIR:-$HOME} = $HOME && -o rcs ]] || exit 74; if whence symphony >/dev/null 2>&1; then exit 73; fi' </dev/null >/dev/null 2>&1 || die 'first installation found conflicting zsh command selection or unsupported startup files; preserved unchanged'
+  done
+  package_preflight_links
+}
+
+package_first_mac_consent() {
+  local answer
+  printf 'Symphony will add a marked setup block to ~/.zshrc, selecting this installation in new zsh terminals.\n'
+  printf 'Unrelated profile text and permissions are preserved. Remove only this block later with install.sh --remove-zsh-setup.\n'
+  if ! "$accept_zsh_setup"; then
+    [ -t 0 ] && [ -t 1 ] || die 'automatic shell setup needs installer consent in a terminal; unattended installation requires --accept-zsh-setup'
+    printf 'Install Symphony and configure zsh? [y/N] '
+    IFS= read -r answer || return 1
+    case "$answer" in y|Y|yes|YES) ;; *) die 'installation canceled; no installation files changed' ;; esac
+  fi
+}
+
 package_install() (
   local stage_only=false skill source target destination next app_lock
+  local accept_zsh_setup=false no_shell_handoff=false remove_zsh_setup=false first_mac=false shell_mode
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bin-dir|--config-dir|--skills-dir|--app-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
-        case "$1" in --bin-dir) bin_dir=$2 ;; --config-dir) config_home=$2 ;; --skills-dir) skills_dir=$2 ;; --app-dir) package_app_home=$2 ;; esac; shift 2 ;;
+        case "$1" in --bin-dir) bin_dir=$2 ;; --config-dir) config_home=$2 ;; --skills-dir) skills_dir=$2 ;; --app-dir) package_app_home=$2; package_app_home_input=$2 ;; esac; shift 2 ;;
       --stage-only) stage_only=true; shift ;;
-      --help|-h) printf 'Usage: install.sh [--app-dir PATH] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH] [--stage-only]\n'; return ;;
+      --accept-zsh-setup) accept_zsh_setup=true; shift ;;
+      --no-shell-handoff) no_shell_handoff=true; shift ;;
+      --remove-zsh-setup) remove_zsh_setup=true; shift ;;
+      --help|-h) printf 'Usage: install.sh [--app-dir PATH] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH] [--stage-only] [--accept-zsh-setup] [--no-shell-handoff] [--remove-zsh-setup]\n'; return ;;
       *) die "unknown install option: $1" ;;
     esac
   done
+  if "$remove_zsh_setup"; then
+    ! "$stage_only" && ! "$accept_zsh_setup" && ! "$no_shell_handoff" || die '--remove-zsh-setup cannot be combined with installation setup or staging options'
+    package_first_mac_defaults || die 'managed zsh setup removal requires the default Mac installation paths'
+    package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
+    printf 'Removed only the Symphony managed zsh block. Existing terminals and installation files are unchanged.\n'
+    return
+  fi
+  if ! "$stage_only" && package_first_mac_defaults && package_first_mac_shell_context; then
+    first_mac=true
+    package_first_mac_preflight || return
+    package_first_mac_consent || return
+  elif "$accept_zsh_setup" || "$no_shell_handoff"; then
+    die 'automatic zsh setup options require a first Mac installation at default paths with standard /bin/zsh without ZDOTDIR'
+  fi
   case "$package_app_home" in /*) ;; *) die 'application storage must be an absolute path' ;; esac
   package_app_home=$(package_helper canonical-path "$package_app_home")
+  bin_dir=$(package_helper canonical-path "$bin_dir") || return
+  config_home=$(package_helper canonical-path "$config_home") || return
+  skills_dir=$(package_helper canonical-path "$skills_dir") || return
+  resolve_runner_home
+  runner_home=$(package_helper canonical-path "$runner_home") || return
   if ! "$stage_only"; then package_preflight_links; fi
   (umask 077; mkdir -p "$package_app_home") || return
   package_helper lock-directory "$package_app_home" || return
@@ -292,6 +459,7 @@ package_install() (
   # Another installation may share command/skill paths while using a different
   # application lock. Recheck after the long copy before any activation.
   package_preflight_links || return
+  package_shell_activation_write || return
   next="$package_app_home/.current-$$"
   package_helper ensure-link "releases/$package_storage_key" "$next" || return
   package_helper replace-link "$next" "$package_app_home/current" || { rm -f "$next"; return 1; }
@@ -303,9 +471,33 @@ package_install() (
   done
   (umask 077; mkdir -p "$config_home/projects") || return
   printf 'Installed Symphony %s (%s)\nCommand: %s/symphony\nConfiguration: %s\n' "$package_version" "$package_revision" "$bin_dir" "$config_home"
-  case ":$PATH:" in *":$bin_dir:"*) ;; *) printf 'Add this directory to PATH: export PATH="%s:$PATH"\n' "$bin_dir" ;; esac
-  if [ "$package_channel" = candidate ]; then printf 'Candidate image prerequisites: symphony runner import --agent codex (or claude) shows the exact companion to download before native login. See the bundled candidate provisioning guide.\n'; fi
-  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, then symphony auth codex login and symphony run.\n'
+  if "$first_mac"; then
+    package_helper zsh-setup-install "$HOME" "$package_app_home/activate.sh" || return
+    # Verify the final startup path, including .zlogin after .zshrc. Do not claim
+    # readiness when user startup files skip or override the managed block.
+    for shell_mode in -ic -lic; do
+      if ! /usr/bin/env -u SYMPHONY_APP_HOME -u SYMPHONY_BIN_DIR -u SYMPHONY_CONFIG_HOME -u SYMPHONY_SKILLS_DIR -u SYMPHONY_HOME -u SYMPHONY_RUNNER_HOME -u SYMPHONY_RUNNER_NAMESPACE /bin/zsh "$shell_mode" '[[ $(whence -w symphony) = "symphony: command" && $(whence -p symphony) = "$HOME/.local/bin/symphony" && $SYMPHONY_BIN_DIR = "$HOME/.local/bin" && $SYMPHONY_APP_HOME = "$HOME/.local/share/symphony" && $SYMPHONY_CONFIG_HOME = "$HOME/.config/symphony" && $SYMPHONY_SKILLS_DIR = "$HOME/.codex/skills" && -z ${SYMPHONY_HOME+x} && ${SYMPHONY_RUNNER_HOME:-$SYMPHONY_CONFIG_HOME/runners} = "$HOME/.config/symphony/runners" && -z $SYMPHONY_RUNNER_NAMESPACE ]]' </dev/null >/dev/null 2>&1; then
+      package_helper zsh-setup-remove "$HOME" "$package_app_home/activate.sh" || return
+      die 'zsh startup files skipped or overrode Symphony setup; the managed block was removed. Installation files remain at the printed paths; no ready terminal handoff was made.'
+      fi
+    done
+    printf 'zsh setup installed. New interactive zsh terminals and login sessions select this installation.\n'
+  else
+    package_shell_context
+    package_shell_activation_instructions
+  fi
+  if [ "$package_channel" = candidate ]; then printf 'Candidate runners: provider login automatically obtains missing original loopback images using project GitHub Actions read access. Availability is checked at login; unavailable originals refuse onboarding. See the bundled candidate provisioning guide.\n'; fi
+  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
+  if "$first_mac"; then
+    if [ -t 0 ] && [ -t 1 ] && ! "$no_shell_handoff"; then
+      printf 'Opening a configured zsh login shell here. Use Symphony commands in this shell or a new Terminal window.\n'
+      printf 'Exiting returns to your original shell, whose environment cannot be changed by an installer.\n'
+      exec 8>&-
+      exec /bin/zsh -il
+    else
+      printf 'Installation complete. Open a new Terminal window to use Symphony commands. The existing parent shell is unchanged.\n'
+    fi
+  fi
 )
 
 package_doctor() {
@@ -316,6 +508,7 @@ package_doctor() {
       *) die "unknown doctor option: $1" ;;
     esac
   done
+  resolve_runner_home
   (container_runtime) >/dev/null 2>&1 || ready=false
   [ -L "$bin_dir/symphony" ] && [ "$(readlink "$bin_dir/symphony")" = "$package_app_home/current/scripts/symphony" ] || ready=false
   global_skills_ready || ready=false
@@ -339,6 +532,8 @@ package_doctor() {
     printf '{"mode":"doctor","installation":"packaged","scope":"installation","provider_project_readiness":"untested","ready":%s,"version":"%s","source_revision":"%s","base_version":"%s","storage_revision":"%s","architecture":"%s","codex_image":"%s","claude_image":"%s","environment":%s}\n' "$ready" "$package_version" "$package_revision" "$package_base_version" "$package_storage_revision" "$package_arch" "$(package_image codex)" "$(package_image claude)" "$selected"
   else
     printf 'Symphony %s (%s), packaged %s %s\nInstallation ready: %s\n' "$package_version" "$package_revision" "$package_platform" "$package_arch" "$ready"
+    package_shell_context
+    package_shell_activation_instructions
     printf 'Readiness scope: installation files, command/skills and runtime CLI. Engine access, image provisioning, project launch/sandbox, native authentication and Git require symphony runner doctor. Tracker access and completed tasks remain untested.\n'
     if [ "$selected" != null ]; then printf 'Selected environment: %s (runtime %s)\n' "$(package_helper get "$selection_file" image_id)" "$(package_helper get "$selection_file" runtime_revision)"; fi
     "$ready" || printf 'Check the Docker engine and installed command/skills. No host build toolchain is required.\n' >&2
@@ -351,3 +546,6 @@ package_source_update_lock() { die 'this bundle lacks the packaged release updat
 
 # JAY-688 extends the same manager and lifecycle updater, without a second state owner.
 if [ -f "$symphony_home/scripts/symphony-package-update.sh" ]; then . "$symphony_home/scripts/symphony-package-update.sh"; fi
+
+# Definitions only; network acquisition runs only for a missing default candidate.
+. "$symphony_home/scripts/symphony-runner-provision.sh"
