@@ -154,6 +154,13 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertNotIn('packages: write',sign)
         self.assertNotIn('contents: write',sign)
         self.assertIn('needs: [inputs, registry]',publish)
+        self.assertNotIn('retained-production-inputs', publish)
+        self.assertNotIn('actions/upload-artifact', publish)
+        # One original retrieval per job, with mutable source rechecks at both
+        # independent protected boundaries. Local verified bytes serve all
+        # subsequent operations within each job.
+        self.assertEqual(publish.count('production_release.py signed'), 3)
+        self.assertEqual(publish.count('production_release.py source'), 3)
         self.assertEqual(publish.count('environment: production-release'),2)
         self.assertLess(publish.index('production_release.py signed'),publish.index('component_publication.py --prepared'))
         self.assertLess(publish.index('production_release.py public'),publish.index('production_release.py publish'))
