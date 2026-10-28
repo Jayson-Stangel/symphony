@@ -14,6 +14,7 @@ sys.path.insert(0,str(Path(__file__).parents[1]))
 import graph_publication as publish
 import qualified_graph as graph
 import registry_closure
+import ghcr_transport_recovery as recovery
 from test_qualified_graph import Fixture
 
 
@@ -191,6 +192,111 @@ class AnonymousRedirectTests(unittest.TestCase):
                 calls.append(request);raise HTTPError(request.full_url,307,'fixture',{'Location':location},io.BytesIO())
             with self.assertRaises(ValueError):registry_closure.open_anonymous(original,{},'GET',opener)
             self.assertEqual(len(calls),1)
+
+
+# Exercise the canonical client, not only its frozen recovery subclass.
+REPO = 'jayson-stangel/symphony-codex'
+DIGEST = 'sha256:' + 'a' * 64
+PREFIX = '/v2/' + REPO
+
+
+class CanonicalResponse:
+    def __init__(self, status, headers=None, raw=b''):
+        self.status, self.headers, self.raw = status, headers or {}, io.BytesIO(raw)
+    def read(self, size):return self.raw.read(size)
+
+
+class CanonicalClientTests(unittest.TestCase):
+    def client(self, responses):
+        calls = []
+        class Connection:
+            def __init__(self, host, **kwargs):
+                self.response = responses.pop(0)
+                self.host = host
+            def request(self, method, path, body=None, headers=None):
+                raw = b''
+                if hasattr(body, 'read'):
+                    while block := body.read(3):raw += block
+                calls.append((self.host, method, path, raw))
+            def getresponse(self):
+                if isinstance(self.response, Exception):raise self.response
+                return self.response
+            def close(self):pass
+        client = publish.GHCR(REPO, 'Fixture', 'SYNTHETIC', connection=Connection, clock=lambda: 0)
+        client.token, client.expiry = 'SYNTHETIC', 100
+        return client, calls
+
+    def test_normal_publisher_uses_recovery_policy_and_preserves_opaque_state(self):
+        for endpoint in ('upload', 'uploads'):
+            client, calls = self.client([CanonicalResponse(201)])
+            location = PREFIX + '/blobs/' + endpoint + '/opaque_A.b==?_state=a%2Bb%3D'
+            target = client.upload_location(location, DIGEST)
+            self.assertEqual(target, recovery.upload_target(REPO, location, DIGEST))
+            client.request('PUT', target, body=io.BytesIO(b'abc'), size=3, expected=(201,))
+            self.assertEqual(calls, [('ghcr.io', 'PUT', PREFIX + target, b'abc')])
+            self.assertIn('_state=a%2Bb%3D&digest=', target)
+
+    def test_foreign_and_ambiguous_target_refuses_before_authorization(self):
+        client, calls = self.client([])
+        for location in ('https://evil.invalid' + PREFIX + '/blobs/upload/a',
+                         PREFIX + '/blobs/upload/../x', PREFIX + '/blobs/upload/a?other=x'):
+            with self.assertRaises(ValueError):client.upload_location(location, DIGEST)
+        for method, target in (('GET', '/blobs/' + DIGEST), ('PUT', '/blobs/upload/a?digest=' + DIGEST + '&other=x')):
+            with self.assertRaises(ValueError):client.request(method, target)
+        self.assertEqual(calls, [])
+
+    def test_401_rewinds_exact_body_but_uncertain_effect_is_never_retried(self):
+        token = json.dumps({'token': 'SECOND', 'expires_in': 300}).encode()
+        client, calls = self.client([CanonicalResponse(401), CanonicalResponse(200, raw=token), CanonicalResponse(201)])
+        target = client.upload_location(PREFIX + '/blobs/upload/opaque_A', DIGEST)
+        client.request('PUT', target, body=io.BytesIO(b'exact bytes'), size=11, expected=(201,))
+        self.assertEqual([row[3] for row in calls if row[1] == 'PUT'], [b'exact bytes', b'exact bytes'])
+        client, calls = self.client([ConnectionError('synthetic unknown effect')])
+        with self.assertRaises(ConnectionError):
+            client.request('PUT', target, body=io.BytesIO(b'exact bytes'), size=11, expected=(201,))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][3], b'exact bytes')
+
+    def test_explicit_resume_rechecks_graph_and_does_not_repeat_committed_blob(self):
+        from test_qualified_graph import Fixture
+        class Interrupted(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.interrupt = True
+                self.writes = []
+            def request(self, method, suffix, **kwargs):
+                value = super().request(method, suffix, **kwargs)
+                if method == 'PUT':
+                    self.writes.append(suffix)
+                    if self.interrupt:
+                        self.interrupt = False
+                        raise ConnectionError('synthetic response lost after commit')
+                return value
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(sources=('a',))
+            directory = fixture.write(Path(temporary).resolve() / 'graph')
+            record = fixture.records[0]
+            selected = [{'record': record, 'directory': directory,
+                         'image': 'ghcr.io/' + REPO + '@' + record['image'].split('@')[1]}]
+            client = Interrupted()
+            with self.assertRaises(ConnectionError):
+                publish.publish_selected(selected, lambda repository: client)
+            first = client.writes[0]
+            self.assertEqual(len(client.writes), 1)
+            # Explicit owner continuation only; the transport did not retry.
+            publish.publish_selected(selected, lambda repository: client)
+            self.assertEqual(client.writes.count(first), 1)
+            self.assertEqual(client.blobs, fixture.data)
+            self.assertEqual(client.manifests, fixture.roots)
+
+    def test_redirect_and_second_401_refuse_without_unbounded_retry(self):
+        client, calls = self.client([CanonicalResponse(307, {'Location': 'https://evil.invalid'})])
+        with self.assertRaisesRegex(ValueError, 'status 307'):client.request('HEAD', '/blobs/' + DIGEST)
+        self.assertEqual(len(calls), 1)
+        token = json.dumps({'token': 'SECOND'}).encode()
+        client, calls = self.client([CanonicalResponse(401), CanonicalResponse(200, raw=token), CanonicalResponse(401)])
+        with self.assertRaisesRegex(ValueError, 'status 401'):client.request('HEAD', '/blobs/' + DIGEST)
+        self.assertEqual(len(calls), 3)
 
 
 if __name__=='__main__':unittest.main()
