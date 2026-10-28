@@ -166,6 +166,7 @@ PORTABLE_RELEASE = {
     'test_registry.py',
     'staging_archive.py',
     'staging_ingress.py',
+    'transport_compatibility.py',
     'verify-prior-source.py',
 }
 

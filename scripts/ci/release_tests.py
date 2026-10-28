@@ -38,6 +38,7 @@ PORTABLE = {
     'test_macos_signing_inputs.py',
     'test_local_distribution.py',
     'test_staging_ingress.py',
+    'test_transport_compatibility.py',
     'test_staging_glue.py',
     'test_production_release.py',
     'test_native_recovery.py',
