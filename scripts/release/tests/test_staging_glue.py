@@ -62,7 +62,8 @@ class StagingGlueTest(unittest.TestCase):
     def test_workflow_only_protected_main_ingress_can_write_and_mac_is_read_only(self):
         text=(Path(__file__).parents[3]/'.github/workflows/macos-local-signing-import.yml').read_text()
         self.assertEqual(set(re.findall(r'^  ([a-z][a-z0-9-]*):$',text,re.M)),
-                         {'verify','mac-runner-local-import','staging-ingress'})
+                         {'verify','mac-runner-local-import','staging-ingress',
+                          'transport-source','transport-reader','transport-registry'})
         producer=job(text,'staging-ingress');native=job(text,'verify')
         self.assertIn('contents: write\n      actions: read',producer)
         self.assertIn('artifact_digest: "sha256:${{ steps.opaque.outputs.artifact-digest }}"',producer)
@@ -75,11 +76,22 @@ class StagingGlueTest(unittest.TestCase):
         for key in ('verify','staging-ingress','mac-runner-local-import'):
             block=job(text,key)
             self.assertIn("github.ref == 'refs/heads/main'",block)
+            self.assertIn('!inputs.transport_fixture_only',block)
             self.assertIn('inputs.approved_revision == github.sha',block)
         self.assertIn('environment: macos-production-signing',producer)
         self.assertIn('environment: macos-production-signing',native)
-        self.assertEqual(text.count('contents: write'),1)
+        self.assertEqual(text.count('contents: write'),2)
         self.assertNotIn('secrets.',text)
+        self.assertIn('default: false', text.split('      transport_fixture_only:',1)[1].split('      approved_revision:',1)[0])
+        for key in ('transport-source','transport-reader','transport-registry'):
+            fixture=job(text,key)
+            self.assertIn("github.ref == 'refs/heads/dev'",fixture)
+            self.assertIn('github.run_attempt == 1',fixture)
+            self.assertIn("github.actor == 'Jayson-Stangel'",fixture)
+            self.assertIn('inputs.transport_fixture_only',fixture)
+            self.assertIn('runs-on: ubuntu-24.04',fixture)
+            self.assertNotIn('environment:',fixture)
+            self.assertNotIn('local_distribution.py import',fixture)
         for retired in ('transport_probe_only','diagnostic_only','diagnostic_fixture_revision','diagnostic_handoff_proof',
                         'http-diagnostic','fixture-ingress','fixture-read-consumer'):
             self.assertNotIn(retired,text)

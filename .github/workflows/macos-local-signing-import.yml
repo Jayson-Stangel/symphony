@@ -2,6 +2,11 @@ name: Verify locally signed production distribution
 on:
   workflow_dispatch:
     inputs:
+      transport_fixture_only:
+        description: Explicit nonproduction dev transport fixture only; no native admission or signing
+        required: false
+        default: false
+        type: boolean
       approved_revision:
         description: Exact promoted source approved for local import
         required: true
@@ -33,7 +38,7 @@ jobs:
       contents: read
       actions: read
     needs: [mac-runner-local-import, staging-ingress]
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
+    if: ${{ !inputs.transport_fixture_only && github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha }}
     environment: macos-production-signing
     # Default remains hosted Intel; an exact permit may select the isolated ARM guest.
     # Both inspect signatures/tickets without executing the uploaded ARM64 payload.
@@ -81,7 +86,7 @@ jobs:
           if-no-files-found: error
   mac-runner-local-import:
     name: Select backup Mac for local distribution inspection
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
+    if: ${{ !inputs.transport_fixture_only && github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -107,7 +112,7 @@ jobs:
         run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
   staging-ingress:
     name: Read private staged distribution
-    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
+    if: ${{ !inputs.transport_fixture_only && github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha }}
     environment: macos-production-signing
     permissions:
       contents: write
@@ -141,3 +146,108 @@ jobs:
             ${{ runner.temp }}/staging-ingress/payload.zip
             ${{ runner.temp }}/staging-ingress/ingress.json
           if-no-files-found: error
+  transport-source:
+    name: Read fixed transport fixture into opaque handoff
+    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      artifact_id: ${{ steps.opaque.outputs.artifact-id }}
+      artifact_digest: "sha256:${{ steps.opaque.outputs.artifact-digest }}"
+      artifact_name: transport-fixture-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+    env:
+      TRANSPORT_FIXTURE_ONLY: 'true'
+      APPROVED_REVISION: ${{ inputs.approved_revision }}
+      STAGING_RELEASE: ${{ inputs.staging_release }}
+      STAGING_ASSET: ${{ inputs.staging_asset }}
+      STAGING_DIGEST: ${{ inputs.staging_digest }}
+    steps:
+      - name: Check out exact reviewed fixture source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read only the exact approved fixture asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release/transport_fixture.py stage "$RUNNER_TEMP/transport-source" > "$RUNNER_TEMP/transport-source-result.json"
+          cat "$RUNNER_TEMP/transport-source-result.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain the one opaque fixture handoff
+        id: opaque
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: transport-fixture-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/transport-source/payload.zip
+            ${{ runner.temp }}/transport-source/ingress.json
+          if-no-files-found: error
+          retention-days: 1
+  transport-reader:
+    name: Verify fixed transport fixture with read-only token
+    needs: transport-source
+    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TRANSPORT_FIXTURE_ONLY: 'true'
+      APPROVED_REVISION: ${{ inputs.approved_revision }}
+      STAGING_RELEASE: ${{ inputs.staging_release }}
+      STAGING_ASSET: ${{ inputs.staging_asset }}
+      STAGING_DIGEST: ${{ inputs.staging_digest }}
+      INGRESS_ARTIFACT_ID: ${{ needs.transport-source.outputs.artifact_id }}
+      INGRESS_ARTIFACT_NAME: ${{ needs.transport-source.outputs.artifact_name }}
+      INGRESS_ARTIFACT_DIGEST: ${{ needs.transport-source.outputs.artifact_digest }}
+    steps:
+      - name: Check out exact reviewed fixture source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact immutable fixture service identity and opaque bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release/transport_fixture.py receive "$RUNNER_TEMP/transport-reader" > "$RUNNER_TEMP/transport-reader-result.json"
+          cat "$RUNNER_TEMP/transport-reader-result.json" >> "$GITHUB_STEP_SUMMARY"
+  transport-registry:
+    name: Verify canonical fixture upload and explicit continuation
+    needs: [transport-source, transport-reader]
+    if: github.event_name == 'workflow_dispatch' && inputs.transport_fixture_only && github.actor == 'Jayson-Stangel' && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha && github.run_attempt == 1
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TRANSPORT_FIXTURE_ONLY: 'true'
+      APPROVED_REVISION: ${{ inputs.approved_revision }}
+      STAGING_RELEASE: ${{ inputs.staging_release }}
+      STAGING_ASSET: ${{ inputs.staging_asset }}
+      STAGING_DIGEST: ${{ inputs.staging_digest }}
+      INGRESS_ARTIFACT_ID: ${{ needs.transport-source.outputs.artifact_id }}
+      INGRESS_ARTIFACT_NAME: ${{ needs.transport-source.outputs.artifact_name }}
+      INGRESS_ARTIFACT_DIGEST: ${{ needs.transport-source.outputs.artifact_digest }}
+    steps:
+      - name: Check out exact reviewed fixture source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exercise only the approved tiny immutable graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/transport_fixture.py registry "$RUNNER_TEMP/transport-registry"
+      - name: Retain bounded structural evidence without upload state or tokens
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/transport-registry/registry-proof.json" ]; then
+            cat "$RUNNER_TEMP/transport-registry/registry-proof.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
