@@ -88,7 +88,10 @@ def browser_selection(paths, event=None, name=None):
         if 'conservative full qualification' in consumer_selection(path)[1]:
             triggers.append({'path': path, 'rule': 'unknown consumer: conservative browser qualification'})
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
-                path in ('scripts/ci/presentation_only.rb', 'scripts/ci/prepare-codex-apparmor.sh') or
+                (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
+                 and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
+                                  'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                                  'scripts/ci/select_mac_runner.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
