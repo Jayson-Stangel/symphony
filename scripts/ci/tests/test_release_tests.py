@@ -119,6 +119,13 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
 
+    def test_invalid_production_controller_mode_refuses_before_selector_fanout(self):
+        mode = dict(PREPARE='true', EVENT='workflow_dispatch', REF='refs/heads/main',
+                    ENGINE_ONLY='false', CONTROLLER_ONLY='true')
+        self.assertNotEqual(self.guard('burrito-release.yml', 'Require manual main preparation', mode), 0)
+        self.assertEqual(self.guard('burrito-release.yml', 'Require manual main preparation',
+                                   dict(mode, PREPARE='false')), 0)
+
     def test_final_only_mode_omits_only_unconsumed_candidate_archives(self):
         good = dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='',
                     PREPARE_RELEASE='true', COMPOSE_PACKAGES='true', PREVIOUS_ARTIFACT_RUN='',
@@ -250,14 +257,16 @@ class EngineOnlyCoverageTest(unittest.TestCase):
     def test_engine_only_retains_native_controller_regressions_after_preflight(self):
         root = Path(__file__).resolve().parents[3]
         text = (root / '.github/workflows/burrito-release.yml').read_text()
-        block = text.split('  engine-fixtures:\n', 1)[1].split('\n  runners:', 1)[0]
-        self.assertIn('needs: qualification', block)
-        self.assertIn("needs.qualification.result == 'success'", block)
-        self.assertIn('inputs.engine_only && !inputs.controller_only', block)
-        self.assertIn('uses: ./.github/workflows/release-native.yml', block)
-        native = (root / '.github/workflows/release-native.yml').read_text()
-        self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', native)
-        self.assertIn('python3 scripts/ci/release_tests.py native', native)
+        block = text.split('  build:\n', 1)[1].split('\n  controller-diagnostics:', 1)[0]
+        self.assertIn('needs: [qualification, host-policy, mac-runner-build]', block)
+        self.assertIn('if: inputs.engine_only', block)
+        self.assertIn('python3 scripts/ci/release_tests.py native', block)
+        self.assertNotIn('  engine-fixtures:', text)
+        selector = text.split('  mac-runner-controller-diagnostics:\n', 1)[1]
+        self.assertIn('needs: production-source', selector)
+        self.assertIn("needs.production-source.result == 'success'", selector)
+        self.assertIn('fetch-depth: 0', block)
+        self.assertFalse((root / '.github/workflows/release-native.yml').exists())
         self.assertNotIn('test_engine_smoke.py', RELEASE.PORTABLE)
         self.assertIn('test_engine_smoke.py', [path.name for path in (root / 'scripts/release/tests').glob('test_*.py')])
 

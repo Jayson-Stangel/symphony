@@ -91,6 +91,16 @@ class Requests(unittest.TestCase):
             request.select_owned_runner('{"run_id":12}',self.env,self.event,FLOW,'native-host-package',verify=self.verify,wait=wait)
         wait.assert_not_called()
 
+    def test_retired_native_and_smoke_targets_cannot_request_owned_capacity(self):
+        for consumer, key in (('.github/workflows/release-native.yml', 'native'),
+                              ('.github/workflows/burrito-release.yml', 'smoke')):
+            with self.subTest(consumer=consumer, key=key):
+                self.verify.reset_mock()
+                value, reason = request.request_from_event(self.env, self.event, consumer, key, self.verify)
+                self.assertIsNone(value)
+                self.assertIn('unsupported', reason)
+                self.verify.assert_not_called()
+
     def test_reusable_caller_permission_overrides_preserve_status_read(self):
         from test_components import job, workflow
         for caller in ('runner-integration','burrito-release'):
@@ -98,7 +108,7 @@ class Requests(unittest.TestCase):
             self.assertIn('uses: ./.github/workflows/runner-release.yml',block)
             self.assertIn('      statuses: read',block)
         for name in ('make-all','package-checks','native-manager-helpers','current-manager-package',
-                     'release-native','runner-release','runner-integration','burrito-release'):
+                     'runner-release','runner-integration','burrito-release'):
             self.assertIn('  statuses: read',workflow(name))
 
     def test_only_requested_mac_targets_wait_and_private_selection_budget_has_headroom(self):

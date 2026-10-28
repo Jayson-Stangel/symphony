@@ -495,7 +495,6 @@ Manual release/artifact qualification retains its independent source/native gate
 | --- | --- |
 | `release-preflight / portable` | Full portable policy/version/schema gate for caller-selected candidates; full Git history for retained-source fixtures. |
 | `host-policy / select` | Cheap validation of exactly native Linux x86-64 and macOS ARM64; platform filter preserves this policy. Container architectures remain separate. |
-| `release-native / host-policy`, `native` | Full native fixtures for explicit engine-only qualification; package-checks now runs its native fixtures inside its helper allocation instead of calling a second matrix. |
 | `native-manager-helpers / host-policy`, `helper`, `qualification` | Explicit integration needs actual exact-source native helpers; verifies source/platform/contracts and emits a receipt only after the complete matrix succeeds. |
 | `current-manager-package / host-policy`, `package`, `metadata` | Assemble selected manager packages from exact-source qualified helpers; verify original checksums before executable permission, selected metadata and both native archives before joining. |
 | `component-plan / plan` | Explicit composition: source-bound original evidence discovery; selected component build/reuse decisions, never manager-change-implies-image-rebuild. |
@@ -503,8 +502,8 @@ Manual release/artifact qualification retains its independent source/native gate
 | `runner-integration / reference-node-smoke` | Only explicit `reference_node_smoke`: build and test both reference harness Docker contexts and their Node/CLI controls. No ordinary allocation. |
 | `runner-integration / runners`, `manager-inputs`, `manager-package` | Build only component plan's affected provider/architecture entries, bind original immutable records and assemble matching current manager packages. |
 | `runner-integration / listener-and-cleanup` | Strict selected-component/package join and actual installed lifecycle, original-payload verification, owned-resource cleanup and retained evidence. Distribution alias probe only when explicitly requested. |
-| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. Tag pushes perform no expensive or mutating work. |
-| `burrito-release / engine-fixtures`, `build`, `smoke`, `controller-diagnostics` | Selected explicit engine/controller diagnostic or full candidate: both supported native engines and actual standalone acceptance; controller-only runs only native controller fixtures. |
+| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. There is no tag trigger. |
+| `burrito-release / build`, `controller-diagnostics` | Each supported engine build immediately qualifies exact standalone bytes; engine-only fixtures share that allocation. Controller-only runs only its selected native fixtures after source validation. |
 | `burrito-release / runners` | Manual full candidates request runner/package composition; production preparation retains stable-reference native packages without publication. Legacy unsigned publication is disabled. |
 | `macos-production-signing / sign` | Explicit main-only protected signing of successful exact-source production Q; retains final assessed artifacts, no registry or GitHub release writes. |
 | `production-publish / inputs`, `registry`, `release` | Explicit exact-tag import of completed Q/S attempts; source/artifact/refusal validation before protected registry transfer and separately protected final GitHub completion. |
@@ -608,7 +607,7 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 
 | Workflow file (without `.yml`) | Internal job ID → display name |
 | --- | --- |
-| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `engine-fixtures` → Qualify native engine fixtures; `runners` → Qualify runner components; `build` → Build engine (target); `smoke` → Verify engine (target); `controller-diagnostics` → Diagnose release controller; `release` → Publish approved engine release |
+| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `runners` → Qualify runner components; `build` → Verify engine (target), including build, selected native fixtures and standalone smoke; `controller-diagnostics` → Diagnose release controller |
 | `change-classification` | `classify` → Classify event inputs |
 | `component-plan` | `plan` → Plan selected components |
 | `current-manager-package` | `host-policy` → Select native hosts; `package` → Build manager package (platform); `metadata` → Assemble manager package metadata |
@@ -617,7 +616,6 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 | `native-manager-helpers` | `host-policy` → Select native hosts; `helper` → Build manager helper (platform); `qualification` → Bind qualified manager helpers |
 | `package-checks` | `changes` → Classify changes; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `native-host-package` → Native helpers and fixtures (platform); `package-qualification` → Package qualification |
 | `pr-description-lint` | `validate-pr-description` → PR description |
-| `release-native` | `host-policy` → Select native hosts; `native` → Native process fixtures (platform) |
 | `release-preflight` | `portable` → Portable preflight |
 | `runner-integration` | `changes` → Classify changes; `chromium` → Browser qualification; `portable` → Portable preflight; `helpers` → Qualify manager helpers; `reference-node-smoke` → Reference Node images; `plan` → Plan components; `runners` → Qualify runner components; `manager-inputs` → Bind selected component inputs; `manager-package` → Build current manager packages; `listener-and-cleanup` → Installed manager integration |
 | `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-probe` → Measure runner cache (provider, architecture); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
@@ -749,6 +747,36 @@ release mutation also checks it before each mutation. This removes one upload
 and one retained artifact per run, while retaining cross-job original retrieval
 and integrity checks. No publication timing saving is claimed without a real
 separately authorized production run.
+
+### Native engine allocation
+
+Each selected Linux x86-64/macOS ARM64 engine is built and immediately qualified
+in one native job, before its executable is uploaded. The existing `Verify
+engine (target)` evidence names now describe the combined producer, so original
+production readers still require a successful complete native job. There is no
+whole-build-matrix barrier or second smoke allocation/selector/download. A
+failed standalone check prevents the engine artifact upload; its evidence is
+retained even on failure.
+
+The controller copies exact checked bytes into a fresh temporary directory,
+uses isolated home/config/cache/extraction/workspace paths, and launches from
+outside the source tree with an explicit environment and system-only PATH. It
+refuses a PATH exposing Erlang/Elixir/Mix/Zig so the preceding build cannot mask
+a missing standalone runtime tool. Python/lsof remain controller dependencies;
+startup, attributable health, missing-provider readiness, graceful stop and
+owned-descendant cleanup remain actual executable checks. Engine-only controller
+fixtures run in the same native build allocation, retaining full Git history and
+the identical suite. The controller-only
+mode selects only its own Mac route. Unselected build/controller routes allocate
+no selector job; the obsolete tag-only no-op trigger is removed. Saved queue
+intervals overlap other work and are not additive deployment-time savings.
+
+The former `release-native.yml` reusable workflow has no remaining consumer and
+is removed together with its `native` route; the separate `smoke` route is also
+retired. New source-bound permits target the combined `build` job. Historical
+runs, source revisions, permits and receipts retain their original meaning and
+are not reinterpreted through the new allowlist. Native compatibility fixtures
+still require full Git history and the same retained source ancestry authorities.
 
 ### One final package cohort for production preparation
 
