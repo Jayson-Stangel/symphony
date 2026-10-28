@@ -395,7 +395,7 @@ without consulting the ordinary browser decision.
 The tables below cover every workflow job, reusable workflow and local action.
 Paths and IDs identify implementation; display names follow the convention below. The
 routing owner is `scripts/ci/classify_changes.py`; its explicit consumers are
-`application`, `portable`, `package_macos`, `package_linux`, `fixtures`,
+`application` (full Elixir family), `claude`, `portable`, `package_macos`, `package_linux`, `fixtures`,
 `npm`, `readiness`, `codex_config`, `contracts`, plus the
 existing Docker-stage-aware `browser` decision. `native` and `native_platform`
 are derived from helper/fixture requirements and validated again in the aggregate.
@@ -409,7 +409,9 @@ or failed native matrices fail the required aggregate.
 | --- | --- |
 | `change-classification / classify`; each caller's `changes` | Always: full PR merge-base/head or exact push before/after paths, both sides of renames and deletions; dependency-free Python and Git. |
 | `pr-description-lint / validate-pr-description` | Every applicable PR metadata event; PR template, body and validator. Explicit cheap exception. |
-| `make-all / make-all` | Routing/metadata regressions and pinned actionlint for behavioral or verified presentation edits. Selected npm configuration, readiness and Codex file/mount-policy tests run cheaply before draft deferral. Elixir setup and `make all` require application inputs and a ready event. |
+| `make-all / make-all` | Always-present required aggregate, routing/metadata regressions and pinned actionlint. Selected fast tests precede draft deferral; every selected ready family must succeed, omitted families must be skipped. |
+| `make-all / elixir-checks` | Full Elixir quality/build/coverage/Dialyzer via `make elixir-ci`, on ready events with `application=true`. Starts directly after classification, independently of Mac process contracts. |
+| `make-all / claude-checks` | Node-only toolchain, locked npm dependencies, syntax and complete Node suite via `make claude-ci`, on ready events with `claude=true`; no Erlang/Elixir setup. |
 | `make-all / platform-contracts` | Selected npm process lifecycle and launcher credential/readiness/lock contracts on Ubuntu 24.04 and macOS 14, including drafts. No helper compilation, engine or updater suite. The required Application checks join rejects failed, missing, cancelled or wrongly skipped selected work. |
 | `package-checks / portable` | Selected portable policy/controller tests, shell/package input checks and release version/schema validation; ordinary events execute this once, before native allocation. A caller may supply only successful exact-source preflight evidence. |
 | `package-checks / qualification` | Always verifies local/caller preflight source or explicit omission; prior-source verification when explicitly requested. Cheap status/source gate. |
@@ -418,8 +420,8 @@ or failed native matrices fail the required aggregate.
 | `package-checks / package-qualification` | Always-present strict status/decision/source join. Relevant draft deferral fails explicitly. Full exact-source receipt only for complete explicit qualification, never ordinary, omitted or partial work. |
 | `runner-integration / chromium` | Always-present guard; only builds/tests for changed browser-consumed stages/COPY sources, context controls, shared build action/cache controller or CI routing/validation controls. Both final provider images retain actual default-user Chromium and CLI smoke; shared builder layers avoid rebuilding common dependencies. |
 
-Application closure: `elixir/` source/tests/dependency locks/config/build tools,
-Claude transport/runtime/tests, runner entrypoints, launchers and packaged
+Elixir closure: `elixir/` source/tests/dependency locks/config/build tools,
+production Claude modules consumed by ExUnit integration, runner entrypoints, launchers and packaged
 behavioral skill/WORKFLOW inputs. `elixir/mix.exs` also affects portable release
 version checks. Helper/package closure: native Swift source and platform locks,
 build/package controllers, installed shell/environment scripts, packaged skills
@@ -438,6 +440,56 @@ new/unrecognized controllers and workflow/action paths conservatively select all
 consumers until their dependencies are reviewed. Tests imported by native helper
 fixtures (including component provenance and original manager metadata) fan out
 to both helper consumers even when their own unit suite is portable.
+
+The JAY-764 follow-up audits signed-output ingress and frozen registry recovery:
+`local_distribution.py`, the staging modules, `ghcr_transport_recovery.py`,
+`recover_ec2_registry.py`, its exact-file manifest, and their manual-only ingress
+and recovery workflows select portable controller tests. These tests use local
+archives and mocked service responses; ordinary CI never performs Apple operations,
+private staging writes or registry publication. The registry recovery suite is
+portable and runs in the ordinary release-policy executor. Changing that suite
+must not leave its sole executor omitted.
+
+Mac admission/preflight/watchdog controllers select their dependency-free policy
+tests and portable workflow contracts. Changing their unit tests runs the policy
+suite without native helper or browser builds. The release suite inventory itself
+selects portable, both package hosts, native process fixtures, launcher contracts
+and Codex configuration tests because it controls those executors; it does not
+change Elixir, Claude or browser execution. Classifier/comparison algorithms and
+unknown inputs retain broad fail-closed qualification. Browser qualification still
+follows actual Docker stages/COPY inputs and shared build/trust controls; a suite
+inventory edit alone is not a browser runtime input.
+
+### Stable application family contract (JAY-765)
+
+The legacy `application` output now selects the complete Elixir family; `claude`
+selects independent Node syntax/tests. Ordinary Elixir source edits select only
+the former. Claude-only test files and auth/entrypoint/credential/smoke commands
+select only the latter. Production Claude modules, lockfiles and JS fixture peers
+select both: full ExUnit tests execute `port-probe.mjs` → production `helper.mjs`
+and cleanup → temporary/runtime modules. A regression derives that relative-import
+closure from the actual ExUnit source rather than assuming all Node code is independent.
+Changes to the shared Makefile or toolchain also select both families.
+
+Full Elixir coverage therefore retains the locked npm dependency installation
+needed by these integration tests, while omitting the unrelated Node test suite.
+This is necessary integration setup, not a claim that Elixir has no Claude dependency.
+`make all` remains comprehensive and installs npm dependencies once; it retains
+build, formatting, specs/Credo, full coverage, Dialyzer, Node syntax and Node tests.
+No partial ExUnit selection is credited as full coverage.
+
+Launcher credential/readiness/locking and Codex file/mount-policy contracts remain
+their independently selected Python/native families. Installation/update/runner
+lifecycle tests that read or execute shared shell launchers remain in full ExUnit;
+the shell inputs continue selecting Elixir as well as their release/launcher consumers.
+No launcher test was moved or dropped to obtain the family split.
+
+Each expensive family starts after classification without depending on unrelated
+Mac process execution. The required `Application checks` join accepts selected
+ready work only with `success`, and omitted/deferred work only with `skipped`;
+draft deferral remains non-passing. Malformed family decisions, failed/cancelled/
+missing/unexpectedly skipped jobs and failed Mac admission still fail the join.
+Manual release/artifact qualification retains its independent source/native gates.
 
 | Explicit manual/reusable/release workflow / jobs | Dependency/event reason (no ordinary diff shortcut) |
 | --- | --- |
@@ -670,3 +722,30 @@ existing refusal rules remain decisive. Plans with matching verified originals
 retain original records and schedule no image build/export/upload. Actual hosted
 execution and payload savings must be credited from the corresponding consumer
 run, not inferred from a fixture or from an unavailable original.
+
+### Production runner content
+
+The production `common` Docker stage compiles `elixir/lib`, `elixir/config` and
+`elixir/priv` against `mix.exs`/`mix.lock`. Static dashboard files and Codex
+readiness Python resources are compile-time consumers of `priv` and stay in the
+image. `elixir/WORKFLOW.md`, `elixir/AGENTS.md` and canonical `.codex/skills` remain
+behavioral inputs. The installed entrypoints execute `bin/symphony`; they do not
+invoke repository tests, documentation or the local Makefile. Those files enter
+only the explicit `claude-test` qualification stage through its full-source copy.
+`runner_inputs.py` derives each production identity from this actual stage/COPY
+closure and the Docker ignore rules, so harness edits do not invalidate either
+provider while runtime, config, assets, dependencies and skills do.
+
+### Production publication handoffs
+
+The initial production publisher input job is an admission gate. It does not
+upload a repacked `retained-production-inputs` artifact: neither protected
+consumer used it. Registry and release jobs independently retrieve authenticated
+original signing/helper/engine artifacts by service ID and digest after their
+separate environment approvals. Within each job the verified local material is
+used for graph transfer/comparison or release assembly without another `signed`
+retrieval. Source/tag state is checked freshly at each protected boundary;
+release mutation also checks it before each mutation. This removes one upload
+and one retained artifact per run, while retaining cross-job original retrieval
+and integrity checks. No publication timing saving is claimed without a real
+separately authorized production run.
