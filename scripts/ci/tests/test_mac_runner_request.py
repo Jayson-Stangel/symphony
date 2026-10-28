@@ -1,5 +1,8 @@
 """Actual source guards are mocked; these fixtures grant no live readiness."""
 from pathlib import Path
+import os
+import re
+import subprocess
 import sys
 import unittest
 from unittest.mock import Mock
@@ -117,3 +120,38 @@ class Requests(unittest.TestCase):
         self.assertLess(block.index('id: capacity-probe'),block.index('id: selected'))
         self.assertIn('mac_runner_request.py --probe',block)
         self.assertIn('SELECT_TARGET_REQUESTED:',block)
+
+    def test_package_selector_omission_preserves_the_actual_required_join(self):
+        from test_components import classifier, env_for, expression, job, scripts, workflow
+        text=workflow('package-checks')
+        selector=job(text,'mac-runner')
+        condition=re.search(r'^    if: (.+)$',selector,re.M)[1]
+        requested=re.search(r'^          SELECT_TARGET_REQUESTED: (.+)$',selector,re.M)[1]
+        join='\n'.join(scripts(job(text,'package-qualification'))[:2])
+        for path in ('README.md','scripts/release/graph_publication.py',
+                     'scripts/package/linux/Package.resolved','scripts/package/host.swift',
+                     'scripts/release/engine-smoke.py'):
+            route=classifier.decisions([path])
+            for ready in (True,False):
+                host='success' if route['native'] and ready else 'skipped'
+                values={'needs.changes.result':'success','needs.qualification.result':'success',
+                    'needs.host-policy.result':host,'needs.changes.outputs.native':str(route['native']).lower(),
+                    **{'needs.changes.outputs.'+key:str(route[key]).lower() for key in ('package_macos','fixtures')}}
+                allowed=expression(condition,values)
+                with self.subTest(path=path,ready=ready):
+                    self.assertEqual(allowed,not route['native'] or ready)
+                    env=env_for(tuple(str(route[key]).lower() for key in ('portable','package_macos','package_linux','fixtures')))
+                    env.update(CODE='false' if path=='README.md' else 'true',READY=str(ready).lower(),
+                               MAC_RUNNER_RESULT='success' if allowed else 'skipped')
+                    result=subprocess.run(['bash','-e','-c',join],env=dict(os.environ,**env),capture_output=True)
+                    self.assertEqual(result.returncode==0,not route['native'] or ready,result.stderr)
+                    if allowed and not expression(requested,values):
+                        verify=Mock();statuses=Mock();wait=Mock()
+                        choice=request.select_owned_runner('',{}, {},FLOW,'native-host-package',False,
+                            verify=verify,statuses=statuses,wait=wait)
+                        self.assertEqual(choice['runner'],'macos-14')
+                        verify.assert_not_called();statuses.assert_not_called();wait.assert_not_called()
+                for key in ('needs.changes.result','needs.qualification.result','needs.host-policy.result'):
+                    for failure in ('failure','cancelled',''):
+                        failed=dict(values,**{key:failure})
+                        self.assertFalse(expression(condition,failed),(path,key,failure))

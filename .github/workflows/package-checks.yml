@@ -326,7 +326,7 @@ jobs:
   mac-runner:
     name: Select owned Mac first for native host package
     needs: [changes, qualification, host-policy]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && (needs.host-policy.result == 'success' || (needs.changes.outputs.native == 'false' && needs.host-policy.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     outputs:
