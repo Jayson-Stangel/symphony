@@ -130,6 +130,7 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 concurrency:
   group: runner-candidate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.retain_diagnostic && github.run_id || 'latest' }}
@@ -297,8 +298,8 @@ jobs:
 
   publication-preflight:
     name: Validate publication inputs
-    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.candidate-qualification.result == 'success' && inputs.prepare_release && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
-    needs: [component-plan, candidate-metadata, candidate-qualification]
+    if: ${{ always() && !cancelled() && needs.component-plan.result == 'success' && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && needs.qualification.result == 'success' && inputs.prepare_release && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    needs: [component-plan, candidate-metadata, package-inputs, candidate, qualification]
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -315,6 +316,12 @@ jobs:
         with:
           name: runner-candidate-metadata
           path: metadata
+      - name: Require qualified component inputs before preparing final metadata
+        env:
+          HAS_BUILDS: ${{ needs.component-plan.outputs.has_builds }}
+          RUNNERS: ${{ needs.candidate.result }}
+        run: |
+          case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac
       - name: Verify every original and public reuse digest before any image push
         env:
           GH_TOKEN: ${{ github.token }}
@@ -457,6 +464,13 @@ jobs:
           python3 scripts/release/manager_version.py
           python3 scripts/release/finalize-manager-packages.py metadata/release.json dist
           python3 scripts/release/artifacts.py validate dist/release.json
+          python3 - <<'PYCODE'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/release')
+          from production_release import verify_packages
+          verify_packages(Path('dist'), os.environ['GITHUB_SHA'])
+          PYCODE
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -588,8 +602,8 @@ jobs:
 
   packaged-candidate:
     name: Build candidate package (${{ matrix.platform }})
-    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && inputs.compose_packages && needs.mac-runner-packaged-candidate.result == 'success' }}
-    needs: [candidate-metadata, package-inputs, mac-runner-packaged-candidate]
+    if: ${{ always() && !cancelled() && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && needs.qualification.outputs.final_only == 'false' && inputs.compose_packages && needs.mac-runner-packaged-candidate.result == 'success' }}
+    needs: [qualification, candidate-metadata, package-inputs, mac-runner-packaged-candidate]
     strategy:
       fail-fast: false
       matrix:
@@ -983,11 +997,14 @@ jobs:
     uses: ./.github/workflows/release-preflight.yml
   qualification:
     name: Validate preflight inputs
+    outputs:
+      final_only: ${{ steps.validated.outputs.final_only }}
     needs: portable
     if: ${{ always() && inputs.resume_native_run == '' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require exact successful local or caller-owned preflight
+        id: validated
         env:
           LOCAL_RESULT: ${{ needs.portable.result }}
           LOCAL_REVISION: ${{ needs.portable.outputs.qualified_revision }}
@@ -996,6 +1013,11 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           CACHE_PROBE: ${{ inputs.cache_probe }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
         run: |
           test "${LEGACY_PUBLISH:-false}" != true || { echo 'Unsigned publication is disabled; use production-publish with signed inputs.' >&2; exit 1; }
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
@@ -1007,6 +1029,22 @@ jobs:
             test "$LOCAL_RESULT" = success
             test "$LOCAL_REVISION" = "$GITHUB_SHA"
           fi
+          if [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
+          if [ "${MANAGER_ONLY_UPDATE:-false}" = true ]; then test -n "${PREVIOUS_ARTIFACT_RUN:-}"; fi
+          if [ -n "${LEGACY_ARTIFACT_RUN:-}" ]; then
+            [[ "$LEGACY_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1
+            test "${MANAGER_ONLY_UPDATE:-false}" = true
+            test -n "${PREVIOUS_ARTIFACT_RUN:-}"
+            test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
+          final_only=false
+          if [ "${PREPARE_RELEASE:-false}" = true ]; then
+            test "${COMPOSE_PACKAGES:-true}" != false
+            if [ -z "${PREVIOUS_REVISION:-}" ] && [ -z "${PREVIOUS_ARTIFACT_RUN:-}" ] && [ -z "${LEGACY_ARTIFACT_RUN:-}" ] && [ "${MANAGER_ONLY_UPDATE:-false}" != true ]; then
+              final_only=true
+            fi
+          fi
+          printf 'final_only=%s\n' "$final_only" >> "$GITHUB_OUTPUT"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: inputs.previous_revision != ''
@@ -1054,7 +1092,7 @@ jobs:
       retain_diagnostic: ${{ inputs.retain_diagnostic }}
   candidate-qualification:
     name: Candidate qualification
-    needs: [component-plan, qualification, package-inputs, candidate, candidate-metadata, packaged-candidate-metadata, ubuntu-package-lifecycle]
+    needs: [component-plan, qualification, package-inputs, candidate, candidate-metadata, packaged-candidate-metadata, ubuntu-package-lifecycle, packaged-release]
     if: ${{ always() && inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
     runs-on: ubuntu-24.04
     steps:
@@ -1066,6 +1104,9 @@ jobs:
           HAS_BUILDS: ${{ needs.component-plan.outputs.has_builds }}
           METADATA: ${{ needs.candidate-metadata.result }}
           BUNDLES: ${{ needs.packaged-candidate-metadata.result }}
+          FINAL_ONLY: ${{ needs.qualification.outputs.final_only }}
+          FINAL_PACKAGES: ${{ needs.packaged-release.result }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
           LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
@@ -1074,10 +1115,19 @@ jobs:
           test "$PACKAGES" = success
           case "$HAS_BUILDS" in true) test "$RUNNERS" = success ;; false) test "$RUNNERS" = skipped ;; *) exit 1 ;; esac
           test "$METADATA" = success
-          test "$BUNDLES" = success
+          case "$PREPARE_RELEASE" in
+            true) test "$FINAL_PACKAGES" = success ;;
+            false) test "$FINAL_PACKAGES" = skipped ;;
+            *) exit 1 ;;
+          esac
+          case "$FINAL_ONLY" in
+            true) test "$BUNDLES" = skipped; test "$FINAL_PACKAGES" = success ;;
+            false) test "$BUNDLES" = success ;;
+            *) exit 1 ;;
+          esac
           if [ -n "$PREVIOUS_REVISION" ] || [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then test "$LIFECYCLE" = success
           else test "$LIFECYCLE" = skipped; fi
-          echo 'Exact-head preflight, native fixtures, all selected provider/platform components and native package archives succeeded. Two-source lifecycle is required when a prior revision was requested.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Exact-head preflight, native fixtures, selected provider/platform components and requested final native archive cohort succeeded. Candidate archives are intentionally omitted only for production preparation without lifecycle consumers. Requested lifecycle must succeed.' >> "$GITHUB_STEP_SUMMARY"
   retained-transfer-timing:
     name: Measure retained transfer
     if: ${{ inputs.resume_native_run == '' && inputs.transfer_timing_run != '' && !inputs.cache_probe }}
@@ -1258,53 +1308,61 @@ jobs:
           retention-days: 30
 
   mac-runner-packaged-candidate:
-    name: Select backup Mac for packaged candidate
+    name: Select owned Mac first for packaged candidate
+    needs: [qualification, candidate-metadata, package-inputs]
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && needs.candidate-metadata.result == 'success' && needs.package-inputs.result == 'success' && needs.qualification.outputs.final_only == 'false' && inputs.compose_packages }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ inputs.compose_packages }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-candidate
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ inputs.compose_packages }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
           SELECT_JOB_KEY: packaged-candidate
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"
 
   mac-runner-packaged-release-platform:
-    name: Select backup Mac for packaged release platform
+    name: Select owned Mac first for packaged release platform
+    needs: publication-preflight
+    if: ${{ always() && !cancelled() && needs.publication-preflight.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
+          SELECT_JOB_KEY: packaged-release-platform
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
         id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
         env:
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/runner-release.yml
           SELECT_JOB_KEY: packaged-release-platform
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"

@@ -90,6 +90,30 @@ LABEL com.symphony.agent=codex com.symphony.protocol=1
         self.write("elixir/deps/generated", "ignored dependency output\n")
         self.assertEqual(before, self.identities())
 
+    def test_narrow_runtime_copy_excludes_harness_but_retains_behavioral_inputs(self):
+        recipe = self.root / "runner/Dockerfile"
+        recipe.write_text(recipe.read_text().replace("COPY elixir /app", """COPY elixir/mix.lock /app/
+COPY elixir/lib /app/lib
+COPY elixir/config /app/config
+COPY elixir/priv /app/priv
+COPY elixir/WORKFLOW.md elixir/AGENTS.md /app/"""))
+        for path in ("elixir/config/config.exs", "elixir/priv/asset.css",
+                     "elixir/test/runtime_test.exs", "elixir/docs/logging.md", "elixir/Makefile"):
+            self.write(path, "original\n")
+        self.commit()
+        before = self.identities()
+        for path in ("elixir/test/runtime_test.exs", "elixir/docs/logging.md", "elixir/Makefile"):
+            self.write(path, "harmless harness edit\n")
+        self.commit()
+        self.assertEqual(before, self.identities())
+        for path in ("elixir/config/config.exs", "elixir/priv/asset.css", "elixir/lib/engine.ex",
+                     "elixir/mix.lock", "elixir/WORKFLOW.md", ".codex/skills/linear/SKILL.md"):
+            before = self.identities()
+            self.write(path, "runtime change " + path)
+            self.commit()
+            for old, new in zip(before, self.identities()):
+                self.assertNotEqual(old, new, path)
+
     def test_provider_only_source_and_recipe_affect_only_consuming_provider(self):
         before = self.identities()
         self.write("runner/claude/runtime.mjs", "actual Claude-only runtime change\n")

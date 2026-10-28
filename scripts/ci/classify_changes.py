@@ -89,7 +89,10 @@ def browser_selection(paths, event=None, name=None):
             triggers.append({'path': path, 'rule': 'unknown consumer: conservative browser qualification'})
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
                 (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
-                 and path != 'scripts/ci/check_pr_body.py') or
+                 and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
+                                  'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                                  'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                                  'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -127,15 +130,18 @@ def browser_required(paths, event=None, name=None):
 
 
 # Ordinary consumers. Full manual/tag/candidate calls never use a diff omission.
-COMPONENTS = ('application', 'portable', 'package_macos', 'package_linux', 'fixtures',
+COMPONENTS = ('application', 'claude', 'portable', 'package_macos', 'package_linux', 'fixtures',
               'npm', 'readiness', 'codex_config', 'contracts')
 ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
+    'test_application_families.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
     'test_presentation.py', 'test_pr_policy.py', 'test_release_tests.py', 'test_workflow_names.py',
+    'test_mac_runner_handoff.py', 'test_mac_runner_request.py', 'test_mac_runner_capacity.py',
+    'test_mac_runner_preflight.py', 'test_mac_runner_selection.py', 'test_mac_runner_watchdog.py',
 }
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
@@ -150,6 +156,10 @@ PORTABLE_RELEASE = {
     'export-image.py',
     'finalize-manager-packages.py',
     'graph_publication.py',
+    'local_distribution.py',
+    'ghcr_transport_recovery.py',
+    'recover_ec2_registry.py',
+    'ec2-registry-recovery-files.json',
     'package-lifecycle.py',
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
@@ -167,6 +177,8 @@ PORTABLE_RELEASE = {
     'staging_archive.py',
     'staging_ingress.py',
     'transport_compatibility.py',
+    'transport_fixture.py',
+    'fixtures/transport-fixture-v1.json',
     'verify-prior-source.py',
 }
 
@@ -184,10 +196,16 @@ def consumer_selection(path):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
             return set(), 'cheap CI policy regression; executed by the always-on policy suite'
         return ALL, 'unknown CI regression input: conservative full qualification'
+    if path == 'scripts/ci/release_tests.py':
+        return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
+    if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py'):
+        return {'portable'}, 'Mac admission policy covered by always-on policy tests and portable workflow contracts'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
     if path == '.github/workflows/make-all.yml':
-        return {'application', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
+        return {'application', 'claude', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
     if path.startswith('.github/workflows/'):
         # Native package/release controls can affect portable and native evidence;
         # manual-only image controllers are validated by portable contract tests.
@@ -199,13 +217,20 @@ def consumer_selection(path):
             return PACKAGES | {'fixtures'}, 'portable/native package qualification workflow control'
         if p.stem == 'browser-smoke':
             return {'portable'}, 'browser workflow migration control'
-        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish'):
+        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish',
+                       'macos-local-signing-import', 'ec2-registry-transport-repair'):
             return {'portable'}, 'explicit signing workflow policy; no ordinary Apple operation'
         return ALL, 'unknown workflow: conservative full qualification'
     if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
         return PACKAGES | {'application'}, 'packaged behavioral skills or runtime workflow'
     if path == 'elixir/mix.exs':
         return {'application', 'portable'}, 'application and release-version input'
+    if path in ('elixir/Makefile', 'elixir/mise.toml'):
+        return {'application', 'claude'}, 'shared application command grouping or Node/Elixir toolchain'
+    if path.startswith('elixir/lib/symphony_elixir/claude/') or path in (
+            'elixir/test/symphony_elixir/claude_adapter_test.exs',
+            'elixir/test/symphony_elixir/claude_environment_test.exs'):
+        return {'application', 'claude'}, 'shared Elixir/Claude transport, protocol or integration fixtures'
     if path == 'elixir/priv/codex_readiness.py':
         return {'application', 'readiness', 'codex_config'}, 'packaged Codex readiness implementation and its fast contracts'
     if path in ('elixir/priv/codex_config_boundary.py', 'elixir/priv/codex_config_snapshot.py',
@@ -265,8 +290,14 @@ def consumer_selection(path):
         return PACKAGES | {'application'}, 'packaged team environment template'
     if path.startswith('runner/claude/qualification/'):
         return {'portable'}, 'explicit reference harness input'
-    if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
-        return {'application'}, 'Claude runtime or runner entrypoint input'
+    if path.startswith('runner/claude/'):
+        if path in ('runner/claude/auth.mjs', 'runner/claude/entrypoint.sh',
+                    'runner/claude/git-credential.sh', 'runner/claude/smoke.sh') or (
+                path.startswith('runner/claude/test/') and not path.startswith('runner/claude/test/fixtures/')):
+            return {'claude'}, 'independent Claude commands or Node-only test suite'
+        return {'application', 'claude'}, 'production Claude modules/dependencies and peers consumed by full ExUnit integration'
+    if path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
+        return {'application'}, 'runner entrypoint consumed by Elixir launcher integration'
     if path in ('runner/test_npm_cache.py', 'runner/test_npm_cache_lifecycle.py'):
         return {'npm'}, 'npm configuration semantics and cross-platform native process ownership tests'
     if path == 'runner/npm-cache.npmrc':
@@ -337,8 +368,13 @@ def workflow_comparison(path, base, head):
             path.startswith('.github/actions/') and PurePosixPath(path).name in ('action.yml', 'action.yaml')):
         return {}
     try:
-        payload = {'path': path, 'before': git('show', base + ':' + path).decode(),
-                   'after': git('show', head + ':' + path).decode()}
+        def contents(revision):
+            # An added/deleted audited workflow is behavioral, but absence is
+            # not malformed YAML. Parse every existing side; the consumer map
+            # still selects all executors controlled by that workflow.
+            names = git('ls-tree', '--name-only', revision, '--', path).decode().splitlines()
+            return git('show', revision + ':' + path).decode() if path in names else None
+        payload = {'path': path, 'before': contents(base), 'after': contents(head)}
         process = subprocess.run(['ruby', str(Path(__file__).with_name('presentation_only.rb'))],
                                  input=json.dumps(payload), text=True, capture_output=True, timeout=10)
         if process.returncode:

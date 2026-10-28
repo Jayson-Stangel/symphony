@@ -15,6 +15,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 jobs:
   changes:
@@ -54,7 +55,7 @@ jobs:
         run: python3 scripts/ci/release_tests.py contracts
   make-all:
     name: Application checks
-    needs: [changes, platform-contracts, mac-runner]
+    needs: [changes, platform-contracts, mac-runner, elixir-checks, claude-checks]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -62,6 +63,9 @@ jobs:
         env:
           RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.application }}
+          CLAUDE: ${{ needs.changes.outputs.claude }}
+          ELIXIR_RESULT: ${{ needs.elixir-checks.result }}
+          CLAUDE_RESULT: ${{ needs.claude-checks.result }}
           POLICY: ${{ needs.changes.outputs.policy }}
           READY: ${{ needs.changes.outputs.ready }}
           NPM: ${{ needs.changes.outputs.npm }}
@@ -75,10 +79,22 @@ jobs:
           test "$MAC_RUNNER_RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
-          for flag in "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
+          for flag in "$CLAUDE" "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done
-          if [ "$CODE" = true ]; then test "$POLICY" = true; fi
+          if [ "$CODE" = true ] || [ "$CLAUDE" = true ]; then test "$POLICY" = true; fi
+          for family in elixir claude; do
+            if [ "$family" = elixir ]; then selected=$CODE; observed=$ELIXIR_RESULT;
+            else selected=$CLAUDE; observed=$CLAUDE_RESULT; fi
+            if [ "$selected" = true ] && [ "$READY" = true ]; then
+              test "$observed" = success
+            else
+              test "$observed" = skipped
+            fi
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "$family family: selected=$selected, ready=$READY, result=$observed (success means executed; skipped means omitted or deferred)." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           if [ "$NPM" = true ] || [ "$READINESS" = true ] || [ "$CONFIG" = true ] || [ "$CONTRACTS" = true ]; then
             test "$POLICY" = true
           fi
@@ -115,12 +131,28 @@ jobs:
       - name: Require ready application qualification
         env:
           APPLICATION: ${{ needs.changes.outputs.application }}
+          CLAUDE: ${{ needs.changes.outputs.claude }}
           READY: ${{ needs.changes.outputs.ready }}
         run: |
-          if [ "$APPLICATION" = true ] && [ "$READY" = false ]; then
-            echo 'Draft PR: affected Elixir qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
+          if { [ "$APPLICATION" = true ] || [ "$CLAUDE" = true ]; } && [ "$READY" = false ]; then
+            echo 'Draft PR: affected application family qualification deferred; this required context remains non-passing until ready qualification succeeds.' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+      - name: Application qualification omission
+        if: needs.changes.outputs.application == 'false' && needs.changes.outputs.claude == 'false'
+        run: echo "No application inputs changed; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Documentation policy omission
+        if: needs.changes.outputs.policy == 'false'
+        run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+
+  elixir-checks:
+    name: Elixir quality, build and full coverage
+    needs: changes
+    if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up mise tools
         if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
@@ -140,39 +172,66 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
-      - name: Verify make all
+      - name: Verify full Elixir family
         if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         working-directory: elixir
-        run: make all
-      - name: Application qualification omission
-        if: needs.changes.outputs.application == 'false'
-        run: echo "No application inputs changed; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
-      - name: Documentation policy omission
-        if: needs.changes.outputs.policy == 'false'
-        run: echo "Human-facing documentation only; CI regression suites and workflow/toolchain setup intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"
+        run: make elixir-ci
+
+  claude-checks:
+    name: Claude syntax and Node tests
+    needs: changes
+    if: needs.changes.outputs.claude == 'true' && needs.changes.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read the canonical pinned Node version
+        id: node-toolchain
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          from pathlib import Path
+          import re, tomllib
+          version = tomllib.loads(Path('elixir/mise.toml').read_text())['tools']['node']
+          if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise ValueError('Claude checks require a complete pinned Node version')
+          print('version=' + version)
+          PY
+      - name: Set up only the Node toolchain
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+        with:
+          install: true
+          cache: true
+          tool_versions: node ${{ steps.node-toolchain.outputs.version }}
+      - name: Verify independent Claude family
+        run: make -C elixir claude-ci
 
   mac-runner:
-    name: Select backup Mac for platform contracts
+    name: Select owned Mac first for platform contracts
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true' }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
+          SELECT_JOB_KEY: platform-contracts
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true' }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/make-all.yml
           SELECT_JOB_KEY: platform-contracts
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"
