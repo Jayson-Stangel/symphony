@@ -1,0 +1,49 @@
+name: Repair frozen ec2 registry transport
+on:
+  push:
+    tags: ['v0.0.6-transport-repair-1']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: production-publication
+  cancel-in-progress: false
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  transfer:
+    name: Transfer only approved ec2 graph bytes
+    if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/tags/v0.0.6-transport-repair-1' && vars.SYMPHONY_PRODUCTION_RELEASES == 'enabled'
+    environment: production-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Check out exact reviewed transport controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: controller
+          persist-credentials: false
+      - name: Check out frozen qualified candidate independently
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ec2be6e1c21c7dc7f7d7d8536bcac1ce06f3202b
+          path: candidate
+          persist-credentials: false
+      - name: Verify original inputs and transfer exact missing graphs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYMPHONY_PRODUCTION_RELEASES: ${{ vars.SYMPHONY_PRODUCTION_RELEASES }}
+        run: python3 controller/scripts/release/recover_ec2_registry.py --candidate candidate --output recovery-evidence
+      - name: Retain sanitized bounded recovery journal
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ec2-registry-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            recovery-evidence/journal.json
+            recovery-evidence/journal.sha256
+          if-no-files-found: error
