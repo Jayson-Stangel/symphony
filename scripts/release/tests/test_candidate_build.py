@@ -356,6 +356,14 @@ class CacheOverlapProcessTest(unittest.TestCase):
 python3 - <<'PEER'
 import os,json,time,sys
 with open(os.environ['EVENTS'],'a') as f:f.write(json.dumps({'event':'qualification'})+'\\n')
+if os.environ['PEER_MODE']=='early-export':
+ from pathlib import Path
+ receipt=Path(os.environ['ARCHIVE_DONE']).parent/'out/claude-x86_64-cache-export/events.jsonl'
+ deadline=time.monotonic()+3
+ while time.monotonic()<deadline:
+  if receipt.exists() and 'cache-export-complete' in receipt.read_text():break
+  time.sleep(0.01)
+ else:sys.exit(92)
 time.sleep(0.15)
 if os.environ['PEER_MODE']=='qualification-fail':sys.exit(37)
 PEER
@@ -380,8 +388,8 @@ if args[:2]==['buildx','build']:
   if os.environ['PEER_MODE']=='cancel':time.sleep(20)
   if os.environ['PEER_MODE']=='cache-fail':event('cache-failed');sys.exit(29)
   deadline=time.monotonic()+5
-  while not Path(os.environ['ARCHIVE_DONE']).exists() and time.monotonic()<deadline:time.sleep(0.01)
-  if not Path(os.environ['ARCHIVE_DONE']).exists():sys.exit(91)
+  while os.environ['PEER_MODE']!='early-export' and not Path(os.environ['ARCHIVE_DONE']).exists() and time.monotonic()<deadline:time.sleep(0.01)
+  if os.environ['PEER_MODE']!='early-export' and not Path(os.environ['ARCHIVE_DONE']).exists():sys.exit(91)
   if os.environ['PEER_MODE']!='missing-export-metadata':
    ref='different-builder/node/cache' if os.environ['PEER_MODE']=='builder-drift' else 'owned-builder/node/cache'
    Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'buildx.build.ref':ref}))
@@ -455,6 +463,33 @@ else:raise SystemExit('unexpected Python peer: '+name)
                     self.assertIn('type=gha,scope=runner-v1-amd64-pr-42-claude,mode=max',export)
                 log=root/'out/claude-x86_64-cache-export/export.log'
                 self.assertNotIn('fixture-cache-token',result.stdout+result.stderr+(log.read_text() if log.exists() else ''))
+
+    def test_actual_export_timestamps_precede_join_and_retain_failure_status(self):
+        import hashlib,json
+        for mode,status in (('early-export',0),('cache-fail',29)):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);source,env=self.fixture(root,mode)
+                result=subprocess.run(['bash',str(source/'scripts/release/build-candidate-runners.sh'),
+                    'claude','x86_64',str(root/'out')],env=env,text=True,capture_output=True,timeout=15)
+                self.assertEqual(result.returncode,status,result.stdout+result.stderr)
+                state=root/'out/claude-x86_64-cache-export'
+                events=[json.loads(line) for line in (state/'events.jsonl').read_text().splitlines()]
+                start,complete=[next(e for e in events if e['event']==n)
+                                for n in ('cache-export-start','cache-export-complete')]
+                self.assertEqual(complete['exit_status'],status)
+                raw=(state/'request.json').read_bytes();request=json.loads(raw)
+                for event in (start,complete):
+                    self.assertEqual(event['request_sha256'],hashlib.sha256(raw).hexdigest())
+                    for key in ('builder','image_id','build_ref'):self.assertEqual(event[key],request[key])
+                self.assertLess(start['monotonic_seconds'],complete['monotonic_seconds'])
+                self.assertLessEqual(start['wall_seconds'],complete['wall_seconds'])
+                if status==0:
+                    archive=next(e for e in events if e['event']=='archive-start')
+                    joined=next(e for e in events if e['event']=='cache-export-joined')
+                    self.assertLess(complete['monotonic_seconds'],archive['monotonic_seconds'])
+                    self.assertLess(archive['monotonic_seconds'],joined['monotonic_seconds'])
+                else:
+                    self.assertNotIn('cache-export-joined',[e['event'] for e in events])
 
     def test_cancel_reaps_owned_export_before_existing_registry_cleanup(self):
         import json,signal,time

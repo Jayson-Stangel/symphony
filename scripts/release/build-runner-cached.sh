@@ -16,7 +16,29 @@ source=$(cd "$source" && pwd -P)
 [ -n "${ACTIONS_RUNTIME_TOKEN:-}" ] && [ -n "${ACTIONS_RESULTS_URL:-}" ] || { echo 'Actions cache runtime unavailable' >&2; exit 1; }
 root=$(cd "$(dirname "$0")/../.." && pwd)
 policy=$(mktemp)
-trap 'rm -f "$policy"' EXIT
+export_started=false
+cache_export_event() {
+  python3 - "$state" "$1" "${2:-}" <<'PYEVENT'
+import hashlib,json,sys,time
+from pathlib import Path
+state=Path(sys.argv[1]);raw=(state/'request.json').read_bytes();request=json.loads(raw)
+value=dict(event=sys.argv[2],wall_seconds=time.time(),monotonic_seconds=time.monotonic(),
+           request_sha256=hashlib.sha256(raw).hexdigest(),builder=request['builder'],
+           image_id=request['image_id'],build_ref=request['build_ref'])
+if sys.argv[3]:value['exit_status']=int(sys.argv[3])
+with (state/'events.jsonl').open('a') as output:output.write(json.dumps(value)+'\n')
+PYEVENT
+}
+finish() {
+  status=$?
+  trap - EXIT
+  if [ "$export_started" = true ]; then
+    cache_export_event cache-export-complete "$status" || { [ "$status" != 0 ] || status=1; }
+  fi
+  rm -f "$policy"
+  exit "$status"
+}
+trap finish EXIT
 EVENT=${GITHUB_EVENT_NAME:?} REF=${GITHUB_REF:?} TARGET=$provider GITHUB_OUTPUT=$policy bash "$root/scripts/release/runner-cache-policy.sh"
 namespace=$(sed -n 's/^namespace=//p' "$policy")
 arch=$(sed -n 's/^arch=//p' "$policy")
@@ -85,6 +107,10 @@ else
   output_flags=(--load --cache-to "type=gha,scope=$scope,mode=max")
 fi
 tag_flags=(); [ "$phase" = export ] || tag_flags=(-t "$image")
+if [ "$phase" = export ]; then
+  cache_export_event cache-export-start
+  export_started=true
+fi
 docker buildx build "${output_flags[@]}" ${cold_flags[@]+"${cold_flags[@]}"} ${tag_flags[@]+"${tag_flags[@]}"} --platform "linux/$arch" --target "$provider" -f "$source/runner/Dockerfile" \
   --build-arg "SYMPHONY_VERSION=$version" --build-arg "SYMPHONY_REVISION=$revision" \
   ${input_flags[@]+"${input_flags[@]}"} ${flags[@]+"${flags[@]}"} "$source"
