@@ -111,6 +111,10 @@ jobs:
         recipe = (ROOT/'runner/Dockerfile').read_text()
         variants = (
             (source.replace("inputs.baseline_run }}", "inputs.baseline_run || '123' }}"), False),
+            (source.replace('Selected installed/package qualification requires explicit reviewed host preparation consent.',
+                            'Manual packaged qualification requires reviewed preparation consent.'), False),
+            (source.replace("if: github.event_name == 'workflow_dispatch' && !inputs.sign_macos",
+                            'if: always()', 1), True),
             (source.replace('timeout-minutes: 30', 'timeout-minutes: 29', 1), True),
             (source.replace('actions: read', 'actions: write'), True),
             (source.replace('  changes:\n', '  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n  changes:\n'), True),
@@ -118,6 +122,7 @@ jobs:
         )
         for changed, expected in variants:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as folder:
+                self.assertNotEqual(changed, source, 'workflow fixture mutation must be real')
                 history = History(folder)
                 history.put('runner/Dockerfile', recipe)
                 history.put('.github/workflows/runner-integration.yml', source)
@@ -130,7 +135,8 @@ jobs:
                     event = dict(before=base, after=head)
                     self.assertEqual(classifier.browser_required(classifier.changed_paths(event, 'push'), event, 'push'), expected)
                     route = classifier.event_routing(classifier.changed_paths(event, 'push'), event, 'push')[0]
-                    if 'unknown-job' in changed or changed.endswith('permissions: {}\n'):
+                    if ('unknown-job' in changed or changed.endswith('permissions: {}\n')
+                            or '    if: always()\n' in changed):
                         self.assertTrue(all(route[key] for key in classifier.COMPONENTS))
                 finally:
                     os.chdir(previous)

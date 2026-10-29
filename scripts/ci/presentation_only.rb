@@ -82,10 +82,14 @@ begin
   if input.fetch('path') == '.github/workflows/runner-integration.yml' && !result['presentation_only']
     # Only these existing jobs are manual composition/signing consumers. Global
     # settings and ordinary classification/browser jobs remain browser controls.
-    manual = %w[sign-macos portable helpers reference-node-smoke plan runners manager-inputs manager-package listener-and-cleanup]
+    manual = %w[packaged-host-consent sign-macos portable helpers reference-node-smoke plan runners manager-inputs manager-package listener-and-cleanup]
     ordinary = [before, after].map do |document|
       jobs = field(document, 'jobs')
       raise 'unknown integration job' unless jobs.keys.all? { |id| (manual + %w[changes chromium]).include?(id.value) }
+      consent = field(jobs, 'packaged-host-consent')
+      if consent && field(consent, 'if')&.value != "github.event_name == 'workflow_dispatch' && !inputs.sign_macos"
+        raise 'packaged host consent must remain explicit manual-only control'
+      end
       jobs.delete_if { |id, _| manual.include?(id.value) }
       events = field(document, 'on')
       selected = key(events, 'workflow_dispatch')
