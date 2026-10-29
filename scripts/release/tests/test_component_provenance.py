@@ -53,6 +53,14 @@ class MetadataReadRecovery(unittest.TestCase):
                     self.assertEqual(call.args[0][:4],['gh','api','--method','GET'])
                     self.assertLessEqual(call.kwargs['timeout'],60)
 
+    def test_actual_recorded_gh_gateway_diagnostic_can_recover(self):
+        # Root operator probe, session20196 at18:36: attempt2/jobs?per_page=100.
+        # This is the recorded CLI shape, not the hidden workflow stderr.
+        failure=subprocess.CalledProcessError(1,['gh','api'],stderr=b'gh: Server Error (HTTP 502)\n')
+        with patch.object(provenance.subprocess,'check_output',side_effect=[failure,b'{"total_count": 42, "jobs": []}']) as request,patch.object(provenance.time,'sleep') as pause:
+            self.assertEqual(provenance.api('actions/runs/40920184399/attempts/2/jobs?per_page=100')['total_count'],42)
+            self.assertEqual(request.call_count,2);pause.assert_called_once_with(1)
+
     def test_persistent_502_is_bounded_and_diagnostics_do_not_expose_stderr(self):
         with patch.object(provenance.subprocess,'check_output',side_effect=self.failure(502)) as request,patch.object(provenance.time,'sleep') as pause,self.assertRaisesRegex(ValueError,'http-502') as error:
             provenance.api('actions/runs/123/attempts/1/jobs?per_page=100')
@@ -73,7 +81,7 @@ class MetadataReadRecovery(unittest.TestCase):
             self.assertNotIn('TOKEN_NEVER_EXPOSE',str(error.exception))
 
     def test_malformed_json_never_retries_even_after_a_transient_read(self):
-        for responses in ([b'TOKEN_NEVER_EXPOSE invalid JSON'],[self.failure(502),b'TOKEN_NEVER_EXPOSE invalid JSON']):
+        for responses in ([b'TOKEN_NEVER_EXPOSE invalid JSON'],[b'\xff'],[self.failure(502),b'TOKEN_NEVER_EXPOSE invalid JSON']):
             with self.subTest(reads=len(responses)),patch.object(provenance.subprocess,'check_output',side_effect=responses) as request,patch.object(provenance.time,'sleep'),self.assertRaisesRegex(ValueError,'malformed JSON') as error:
                 provenance.api('actions/runs/123')
             self.assertEqual(request.call_count,len(responses));self.assertNotIn('TOKEN_NEVER_EXPOSE',str(error.exception))
