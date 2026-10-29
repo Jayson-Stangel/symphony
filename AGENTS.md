@@ -14,18 +14,22 @@ checks or replace the issue's acceptance contract.
   most likely to invalidate the plan and choose the smallest authorized experiment
   that can resolve it. When the uncertainty concerns an external service, native
   tool or installed experience, exercise that actual boundary before investing in
-  expensive qualification. A mock cannot establish real token access or native
-  behavior. Keep required final validation after the decisive experiment.
+  expensive qualification or expanding the implementation around it. Prove the
+  risky mechanism, including its input/output handoff, before scaling it. A mock
+  cannot establish real token access or native behavior. Keep required final
+  validation after the decisive experiment.
 - **Optimize for the user's completed outcome.** Define success in terms of the
   requested experience under ordinary operating conditions. Passing tests,
   merging code and publishing artifacts establish different milestones; none
   alone proves the composed outcome. Identify who will demonstrate remaining
   integration and keep manual repairs, overrides and acceptance gaps explicit.
-- **Choose the simplest sufficient approach.** Before adding infrastructure,
-  abstractions, services or coordination steps, establish why existing supported
-  capabilities cannot meet the requirement. Prefer a smaller coherent delivery
-  that preserves required behavior and protections. Urgency calls for sharper
-  scope and judgment, not speculative infrastructure or weaker trust gates.
+- **Choose the simplest sufficient approach.** Before adding a subsystem,
+  controller, queue, evidence protocol or persistent state, briefly explain in the
+  existing workpad or task record why supported capabilities are insufficient,
+  which smaller alternative was considered and why the added operating cost is
+  justified.
+  This is a reasoning obligation, not a new routine approval gate. Prefer a
+  smaller coherent delivery that preserves required behavior and protections.
 - **Treat operator attention as scarce.** Carry routine authorized work through
   completion and preserve the original human authorization across handoffs in the
   existing workpad. Verify that source rather than treating an agent's forwarded
@@ -37,11 +41,13 @@ checks or replace the issue's acceptance contract.
   source, environment and scope. Report queued, running, failed, cancelled,
   succeeded, reused and intentionally omitted work accurately. A partial success
   or predicted result must not become a completion claim.
-- **Reassess when repairs keep spreading.** When related failures recur or fixes
-  expand into adjacent capabilities, revisit the assumptions, delivery unit and
-  approach before adding another patch, agent or full test run. Explain what new
-  evidence the next step will obtain. Repair ordinary defects within scope, but
-  do not treat repeated activity as evidence that the plan remains sound.
+- **Control expansion.** An authorized outcome does not justify unlimited
+  implementation complexity. When fixes spread into adjacent capabilities or
+  repeatedly repair their own validation machinery, reassess before extending the
+  approach. Prefer simplifying, splitting or deferring the expansion; continue
+  independent authorized work. Explain the next step's decisive evidence and keep
+  unfinished requirements explicit. Repair ordinary defects within scope without
+  silently narrowing acceptance or treating repeated activity as progress.
 - **Keep proof proportional and reusable.** Gather evidence to resolve a named
   acceptance question. Prefer concise command results, diffs and original
   receipts; add screenshots or large exports only when they demonstrate something
@@ -107,40 +113,52 @@ checks or replace the issue's acceptance contract.
 
 ## Main-chat coordination and subagent delivery
 
-- Coordination before merging means verifying the impact on the other chat's
-  work and obtaining that chat's explicit clearance, not merely announcing a
-  merge or agreeing on timing. When work shares an integration branch, build
-  inputs, qualification evidence or a release candidate, identify the affected
-  owners and inspect their current source freeze and in-flight operations.
-- Before requesting clearance, present the exact PR/head, proposed base and
-  relevant impact evidence. Check actual consumed files and input identities,
-  artifact reuse, source-bound validation, signing and runtime consequences.
-  Documentation-only CI classification does not establish build-input safety.
-  Resolve uncertainty with the owning chat before merging; silence is not
-  clearance. Record clearance for the verified scope and timing, and obtain
-  renewed clearance if the head, base, affected inputs or other chat's work
-  changes in a way that invalidates that assessment. Operator authorization to
-  coordinate does not waive this requirement or separate production approvals.
+- Before merging, inspect actual dependencies and in-flight operations for a
+  concrete conflict: overlapping writes, a changed interface or consumed build
+  input, invalidated qualification evidence, or contention for an exclusive
+  resource. Sharing `dev`, a repository or a coordination chat alone does not
+  require peer clearance. Documentation-only CI classification alone does not
+  establish build-input safety. If no material coupling is found, record the
+  assessment briefly and proceed within existing authority.
+- Obtain explicit clearance only from owners whose work is affected by that
+  conflict. Present the exact PR/head, proposed base, dependency or resource
+  impact and timing. Resolve material uncertainty with those owners; silence is
+  not clearance. Renew clearance only when a change invalidates the assessed
+  dependency, impact or timing, not merely because a head or base SHA changed.
+  Separate production revision approvals below still apply in full.
+- A freeze must name the affected inputs or resource, protected operation, owner,
+  reason and release condition in the existing workpad. Hold only actions that
+  can invalidate that operation; allow independent reads, local work and unrelated
+  publication. A pinned immutable run is not invalidated by a ref moving unless
+  its actual admission or source policy depends on that ref remaining unchanged.
+  Release the hold when its stated condition is met; do not make serial runner
+  use a repository-wide source-push freeze without a demonstrated dependency.
 - The main chat owns the operator's request, current Linear contract, scope,
-  acceptance decisions and final handoff. For implementation work, it delegates
-  focused development and testing to subagents, with explicit ownership, base
-  revision, deliverable, required proof and action limits. Use separate worktrees
-  where needed; parallelize independent work without competing writes or duplicate
-  builds and qualification runs. Small documentation or administrative changes
-  may be handled directly without an unnecessary delegation cycle.
+  acceptance decisions and final handoff. Even within a broad goal, choose a
+  bounded next delivery with an observable acceptance endpoint and stop condition;
+  discoveries do not automatically expand it. Delegate independent development
+  and testing with explicit ownership, base, deliverable, proof and action limits.
+  Use separate worktrees where needed; avoid competing writes and duplicate
+  qualification. Small documentation or administrative changes may be handled
+  directly without an unnecessary delegation cycle.
 - Subagents implement, test and return a reviewable diff or PR with exact source
   revisions, commands/results, acceptance evidence and remaining gaps. A subagent
   completion message is a handoff, not acceptance or merge approval. Subagents
   must not merge or expand external effects beyond their delegated authority.
 - The main chat reviews the actual diff, current issue, tests, required CI,
   available review feedback and resulting behavior. It checks the final combined
-  change against the contract rather than accepting a subagent's summary alone.
+  change against the contract, including necessity, simpler alternatives, proof
+  order and operating cost. Green tests and a clean defect review are insufficient
+  justification for added machinery. Reject unjustified complexity or recommend
+  simplification or deferral, preserving unfinished acceptance and obtaining any
+  required contract decision rather than accepting a subagent's summary alone.
   Use an independent review subagent for substantial code or safety-sensitive
   changes; its findings supplement the main chat's responsibility.
-- Return actionable findings to the owning subagent with concrete expected
-  behavior and proof. Reassess the approach when failures expose a mistaken
-  assumption; do not merely repeat tests until green. After fixes or integration
-  changes, refresh the relevant validation and review against the final head.
+- Return actionable findings with concrete expected behavior and proof. Resolve
+  decisive preparation, artifact and handoff failures with focused checks before
+  another expensive run. Apply the expansion principle when the approach itself
+  keeps failing; after corrections, refresh affected validation and review against
+  the final head while preserving all applicable required gates.
 - Once acceptance, review and required checks pass, the main chat may merge the
   focused PR into `dev` only within the operator's existing merge authorization.
   If authority is missing or the request requires an unmerged handoff, leave the
