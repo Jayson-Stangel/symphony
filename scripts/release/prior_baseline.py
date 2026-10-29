@@ -92,6 +92,8 @@ AUDITED_NATIVE_WORKFLOWS = {
         'd52762aa3178f5d60f09403893f533d1b446dcffecbf02afa0f7464c806f62d9',
         'da3eba8c657f54ef27741d1ad7520c3751106ba921f2544de87df787349acb24',
         'eb220badc9a93bb02a84fbc93ff597b7e0992cd1d5ef4bfce5202bd519ecd563',
+        # Proposed c3d00c4 + reviewed gate/bootstrap/772 composition; owner review before integration.
+        '1596fb4efee150c2079ca88aa51880b2daae1f015ae503a41596bce67284826d',
     },
     'package-checks': {
         'df48744bd32860a69821dd559962e90e9706f32afe5655afdce0c4adc2bc3b83',
