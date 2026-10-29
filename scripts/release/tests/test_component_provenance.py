@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import subprocess
 import os
 import tempfile
 from types import SimpleNamespace
@@ -35,6 +36,71 @@ def record(provider="codex", architecture="arm64"):
                               "archive_filename": f"{provider}-{architecture}.docker.tar.gz", "archive_sha256": "f" * 64,
                               **{key: value[key] for key in ("source_revision", "image", "input_identity")}}
     return value
+
+
+class MetadataReadRecovery(unittest.TestCase):
+    @staticmethod
+    def failure(status):
+        return subprocess.CalledProcessError(1,['gh','api'],stderr=(
+            'gh: private-provider-message TOKEN_NEVER_EXPOSE (HTTP '+str(status)+')\n').encode())
+
+    def test_transient_http_errors_recover_with_finite_get_only_backoff(self):
+        for status in (502,503,504):
+            with self.subTest(status=status),patch.object(provenance.subprocess,'check_output',side_effect=[self.failure(status),b'{"id": 123}']) as request,patch.object(provenance.time,'sleep') as pause:
+                self.assertEqual(provenance.api('actions/runs/123'),dict(id=123))
+                self.assertEqual(request.call_count,2);pause.assert_called_once_with(1)
+                for call in request.call_args_list:
+                    self.assertEqual(call.args[0][:4],['gh','api','--method','GET'])
+                    self.assertLessEqual(call.kwargs['timeout'],60)
+
+    def test_persistent_502_is_bounded_and_diagnostics_do_not_expose_stderr(self):
+        with patch.object(provenance.subprocess,'check_output',side_effect=self.failure(502)) as request,patch.object(provenance.time,'sleep') as pause,self.assertRaisesRegex(ValueError,'http-502') as error:
+            provenance.api('actions/runs/123/attempts/1/jobs?per_page=100')
+        self.assertEqual(request.call_count,3);self.assertEqual([x.args[0] for x in pause.call_args_list],[1,2])
+        self.assertNotIn('TOKEN_NEVER_EXPOSE',str(error.exception));self.assertIsNone(error.exception.__cause__)
+        self.assertTrue(error.exception.__suppress_context__)
+
+    def test_auth_permanent_unknown_and_ambiguous_errors_never_retry(self):
+        errors=[self.failure(n) for n in (400,401,403,404,429,500)]
+        errors += [subprocess.CalledProcessError(1,['gh'],stderr=b'TOKEN_NEVER_EXPOSE'),
+                   subprocess.CalledProcessError(1,['gh'],stderr=b'gh: denied (HTTP 403)\ngh: gateway (HTTP 502)\n'),
+                   subprocess.CalledProcessError(1,['gh'],stderr=b'gh: gateway (HTTP 502)\n'+b'x'*65536),
+                   OSError('TOKEN_NEVER_EXPOSE')]
+        for failure in errors:
+            with self.subTest(failure=type(failure).__name__),patch.object(provenance.subprocess,'check_output',side_effect=failure) as request,patch.object(provenance.time,'sleep') as pause,self.assertRaises(ValueError) as error:
+                provenance.api('actions/runs/123')
+            self.assertEqual(request.call_count,1);pause.assert_not_called()
+            self.assertNotIn('TOKEN_NEVER_EXPOSE',str(error.exception))
+
+    def test_malformed_json_never_retries_even_after_a_transient_read(self):
+        for responses in ([b'TOKEN_NEVER_EXPOSE invalid JSON'],[self.failure(502),b'TOKEN_NEVER_EXPOSE invalid JSON']):
+            with self.subTest(reads=len(responses)),patch.object(provenance.subprocess,'check_output',side_effect=responses) as request,patch.object(provenance.time,'sleep'),self.assertRaisesRegex(ValueError,'malformed JSON') as error:
+                provenance.api('actions/runs/123')
+            self.assertEqual(request.call_count,len(responses));self.assertNotIn('TOKEN_NEVER_EXPOSE',str(error.exception))
+
+    def test_timeout_retry_obeys_one_absolute_120_second_budget(self):
+        clock=SimpleNamespace(now=0)
+        def timeout(args,**kwargs):
+            clock.now+=kwargs['timeout']
+            raise subprocess.TimeoutExpired(args,kwargs['timeout'],stderr=b'TOKEN_NEVER_EXPOSE')
+        def pause(seconds):clock.now+=seconds
+        with patch.object(provenance.time,'monotonic',side_effect=lambda:clock.now),patch.object(provenance.time,'sleep',side_effect=pause),patch.object(provenance.subprocess,'check_output',side_effect=timeout) as request,self.assertRaisesRegex(ValueError,'deadline'):
+            provenance.api('actions/runs/123')
+        self.assertEqual(clock.now,120);self.assertEqual([c.kwargs['timeout'] for c in request.call_args_list],[60,59])
+
+    def test_short_timeout_can_recover_but_late_success_does_not_authorize(self):
+        with patch.object(provenance.subprocess,'check_output',side_effect=[subprocess.TimeoutExpired(['gh'],60),b'{}']) as request,patch.object(provenance.time,'sleep'):
+            self.assertEqual(provenance.api('actions/runs/123'),{});self.assertEqual(request.call_count,2)
+        clock=SimpleNamespace(now=0)
+        def late(*args,**kwargs):clock.now=121;return b'{}'
+        with patch.object(provenance.time,'monotonic',side_effect=lambda:clock.now),patch.object(provenance.subprocess,'check_output',side_effect=late),self.assertRaisesRegex(ValueError,'deadline'):
+            provenance.api('actions/runs/123')
+
+    def test_binary_archive_reads_keep_one_attempt_without_retry(self):
+        for failure in (self.failure(502),subprocess.TimeoutExpired(['gh'],60)):
+            with self.subTest(failure=type(failure).__name__),patch.object(provenance,'_BINARY_FLAGS',[]),patch.object(provenance.subprocess,'check_output',side_effect=failure) as request,patch.object(provenance.time,'sleep') as pause,self.assertRaises(ValueError):
+                provenance.api('actions/artifacts/123/zip',binary=True)
+            self.assertEqual(request.call_count,1);pause.assert_not_called()
 
 
 class ComponentProofTest(unittest.TestCase):
