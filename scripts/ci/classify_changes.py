@@ -178,6 +178,9 @@ PORTABLE_RELEASE = {
     'test_registry.py',
     'staging_archive.py',
     'staging_ingress.py',
+    'transport_compatibility.py',
+    'transport_fixture.py',
+    'fixtures/transport-fixture-v1.json',
     'verify-prior-source.py',
 }
 
