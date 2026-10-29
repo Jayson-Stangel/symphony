@@ -525,7 +525,7 @@ Manual release/artifact qualification retains its independent source/native gate
 | `runner-release / candidate`, `candidate-metadata` | Plan-selected native provider/container architecture builds and actual-image qualification; join exact records without turning skipped/reused builds into new evidence. Both Linux container architectures and providers remain supported. |
 | `runner-release / package-inputs`, `packaged-candidate`, `packaged-candidate-metadata`, `ubuntu-package-lifecycle`, `candidate-qualification` | Explicit package composition requires full package qualification, exact helper artifacts, native archives, requested prior package lifecycle and strict terminal joins. `compose_packages=false` intentionally omits this cohort. |
 | `runner-release / publication-preflight`, `publish`, `packaged-release-platform`, `packaged-release` | Tag-only, production-gated publication and source-bound native package assembly; full selected artifact qualification retained. |
-| `runner-release / cache-probe`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
+| `runner-release / cache-controller-comparison`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
 | `runner-release / retained-transfer-timing`, `transfer-benchmark`, `transfer-replay`; `transfer-timing / retained-payload-timing` | Only selected immutable run/provider/architecture diagnostics; download/measure/verify original payloads, with explicit replay and native producer guards. |
 | Local action `build-runner` | Browser/candidate/probe consumer only: target, Docker recipe/COPY/ignore closure, scoped cache policy, native buildx and load, then caller-owned actual runtime qualification. |
 | Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests. These candidate-only cache controls and probe controllers do not allocate an ordinary browser build; `build-runner` and its actual cache policy still do. |
@@ -632,7 +632,7 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 | `pr-description-lint` | `validate-pr-description` → PR description |
 | `release-preflight` | `portable` → Portable preflight |
 | `runner-integration` | `changes` → Classify changes; `chromium` → Browser qualification; `portable` → Portable preflight; `helpers` → Qualify manager helpers; `reference-node-smoke` → Reference Node images; `plan` → Plan components; `runners` → Qualify runner components; `manager-inputs` → Bind selected component inputs; `manager-package` → Build current manager packages; `listener-and-cleanup` → Installed manager integration |
-| `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-probe` → Measure runner cache (provider, architecture); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
+| `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-controller-comparison` → Measure real controller (strategy, Claude ARM64); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
 | `transfer-timing` | `retained-payload-timing` → Measure retained payload transfer |
 
 The graph audit removed the duplicate ordinary package result job and the
@@ -764,33 +764,26 @@ separately authorized production run.
 
 ### Bounded cache export comparison
 
-JAY-769's existing `runner-release.yml` cache probe accepts one selected provider
-and native architecture plus `cache_probe_export_comparison=true`. Validation
-refuses `all` dimensions and restore-only runs in comparison mode, so max/min need exactly two native
-allocations. Each runs cold, warm and changed-input phases through a fresh
-Buildx builder per invocation, retaining its original builder reference; a reused
-local builder refuses remote-cache proof. Max/min use separate branch/trust and
-architecture scopes and disable unrelated trusted cache fallback. Ordinary
-builds keep their existing max export/fallback policy until comparative evidence
-justifies a change. Changed-recipe diagnostics retain the existing no-export
-policy and disclose it in the build receipt.
+The optional `runner-release.yml` controller comparison replaces the obsolete
+composite-action probe and its five dispatch inputs. Set
+`cache_controller_revision` to the exact approved current dev source, disable
+package composition and retain diagnostics. The scope is fixed to Claude ARM64;
+the two native jobs compare serial and overlapping max cache export through the
+actual candidate controller. Ordinary builds keep serial export by default;
+`cache_export_overlap` remains an explicit experimental opt-in.
 
-Every phase records exact committed Docker input identity/source/image labels,
-BuildKit cache import/export and image export/load vertex intervals, complete
-build elapsed time, actual-user runtime qualification, loopback registry push/
-pull, archive export/compression/checksum and small evidence upload. Vertex
-intervals overlap and must not be summed as cost or end-to-end saving; upload
-step elapsed time comes from the completed Actions job receipt. The probe uses
-level-one gzip consistently with delivered payload export. Large diagnostic
-archives are deleted; only owned registries/builders and small receipts remain.
+Each job measures cold, warm and changed-input paths with bounded phase time,
+disk headroom, archive size and small receipt retention. BuildKit vertex intervals
+overlap and must not be summed as cost or end-to-end saving. Export-only solves
+must show cached build operations. Diagnostic archives are hashed and removed;
+only small receipts are retained. The shared timing parser remains in use, and
+Browser still consumes the `build-runner` action.
 
-Historical run 39865529840 has valid warm/changed receipts, but its retained
-artifacts do not establish a cold baseline. A new exact-source comparison is
-needed before changing the default; no claimed saving is inferred from those
-old timings or the separate 178.9-second production cache-export observation.
-The bounded hosted diagnostic requires its exact source/input/job/resource plan
-to be authorized before dispatch. It performs no customer release, signing,
-production settings or provider/model requests.
+Historical run 39865529840 retains its original warm/changed evidence, but does
+not establish a cold controller baseline. The new comparison still needs an
+explicit exact-source/input/job/resource plan before any dispatch; code and
+fixture checks do not establish an allocation or timing improvement. It performs
+no customer release, signing, production settings or provider/model requests.
 
 ### Native engine allocation
 

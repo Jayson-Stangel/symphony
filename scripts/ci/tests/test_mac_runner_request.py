@@ -145,11 +145,11 @@ class Requests(unittest.TestCase):
             for ready in (True,False):
                 host='success' if route['native'] and ready else 'skipped'
                 values={'needs.changes.result':'success','needs.qualification.result':'success',
-                    'needs.host-policy.result':host,'needs.changes.outputs.native':str(route['native']).lower(),
+                    'needs.host-policy.result':host,'needs.changes.outputs.ready':str(ready).lower(),'needs.changes.outputs.native':str(route['native']).lower(),
                     **{'needs.changes.outputs.'+key:str(route[key]).lower() for key in ('package_macos','fixtures')}}
                 allowed=expression(condition,values)
                 with self.subTest(path=path,ready=ready):
-                    self.assertEqual(allowed,not route['native'] or ready)
+                    self.assertEqual(allowed,route['native'] and ready and (route['package_macos'] or route['fixtures']))
                     env=env_for(tuple(str(route[key]).lower() for key in ('portable','package_macos','package_linux','fixtures')))
                     env.update(CODE='false' if path=='README.md' else 'true',READY=str(ready).lower(),
                                MAC_RUNNER_RESULT='success' if allowed else 'skipped')

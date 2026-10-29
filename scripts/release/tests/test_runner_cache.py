@@ -180,71 +180,33 @@ class CacheBuildTimingTest(unittest.TestCase):
 
 
 class CacheComparisonWorkflowTest(unittest.TestCase):
-    def test_comparison_requires_one_provider_architecture_before_native_fanout(self):
-        text = (ROOT/'.github/workflows/runner-release.yml').read_text()
-        guard = text.split('      - name: Require exact successful local or caller-owned preflight\n', 1)[1]
-        script = guard.split('        run: |\n', 1)[1].split('\n      - ', 1)[0]
-        lines = []
-        for line in script.splitlines():
-            if line.strip() and not line.startswith('          '):
-                break
-            lines.append(line[10:])
-        with tempfile.TemporaryDirectory() as directory:
-            good = dict(os.environ, GITHUB_SHA='a'*40, GITHUB_OUTPUT=str(Path(directory)/'outputs'),
-                        PREPARE_RELEASE='false', PREVIOUS_ARTIFACT_RUN='', LEGACY_ARTIFACT_RUN='',
-                        MANAGER_ONLY_UPDATE='false', LOCAL_RESULT='success', LOCAL_REVISION='a'*40,
-                        CALLER_REVISION='', PREVIOUS_REVISION='', CACHE_PROBE='true',
-                        DIAGNOSTIC_ARTIFACT_RUN='', CACHE_EXPORT_COMPARISON='true',
-                        CACHE_PROBE_PROVIDER='claude', CACHE_PROBE_ARCHITECTURE='arm64')
-            for changes, passed in (({}, True), ({'CACHE_PROBE_PROVIDER': 'all'}, False),
-                                    ({'CACHE_PROBE_ARCHITECTURE': 'all'}, False),
-                                    ({'CACHE_PROBE': 'false'}, False), ({'CACHE_PROBE_RESTORE': 'true'}, False)):
-                result = subprocess.run(['bash', '-e', '-c', '\n'.join(lines)], cwd=directory,
-                                        env=dict(good, **changes), capture_output=True)
-                self.assertEqual(result.returncode == 0, passed)
-
-    def test_filtered_matrix_cannot_add_unselected_architecture_allocations(self):
-        import itertools, json, re
+    def test_retired_composite_probe_leaves_bounded_controller_interface(self):
+        import re
         workflow = (ROOT/'.github/workflows/runner-release.yml').read_text()
-        probe = workflow.split('  cache-probe:\n', 1)[1].split('  packaged-candidate:\n', 1)[0]
-        # GitHub include adds unmatched rows. There must be no include expansion
-        # after dimensions are filtered; derive the runner directly instead.
-        self.assertNotIn('        include:', probe)
-        self.assertIn("matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04'", probe)
-        dimensions = {}
-        for key in ('provider', 'architecture', 'cache_mode'):
-            line = re.search(r'^        '+key+r': (.+)$', probe, re.M).group(1)
-            dimensions[key] = [json.loads(raw) for raw in re.findall(r"fromJSON\('([^']+)'\)", line)]
-        for provider, architecture, comparison, expected in (
-                ('all', 'all', False, 4), ('claude', 'arm64', False, 1),
-                ('claude', 'arm64', True, 2), ('codex', 'x86_64', True, 2)):
-            providers = dimensions['provider'][-1] if provider == 'all' else [provider]
-            arches = dimensions['architecture'][-1] if architecture == 'all' else [architecture]
-            modes = dimensions['cache_mode'][0 if comparison else -1]
-            rows = list(itertools.product(providers, arches, modes))
-            self.assertEqual(len(rows), expected)
-            if architecture != 'all':
-                self.assertEqual({row[1] for row in rows}, {architecture})
+        dispatch = workflow.split('  workflow_dispatch:\n', 1)[1].split('\npermissions:', 1)[0]
+        names = re.findall(r'^      ([a-z_]+):$', dispatch, re.M)
+        self.assertEqual(len(names), 22)
+        self.assertLessEqual(len(names), 25)
+        self.assertIn('bootstrap_previous', names)
+        self.assertIn('require_reuse', names)
+        self.assertIn('cache_controller_revision', names)
+        self.assertIn('cache_export_overlap', names)
+        self.assertNotIn('cache_probe', workflow)
+        self.assertNotIn('  cache-probe:', workflow)
+        comparison = workflow.split('  cache-controller-comparison:\n', 1)[1].split('  packaged-candidate:', 1)[0]
+        self.assertIn('runs-on: ubuntu-24.04-arm', comparison)
+        self.assertIn('strategy: [serial, overlap]', comparison)
+        self.assertIn("'claude','arm64'", comparison)
+        self.assertNotIn('        include:', comparison)
+        self.assertIn('runner-cache-probe.py', comparison)
 
-    def test_existing_probe_bounds_comparison_without_changing_production_default(self):
+    def test_retained_browser_action_keeps_production_cache_default(self):
         action = (ROOT/'.github/actions/build-runner/action.yml').read_text()
-        workflow = (ROOT/'.github/workflows/runner-release.yml').read_text()
+        browser = (ROOT/'.github/workflows/runner-integration.yml').read_text()
+        self.assertIn('uses: ./.github/actions/build-runner', browser)
         self.assertIn('  cache-mode:\n', action)
         self.assertIn('    default: max\n', action)
         self.assertIn("inputs.trusted-cache-fallback == 'true'", action)
         self.assertIn("if: inputs.builder == ''", action)
         self.assertIn("'builder_ref': ref", action)
         self.assertIn("ref.rsplit('/', 1)[1]", action)
-        probe = workflow.split('  cache-probe:\n', 1)[1].split('  packaged-candidate:\n', 1)[0]
-        self.assertEqual(probe.count('uses: ./.github/actions/build-runner'), 3)
-        self.assertNotIn('          builder:', probe)  # every phase obtains a fresh builder
-        self.assertIn('inputs.cache_probe_provider', probe)
-        self.assertIn('inputs.cache_probe_architecture', probe)
-        self.assertIn("fromJSON('[\"max\",\"min\"]')", probe)
-        self.assertEqual(probe.count('trusted-cache-fallback:'), 3)
-        self.assertEqual(probe.count('runner_inputs.py --provider'), 3)
-        self.assertEqual(probe.count('input-identity:'), 3)
-        self.assertIn("format('codex-apparmor-cache-{0}-{1}', matrix.architecture, matrix.cache_mode)", probe)
-        self.assertIn("format('codex-apparmor-cache-{0}', matrix.architecture)", probe)
-        self.assertIn("inputs.cache_probe_export_comparison && 'false' || 'true'", probe)
-        self.assertIn("export-cache: 'false'", probe)  # changed diagnostic stays read-only

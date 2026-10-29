@@ -323,7 +323,7 @@ class Selection(unittest.TestCase):
                 result = subprocess.run(['bash', '-e', '-c', command],
                     env=dict(os.environ, **dict(env, MAC_RUNNER_RESULT=status, GITHUB_STEP_SUMMARY=os.devnull)),
                     capture_output=True)
-                self.assertEqual(result.returncode == 0, status == 'success', status)
+                self.assertEqual(result.returncode == 0, status == 'skipped', status)
 
 
 if __name__ == '__main__':

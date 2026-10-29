@@ -94,8 +94,12 @@ AUDITED_NATIVE_WORKFLOWS = {
         'eb220badc9a93bb02a84fbc93ff597b7e0992cd1d5ef4bfce5202bd519ecd563',
         # Proposed c3d00c4 + reviewed gate/bootstrap/772 composition; owner review before integration.
         '1596fb4efee150c2079ca88aa51880b2daae1f015ae503a41596bce67284826d',
+        # Reviewed JAY769/770 composition at cba3817; exact workflow bytes unchanged.
+        'ebb3d201fe42f0ae683d6ace4f6ca5937004f89178dda29197dae85b01f5c6ca',
     },
     'package-checks': {
+        # Native owner cleared exact selector-only policy e257; all native steps unchanged.
+        'df30ac4e989bdf1ec344d6f6e06bef88ee2d190b24297c93e5dd2c2845ee1a87',
         'df48744bd32860a69821dd559962e90e9706f32afe5655afdce0c4adc2bc3b83',
         'a1918221a790e59eff3a669ef167c9fa420be802950401b8f8ca26c151a434cf',
     },

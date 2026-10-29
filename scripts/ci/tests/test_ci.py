@@ -241,11 +241,11 @@ class WorkflowContracts(unittest.TestCase):
         guard='\n'.join(line[10:] for line in guard.splitlines() if line.strip())
         with tempfile.TemporaryDirectory() as folder:
             for result,code,expected in [('success','false',0),('success','true',0),('failure','false',1),('cancelled','false',1),('skipped','false',1),('success','',1)]:
-                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code,POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='success',CLAUDE='false',ELIXIR_RESULT='success' if code=='true' else 'skipped',CLAUDE_RESULT='skipped'))
+                command=subprocess.run(['bash','-e','-c',guard],cwd=folder,env=dict(os.environ,RESULT=result,CODE=code,POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='skipped',CLAUDE='false',ELIXIR_RESULT='success' if code=='true' else 'skipped',CLAUDE_RESULT='skipped'))
                 self.assertEqual(command.returncode==0,expected==0,(result,code))
             for policy in ('', 'invalid', 'false'):
                 refused=subprocess.run(['bash','-e','-c',guard],cwd=folder,
-                    env=dict(os.environ,RESULT='success',CODE='true',POLICY=policy,READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='success',CLAUDE='false',ELIXIR_RESULT='success',CLAUDE_RESULT='skipped'),capture_output=True)
+                    env=dict(os.environ,RESULT='success',CODE='true',POLICY=policy,READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='skipped',CLAUDE='false',ELIXIR_RESULT='success',CLAUDE_RESULT='skipped'),capture_output=True)
                 self.assertNotEqual(refused.returncode,0)
             summary=Path(folder)/'summary'
             command='echo "Documentation-only event; behavioral checks intentionally omitted, not executed." >> "$GITHUB_STEP_SUMMARY"'
@@ -253,7 +253,7 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn('not executed',summary.read_text())
             # A real failing behavioral command must remain failing: wrappers do
             # not use continue-on-error or a trailing blanket green step.
-            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true',POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='success'),capture_output=True,text=True)
+            failure=subprocess.run(['bash','-e','-c',guard+'\nfalse\necho unreachable'],cwd=folder,env=dict(os.environ,RESULT='success',CODE='true',POLICY='true',READY='true',NPM='false',READINESS='false',CONFIG='false',CONTRACTS='false',PROCESS_RESULT='skipped',MAC_RUNNER_RESULT='skipped'),capture_output=True,text=True)
             self.assertNotEqual(failure.returncode,0)
             self.assertNotIn('unreachable',failure.stdout)
 

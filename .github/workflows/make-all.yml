@@ -76,7 +76,6 @@ jobs:
           MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
-          test "$MAC_RUNNER_RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
           for flag in "$CLAUDE" "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
@@ -99,8 +98,10 @@ jobs:
             test "$POLICY" = true
           fi
           if [ "$NPM" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$MAC_RUNNER_RESULT" = success
             test "$PROCESS_RESULT" = success
           else
+            test "$MAC_RUNNER_RESULT" = skipped
             test "$PROCESS_RESULT" = skipped
           fi
       - name: Check out source
@@ -208,7 +209,7 @@ jobs:
   mac-runner:
     name: Select owned Mac first for platform contracts
     needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     outputs:

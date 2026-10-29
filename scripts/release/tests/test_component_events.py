@@ -156,6 +156,19 @@ class ComponentEvents(unittest.TestCase):
 
 class CommittedReleaseMode(unittest.TestCase):
     """Run actual caller shell and planner; only external native receipts are synthetic."""
+    def test_require_reuse_interfaces_and_native_fanout_gate(self):
+        workflow = (ROOT / '.github/workflows/runner-release.yml').read_text()
+        for interface in ('workflow_call', 'workflow_dispatch'):
+            inputs = workflow.split('  ' + interface + ':\n', 1)[1].split('\npermissions:', 1)[0]
+            if interface == 'workflow_call':
+                inputs = inputs.split('  workflow_dispatch:', 1)[0]
+            self.assertRegex(inputs, r'(?m)^      require_reuse:\n        description: [^\n]+\n        type: boolean\n        default: false\n')
+        planning = workflow.split('  component-plan:\n', 1)[1].split('  candidate:\n', 1)[0]
+        self.assertIn('REQUIRE_REUSE: ${{ inputs.require_reuse }}', planning)
+        candidate = workflow.split('  candidate:\n', 1)[1].split('    runs-on:', 1)[0]
+        self.assertIn("needs.component-plan.result == 'success'", candidate)
+        self.assertIn("needs.component-plan.outputs.has_builds == 'true'", candidate)
+
     def test_normal_caller_builds_changes_and_preserves_verified_originals(self):
         import copy
         import json
@@ -194,7 +207,11 @@ sys.path.insert(0, os.environ['RELEASE_MODULES'])
 import runner_reuse
 records=json.load(open(os.environ['SYNTHETIC_RECORDS']))
 runner_reuse.discover=lambda **kwargs: records
-runner_reuse.verify_origin=lambda record: {'scope':'SYNTHETIC native receipt control', 'image':record['image']}
+def verify(record):
+    if os.environ.get('EXPIRED_ORIGINAL') == 'true':
+        raise ValueError('artifact payload has expired')
+    return {'scope':'SYNTHETIC native receipt control', 'image':record['image']}
+runner_reuse.verify_origin=verify
 sys.argv=sys.argv[1:]
 runner_reuse.main()
 ''')
@@ -210,35 +227,63 @@ runner_reuse.main()
             subprocess.run(['bash', '-e', '-c', receipt_script], cwd=ROOT, check=True,
                            env=dict(os.environ, GITHUB_SHA=revision, GITHUB_OUTPUT=str(receipt_output)))
             selected_schema = dict(line.split('=', 1) for line in receipt_output.read_text().splitlines())['schema']
-            for mode in ('unchanged', 'changed', 'incompatible-finite', 'forbidden-baseline'):
+            for mode in ('unchanged', 'changed', 'unchanged-required', 'changed-required', 'missing-required', 'expired-required',
+                         'selected-changed-required', 'selected-unchanged-required',
+                         'incompatible-finite', 'forbidden-baseline'):
                 records = copy.deepcopy(templates)
                 if mode != 'incompatible-finite':
                     for record in records:
                         p, a = record['provider'], record['architecture']
                         record['input_identity'] = identity(checkout, p, a)['input_identity']
-                        if mode == 'changed' and p == 'claude':
+                        if 'changed' in mode and 'unchanged' not in mode and p == 'claude':
                             record['input_identity'] = 'f' * 64
+                if mode == 'missing-required':
+                    records = []
+                selected = mode.startswith('selected-')
+                if selected:
+                    from runner_reuse import plan as make_plan
+                    selected_plan = make_plan(checkout, {'runners': {}}, candidates=records,
+                        verify=lambda record: {'scope': 'SYNTHETIC native receipt control', 'image': record['image']},
+                        browser_inputs=identity)
+                    (checkout / 'selected-plan').mkdir(exist_ok=True)
+                    (checkout / 'selected-plan/component-plan.json').write_text(json.dumps(selected_plan))
+                producer_output = directory / 'producer-output'
+                producer_output.write_text('')
                 records_path = directory / 'records.json'
                 records_path.write_text(json.dumps(records))
                 result = subprocess.run(['bash', '-e', '-c', script], cwd=checkout, capture_output=True, text=True,
                     env=dict(os.environ, PATH=str(tools)+os.pathsep+os.environ['PATH'], REAL_PYTHON=sys.executable,
                              SYNTHETIC_DRIVER=str(driver), SYNTHETIC_RECORDS=str(records_path),
                              RELEASE_MODULES=str(ROOT / 'scripts/release'), GITHUB_SHA=revision,
-                             GITHUB_OUTPUT=str(directory / 'producer-output'),
+                             GITHUB_OUTPUT=str(producer_output),
                              BASELINE_RUN='123' if mode == 'forbidden-baseline' else '', PREVIOUS_REVISION='',
                              GITHUB_EVENT_NAME='push' if mode == 'forbidden-baseline' else 'workflow_dispatch',
                              GITHUB_REPOSITORY='Jayson-Stangel/symphony',
                              MANIFEST_SCHEMA='1' if mode == 'incompatible-finite' else selected_schema,
-                             SELECTED_PLAN_ARTIFACT='', PREVIOUS_ARTIFACT_RUN='', LEGACY_ARTIFACT_RUN='',
-                             MANAGER_ONLY_UPDATE='false'))
+                             SELECTED_PLAN_ARTIFACT='selected' if selected else '', PREVIOUS_ARTIFACT_RUN='', LEGACY_ARTIFACT_RUN='',
+                             REQUIRE_REUSE=str(mode.endswith('-required')).lower(),
+                             EXPIRED_ORIGINAL=str(mode == 'expired-required').lower(), MANAGER_ONLY_UPDATE='false'))
                 if mode in ('incompatible-finite', 'forbidden-baseline'):
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn('no reuse decision was authorized', result.stderr)
                     continue
+                if mode in ('changed-required', 'missing-required', 'expired-required', 'selected-changed-required'):
+                    self.assertNotEqual(result.returncode, 0, mode)
+                    self.assertIn('requires a verified-input rebuild' if not selected else 'required component reuse would require runner builds', result.stderr)
+                    self.assertEqual(producer_output.read_text(), '', 'refusal must publish no native fanout outputs')
+                    refused = json.loads((checkout / 'component-plan.json').read_text())
+                    self.assertTrue(refused['has_builds'], 'retain the genuine build decision for diagnosis')
+                    self.assertGreater(len(refused['build_matrix']['include']), 0)
+                    if mode == 'expired-required':
+                        for components in refused['components'].values():
+                            for decision in components.values():
+                                self.assertEqual(decision['candidate_decisions'][0]['refusal'], 'expired_or_missing_payload')
+                    (checkout / 'component-plan.json').unlink()
+                    continue
                 self.assertEqual(result.returncode, 0, result.stderr)
                 plan = json.loads((checkout / 'component-plan.json').read_text())
-                self.assertEqual(len(plan['build_matrix']['include']), 0 if mode == 'unchanged' else 2)
-                self.assertEqual(len(plan['reuse_matrix']['include']), 4 if mode == 'unchanged' else 2)
+                self.assertEqual(len(plan['build_matrix']['include']), 0 if 'unchanged' in mode else 2)
+                self.assertEqual(len(plan['reuse_matrix']['include']), 4 if 'unchanged' in mode else 2)
                 for entry in plan['reuse_matrix']['include']:
                     expected = next(r for r in records if r['provider'] == entry['provider'] and r['architecture'] == entry['architecture'])
                     self.assertEqual(entry['record'], expected)
