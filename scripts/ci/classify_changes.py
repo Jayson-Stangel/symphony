@@ -95,7 +95,7 @@ def browser_selection(paths, event=None, name=None):
                                   'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
                                   'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
                                   'scripts/ci/validation_cache.py', 'scripts/ci/validation_oci.py',
-                                  'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group',
+                                  'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group', 'scripts/ci/elixir-coverage.resolv.conf',
                                   'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
                                   'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
                                   'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py',
@@ -214,7 +214,7 @@ def consumer_selection(path):
                 'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
                 'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
                 'scripts/ci/validation_cache.py', 'scripts/ci/validation_oci.py',
-                'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group'):
+                'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group', 'scripts/ci/elixir-coverage.resolv.conf'):
         return {'application', 'portable'}, 'audited full-coverage input/provenance control; Elixir and policy contracts only'
     if path in ('scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb'):
         return {'portable'}, 'known CI selection policy; unconditional policy regressions and portable workflow contracts'

@@ -19,7 +19,8 @@ from validation_inputs import UnknownInput, digest, file_identity
 
 DIRECTORY = Path(__file__).parent
 RECIPE = DIRECTORY / 'elixir-coverage.Dockerfile'
-PUBLIC = {name: DIRECTORY / ('elixir-coverage.' + name) for name in ('passwd', 'group')}
+PUBLIC = {name: DIRECTORY / ('elixir-coverage.' + name) for name in ('passwd', 'group', 'resolv.conf')}
+OFFLINE_RESOLVER = b'nameserver 127.0.0.1\noptions attempts:1 timeout:1\n'
 GENERATED = ('elixir/deps', 'elixir/_build/dev', 'elixir/_build/test',
              'elixir/bin', 'elixir/cover', 'elixir/log', 'runner/claude/node_modules')
 PRIVATE = {'home': '/home/ci', 'tmp': '/tmp', 'mix': '/cache/mix',
@@ -118,12 +119,23 @@ def initialize(root, state):
     return record
 
 
+def resolver_identity(state):
+    path = state / 'public' / 'resolv.conf'
+    identity = file_identity(path)
+    require(identity['sha256'] == hashlib.sha256(OFFLINE_RESOLVER).hexdigest()
+            and identity['size'] == len(OFFLINE_RESOLVER) and identity['mode'] == 0o644
+            and identity['uid'] == os.getuid() and identity['gid'] == os.getgid(),
+            'offline resolver is outside the exact public profile')
+    return identity
+
+
 def record(state):
     path = state / 'oci.json'
     require(path.is_file() and not path.is_symlink() and path.stat().st_uid == os.getuid()
             and not path.stat().st_mode & 0o077, 'owned OCI record unavailable')
     value = json.loads(path.read_text())
     require(re.fullmatch('symphony-coverage-[0-9a-f]{32}', value.get('owner', '')), 'OCI owner identity invalid')
+    require(resolver_identity(state) == value['public'].get('resolv.conf'), 'offline resolver identity changed')
     require(image_identity(one(['image', 'inspect', value['image']['Id']])) == value['image'], 'OCI image changed')
     return value
 
@@ -151,7 +163,10 @@ def arguments(root, state, value, phase, command, *, mix='test', network=False):
         args += ['--mount', f'type=bind,src={root / relative},dst={SOURCE}/{relative}']
     for name_, destination in PRIVATE.items():
         args += ['--mount', f'type=bind,src={state / name_},dst={destination}']
+    # Online preparation consumes Docker DNS; only offline phases bind public DNS.
     for name_, path in PUBLIC.items():
+        if network and name_ == 'resolv.conf':
+            continue
         args += ['--mount', f"type=bind,src={state / 'public' / name_},dst=/etc/{name_},readonly"]
     for key, val in sorted(environment(mix, network=network).items()):
         args += ['--env', key + '=' + val]
@@ -194,7 +209,7 @@ def admit(actual, root, state, value, *, network):
     expected = {SOURCE: (str(root), False)}
     expected.update({SOURCE + '/' + path: (str(root / path), True) for path in GENERATED})
     expected.update({path: (str(state / name), True) for name, path in PRIVATE.items()})
-    expected.update({'/etc/' + name: (str(state / 'public' / name), False) for name in PUBLIC})
+    expected.update({'/etc/' + name: (str(state / 'public' / name), False) for name in PUBLIC if not (network and name == 'resolv.conf')})
     env = dict(item.split('=', 1) for item in config['Env'])
     expected_env = dict(item.split('=', 1) for item in value['image']['Config']['Env'])
     expected_env.update(environment(env.get('MIX_ENV'), network=network))
@@ -227,7 +242,7 @@ def cleanup_phase(identity, value):
 
 
 PREFLIGHT = r'''
-import json,os,pwd,resource,socket,subprocess,signal,tempfile,platform
+import errno,json,os,pwd,resource,socket,subprocess,signal,tempfile,platform
 from pathlib import Path
 assert os.getuid()==os.getgid()==1001 and pwd.getpwuid(1001).pw_name=='ci'
 assert json.loads(subprocess.check_output(['node','-e','console.log(JSON.stringify(require("os").userInfo()))']))['username']=='ci'
@@ -237,10 +252,19 @@ assert not Path('/var/run/docker.sock').exists() and sorted(os.listdir('/sys/cla
 mounts=[]
 for line in Path('/proc/self/mountinfo').read_text().splitlines():
  p=line.split();i=p.index('-');dest=p[4]
- if dest in ['/', '/etc/passwd','/etc/group','/home/ci','/tmp','/cache/mix','/cache/hex','/cache/npm','/cache/native-fetch'] or dest.startswith('/home/runner/work/symphony/symphony'):
+ if dest in ['/', '/etc/passwd','/etc/group','/etc/resolv.conf','/home/ci','/tmp','/cache/mix','/cache/hex','/cache/npm','/cache/native-fetch'] or dest.startswith('/home/runner/work/symphony/symphony'):
   mounts.append([dest,sorted(p[5].split(',')),p[i+1]])
 assert any(p=='/' and 'ro' in flags for p,flags,fs in mounts)
 assert any(p=='/home/runner/work/symphony/symphony' and 'ro' in flags for p,flags,fs in mounts)
+assert any(p=='/etc/resolv.conf' and 'ro' in flags for p,flags,fs in mounts)
+assert Path('/etc/resolv.conf').read_bytes()==b'nameserver 127.0.0.1\noptions attempts:1 timeout:1\n'
+try:
+ Path('/etc/resolv.conf').write_text('forbidden')
+except OSError as error:
+ assert error.errno==errno.EROFS
+else:
+ raise AssertionError('offline resolver is writable')
+assert socket.gethostbyname('localhost')=='127.0.0.1'
 log=Path('/home/runner/work/symphony/symphony/elixir/log')/'symphony-preflight-output'
 log.write_bytes(b'owned log output capability');log.unlink()
 for parent in ['/home/ci','/tmp','/cache/mix','/cache/hex','/cache/native-fetch']:

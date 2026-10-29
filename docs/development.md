@@ -898,8 +898,12 @@ Only the finite reviewed 199-source profile may produce reusable evidence. Its
 actual pinned-vendor OCI image/config/rootfs, recipe, generated public identity
 files, kernel/Docker/CPU/isolation settings and public inputs must match. Each
 phase has a read-only root/source, a non-root identity, and explicit private
-writable binds; coverage starts without external networking. Native and artifact
-qualification remain separate. No image is published or included in evidence.
+writable binds; coverage starts without external networking. Offline phases bind
+the exact public `elixir-coverage.resolv.conf` read-only; preflight checks its
+bytes, mount, write refusal and localhost behavior. Online preparation retains
+Docker-generated DNS. Resolver file identity, actual runtime bytes and mount
+semantics remain fingerprinted, and CPU capability differences still require
+fresh qualification. Native and artifact qualification remain separate. No image is published or included in evidence.
 
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle

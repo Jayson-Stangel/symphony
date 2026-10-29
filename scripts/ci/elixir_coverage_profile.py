@@ -23,7 +23,7 @@ CONTROL_FILES = frozenset({
  'scripts/ci/validation_oci.py','scripts/ci/elixir_coverage_profile.py','scripts/ci/elixir-coverage-profile.json',
  'scripts/ci/elixir_coverage.py','scripts/ci/elixir_coverage_bootstrap.py',
  'scripts/ci/classify_changes.py','scripts/ci/release_tests.py','scripts/ci/presentation_only.rb',
- 'scripts/ci/elixir-coverage.Dockerfile','scripts/ci/elixir-coverage.passwd','scripts/ci/elixir-coverage.group',
+ 'scripts/ci/elixir-coverage.Dockerfile','scripts/ci/elixir-coverage.passwd','scripts/ci/elixir-coverage.group', 'scripts/ci/elixir-coverage.resolv.conf',
  'scripts/release/runner_inputs.py','runner/Dockerfile',
 })
 

@@ -364,10 +364,14 @@ class OwnedOCIProtocol(unittest.TestCase):
             HostConfig=dict(ReadonlyRootfs=True,Privileged=False,NetworkMode='none',CapDrop=['ALL'],SecurityOpt=['no-new-privileges']),
             Mounts=[dict(Destination=target,Source=source,RW=rw,Type='bind') for target,(source,rw) in expected.items()])
         self.assertEqual(oci.admit(actual,root,state,value,network=False)['network'],'none')
-        for change in ('network','privileged','source-rw','log-ro','extra-mount','secret','cpu-limit'):
+        for change in ('dns-rw','dns-source','dns-missing','dns-duplicate','network','privileged','source-rw','log-ro','extra-mount','secret','cpu-limit'):
             with self.subTest(change=change):
                 wrong=deepcopy(actual)
-                if change=='network':wrong['HostConfig']['NetworkMode']='bridge'
+                if change=='dns-rw':next(m for m in wrong['Mounts'] if m['Destination']=='/etc/resolv.conf')['RW']=True
+                elif change=='dns-source':next(m for m in wrong['Mounts'] if m['Destination']=='/etc/resolv.conf')['Source']='/foreign/resolv.conf'
+                elif change=='dns-missing':wrong['Mounts']=[m for m in wrong['Mounts'] if m['Destination']!='/etc/resolv.conf']
+                elif change=='dns-duplicate':wrong['Mounts'].append(deepcopy(next(m for m in wrong['Mounts'] if m['Destination']=='/etc/resolv.conf')))
+                elif change=='network':wrong['HostConfig']['NetworkMode']='bridge'
                 elif change=='privileged':wrong['HostConfig']['Privileged']=True
                 elif change=='source-rw':wrong['Mounts'][0]['RW']=True
                 elif change=='log-ro':next(m for m in wrong['Mounts'] if m['Destination']==oci.SOURCE+'/elixir/log')['RW']=False
@@ -375,6 +379,32 @@ class OwnedOCIProtocol(unittest.TestCase):
                 elif change=='secret':wrong['Config']['Env'].append('GH_TOKEN=dummy-secret')
                 else:wrong['HostConfig']['NanoCpus']=2000000000
                 with self.assertRaises(UnknownInput):oci.admit(wrong,root,state,value,network=False)
+
+    def test_public_resolver_rejects_missing_symlink_bytes_mode_and_owner(self):
+        from validation_inputs import UnknownInput
+        oci=controller.oci
+        for kind in ('missing','symlink','bytes','mode','owner','valid'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                state=Path(directory);(state/'public').mkdir();path=state/'public/resolv.conf'
+                if kind=='symlink':path.symlink_to(oci.PUBLIC['resolv.conf'])
+                elif kind!='missing':
+                    path.write_bytes(b'changed' if kind=='bytes' else oci.OFFLINE_RESOLVER)
+                    path.chmod(0o600 if kind=='mode' else 0o644)
+                if kind=='valid':self.assertEqual(oci.resolver_identity(state)['sha256'],controller.hashlib.sha256(oci.OFFLINE_RESOLVER).hexdigest())
+                elif kind=='owner':
+                    with patch.object(oci.os,'getuid',return_value=os.getuid()+1),self.assertRaises(UnknownInput):oci.resolver_identity(state)
+                else:
+                    with self.assertRaises((UnknownInput,FileNotFoundError)):oci.resolver_identity(state)
+
+    def test_online_bridge_retains_docker_dns_and_refuses_offline_bind(self):
+        oci=controller.oci
+        value=dict(owner='owned',image=dict(Id='sha256:'+'a'*64))
+        _,offline=oci.arguments(Path('/source'),Path('/private'),value,'preflight',['true'])
+        _,online=oci.arguments(Path('/source'),Path('/private'),value,'prepare',['true'],network=True)
+        resolver='type=bind,src=/private/public/resolv.conf,dst=/etc/resolv.conf,readonly'
+        self.assertIn(resolver,offline);self.assertNotIn(resolver,online)
+        self.assertIn('bridge',online);self.assertIn('none',offline)
+        self.assertEqual(oci.PUBLIC['resolv.conf'].read_bytes(),b'nameserver 127.0.0.1\noptions attempts:1 timeout:1\n')
 
     def test_public_hex_registry_is_retained_for_early_offline_resolution(self):
         from validation_inputs import UnknownInput

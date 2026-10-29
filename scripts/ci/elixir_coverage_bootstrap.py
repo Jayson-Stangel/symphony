@@ -18,7 +18,7 @@ REPOSITORY = 'Jayson-Stangel/symphony'
 FILES = ('validation_inputs.py', 'elixir_coverage_profile.py', 'elixir-coverage-profile.json',
          'validation_evidence.py', 'elixir_coverage.py', 'classify_changes.py',
          'release_tests.py', 'presentation_only.rb', 'validation_cache.py', 'validation_oci.py')
-DATA = ('elixir-coverage.Dockerfile', 'elixir-coverage.passwd', 'elixir-coverage.group')
+DATA = ('elixir-coverage.Dockerfile', 'elixir-coverage.passwd', 'elixir-coverage.group', 'elixir-coverage.resolv.conf')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
 
