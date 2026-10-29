@@ -340,3 +340,173 @@ exit {curl_status}
             self.assertFalse((root / "curl-called").exists())
             self.assertFalse((root / "docker-called").exists())
             self.assertTrue(all(path.read_text() == "preserved output" for path in generated))
+
+
+class CacheOverlapProcessTest(unittest.TestCase):
+    """Actual controller/callback with bounded local process peers; no Docker runs."""
+    def fixture(self, root, mode='success'):
+        import json,sys
+        source=root/'source';(source/'scripts/release').mkdir(parents=True);(source/'runner').mkdir();(source/'elixir').mkdir()
+        for name in ('build-candidate-runners.sh','build-runner-cached.sh','runner-cache-policy.sh'):
+            shutil.copyfile(ROOT/'scripts/release'/name,source/'scripts/release'/name)
+            (source/'scripts/release'/name).chmod(0o755)
+        (source/'runner/Dockerfile').write_text('FROM explicit-process-peer\n')
+        (source/'elixir/mix.exs').write_text('  version: "0.0.4",\n')
+        (source/'scripts/release/runner-smoke.sh').write_text('''#!/bin/sh
+python3 - <<'PEER'
+import os,json,time,sys
+with open(os.environ['EVENTS'],'a') as f:f.write(json.dumps({'event':'qualification'})+'\\n')
+if os.environ['PEER_MODE']=='early-export':
+ from pathlib import Path
+ receipt=Path(os.environ['ARCHIVE_DONE']).parent/'out/claude-x86_64-cache-export/events.jsonl'
+ deadline=time.monotonic()+3
+ while time.monotonic()<deadline:
+  if receipt.exists() and 'cache-export-complete' in receipt.read_text():break
+  time.sleep(0.01)
+ else:sys.exit(92)
+time.sleep(0.15)
+if os.environ['PEER_MODE']=='qualification-fail':sys.exit(37)
+PEER
+''')
+        subprocess.run(['git','init','-q',str(source)],check=True)
+        subprocess.run(['git','-C',str(source),'add','.'],check=True)
+        subprocess.run(['git','-C',str(source),'-c','user.name=Fixture','-c','user.email=f@example.invalid','commit','-qm','isolated process peers'],check=True)
+        peers=root/'peers';peers.mkdir()
+        uname=peers/'uname';uname.write_text('#!/bin/sh\necho x86_64\n');uname.chmod(0o755)
+        docker=peers/'docker';docker.write_text('#!'+sys.executable+'''
+import os,sys,json,time,signal
+from pathlib import Path
+args=sys.argv[1:];events=Path(os.environ['EVENTS']);state=Path(os.environ['DOCKER_STATE'])
+def event(name,**extra):
+ with events.open('a') as f:f.write(json.dumps(dict(event=name,**extra))+'\\n')
+def save(present):state.write_text(json.dumps(dict(present=present,image_id='sha256:'+'a'*64)))
+if args[:2]==['buildx','build']:
+ if 'type=cacheonly' in args:
+  Path(os.environ['EXPORT_PID']).write_text(str(os.getpid()));event('cache-start',args=args)
+  def stop(signum,frame):event('cache-terminated');sys.exit(143)
+  signal.signal(signal.SIGTERM,stop)
+  if os.environ['PEER_MODE']=='cancel':time.sleep(20)
+  if os.environ['PEER_MODE']=='cache-fail':event('cache-failed');sys.exit(29)
+  deadline=time.monotonic()+5
+  while os.environ['PEER_MODE']!='early-export' and not Path(os.environ['ARCHIVE_DONE']).exists() and time.monotonic()<deadline:time.sleep(0.01)
+  if os.environ['PEER_MODE']!='early-export' and not Path(os.environ['ARCHIVE_DONE']).exists():sys.exit(91)
+  if os.environ['PEER_MODE']!='missing-export-metadata':
+   ref='different-builder/node/cache' if os.environ['PEER_MODE']=='builder-drift' else 'owned-builder/node/cache'
+   Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'buildx.build.ref':ref}))
+  if os.environ['PEER_MODE']=='image-drift':
+   value=json.loads(state.read_text());value['image_id']='sha256:'+'c'*64;state.write_text(json.dumps(value))
+  event('cache-done');sys.exit(0)
+ event('load',args=args);save(True)
+ if '--metadata-file' in args:
+  Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'buildx.build.ref':'owned-builder/node/build','containerimage.config.digest':'sha256:'+'a'*64}))
+ if os.environ['PEER_MODE']=='context-drift':Path(args[-1]+'/runner/Dockerfile').write_text('FROM drifted\\n')
+elif args[0]=='push':event('push')
+elif args[:2]==['image','inspect']:
+ if not json.loads(state.read_text())['present']:sys.exit(1)
+ print(json.loads(state.read_text())['image_id'] if '{{.Id}}' in args else 'localhost:5000/symphony-claude@sha256:'+'b'*64)
+elif args[:2]==['image','rm']:save(False)
+elif args[0]=='pull':save(True);event('pull')
+elif args[0]=='tag':save(True)
+elif args[0]=='logs':print('owned registry peer')
+else:raise SystemExit('unexpected Docker peer command: '+repr(args))
+''');docker.chmod(0o755)
+        python=peers/'python3';python.write_text('#!'+sys.executable+'''
+import os,sys,json
+from pathlib import Path
+args=sys.argv[1:]
+if args[0] in ('-','-c'):os.execv(sys.executable,[sys.executable,*args])
+name=Path(args[0]).name;args=args[1:]
+def event(name,**extra):
+ with open(os.environ['EVENTS'],'a') as f:f.write(json.dumps(dict(event=name,**extra))+'\\n')
+if name=='test_registry.py':
+ if args[0]=='start':Path(args[1]).write_text(json.dumps({'container_id':'1'*64}));event('registry-start')
+ else:
+  pid=Path(os.environ['EXPORT_PID']);alive=False
+  if pid.exists():
+   try:os.kill(int(pid.read_text()),0);alive=True
+   except ProcessLookupError:pass
+  event('registry-cleanup',cache_alive=alive)
+  if alive:sys.exit(82)
+elif name=='runner_inputs.py':Path(args[args.index('--output')+1]).write_text(json.dumps({'input_identity':'d'*64}))
+elif name=='record.py':Path(args[args.index('--output')+1]).write_text('{}');event('record')
+elif name=='export-image.py':
+ Path(args[args.index('--output')+1]).write_bytes(b'process peer archive')
+ Path(args[args.index('--checksum-output')+1]).write_text('peer checksum');event('archive');Path(os.environ['ARCHIVE_DONE']).touch()
+else:raise SystemExit('unexpected Python peer: '+name)
+''');python.chmod(0o755)
+        env=dict(os.environ,PATH=str(peers)+':'+os.environ['PATH'],EVENTS=str(root/'events'),DOCKER_STATE=str(root/'docker-state'),
+            EXPORT_PID=str(root/'export-pid'),ARCHIVE_DONE=str(root/'archive-done'),PEER_MODE=mode,SYMPHONY_CANDIDATE_CACHE_OVERLAP='true',
+            SYMPHONY_CANDIDATE_CAPTURE_INPUTS='1',SYMPHONY_CANDIDATE_BUILD_COMMAND=str(source/'scripts/release/build-runner-cached.sh'),
+            SYMPHONY_GHA_RUNNER_CACHE='true',ACTIONS_RUNTIME_TOKEN='fixture-cache-token',ACTIONS_RESULTS_URL='https://cache.invalid',
+            GITHUB_EVENT_NAME='pull_request',GITHUB_REF='refs/pull/42/merge',PR_NUMBER='42',GITHUB_STEP_SUMMARY=str(root/'summary'))
+        return source,env
+
+    def test_overlap_joins_export_before_cleanup_and_refuses_both_failure_paths(self):
+        import json
+        for mode,code in (('success',0),('cache-fail',29),('qualification-fail',37),('context-drift',1),
+                          ('missing-export-metadata',1),('builder-drift',1),('image-drift',1)):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);source,env=self.fixture(root,mode)
+                result=subprocess.run(['bash',str(source/'scripts/release/build-candidate-runners.sh'),'claude','x86_64',str(root/'out')],
+                    env=env,text=True,capture_output=True,timeout=15)
+                self.assertEqual(result.returncode,code,result.stdout+result.stderr)
+                events=[json.loads(line) for line in (root/'events').read_text().splitlines()]
+                self.assertEqual(events[-1],dict(event='registry-cleanup',cache_alive=False))
+                if mode=='success':
+                    names=[e['event'] for e in events]
+                    self.assertLess(names.index('cache-start'),names.index('archive'))
+                    self.assertLess(names.index('archive'),names.index('cache-done'))
+                    load=next(e['args'] for e in events if e['event']=='load');export=next(e['args'] for e in events if e['event']=='cache-start')
+                    self.assertNotIn('--cache-to',load);self.assertIn('--load',load)
+                    self.assertNotIn('--load',export);self.assertNotIn('-t',export)
+                    self.assertEqual(export[export.index('--builder')+1],'owned-builder')
+                    self.assertIn('type=gha,scope=runner-v1-amd64-pr-42-claude,mode=max',export)
+                log=root/'out/claude-x86_64-cache-export/export.log'
+                self.assertNotIn('fixture-cache-token',result.stdout+result.stderr+(log.read_text() if log.exists() else ''))
+
+    def test_actual_export_timestamps_precede_join_and_retain_failure_status(self):
+        import hashlib,json
+        for mode,status in (('early-export',0),('cache-fail',29)):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);source,env=self.fixture(root,mode)
+                result=subprocess.run(['bash',str(source/'scripts/release/build-candidate-runners.sh'),
+                    'claude','x86_64',str(root/'out')],env=env,text=True,capture_output=True,timeout=15)
+                self.assertEqual(result.returncode,status,result.stdout+result.stderr)
+                state=root/'out/claude-x86_64-cache-export'
+                events=[json.loads(line) for line in (state/'events.jsonl').read_text().splitlines()]
+                start,complete=[next(e for e in events if e['event']==n)
+                                for n in ('cache-export-start','cache-export-complete')]
+                self.assertEqual(complete['exit_status'],status)
+                raw=(state/'request.json').read_bytes();request=json.loads(raw)
+                for event in (start,complete):
+                    self.assertEqual(event['request_sha256'],hashlib.sha256(raw).hexdigest())
+                    for key in ('builder','image_id','build_ref'):self.assertEqual(event[key],request[key])
+                self.assertLess(start['monotonic_seconds'],complete['monotonic_seconds'])
+                self.assertLessEqual(start['wall_seconds'],complete['wall_seconds'])
+                if status==0:
+                    archive=next(e for e in events if e['event']=='archive-start')
+                    joined=next(e for e in events if e['event']=='cache-export-joined')
+                    self.assertLess(complete['monotonic_seconds'],archive['monotonic_seconds'])
+                    self.assertLess(archive['monotonic_seconds'],joined['monotonic_seconds'])
+                else:
+                    self.assertNotIn('cache-export-joined',[e['event'] for e in events])
+
+    def test_cancel_reaps_owned_export_before_existing_registry_cleanup(self):
+        import json,signal,time
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source,env=self.fixture(root,'cancel')
+            process=subprocess.Popen(['bash',str(source/'scripts/release/build-candidate-runners.sh'),'claude','x86_64',str(root/'out')],
+                env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            try:
+                deadline=time.monotonic()+5
+                while not (root/'export-pid').exists() and time.monotonic()<deadline:time.sleep(0.01)
+                self.assertTrue((root/'export-pid').exists(),'actual owned export peer never started')
+                process.send_signal(signal.SIGTERM)
+                output,error=process.communicate(timeout=10)
+                self.assertEqual(process.returncode,143,output+error)
+                events=[json.loads(line) for line in (root/'events').read_text().splitlines()]
+                self.assertIn('cache-terminated',[e['event'] for e in events])
+                self.assertEqual(events[-1],dict(event='registry-cleanup',cache_alive=False))
+            finally:
+                if process.poll() is None:process.kill();process.wait()
+                process.stdout.close();process.stderr.close()
