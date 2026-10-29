@@ -24,6 +24,10 @@ on:
         description: Experimental same-builder max export overlap; serial remains the default
         type: boolean
         default: false
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -86,6 +90,7 @@ jobs:
           PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
           PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
           PREPARE: ${{ inputs.production_prepare }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           ENGINE_ONLY: ${{ inputs.engine_only }}
@@ -99,11 +104,34 @@ jobs:
             test "$GITHUB_ACTOR" = Jayson-Stangel
             test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
           fi
+          if [ -n "${BOOTSTRAP_PREVIOUS:-}" ]; then
+            test "$PREPARE" = false
+            test "$REF" = refs/heads/dev
+            test "$ENGINE_ONLY" = false
+            test "$CONTROLLER_ONLY" = false
+          fi
           if [ "$PREPARE" = true ]; then
             test "$REF" = refs/heads/main
             test "$ENGINE_ONLY" != true
             test "$CONTROLLER_ONLY" != true
           fi
+
+      - name: Check out exact pending-baseline controller before native fanout
+        if: inputs.bootstrap_previous != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate pinned pending baseline before any native fanout
+        if: inputs.bootstrap_previous != ''
+        env:
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.production_prepare }}
+          COMPOSE_PACKAGES: 'true'
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: python3 scripts/release/prior_baseline.py validate
 
   qualification:
     name: Validate preflight inputs
@@ -129,6 +157,7 @@ jobs:
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
       previous_artifact_run: ${{ inputs.previous_artifact_run }}
+      bootstrap_previous: ${{ inputs.bootstrap_previous }}
       legacy_artifact_run: ${{ inputs.legacy_artifact_run }}
       manager_only_update: ${{ inputs.manager_only_update }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}

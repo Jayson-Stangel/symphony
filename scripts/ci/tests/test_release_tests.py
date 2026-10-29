@@ -230,6 +230,17 @@ class WorkflowGuardTest(unittest.TestCase):
                 if passes:exec(assertion,scope)
                 else:
                     with self.assertRaisesRegex(AssertionError,'uncached build operations'):exec(assertion,scope)
+    def test_pending_bootstrap_requires_fresh_ubuntu_terminal_proof(self):
+        values = dict(PREFLIGHT='success', PACKAGES='success', HAS_BUILDS='false', RUNNERS='skipped',
+                      METADATA='success', BUNDLES='success', FINAL_ONLY='false', FINAL_PACKAGES='skipped',
+                      PREPARE_RELEASE='false', LIFECYCLE='success', PREVIOUS_REVISION='', PREVIOUS_ARTIFACT_RUN='40588897389',
+                      BOOTSTRAP_REQUESTED='true', BOOTSTRAP_PROOF='true')
+        name = 'Require all requested candidate work without accepting omitted failures'
+        self.assertEqual(self.guard('runner-release.yml', name, values), 0)
+        for result in ('', 'false', 'failure', 'skipped'):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(values, BOOTSTRAP_PROOF=result)), 0)
+        for result in ('failure', 'cancelled', 'skipped'):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(values, LIFECYCLE=result)), 0)
 
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'

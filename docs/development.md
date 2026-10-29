@@ -376,9 +376,11 @@ Its dependency closure follows the actual consumers:
 - `.github/workflows/runner-integration.yml` owns ordinary browser/global controls.
   Strict YAML comparison can exclude changes confined to its audited manual-only
   jobs and dispatch inputs. New jobs or uncertain YAML stay conservative.
-- `.github/workflows/change-classification.yml` and shared `scripts/ci/` controls
-  own routing and required wrappers. Explicitly inventoried policy regression files
-  under `scripts/ci/tests/` run cheaply without image builds; unknown tests stay broad.
+- `.github/workflows/change-classification.yml` and unknown shared `scripts/ci/`
+  controls retain broad qualification. The known classifier and YAML comparator
+  run the unconditional policy regressions and portable workflow contracts without
+  browser builds. Explicitly inventoried policy regression files under
+  `scripts/ci/tests/` also run cheaply; unknown tests stay broad.
 
 Keep this set aligned with new COPY sources, build stages and invoked tools.
 Application source changes alone do not change the browser-stage source closure;
@@ -452,13 +454,25 @@ must not leave its sole executor omitted.
 
 Mac admission/preflight/watchdog controllers select their dependency-free policy
 tests and portable workflow contracts. Changing their unit tests runs the policy
-suite without native helper or browser builds. The release suite inventory itself
-selects portable, both package hosts, native process fixtures, launcher contracts
-and Codex configuration tests because it controls those executors; it does not
-change Elixir, Claude or browser execution. Classifier/comparison algorithms and
-unknown inputs retain broad fail-closed qualification. Browser qualification still
-follows actual Docker stages/COPY inputs and shared build/trust controls; a suite
-inventory edit alone is not a browser runtime input.
+suite without native helper or browser builds. The known classifier and YAML
+comparator likewise select policy regressions and portable workflow contracts.
+Unknown CI controls and tests retain broad fail-closed qualification.
+
+The release suite inventory normally selects portable, both package hosts, native
+process fixtures, launcher contracts and Codex configuration tests because it
+controls those executors; it does not change Elixir, Claude or browser execution.
+A narrow exception selects portable only when the sole Python AST change adds
+unique valid test filenames to the single top-level literal `PORTABLE` set.
+Removals, executor changes and native inventory changes retain their affected
+families. Browser qualification follows actual Docker stages/COPY inputs and
+shared build/trust controls; an inventory edit alone is not a browser runtime input.
+
+On ordinary PR and push events, changes confined to the audited
+`burrito-release.yml` manual controller select portable workflow contracts when
+both workflow versions remain `workflow_dispatch`-only, use only the eight audited
+job IDs, and preserve all other global controls. Unknown jobs, trigger changes or
+global changes select full qualification. Manual and tag events retain complete
+qualification regardless of these ordinary-event comparisons.
 
 ### Stable application family contract (JAY-765)
 
@@ -831,3 +845,41 @@ candidate archives and real lifecycle consumers; final production preparation
 still cannot succeed after a failed requested lifecycle. No signing, publication
 or production settings are invoked by these routing changes. Production workflow
 execution and final-byte native acceptance remain separate from fixture tests.
+
+### Pending original baseline qualification
+
+The ordinary prior-package selector still requires successful historical installed
+lifecycle proof. A separate default-empty `bootstrap_previous` descriptor permits
+only one explicit owner-triggered, nonproduction combined candidate on `dev` to
+use original run `40588897389`, attempt 3, source `ec2be6e1c21c7dc7f7d7d8536bcac1ce06f3202b`,
+package artifact `12774063336` with service digest
+`sha256:6347428eaa08c972eb43090af41460c0d73c9d84776351f2b91c80d407bdc446`.
+The descriptor also pins the approved current candidate source and historical
+skipped lifecycle job `122501814533`. This is a pending test subject, never a
+claim that the skipped historical lifecycle passed. Production/main/tag and
+ambiguous, mismatched, failed or expired subjects refuse.
+
+Before executing its installer, the actual Ubuntu lifecycle verifies original
+service and inner archive hashes, manifest/core/source/component identity and
+helper architecture. Owned Mac provenance requires its actual source's native
+OS/CPU/version guard, successful ordered helper/package steps and a bounded
+original helper receipt whose bytes match the packaged helper. A private label
+or capacity-ready status alone proves neither native execution nor qualification.
+Owned-Mac source validation accepts only explicitly audited whole-workflow
+fingerprints and exact relied-on step configurations. Unknown workflow text
+refuses, including quoted keys, aliases, duplicate jobs and shell/error overrides.
+This intentionally requires another owner review when those workflows change;
+it is not a general YAML or shell equivalence checker. The final combined source
+fingerprint must be reviewed after integration before candidate execution.
+
+The existing `scripts/release/package-lifecycle.py` consumer must repeat-install
+that exact original baseline as an ordinary user, assert its installed source,
+pass doctor, and run both isolated projects with attributable listeners, original
+images and preserved canaries before activating the new candidate. Full update,
+rollback, refusal/retry and cleanup must then pass. The existing terminal join
+also requires fresh same-run baseline proof; missing or failed proof refuses.
+Fresh proof names both original and current identities and preserves the old
+`skipped` result. The descriptor grants no execution authority: exact candidate
+source, complete change inventory, prior subject and native effects still require
+operator approval before the single combined candidate. No version bump or
+production promotion is needed for this nonpublishing dev path.
