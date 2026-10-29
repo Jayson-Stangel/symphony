@@ -284,7 +284,7 @@ archive. Production publication requires a completed exact-source preparation,
 completed production signing and separately approved protected publication.
 None of these steps is authorized by implementing or merging this tooling.
 
-The committed manager version is 0.0.6 with schema2. The standalone engine still
+The committed manager version is 0.0.7 with schema2. The standalone engine still
 has its independent 0.0.4 version. Its release filenames identify the manager
 release and its source receipts identify the actual build source; those filenames
 do not change the engine version. Standalone Burrito binaries are independently
@@ -376,7 +376,7 @@ these settings changes; workflow source cannot create or enforce them.
    A candidate-registry lifecycle proves composition, not final public GHCR
    availability. Keep any check requiring actual public refs explicitly pending
    until the next authorized stage; do not rewrite the package to insert aliases.
-6. Only with exact tag/publication approval, create `v0.0.6` at `P`, then manually
+6. Only with exact tag/publication approval, create `v0.0.7` at `P`, then manually
    dispatch `production-publish.yml` **on that tag**, supplying
    `approved_revision=P`, `signed_run=S`, `signed_attempt=S_ATTEMPT`. The source
    must remain an ancestor of protected `main`; later unrelated main advancement
