@@ -349,23 +349,39 @@ def dialyzer():
 
 
 def seal():
-    root,temporary,source,state,_=paths();available=False
+    root,temporary,source,state,_=paths();available=False;stage='prepared_record'
     try:
         require(read(state/'prepared.json')==dict(source=source,supported=True,ordinary=False),'unsupported original')
+        stage='dialyzer_record'
         require(read(state/'dialyzer.json')==dict(source=source,success=True),'fresh Dialyzer missing')
+        stage='execution_record'
         execution=read(state/'execution.json');require(execution['mode']=='EXECUTED' and execution['exit_code']==0,'not original executed qualification')
+        stage='inputs_record'
         inputs=read(state/'inputs.json');require(inputs['sha256']==digest(inputs['identity']),'producer identity invalid')
+        stage='coverage_summary'
         execution['summary']=coverage_summary((state/'coverage.log').read_bytes(),strict_json(profile.PROFILE_PATH.read_bytes()))
+        stage='producer_context'
         caller=context(client(temporary),source);require(caller['eligible_producer'],'ineligible original producer')
+        stage='native_fetch_scratch'
         oci.require_empty_native_fetch(state)
+        stage='checkpoint_records'
         sides={'test':read(state/'sidecar.json'),'hex':read(state/'hex-sidecar.json')}
-        require(cache.identity(state/'hex',root,private_root=state)==sides['hex']['cache'],'precoverage Hex checkpoint changed')
-        require(cache.identity(root/'elixir/_build/test',root)==sides['test']['cache'],'precoverage test cache changed')
+        for name,path,options in (('hex',state/'hex',dict(private_root=state)),('test',root/'elixir/_build/test',{})):
+            stage=name+'_checkpoint'
+            observed=cache.identity(path,root,**options);expected=sides[name]['cache']
+            def facet(value):
+                sha=value.get('sha256');sha=sha if isinstance(sha,str) and len(sha)==64 and all(c in '0123456789abcdef' for c in sha) else 'unknown'
+                entries=value.get('files');size=value.get('bytes')
+                return dict(sha256=sha,files=entries if type(entries) is int else 'unknown',bytes=size if type(size) is int else 'unknown')
+            require(observed==expected,'precoverage '+name+' checkpoint changed; expected='+str(facet(expected))+' observed='+str(facet(observed)))
         raw={'test':(state/'test-cache.tar.gz').read_bytes(),'hex':(state/'hex-cache.tar.gz').read_bytes()}
-        for name,path in (('deps',root/'elixir/deps'),('dev',root/'elixir/_build/dev')):raw[name],sides[name]=cache.create(path,root)
+        for name,path in (('deps',root/'elixir/deps'),('dev',root/'elixir/_build/dev')):
+            stage=name+'_archive';raw[name],sides[name]=cache.create(path,root)
+        stage='aggregate_archive_bounds'
         require(sum(len(value) for value in raw.values())<=cache.MAX_COMPRESSED
                 and sum(value['cache']['bytes'] for value in sides.values())<=cache.MAX_EXPANDED
                 and sum(value['cache']['files'] for value in sides.values())<=cache.MAX_ENTRIES,'combined checkpoint exceeds bounds')
+        stage='receipt_write'
         proof=state/'proof';proof.mkdir(mode=0o700)
         store(proof/'receipt.json',dict(schema_version=3,family='full-exunit-coverage',inputs_sha256=inputs['sha256'],
             sidecar=sides,checkpoints=dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
@@ -374,8 +390,11 @@ def seal():
         store(proof/'inputs.json',inputs,new=True);(proof/'coverage.log').write_bytes((state/'coverage.log').read_bytes())
         for name,value in raw.items():(proof/(name+'-cache.tar.gz')).write_bytes(value)
         available=True
-    except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError,AttributeError):
-        summary('No reusable original receipt: incomplete/changed input or checkpoint; qualification execution status is unchanged.')
+    except (Fresh,UnknownInput,ValueError) as error:
+        reason=str(error) if type(error) in (Fresh,UnknownInput,ValueError) else 'malformed public record'
+        summary('No reusable original receipt; stage='+stage+'; reason='+reason+'. Qualification execution status is unchanged.')
+    except (OSError,KeyError,TypeError,AttributeError) as error:
+        summary('No reusable original receipt; stage='+stage+'; reason='+type(error).__name__+'. Qualification execution status is unchanged.')
     output(available=available)
 
 

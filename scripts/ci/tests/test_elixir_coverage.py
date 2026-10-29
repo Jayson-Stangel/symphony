@@ -114,6 +114,17 @@ class ExistingJobPhases(unittest.TestCase):
                 if not corrupted:
                     self.assertEqual((targets['test']/'lib/phoenix/priv/payload').read_bytes(),b'authenticated dependency bytes')
 
+    def test_seal_refusal_names_first_safe_stage_without_environment_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);state=root/'state';state.mkdir(mode=0o700)
+            controller.store(state/'prepared.json',dict(source='a'*40,supported=False,ordinary=True),new=True)
+            messages=[];outputs=[]
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'summary',side_effect=messages.append),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.dict(os.environ,dict(GH_TOKEN='dummy-secret-never-print')):
+                controller.seal()
+            self.assertEqual(outputs,[dict(available=False)])
+            self.assertIn('stage=prepared_record',messages[0]);self.assertIn('unsupported original',messages[0])
+            self.assertNotIn('dummy-secret-never-print',str(messages))
+
     def test_only_a_supported_profile_refuses_both_ordinary_executable_cache_restores(self):
         import re
         from test_components import job, workflow
