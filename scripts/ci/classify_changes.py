@@ -155,6 +155,7 @@ CI_POLICY_TESTS = {
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
 PORTABLE_RELEASE = {
+    'README.md',  # Exact release-controller reference; no application/runtime reader.
     'benchmark-transfer.py',
     'build-candidate-runners.sh',
     'build-manager-package.sh',

@@ -887,7 +887,7 @@ missing provenance, changed audited sources, or different execution inputs run
 fresh. The required Application wrapper distinguishes `EXECUTED`, `REUSED` and
 `OMITTED` and preserves the original run, attempt, job and artifact identities.
 
-Only the finite reviewed 200-source profile may produce reusable evidence. Its
+Only the finite reviewed 199-source profile may produce reusable evidence. Its
 actual pinned-vendor OCI image/config/rootfs, recipe, generated public identity
 files, kernel/Docker/CPU/isolation settings and public inputs must match. Each
 phase has a read-only root/source, a non-root identity, and explicit private

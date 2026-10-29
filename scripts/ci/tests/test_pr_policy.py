@@ -151,6 +151,7 @@ jobs:
 
     def test_known_policy_tests_and_actual_consumer_families(self):
         cases = {
+            'scripts/release/README.md': {'portable'},
             'runner/test_npm_cache.py': {'npm'},
             'runner/test_npm_cache_lifecycle.py': {'npm'},
             'runner/test_codex_readiness.py': {'readiness'},
@@ -189,11 +190,32 @@ jobs:
         for path, selected in cases.items():
             with self.subTest(path=path):
                 self.assertEqual(classifier.consumers(path), selected)
-        for path in ('scripts/ci/tests/test_unknown.py', 'scripts/release/tests/test_unknown.py'):
+        for path in ('scripts/ci/tests/test_unknown.py', 'scripts/release/tests/test_unknown.py',
+                     'scripts/release/UNKNOWN.md', 'scripts/new/README.md'):
             self.assertEqual(classifier.consumers(path), classifier.ALL)
         mixed = classifier.decisions(['runner/test_npm_cache_lifecycle.py', 'scripts/package/linux/Package.resolved'])
         self.assertTrue(mixed['npm'] and mixed['package_linux'] and mixed['portable'])
         self.assertFalse(mixed['package_macos'] or mixed['application'] or mixed['fixtures'])
+
+    def test_exact_release_readme_keeps_policy_and_unknown_or_runtime_inputs_conservative(self):
+        with tempfile.TemporaryDirectory() as folder:
+            history=History(folder);history.put('runner/Dockerfile',RECIPE)
+            history.put('scripts/release/README.md','original release controller reference')
+            base=history.commit();previous=os.getcwd();os.chdir(folder)
+            try:
+                for changed,expected,browser in (
+                    ('scripts/release/README.md',{'portable'},False),
+                    ('scripts/release/UNKNOWN.md',classifier.ALL,True),
+                    ('scripts/new/README.md',classifier.ALL,True),
+                    ('elixir/lib/actual_runtime.ex',{'application'},False)):
+                    history.put(changed,'updated executable-consumer or reference contract')
+                    head=history.commit();event=dict(before=base,after=head,ref='refs/heads/dev')
+                    paths=classifier.changed_paths(event,'push');routing=classifier.event_routing(paths,event,'push')[0]
+                    with self.subTest(changed=changed):
+                        self.assertEqual({name for name in classifier.COMPONENTS if routing[name]},expected)
+                        self.assertEqual(classifier.browser_required(paths,event,'push'),browser)
+                    base=head
+            finally:os.chdir(previous)
 
     def test_manual_only_integration_changes_do_not_build_browser_but_global_changes_do(self):
         source = (ROOT/'.github/workflows/runner-integration.yml').read_text()
