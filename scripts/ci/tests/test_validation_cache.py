@@ -35,6 +35,8 @@ class PublicSidecar(unittest.TestCase):
             link = target/'lib/symphony_elixir/priv'
             link.parent.mkdir(parents=True)
             link.symlink_to('../../../../priv')
+            stamp=1740000000125000000
+            os.utime(target/'compiled.beam',ns=(stamp,stamp));os.utime(target,ns=(stamp,stamp))
             raw, meta = cache.create(target, root)
             stage = target.with_name('.test-evidence')
             observed = cache.stage(raw, meta, stage, root)
@@ -42,6 +44,8 @@ class PublicSidecar(unittest.TestCase):
             self.assertEqual((stage/'compiled.beam').read_bytes(), (target/'compiled.beam').read_bytes())
             self.assertEqual((stage/'compiled.beam').stat().st_mode, (target/'compiled.beam').stat().st_mode)
             self.assertEqual((stage/'lib/symphony_elixir/priv').readlink(), link.readlink())
+            self.assertEqual((stage/'compiled.beam').stat().st_mtime_ns,stamp)
+            self.assertEqual(stage.stat().st_mtime_ns,stamp)
 
     def test_hash_mismatch_refuses_before_creating_any_destination(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -76,6 +80,56 @@ class PublicSidecar(unittest.TestCase):
                 raw=data.getvalue();meta=dict(size=len(raw),sha256=hashlib.sha256(raw).hexdigest())
                 with self.assertRaises(UnknownInput):cache.stage(raw,meta,stage,root)
                 self.assertFalse(stage.exists())
+
+
+    def test_private_hex_target_is_exact_public_lock_bound_and_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory);root=parent/'source';root.mkdir();(root/'elixir').mkdir()
+            (root/'elixir/mix.lock').write_text('  "phoenix": {:hex, :phoenix, "1.0.0"}\n')
+            state=parent/'state';state.mkdir(mode=0o700);target=state/'hex';target.mkdir()
+            (target/'packages/hexpm').mkdir(parents=True)
+            (target/'cache.bin').write_bytes(b'opaque raw timestamp and registry bytes')
+            (target/'packages/hexpm/phoenix-1.0.0.tar').write_bytes(b'public lock-bound archive')
+            raw,metadata=cache.create(target,root,private_root=state)
+            stage=state/'.hex-evidence-v2';cache.stage(raw,metadata,stage,root,private_root=state)
+            self.assertEqual((stage/'cache.bin').read_bytes(),(target/'cache.bin').read_bytes())
+            self.assertEqual(cache.identity(stage,root,private_root=state)['sha256'],metadata['cache']['sha256'])
+            for name in ('hex.config','auth','cache.bin.123.tmp','packages/private/phoenix-1.0.0.tar','packages/hexpm/unknown-1.0.0.tar'):
+                with self.subTest(name=name):
+                    path=target/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'not public supported input')
+                    with self.assertRaises(UnknownInput):cache.create(target,root,private_root=state)
+                    path.unlink()
+                    if path.parent.name=='private':path.parent.rmdir()
+            (target/'link').symlink_to(target/'cache.bin')
+            with self.assertRaises(UnknownInput):cache.create(target,root,private_root=state)
+            with self.assertRaises(UnknownInput):cache.stage(raw,metadata,state/'other',root,private_root=state)
+            with self.assertRaises(UnknownInput):cache.stage(raw,metadata,parent/'.hex-evidence-v2',root,private_root=state)
+
+
+    def test_invalid_original_timestamps_refuse_before_materialization(self):
+        from unittest.mock import patch
+        for timestamp in ('nan','inf','-1','4102444801'):
+            with self.subTest(timestamp=timestamp),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);target=self.fixture(root);raw,metadata=cache.create(target,root)
+                import gzip
+                source=tarfile.open(fileobj=io.BytesIO(gzip.decompress(raw)),mode='r:')
+                output=io.BytesIO()
+                with source,tarfile.open(fileobj=output,mode='w:gz') as archive:
+                    for row in source:
+                        row.pax_headers['mtime']=timestamp
+                        archive.addfile(row,source.extractfile(row) if row.isfile() else None)
+                raw=output.getvalue();metadata.update(size=len(raw),sha256=hashlib.sha256(raw).hexdigest())
+                stage=target.with_name('.invalid')
+                with self.assertRaises(UnknownInput):cache.stage(raw,metadata,stage,root)
+                self.assertFalse(stage.exists())
+
+    def test_early_combined_inventory_refuses_before_fingerprinting_or_coverage(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);a=root/'a';b=root/'b';a.mkdir();b.mkdir();(a/'payload').write_bytes(b'1234')
+            self.assertEqual(cache.precheck([a,b]),dict(entries=3,bytes=4))
+            with patch.object(cache,'MAX_ENTRIES',2),self.assertRaises(UnknownInput):cache.precheck([a,b])
+            with patch.object(cache,'MAX_EXPANDED',3),self.assertRaises(UnknownInput):cache.precheck([a,b])
 
 
 if __name__ == '__main__':

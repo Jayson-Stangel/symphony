@@ -289,16 +289,6 @@ def clean_tmp(state):
     shutil.rmtree(path); path.mkdir(mode=0o700)
 
 
-def clean_hex(state):
-    # Public fetch scratch is not an execution input: construct a new empty
-    # actual HEX_HOME after the online phase has ended, before offline compile.
-    # Archive/tool bytes remain in MIX_HOME and raw deps/build are untouched.
-    path = state / 'hex'
-    require(state.is_dir() and not state.is_symlink() and state.stat().st_uid == os.getuid()
-            and path.is_dir() and not path.is_symlink() and path.stat().st_uid == os.getuid(),
-            'private Hex fetch scratch is not owned')
-    shutil.rmtree(path); path.mkdir(mode=0o700)
-
 
 def cleanup(state):
     intent = state / 'oci-intent.json'

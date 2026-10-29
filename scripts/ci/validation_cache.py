@@ -5,9 +5,12 @@ inputs before calling stage(). No archive extraction API or compiler-byte
 normalization is used. Unknown file kinds/links/ownership select fresh tests.
 """
 import hashlib
+from itertools import chain
 import gzip
+from decimal import Decimal, InvalidOperation
 import io
 import os
+import re
 from pathlib import Path, PurePosixPath
 import stat
 import tarfile
@@ -37,13 +40,57 @@ def require(value):
         raise UnknownInput('test-cache sidecar is outside the audited public archive profile')
 
 
-def identity(root, repository):
-    return tree_identity(root, allowed_roots=[repository], deadline=time.monotonic() + 15)[0]
+def private_hex(root, repository, private_root):
+    root, repository, state = Path(root), Path(repository).resolve(), Path(private_root)
+    require(state.is_absolute() and state.is_dir() and not state.is_symlink()
+            and state.stat().st_uid == os.getuid() and not state.stat().st_mode & 0o077
+            and not state.resolve().is_relative_to(repository) and not repository.is_relative_to(state.resolve())
+            and root.parent == state and root.name in ('hex','.hex-evidence-v2') and not root.is_symlink())
+    return state
 
 
-def create(root, repository):
+def hex_member(name, directory, repository):
+    if directory:
+        return name in ('.','packages','packages/hexpm')
+    if name == 'cache.bin':
+        return True
+    lock = (Path(repository)/'elixir/mix.lock').read_text()
+    rows = re.findall(r'^  "[^"]+": \{:hex, :([a-zA-Z0-9_]+), "([^"]+)"',lock,re.M)
+    require(bool(rows))
+    return name in {'packages/hexpm/'+package+'-'+version+'.tar' for package,version in rows}
+
+
+def original_mtime(row):
+    try:
+        value=Decimal(row.pax_headers.get('mtime',str(row.mtime)))
+        require(value.is_finite() and 0<=value<=4102444800)
+        return int(value*1000000000)
+    except (InvalidOperation,ValueError,OverflowError):
+        raise UnknownInput('invalid original public archive timestamp') from None
+
+
+def precheck(roots):
+    entries=total=0;deadline=time.monotonic()+5
+    for root in roots:
+        root=Path(root)
+        for path in chain((root,),root.rglob('*')):
+            info=path.lstat();entries+=1
+            require(stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode))
+            if stat.S_ISREG(info.st_mode):total+=info.st_size
+            require(entries<=MAX_ENTRIES and total<=MAX_EXPANDED and time.monotonic()<deadline)
+    return dict(entries=entries,bytes=total)
+
+
+def identity(root, repository, *, private_root=None):
+    allowed=[repository]
+    if private_root is not None:
+        allowed.append(private_hex(root,repository,private_root))
+    return tree_identity(root, allowed_roots=allowed, deadline=time.monotonic() + 15)[0]
+
+
+def create(root, repository, *, private_root=None):
     root, repository = Path(root), Path(repository).resolve()
-    before = identity(root, repository)
+    before = identity(root, repository, private_root=private_root)
     paths = [root, *sorted(root.rglob('*'))]
     require(len(paths) <= MAX_ENTRIES and sum(path.stat().st_size for path in paths if path.is_file() and not path.is_symlink()) <= MAX_EXPANDED)
     target = io.BytesIO()
@@ -52,6 +99,9 @@ def create(root, repository):
             name = '.' if path == root else path.relative_to(root).as_posix()
             info = bundle.gettarinfo(str(path), arcname=name)
             require(info.isdir() or info.isfile() or (info.issym() and LINKS.get(name) == info.linkname))
+            if private_root is not None:
+                require(not info.issym() and hex_member(name,info.isdir(),repository))
+            original_mtime(info)
             require(info.uid == os.getuid() and info.gid == os.getgid() and (info.issym() or not info.mode & 0o7022))
             if info.isfile():
                 with path.open('rb') as data:
@@ -60,18 +110,21 @@ def create(root, repository):
                 bundle.addfile(info)
     raw = target.getvalue()
     require(0 < len(raw) <= MAX_COMPRESSED)
-    require(identity(root, repository) == before)
+    require(identity(root, repository, private_root=private_root) == before)
     return raw, dict(sha256=hashlib.sha256(raw).hexdigest(), size=len(raw), cache=before)
 
 
-def stage(raw, metadata, directory, repository):
+def stage(raw, metadata, directory, repository, *, private_root=None):
     """Validate every inert member before writing a fresh private staging tree."""
     directory, repository = Path(directory), Path(repository).resolve()
     require(type(raw) is bytes and 0 < len(raw) <= MAX_COMPRESSED
             and type(metadata) is dict and metadata.get('size') == len(raw)
             and metadata.get('sha256') == hashlib.sha256(raw).hexdigest())
-    require(not directory.exists() and not directory.is_symlink()
-            and directory.parent.resolve().is_relative_to(repository))
+    require(not directory.exists() and not directory.is_symlink())
+    if private_root is None:
+        require(directory.parent.resolve().is_relative_to(repository))
+    else:
+        private_hex(directory,repository,private_root)
     try:
         limit = MAX_EXPANDED + MAX_ENTRIES * 2048
         with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
@@ -91,6 +144,9 @@ def stage(raw, metadata, directory, repository):
                 require(row.name not in names and row.uid == os.getuid() and row.gid == os.getgid()
                         and (row.issym() or not row.mode & 0o7022) and row.size >= 0)
                 require(row.isdir() or row.isfile() or (row.issym() and LINKS.get(row.name) == row.linkname))
+                if private_root is not None:
+                    require(not row.issym() and hex_member(row.name,row.isdir(),repository))
+                original_mtime(row)
                 names.add(row.name)
             by_name = {row.name: row for row in rows}
             require('.' in names and by_name['.'].isdir())
@@ -114,6 +170,7 @@ def stage(raw, metadata, directory, repository):
                             block = source.read(min(1024 * 1024, remaining))
                             require(bool(block)); output.write(block); remaining -= len(block)
                     os.chmod(path, row.mode)
+                    stamp=original_mtime(row);os.utime(path,ns=(stamp,stamp),follow_symlinks=False)
             # Only the finite audited links are created, after regular data.
             for row in rows:
                 if row.issym():
@@ -123,7 +180,12 @@ def stage(raw, metadata, directory, repository):
             for row in rows:
                 if row.isdir():
                     os.chmod(directory if row.name == '.' else directory / row.name, row.mode)
-        observed = identity(directory, repository)
+            # Directory timestamps are last, after every child write/link.
+            for row in sorted(rows,key=lambda item:len(PurePosixPath(item.name).parts),reverse=True):
+                if row.isdir() or row.issym():
+                    path=directory if row.name=='.' else directory/row.name
+                    stamp=original_mtime(row);os.utime(path,ns=(stamp,stamp),follow_symlinks=False)
+        observed = identity(directory, repository, private_root=private_root)
         expected = metadata.get('cache')
         require(type(expected) is dict and all(observed[key] == expected.get(key) for key in ('sha256', 'files', 'bytes')))
         return observed

@@ -56,15 +56,15 @@ class OriginalProof(unittest.TestCase):
 
     def pack(self, *, extra=None):
         sidecar = b'inert test-cache fixture, never installed by these provenance tests'
-        self.receipt['sidecar'] = {name: dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar),cache=dict(files=1,bytes=1)) for name in ('test','dev','deps')}
-        self.receipt['checkpoints'] = dict(test='PRE_COVERAGE',dev='POST_DIALYZER',deps='POST_DIALYZER')
-        self.receipt['cache_origin'] = dict(mode='CLEAN')
+        self.receipt['sidecar'] = {name: dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar),cache=dict(files=1,bytes=1)) for name in ('test','dev','deps','hex')}
+        self.receipt.setdefault('checkpoints',dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',dev='POST_DIALYZER',deps='POST_DIALYZER'))
+        self.receipt.setdefault('cache_origin',dict(mode='CLEAN'))
         target = io.BytesIO()
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('receipt.json', json.dumps(self.receipt))
             archive.writestr('inputs.json', json.dumps(self.inputs))
             archive.writestr('coverage.log', self.log)
-            for name in ('test','dev','deps'): archive.writestr(name+'-cache.tar.gz', sidecar)
+            for name in ('test','dev','deps','hex'): archive.writestr(name+'-cache.tar.gz', sidecar)
             if extra:
                 archive.writestr(*extra)
         self.raw = target.getvalue()
@@ -82,6 +82,16 @@ class OriginalProof(unittest.TestCase):
         self.assertEqual(result['artifact_id'], 901)
         self.assertIn('/attempts/2', result['original_run_url'])
         self.assertEqual(result['inputs_sha256'], self.inputs['sha256'])
+
+    def test_hex_checkpoint_timing_and_public_cache_origin_are_required(self):
+        for target in ('hex','origin'):
+            with self.subTest(target=target):
+                saved=json.loads(json.dumps(self.receipt))
+                if target=='hex':self.receipt['checkpoints']['hex']='POST_DIALYZER'
+                else:self.receipt['cache_origin']['mode']='UNTRUSTED'
+                self.pack()
+                with self.assertRaises(evidence.Fresh):self.verify()
+                self.receipt=saved
 
     def test_failed_cancelled_incomplete_foreign_manual_pr_stale_producer_never_authorizes(self):
         original = deepcopy(self.run)
@@ -213,7 +223,7 @@ class OriginalProof(unittest.TestCase):
         self.assertEqual(result['mode'],'REUSED')
         self.assertEqual(result['original']['source'],'c'*40)
         self.assertEqual(result['original']['run_id'],101)
-        self.assertEqual(set(result['sidecar_bytes']),{'test','dev','deps'})
+        self.assertEqual(set(result['sidecar_bytes']),{'test','dev','deps','hex'})
         self.assertLess(requests.index('pulls/44'),requests.index('actions/artifacts/901/zip'))
 
     def test_fork_unmerged_failed_new_attempt_and_different_tested_tree_refuse(self):

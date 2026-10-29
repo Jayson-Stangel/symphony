@@ -84,28 +84,31 @@ class ExistingJobPhases(unittest.TestCase):
         from validation_inputs import UnknownInput
         for corrupted in (False,True):
             with self.subTest(corrupted=corrupted),tempfile.TemporaryDirectory() as directory:
-                root=Path(directory)
-                targets={'deps':root/'elixir/deps','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
+                root=Path(directory)/'source';root.mkdir();state=Path(directory)/'state';state.mkdir(mode=0o700)
+                targets={'deps':root/'elixir/deps','hex':state/'hex','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
                 private=targets['deps']/'phoenix/priv';private.mkdir(parents=True)
                 (private/'payload').write_bytes(b'authenticated dependency bytes')
                 for name in ('dev','test'):
                     path=targets[name]/'lib/phoenix';path.mkdir(parents=True)
                     (path/'priv').symlink_to('../../../../deps/phoenix/priv')
                     (path/'compiled').write_bytes(b'authenticated compiler bytes')
+                (root/'elixir/mix.lock').write_text('  \"phoenix\": {:hex, :phoenix, \"1.0.0\"}\n')
+                targets['hex'].mkdir();(targets['hex']/'cache.bin').write_bytes(b'original public raw registry timestamp')
+                def options(name):return dict(private_root=state) if name=='hex' else {}
                 raw={};meta={}
-                for name,target in targets.items():raw[name],meta[name]=validation_cache.create(target,root)
-                expected={name:validation_cache.identity(path,root) for name,path in targets.items()}
+                for name,target in targets.items():raw[name],meta[name]=validation_cache.create(target,root,**options(name))
+                expected={name:validation_cache.identity(path,root,**options(name)) for name,path in targets.items()}
                 for path in targets.values():
                     import shutil
                     shutil.rmtree(path);path.mkdir()
                     (path/'fresh').write_bytes(b'fresh fallback')
-                fallback={name:validation_cache.identity(path,root) for name,path in targets.items()}
+                fallback={name:validation_cache.identity(path,root,**options(name)) for name,path in targets.items()}
                 if corrupted:meta['test']['cache']['sha256']='0'*64
                 if corrupted:
-                    with self.assertRaises(UnknownInput):controller.install_bundle(root,root,dict(sidecar_bytes=raw,sidecar=meta))
-                else:controller.install_bundle(root,root,dict(sidecar_bytes=raw,sidecar=meta))
+                    with self.assertRaises(UnknownInput):controller.install_bundle(root,state,dict(sidecar_bytes=raw,sidecar=meta))
+                else:controller.install_bundle(root,state,dict(sidecar_bytes=raw,sidecar=meta))
                 for name,path in targets.items():
-                    self.assertEqual(validation_cache.identity(path,root),fallback[name] if corrupted else expected[name])
+                    self.assertEqual(validation_cache.identity(path,root,**options(name)),fallback[name] if corrupted else expected[name])
                     self.assertFalse(path.with_name('.'+path.name+'-evidence-v2').exists())
                     self.assertFalse(path.with_name('.'+path.name+'-fresh-v2').exists())
                 if not corrupted:
@@ -185,7 +188,7 @@ class OwnedOCIProtocol(unittest.TestCase):
                 else:wrong['HostConfig']['NanoCpus']=2000000000
                 with self.assertRaises(UnknownInput):oci.admit(wrong,root,state,value,network=False)
 
-    def test_owned_hex_fetch_scratch_is_recreated_before_any_offline_compilation(self):
+    def test_public_hex_registry_is_retained_for_early_offline_resolution(self):
         from validation_inputs import UnknownInput
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);state=root/'state';state.mkdir()
@@ -196,7 +199,7 @@ class OwnedOCIProtocol(unittest.TestCase):
             def phase(source,private,name,*args,**kwargs):
                 steps.append(name)
                 if name=='offline-resolution':
-                    self.assertEqual(list((state/'hex').iterdir()),[])
+                    self.assertEqual((state/'hex/cache.bin').read_bytes(),b'public timestamped fetch metadata')
                     self.assertEqual(args[0],['mix','deps.get']);self.assertEqual(kwargs,dict(mix='dev'))
                 if name=='test-compile':self.assertIn('offline-resolution',steps)
                 return 1
@@ -206,14 +209,6 @@ class OwnedOCIProtocol(unittest.TestCase):
             self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
             self.assertEqual(controller.oci.environment()['HEX_OFFLINE'],'1')
             self.assertNotIn('HEX_OFFLINE',controller.oci.environment(network=True))
-            (state/'hex').rmdir();(state/'hex').symlink_to(state/'mix',target_is_directory=True)
-            with self.assertRaises(UnknownInput):controller.oci.clean_hex(state)
-            self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
-            steps.clear()
-            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
-                controller.prepare()
-            self.assertEqual(steps,['prepare'])
-            (state/'hex').unlink();(state/'hex').mkdir()
             steps.clear()
             def unavailable(source,private,name,*args,**kwargs):
                 steps.append(name)

@@ -217,14 +217,14 @@ def warm():
 def install_bundle(root,state,result):
     # No phase container/Mix is running here. Validate and install authenticated
     # deps first so the finite raw dev/test links resolve against their actual
-    # authenticated targets. All three validate before any cached code executes.
-    targets={'deps':root/'elixir/deps','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
+    # authenticated targets. All four validate before any cached code executes.
+    targets={'deps':root/'elixir/deps','hex':state/'hex','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
     staged={};backups={};installed=[]
     def stage(name):
         target=targets[name];path=target.with_name('.'+target.name+'-evidence-v2')
         require(not path.exists() and not path.is_symlink(),'cache staging already exists')
         staged[name]=path
-        cache.stage(result['sidecar_bytes'][name],result['sidecar'][name],path,root)
+        cache.stage(result['sidecar_bytes'][name],result['sidecar'][name],path,root,**(dict(private_root=state) if name=='hex' else {}))
     def install(name):
         target=targets[name];backup=target.with_name('.'+target.name+'-fresh-v2')
         require(target.is_dir() and not target.is_symlink() and not backup.exists()
@@ -235,8 +235,8 @@ def install_bundle(root,state,result):
         installed.append(name)
     try:
         stage('deps');install('deps')
-        stage('dev');stage('test')
-        install('dev');install('test')
+        stage('hex');stage('dev');stage('test')
+        install('hex');install('dev');install('test')
     except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError):
         for name in reversed(installed):
             targets[name].rename(staged[name]);backups[name].rename(targets[name])
@@ -255,7 +255,6 @@ def prepare():
     if not (state/'warm.json').exists():store(state/'warm.json',dict(mode='CLEAN',reason='immutable seed verifier unavailable'),new=True)
     environment=oci.environment();profile.public_environment(environment)
     development=phase_run(root,state,'prepare',['make','setup','build','fmt-check','lint','claude-setup'],mix='dev',network=True)
-    oci.clean_hex(state)
     phase_run(root,state,'offline-resolution',['mix','deps.get'],mix='dev')
     compiled=phase_run(root,state,'test-compile',['mix','compile'])
     phase_run(root,state,'native-manifest',['mix','run','--no-start','-e',
@@ -271,11 +270,18 @@ def measure():
     if prepared['ordinary']:output(available=False);return
     # A supported OCI profile that cannot describe its actual inputs refuses
     # here before spending another full suite/PLT run on an unprovable profile.
+    inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'])
+    summary(f"Early four-checkpoint bound: {inventory['entries']} entries/{inventory['bytes']} raw bytes; final post-PLT bounds remain required.")
     started=time.monotonic();measured=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
     raw,metadata=cache.create(root/'elixir/_build/test',root)
     cache_row=next(row for row in measured['identity']['public_inputs'] if row['path']==str(root/'elixir/_build/test'))
     require(metadata['cache']==cache_row,'test cache changed after complete measurement')
     (state/'test-cache.tar.gz').write_bytes(raw);os.chmod(state/'test-cache.tar.gz',0o600)
+    hex_raw,hex_metadata=cache.create(state/'hex',root,private_root=state)
+    hex_row=next(row for row in measured['identity']['public_inputs'] if row['path']==str(state/'hex'))
+    require(hex_metadata['cache']==hex_row,'Hex checkpoint changed after complete measurement')
+    (state/'hex-cache.tar.gz').write_bytes(hex_raw);os.chmod(state/'hex-cache.tar.gz',0o600)
+    store(state/'hex-sidecar.json',hex_metadata,new=True)
     store(state/'sidecar.json',metadata,new=True);store(state/'inputs.json',measured,new=True)
     output(available=True,input_sha256=measured['sha256'])
     summary(f"Complete OCI/public mutable input identity: {measured['files']} entries/{measured['bytes']} bytes; fingerprint+gzip1 checkpoint {time.monotonic()-started:.3f}s. No coverage reuse inferred.")
@@ -344,16 +350,17 @@ def seal():
         inputs=read(state/'inputs.json');require(inputs['sha256']==digest(inputs['identity']),'producer identity invalid')
         execution['summary']=coverage_summary((state/'coverage.log').read_bytes(),strict_json(profile.PROFILE_PATH.read_bytes()))
         caller=context(client(temporary),source);require(caller['eligible_producer'],'ineligible original producer')
-        sides={'test':read(state/'sidecar.json')}
+        sides={'test':read(state/'sidecar.json'),'hex':read(state/'hex-sidecar.json')}
+        require(cache.identity(state/'hex',root,private_root=state)==sides['hex']['cache'],'precoverage Hex checkpoint changed')
         require(cache.identity(root/'elixir/_build/test',root)==sides['test']['cache'],'precoverage test cache changed')
-        raw={'test':(state/'test-cache.tar.gz').read_bytes()}
+        raw={'test':(state/'test-cache.tar.gz').read_bytes(),'hex':(state/'hex-cache.tar.gz').read_bytes()}
         for name,path in (('deps',root/'elixir/deps'),('dev',root/'elixir/_build/dev')):raw[name],sides[name]=cache.create(path,root)
         require(sum(len(value) for value in raw.values())<=cache.MAX_COMPRESSED
                 and sum(value['cache']['bytes'] for value in sides.values())<=cache.MAX_EXPANDED
                 and sum(value['cache']['files'] for value in sides.values())<=cache.MAX_ENTRIES,'combined checkpoint exceeds bounds')
         proof=state/'proof';proof.mkdir(mode=0o700)
         store(proof/'receipt.json',dict(schema_version=3,family='full-exunit-coverage',inputs_sha256=inputs['sha256'],
-            sidecar=sides,checkpoints=dict(test='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
+            sidecar=sides,checkpoints=dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
             cache_origin=read(state/'warm.json'),producer=dict(repository=REPOSITORY,repository_id=caller['repository_id'],
             run_id=caller['run_id'],attempt=caller['attempt'],job_id=caller['job_id'],source=source,workflow=WORKFLOW),execution=execution),new=True)
         store(proof/'inputs.json',inputs,new=True);(proof/'coverage.log').write_bytes((state/'coverage.log').read_bytes())

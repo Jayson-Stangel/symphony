@@ -241,7 +241,7 @@ def archive(raw, meta):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
             entries = bundle.infolist()
-            require(len(entries) == 6 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log', 'test-cache.tar.gz', 'dev-cache.tar.gz', 'deps-cache.tar.gz'},
+            require(len(entries) == 7 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log', 'test-cache.tar.gz', 'dev-cache.tar.gz', 'deps-cache.tar.gz', 'hex-cache.tar.gz'},
                     'unexpected/duplicate original proof archive members')
             require(all(not entry.is_dir() and not entry.flag_bits & 1
                         and not stat.S_ISLNK(entry.external_attr >> 16)
@@ -252,7 +252,7 @@ def archive(raw, meta):
             values = {entry.filename: bundle.read(entry) for entry in entries}
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         raise Fresh('corrupt original proof archive') from None
-    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log'], {name:values[name+'-cache.tar.gz'] for name in ('test','dev','deps')}
+    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log'], {name:values[name+'-cache.tar.gz'] for name in ('test','dev','deps','hex')}
 
 
 def coverage_summary(raw, profile):
@@ -301,7 +301,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
         require(inputs['sha256'] == current['sha256'] == digest(current['identity']),
                 'actual effective validation inputs differ')
     sidecar = receipt.get('sidecar')
-    require(type(sidecar) is dict and set(sidecar) == {'test','dev','deps'}, 'finite checkpoint inventory differs')
+    require(type(sidecar) is dict and set(sidecar) == {'test','dev','deps','hex'}, 'finite checkpoint inventory differs')
     for name, metadata in sidecar.items():
         require(type(metadata) is dict and metadata.get('sha256') == hashlib.sha256(cache[name]).hexdigest()
                 and metadata.get('size') == len(cache[name]), 'original checkpoint integrity differs')
@@ -309,7 +309,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
     require(all(type(row.get(key)) is int and row[key]>=0 for row in inventories for key in ('files','bytes'))
             and sum(row['files'] for row in inventories)<=10000
             and sum(row['bytes'] for row in inventories)<=256*1024*1024, 'checkpoint aggregate exceeds finite profile')
-    require(receipt.get('checkpoints') == dict(test='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
+    require(receipt.get('checkpoints') == dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
             'checkpoint timing is not explicit')
     require(type(receipt.get('cache_origin')) is dict and receipt['cache_origin'].get('mode') in ('CLEAN','RESTORED'),
             'original cache provenance unavailable')

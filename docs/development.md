@@ -896,25 +896,28 @@ qualification remain separate. No image is published or included in evidence.
 
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle
-contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus a separate
-pre-coverage `_build/test` checkpoint. Authenticated dependencies become visible first so the audited compiler links
-resolve to their actual targets. All three validate before cached code executes;
-raw bytes, modes, ownership and allowed links remain exact. No global Mix home or
-core PLTs are restored. Fresh build, formatting, lint, npm setup, compilation and
-ordinary Dialyzer still execute. Once the online setup container has exited and
-been removed, the exact private Hex fetch directory is discarded and recreated
-empty. Following compilation, tests and Dialyzer use `HEX_OFFLINE=1`; actual Hex
-archive/tool bytes in Mix home and raw dependency/compiler bytes remain bound.
-This creates the execution input before qualification rather than altering any
-observed timestamp or executable bytes. An early offline `mix deps.get` in the development environment proves the
-resolution required again by Dialyzer before test compilation or the full suite.
-Unavailable registry data therefore fails before expensive qualification. ExUnit's own API initializes the empty failures
-manifest before the checkpoint. A protected `main` push can consume the same
-original proof after authenticating the actual dev-to-main promotion; this code
-does not authorize promotion. Unsupported sources retain the ordinary mise/Mix
-cache and fresh command. API work is bounded to 30 seconds and 80 GETs, with at
-most three dev history rows and one original PR link. Unavailable evidence stays
-fresh; an unobservable supported execution profile refuses before the full suite.
+contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus separate
+pre-coverage `_build/test` and exact private Hex checkpoints. Authenticated
+dependencies become visible first so audited compiler links resolve to their
+actual targets. All four validate before cached code executes; raw bytes, modes,
+ownership and allowed links remain exact. No Mix home or core PLTs are restored.
+Fresh build, formatting, lint, npm setup, compilation and ordinary Dialyzer still
+execute. Hex restores only raw `cache.bin` and lock-bound public tarballs under
+`packages/hexpm`; configuration, private repos, unknown files, temporary files and
+symlinks refuse. A 24-hour version-check throttle can preserve the original check
+timestamp; ordinary registry requests may still refresh data. Changed raw fetch
+metadata causes fresh qualification, never timestamp editing or an equality claim.
+The same aggregate 64 MiB compressed, 256 MiB expanded and 10,000-entry limits cover
+all four checkpoints; actual hosted size remains unmeasured. Hex must remain
+unchanged through sealing. Following online setup, early offline `mix deps.get`
+proves the resolution required again by Dialyzer before test compilation or the
+full suite. ExUnit's own API initializes the empty failures manifest before the
+checkpoint. A protected `main` push can consume the same original proof after
+authenticating actual dev-to-main promotion; this code does not authorize promotion.
+Unsupported sources retain the ordinary mise/Mix cache and fresh command. API work
+is bounded to 30 seconds and 80 GETs, with at most three dev history rows and one
+original PR link. Unavailable evidence stays fresh; an unobservable supported
+execution profile refuses before the full suite.
 
 This operates within the existing reviewed root-workflow trust boundary; it does
 not enforce a required workflow against a root workflow that removes validation.
