@@ -1,6 +1,7 @@
 # Compare Psych's syntax tree without YAML 1.1 boolean coercion (notably `on`).
 # Scalar spelling/quoting is retained; unsupported syntax can never grant omission.
 require 'json'
+require 'digest'
 require 'psych'
 Scalar = Struct.new(:value, :plain, :quoted)
 
@@ -68,6 +69,19 @@ def presentation(value, path)
   value
 end
 
+# Finite reviewed job bodies, not a generic exemption for application controls.
+def job_identity(value)
+  encode = lambda do |item|
+    case item
+    when Scalar then [item.value, item.plain, item.quoted]
+    when Hash then item.map { |key, child| [encode.call(key), encode.call(child)] }
+    when Array then item.map { |child| encode.call(child) }
+    else item
+    end
+  end
+  Digest::SHA256.hexdigest(JSON.generate(encode.call(value)))
+end
+
 begin
   input = JSON.parse(STDIN.read)
   if input['before'].nil? || input['after'].nil?
@@ -112,7 +126,42 @@ begin
     end
     result['browser_control_changed'] = ordinary[0] != ordinary[1]
   end
+  if input.fetch('path') == '.github/workflows/package-checks.yml' && !result['presentation_only']
+    # Exact reviewed no-consumer selector and strict required joins only.
+    # Native commands, callers, triggers and every other job must be identical.
+    audited = {
+      'native-host-package' => %w[e712d94d26bff453ab2615554e997c9f2c63d51dcebd511213bd84ff04ae87f8 20e6aee0c3746702be256912c5b9699838ae1f5202582adec860cc2782eeebf2],
+      'package-qualification' => %w[755c35dccbc66fee57e976447f6d80f8ce1eb94314b3b4a9fc1ba570590c72e0 c24c93c2913592a6b152c0b81cc79af667c5ac3811c3d21e17b77edb77ae74fc],
+      'mac-runner' => %w[7c518ede33b18800ba4e3b48ed63c0ecd409373e94827a809763f727d662ecdc 3f0da5690c80fa29b1e3094d4b2669314f7cc6d3085adff7a881aac6c4b460db]
+    }
+    copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
+    finite = copies.all? do |document|
+      jobs = field(document, 'jobs')
+      jobs.keys.map(&:value).sort == %w[changes portable qualification host-policy native-host-package package-qualification mac-runner].sort &&
+      audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
+    end
+    if finite
+      copies.each { |document| field(document, 'jobs').delete_if { |id, _| audited.key?(id.value) } }
+      result['mac_selector_policy_only'] = true if copies[0] == copies[1]
+    end
+  end
   if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
+    # Only these reviewed selector seams may change required joins.
+    # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
+    audited = {
+      'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 7c6c91472fd1e76f2e64479b6678652d0c88c5d8113ff975e5a3ff171b43c6f3],
+      'mac-runner' => %w[c0d947e5032f85257bf474be76efc3b83db9fb483ea691d3f0f1b5c74c5329b0 87296894c588f3b29e0df6c8bfef65b0bab91efe21d36f159f53c99bafdab11c]
+    }
+    copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
+    finite = copies.all? do |document|
+      jobs = field(document, 'jobs')
+      jobs.keys.map(&:value).sort == %w[changes platform-contracts make-all elixir-checks claude-checks mac-runner].sort &&
+      audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
+    end
+    if finite
+      copies.each { |document| field(document, 'jobs').delete_if { |id, _| audited.key?(id.value) } }
+      result['mac_selector_policy_only'] = true if copies[0] == copies[1]
+    end
     known = {
       'python3 runner/test_codex_readiness.py' => 'readiness',
       'python3 scripts/ci/release_tests.py codex-config' => 'codex_config',

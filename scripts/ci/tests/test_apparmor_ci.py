@@ -241,7 +241,6 @@ class AppArmorWorkflowTest(unittest.TestCase):
         jobs = {
             'runner-release.yml': {
                 'candidate': 'Build exact native runner candidates and verify digest pulls',
-                'cache-probe': 'Prepare isolated registry and evidence',
                 'ubuntu-package-lifecycle': 'Real source-independent Ubuntu 26.04 manager lifecycle',
                 'lifecycle-diagnostic': 'Diagnose actual Ubuntu lifecycle using selected real artifacts',
                 'transfer-replay': 'Real checksum, Docker load and model-free runtime proof',

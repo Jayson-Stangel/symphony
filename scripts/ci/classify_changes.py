@@ -148,6 +148,7 @@ CI_POLICY_TESTS = {
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
 PORTABLE_RELEASE = {
+    'README.md',  # Exact release-controller reference; no application/runtime reader.
     'benchmark-transfer.py',
     'build-candidate-runners.sh',
     'build-manager-package.sh',
@@ -467,6 +468,9 @@ def event_routing(paths, event, name):
                 selected, rule = {'portable'}, 'known manual-only controller changed; ordinary policy/portable contracts, no payload inputs'
             else:
                 selected, rule = ALL, 'unknown manual workflow controls or trigger changes: conservative full qualification'
+        if path in ('.github/workflows/make-all.yml', '.github/workflows/package-checks.yml') and base:
+            if workflow_comparison(path, base, head).get('mac_selector_policy_only') is True:
+                selected, rule = {'portable'}, 'exact audited Mac selector/required-join policy; payload commands unchanged'
         if path == '.github/workflows/make-all.yml' and base:
             families = workflow_comparison(path, base, head).get('fast_workflow_families')
             if families and set(families) <= {'npm', 'readiness', 'codex_config'}:
