@@ -15,6 +15,122 @@ finally:
     sys.path[:] = before
 
 
+COVERAGE_FIXTURE=b'685 tests, 0 failures, 10 skipped\n| 100.00% | Total |\n'
+
+
+def precoverage_fixture(outer):
+    root=outer/'source';root.mkdir();state=outer/'state';state.mkdir(mode=0o700)
+    (root/'elixir').mkdir();(root/'elixir/mix.lock').write_text('  "phoenix": {:hex, :phoenix, "1.0.0"}\n')
+    targets={'test':root/'elixir/_build/test','hex':state/'hex'}
+    for target in targets.values():target.mkdir(parents=True)
+    (targets['test']/'compiled').write_bytes(b'INERT original compiler bytes')
+    (targets['hex']/'cache.bin').write_bytes(b'INERT original public registry')
+    for target in (root/'elixir/deps',root/'elixir/_build/dev'):target.mkdir(parents=True)
+    (root/'elixir/deps/source').write_bytes(b'INERT dependency bytes')
+    rows=[]
+    for name,target in targets.items():
+        raw,metadata=controller.cache.create(target,root,**(dict(private_root=state) if name=='hex' else {}))
+        path=state/(name+'-cache.tar.gz');path.write_bytes(raw);path.chmod(0o600)
+        controller.store(state/('sidecar.json' if name=='test' else 'hex-sidecar.json'),metadata,new=True)
+        rows.append(metadata['cache'])
+    inputs=dict(identity=dict(schema_version=2,family='full-exunit-coverage',profile_version=2,
+        execution=dict(profile='full-exunit-oci-v2',source=dict(files=199)),public_inputs=rows))
+    inputs['sha256']=controller.digest(inputs['identity'])
+    controller.store(state/'inputs.json',inputs,new=True)
+    controller.store(state/'environment.json',controller.oci.environment(),new=True)
+    controller.store(state/'prepared.json',dict(source='a'*40,supported=True,ordinary=False),new=True)
+    controller.store(state/'dialyzer.json',dict(source='a'*40,success=True),new=True)
+    controller.store(state/'warm.json',dict(mode='CLEAN'),new=True)
+    return root,state,inputs
+
+
+class ProtectedStartingWorld(unittest.TestCase):
+    def test_input_drift_or_prearchive_tampering_refuses_before_any_test_container(self):
+        from copy import deepcopy
+        for changed in ('fingerprint','archive','metadata'):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as directory:
+                root,state,inputs=precoverage_fixture(Path(directory));observed=deepcopy(inputs)
+                if changed=='fingerprint':
+                    observed['identity']['unreviewed']='changed';observed['sha256']=controller.digest(observed['identity'])
+                elif changed=='archive':
+                    path=state/'hex-cache.tar.gz';path.write_bytes(path.read_bytes()+b'changed')
+                else:
+                    metadata=controller.read(state/'sidecar.json');metadata['cache']['sha256']='f'*64
+                    controller.store(state/'sidecar.json',metadata)
+                with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller.profile,'fingerprint',return_value=observed),patch.object(controller,'phase_run') as run,self.assertRaises(ValueError):controller.execute()
+                run.assert_not_called();self.assertFalse((state/'execution.json').exists())
+
+    def test_successful_execution_preserves_start_world_while_live_outputs_may_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,state,inputs=precoverage_fixture(Path(directory));outputs=[];messages=[]
+            original=(state/'test-cache.tar.gz').read_bytes()
+            def run(source,private,phase,arguments,**options):
+                start=controller.read(state/'execution.json')
+                self.assertEqual(start['start_inputs_sha256'],inputs['sha256']);self.assertEqual(start['mode'],'EXECUTING')
+                (root/'elixir/_build/test/compiled').write_bytes(b'INERT changed post-test output')
+                (state/'hex/cache.bin').write_bytes(b'INERT changed post-test registry')
+                options['log'].write_bytes(COVERAGE_FIXTURE);return 4.0
+            with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller.profile,'fingerprint',return_value=inputs),patch.object(controller,'phase_run',side_effect=run),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary',side_effect=messages.append),patch.object(controller,'client'),patch.object(controller,'context',return_value=dict(eligible_producer=True,repository_id=77,run_id=101,attempt=2,job_id=501)):
+                controller.execute();controller.seal()
+            self.assertEqual(outputs[-1],dict(available=True))
+            receipt=controller.read(state/'proof/receipt.json');self.assertEqual(receipt['schema_version'],4)
+            self.assertEqual(receipt['execution']['start_inputs_sha256'],inputs['sha256'])
+            self.assertEqual((state/'proof/test-cache.tar.gz').read_bytes(),original)
+            self.assertEqual(set(receipt['sidecar']),{'test','hex','dev','deps'})
+
+    def test_protected_archive_tampering_after_success_refuses_sealing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,state,inputs=precoverage_fixture(Path(directory));outputs=[];messages=[]
+            def run(*args,**options):options['log'].write_bytes(COVERAGE_FIXTURE);return 4.0
+            with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller.profile,'fingerprint',return_value=inputs),patch.object(controller,'phase_run',side_effect=run),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary',side_effect=messages.append),patch.object(controller,'client'),patch.object(controller,'context',return_value=dict(eligible_producer=True,repository_id=77,run_id=101,attempt=2,job_id=501)):
+                controller.execute();path=state/'test-cache.tar.gz';path.write_bytes(path.read_bytes()+b'tampered');controller.seal()
+            self.assertEqual(outputs[-1],dict(available=False));self.assertIn('protected_start_inputs',messages[-1])
+            self.assertFalse((state/'proof').exists())
+
+    def test_actual_diagnostic_workflow_only_retains_unqualified_failures_and_always_cleans(self):
+        import re
+        from test_components import job,workflow
+        block=job(workflow('make-all'),'elixir-checks')
+        prepare=block.split('      - name: Prepare bounded unqualified public input diagnostics\n',1)[1].split('      - name:',1)[0]
+        condition=re.search(r'^        if: (.+)$',prepare,re.M)[1]
+        for supported in ('true','false',''):
+            for proof,mode in ((proof,mode) for proof in ('true','false','') for mode in ('EXECUTED','REUSED','')):
+                for failed in (True,False):
+                    code=condition.replace('always()','True').replace('failure()',repr(failed)).replace('steps.profile.outputs.supported',repr(supported)).replace('steps.producer.outputs.available',repr(proof)).replace('steps.evidence.outputs.mode',repr(mode)).replace('&&',' and ').replace('||',' or ')
+                    self.assertEqual(eval(code,{'__builtins__':{}}),supported=='true' and (failed or (proof!='true' and mode!='REUSED')))
+        self.assertNotIn('GH_TOKEN',prepare)
+        retained=block.split('      - name: Retain unqualified public input diagnostics\n',1)[1].split('      - name:',1)[0]
+        self.assertIn('name: elixir-coverage-diagnostics-',retained);self.assertIn('retention-days: 3',retained)
+        self.assertIn('actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',retained)
+        self.assertIn("if: always() && steps.profile.outputs.supported == 'true'",block.split('      - name: Remove owned OCI execution resources\n',1)[1])
+
+    def test_healthy_reused_execution_never_mints_an_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root,state,_=precoverage_fixture(Path(directory));outputs=[]
+            controller.store(state/'decision.json',dict(mode='REUSED',original_run_url='https://example.invalid/INERT'),new=True)
+            with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary'),patch.object(controller,'context') as api:
+                controller.seal()
+            self.assertEqual(outputs,[dict(available=False)]);api.assert_not_called()
+            self.assertEqual(controller.read(state/'seal-status.json')['stage'],'reused_original')
+            self.assertFalse((state/'proof').exists())
+
+    def test_diagnostics_are_exact_public_records_bounded_and_never_include_cache_or_ambient_values(self):
+        for oversize in (False,True):
+            with self.subTest(oversize=oversize),tempfile.TemporaryDirectory() as directory:
+                root,state,inputs=precoverage_fixture(Path(directory));outputs=[]
+                (state/'unknown.env').write_text('dummy-secret-never-copy')
+                if oversize:controller.store(state/'inputs.json',dict(public_fixture='x'*10000))
+                with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller,'MAX_DIAGNOSTICS',100 if oversize else 1024*1024),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary'),patch.dict(os.environ,dict(GITHUB_RUN_ID='101',GITHUB_RUN_ATTEMPT='2',GH_TOKEN='dummy-secret-never-copy')):controller.diagnostics()
+                self.assertEqual(outputs,[dict(available=not oversize)])
+                if oversize:self.assertFalse((state/'diagnostics').exists())
+                else:
+                    files=list((state/'diagnostics').iterdir());self.assertLessEqual(sum(p.stat().st_size for p in files),1024*1024)
+                    self.assertTrue({p.name for p in files}<=set(controller.DIAGNOSTIC_RECORDS)|{'diagnostic-status.json'})
+                    self.assertFalse(any('cache.tar' in p.name or p.suffix=='.env' for p in files))
+                    self.assertNotIn(b'dummy-secret-never-copy',b''.join(p.read_bytes() for p in files))
+                    self.assertFalse(controller.read(state/'diagnostics/diagnostic-status.json')['qualified'])
+
+
 class ExistingJobPhases(unittest.TestCase):
     def test_unknown_source_preserves_ordinary_full_make_and_parent_settings_without_api_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -51,23 +167,19 @@ class ExistingJobPhases(unittest.TestCase):
 
     def test_supported_fresh_execution_keeps_ordinary_coverage_startup_and_actual_output_mode(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); state = root / 'state'; state.mkdir(mode=0o700)
-            commands, outputs = [], []
-            def read(path):
-                if path.name == 'prepared.json':
-                    return dict(source='a'*40, ordinary=False)
-                return dict(MIX_ENV='test', PATH='/fixed/toolchain:/usr/bin:/bin')
-            def run(source, state, phase, arguments, **options):
-                commands.append(arguments); options['log'].write_bytes(b'full suite output')
-                return 340.2
-            with patch.object(controller, 'paths', return_value=(root, root, 'a'*40, state, root/'selection')), \
-                 patch.object(controller, 'read', side_effect=read), patch.object(controller, 'phase_run', side_effect=run), \
-                 patch.object(controller, 'output', side_effect=lambda **value: outputs.append(value)), \
-                 patch.object(controller, 'summary'):
+            root,state,inputs=precoverage_fixture(Path(directory))
+            commands,outputs=[],[]
+            def run(source,private,phase,arguments,**options):
+                self.assertEqual(controller.read(state/'execution.json')['mode'],'EXECUTING')
+                commands.append(arguments);options['log'].write_bytes(COVERAGE_FIXTURE)
+                return 4.0
+            with patch.object(controller,'paths',return_value=(root,state.parent,'a'*40,state,state/'selection')),patch.object(controller.profile,'fingerprint',return_value=inputs),patch.object(controller,'phase_run',side_effect=run),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary'):
                 controller.execute()
-            self.assertEqual(commands, [['mix', 'test', '--cover', '--seed', '0', '--max-failures', '1']])
-            self.assertNotIn('--no-compile', commands[0])
-            self.assertEqual(outputs, [dict(mode='EXECUTED', origin='')])
+            self.assertEqual(commands,[['mix','test','--cover','--seed','0','--max-failures','1']])
+            self.assertEqual(outputs,[dict(mode='EXECUTED',origin='')])
+            execution=controller.read(state/'execution.json')
+            self.assertEqual(execution['start_inputs_sha256'],inputs['sha256'])
+            self.assertEqual(set(execution['precoverage_checkpoints']),{'test','hex'})
 
     def test_dialyzer_stays_fresh_in_dev_environment_without_bypassing_hash_check(self):
         with tempfile.TemporaryDirectory() as directory:

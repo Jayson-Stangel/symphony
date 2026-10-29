@@ -299,6 +299,19 @@ def difference_facets(original, current):
     return ','.join(facets) or 'other_profile_input'
 
 
+def validate_input_profile(inputs, profile):
+    from validation_inputs import digest
+    require(type(inputs) is dict and type(inputs.get('identity')) is dict
+            and inputs.get('sha256')==digest(inputs['identity']), 'original complete input manifest integrity differs')
+    identity=inputs['identity'];execution=identity.get('execution')
+    require(identity.get('schema_version')==2 and identity.get('family')=='full-exunit-coverage'
+            and identity.get('profile_version')==profile.get('version')==2
+            and type(execution) is dict and execution.get('profile')==profile.get('cache_profile')=='full-exunit-oci-v2'
+            and type(execution.get('source')) is dict
+            and execution['source'].get('files')==profile.get('audited_source_files')==199,
+            'unsupported audited original input profile')
+
+
 def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, restore=False):
     from validation_inputs import digest
     if merged_source is None:
@@ -310,7 +323,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
     stages = successful_steps(job)
     artifact_metadata(meta, run, stages[-1])
     receipt, inputs, log, cache = archive(raw, meta)
-    require(type(receipt) is dict and receipt.get('schema_version') == 3
+    require(type(receipt) is dict and receipt.get('schema_version') == 4
             and type(receipt.get('schema_version')) is int
             and receipt.get('family') == 'full-exunit-coverage', 'unsupported original receipt format')
     producer = receipt.get('producer')
@@ -319,6 +332,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
                              source=merged_source or run['head_sha'], workflow=WORKFLOW), 'receipt origin differs from actual service provenance')
     require(type(inputs) is dict and type(inputs.get('identity')) is dict
             and inputs.get('sha256') == digest(inputs['identity']), 'original complete input manifest integrity differs')
+    validate_input_profile(inputs,profile)
     if restore == 'warm':
         require(type(inputs['identity'].get('execution')) is dict and bool(inputs['identity']['execution'])
                 and inputs['identity']['execution'] == current['identity'].get('execution'), 'actual OCI/source/tool/build runtime differs: '+difference_facets(inputs['identity'],current['identity']))
@@ -345,6 +359,9 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
     require(type(execution) is dict and execution.get('mode') == 'EXECUTED'
             and execution.get('exit_code') == 0 and type(execution.get('exit_code')) is int,
             'receipt is not an original successful executed suite')
+    require(execution.get('start_inputs_sha256')==inputs['sha256']
+            and execution.get('precoverage_checkpoints')=={name:sidecar[name] for name in ('test','hex')},
+            'execution is not bound to its protected original start inputs/checkpoints')
     require(execution.get('coverage_log_sha256') == hashlib.sha256(log).hexdigest(), 'original test output integrity differs')
     require(execution.get('summary') == coverage_summary(log, profile), 'receipt summary differs from original test output')
     seconds = execution.get('seconds')

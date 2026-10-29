@@ -38,12 +38,12 @@ class OriginalProof(unittest.TestCase):
         self.job = dict(id=501, run_id=101, run_attempt=2, head_sha='a' * 40, name=evidence.JOB,
                         status='completed', conclusion='success', labels=['ubuntu-24.04'],
                         runner_id=1000001, runner_group_id=0, runner_group_name='GitHub Actions', steps=stages)
-        self.profile = dict(expected_tests=685, expected_linux_skips=10, measured_coverage=100.0)
-        self.inputs = dict(identity=dict(execution=dict(audited_oci_fixture=True), audited_full_input_fixture=True, public_inputs=[
+        self.profile = dict(version=2,cache_profile='full-exunit-oci-v2',audited_source_files=199,expected_tests=685, expected_linux_skips=10, measured_coverage=100.0)
+        self.inputs = dict(identity=dict(schema_version=2,family='full-exunit-coverage',profile_version=2,execution=dict(profile='full-exunit-oci-v2',source=dict(files=199),audited_oci_fixture=True), audited_full_input_fixture=True, public_inputs=[
             dict(path='/home/runner/work/symphony/symphony/elixir/_build/test', sha256='f'*64, files=1, bytes=1)]))
         self.inputs['sha256'] = digest(self.inputs['identity'])
         self.log = b'Finished in 4.0 seconds\n685 tests, 0 failures, 10 skipped\n| 100.00% | Total |\n'
-        self.receipt = dict(schema_version=3, family='full-exunit-coverage', clean_preparation='no-mise-or-compiled-cache-v1',
+        self.receipt = dict(schema_version=4, family='full-exunit-coverage', clean_preparation='no-mise-or-compiled-cache-v1',
             producer=dict(repository=evidence.REPOSITORY, repository_id=77, run_id=101, attempt=2,
                           job_id=501, source='a' * 40, workflow=evidence.WORKFLOW),
             inputs_sha256=self.inputs['sha256'], execution=dict(mode='EXECUTED', exit_code=0,
@@ -59,6 +59,8 @@ class OriginalProof(unittest.TestCase):
         self.receipt['sidecar'] = {name: dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar),cache=dict(files=1,bytes=1)) for name in ('test','dev','deps','hex')}
         self.receipt.setdefault('checkpoints',dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',dev='POST_DIALYZER',deps='POST_DIALYZER'))
         self.receipt.setdefault('cache_origin',dict(mode='CLEAN'))
+        self.receipt['execution'].setdefault('start_inputs_sha256',self.inputs['sha256'])
+        self.receipt['execution'].setdefault('precoverage_checkpoints',{name:self.receipt['sidecar'][name] for name in ('test','hex')})
         target = io.BytesIO()
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('receipt.json', json.dumps(self.receipt))
@@ -102,6 +104,26 @@ class OriginalProof(unittest.TestCase):
         original['environment']=dict(DUMMY_SECRET='never-print-value');changed['environment']={}
         actual=evidence.difference_facets(original,changed)
         self.assertIn('public_environment',actual);self.assertNotIn('never-print-value',actual)
+
+    def test_schema3_missing_start_binding_and_diagnostics_never_qualify(self):
+        for change in ('legacy','start','checkpoints','diagnostics'):
+            with self.subTest(change=change):
+                old=json.loads(json.dumps(self.receipt));old_meta=dict(self.meta)
+                if change=='legacy':self.receipt['schema_version']=3
+                elif change=='start':self.receipt['execution']['start_inputs_sha256']='f'*64
+                elif change=='checkpoints':self.receipt['execution']['precoverage_checkpoints']={}
+                self.pack()
+                if change=='diagnostics':self.meta['name']='elixir-coverage-diagnostics-101-2'
+                with self.assertRaises(evidence.Fresh):self.verify()
+                self.receipt=old;self.meta=old_meta
+
+    def test_captured_actual143_public_coverage_payload_parses_without_becoming_a_receipt(self):
+        fixture=json.loads((Path(__file__).parent/'fixtures/coverage-job-before.json').read_text())['captured_143_coverage']
+        raw=fixture['payload'].encode()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),fixture['payload_sha256'])
+        self.assertEqual(fixture['raw_job_log_sha256'],'260a02b0ed81f253458be5f5d7821d36d14ace60c571f2e04e47b4082dc25290')
+        self.assertEqual(evidence.coverage_summary(raw,self.profile),dict(tests=685,failures=0,skipped=10,measured_coverage=100.0))
+        self.assertNotIn('receipt',fixture);self.assertNotIn('schema_version',fixture)
 
     def test_failed_cancelled_incomplete_foreign_manual_pr_stale_producer_never_authorizes(self):
         original = deepcopy(self.run)

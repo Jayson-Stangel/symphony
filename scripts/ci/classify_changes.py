@@ -482,6 +482,9 @@ def event_routing(paths, event, name):
                 selected, rule = {'portable'}, 'known manual-only controller changed; ordinary policy/portable contracts, no payload inputs'
             else:
                 selected, rule = ALL, 'unknown manual workflow controls or trigger changes: conservative full qualification'
+        if path == '.github/workflows/package-checks.yml' and base:
+            if workflow_comparison(path,base,head).get('mac_selector_policy_only') is True:
+                selected,rule={'portable'},'exact audited Mac selector/required-join policy; native payload commands unchanged'
         if path == '.github/workflows/make-all.yml' and base:
             comparison = workflow_comparison(path, base, head)
             if comparison.get('elixir_profile_only') is True:

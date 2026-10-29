@@ -104,7 +104,7 @@ jobs:
   native-host-package:
     name: Native helpers and fixtures (${{ matrix.platform }})
     needs: [changes, qualification, host-policy, mac-runner]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.mac-runner.result == 'success' && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && (((needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true') && needs.mac-runner.result == 'success') || (needs.changes.outputs.package_macos == 'false' && needs.changes.outputs.fixtures == 'false' && needs.mac-runner.result == 'skipped')) && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
@@ -254,7 +254,6 @@ jobs:
           MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
-          test "$MAC_RUNNER_RESULT" = success
           for flag in "$CODE" "$PORTABLE_REQUIRED" "$MACOS" "$LINUX" "$FIXTURES" "$NATIVE_REQUIRED" "$READY"; do
             case "$flag" in true|false) ;; *) exit 1 ;; esac
           done
@@ -269,6 +268,11 @@ jobs:
           test "$NATIVE_REQUIRED" = "$expected_native"
           if [ "$NATIVE_REQUIRED" = true ]; then test "$PORTABLE_REQUIRED" = true; fi
           test "$PLATFORM" = "$expected_platform"
+          if [ "$macos" = true ] && [ "$READY" = true ]; then
+            test "$MAC_RUNNER_RESULT" = success
+          else
+            test "$MAC_RUNNER_RESULT" = skipped
+          fi
           if [ "$CODE" = false ]; then
             test "$PORTABLE_REQUIRED/$MACOS/$LINUX/$FIXTURES" = false/false/false/false
           fi
@@ -326,7 +330,7 @@ jobs:
   mac-runner:
     name: Select owned Mac first for native host package
     needs: [changes, qualification, host-policy]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && (needs.host-policy.result == 'success' || (needs.changes.outputs.native == 'false' && needs.host-policy.result == 'skipped')) }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && needs.changes.outputs.native == 'true' && needs.changes.outputs.ready == 'true' && (needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     outputs:

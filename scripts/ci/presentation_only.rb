@@ -126,16 +126,37 @@ begin
     end
     result['browser_control_changed'] = ordinary[0] != ordinary[1]
   end
-  if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
-    # Only this reviewed coverage seam may change the shared required join.
-    # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
+  if input.fetch('path') == '.github/workflows/package-checks.yml' && !result['presentation_only']
+    # Exact reviewed no-consumer selector and strict required joins only.
+    # Native commands, callers, triggers and every other job must be identical.
     audited = {
-      'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 40c45ec9253396761f796ae2e4d02b36e88f2c528cba94889f99efbeed21692b],
-      'elixir-checks' => %w[27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 c522ec1eb47cae0680570fb0ab7021e19959a6bbbf0d9992dd2ee5bfbfcb86da]
+      'native-host-package' => %w[e712d94d26bff453ab2615554e997c9f2c63d51dcebd511213bd84ff04ae87f8 20e6aee0c3746702be256912c5b9699838ae1f5202582adec860cc2782eeebf2],
+      'package-qualification' => %w[755c35dccbc66fee57e976447f6d80f8ce1eb94314b3b4a9fc1ba570590c72e0 c24c93c2913592a6b152c0b81cc79af667c5ac3811c3d21e17b77edb77ae74fc],
+      'mac-runner' => %w[7c518ede33b18800ba4e3b48ed63c0ecd409373e94827a809763f727d662ecdc 3f0da5690c80fa29b1e3094d4b2669314f7cc6d3085adff7a881aac6c4b460db]
     }
     copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
     finite = copies.all? do |document|
       jobs = field(document, 'jobs')
+      jobs.keys.map(&:value).sort == %w[changes portable qualification host-policy native-host-package package-qualification mac-runner].sort &&
+      audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
+    end
+    if finite
+      copies.each { |document| field(document, 'jobs').delete_if { |id, _| audited.key?(id.value) } }
+      result['mac_selector_policy_only'] = true if copies[0] == copies[1]
+    end
+  end
+  if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
+    # Only these reviewed coverage/selector seams may change required joins.
+    # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
+    audited = {
+      'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 a0ad8ba9821a0bd840f4af10bc6c5bbaeaf9f28d243eedef2582edbeb9bb9fb6],
+      'elixir-checks' => %w[27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 6e500514340d9177b1b16fe6915767b5d31b761b6ec6b8a1b8eefb2baab1f671],
+      'mac-runner' => %w[c0d947e5032f85257bf474be76efc3b83db9fb483ea691d3f0f1b5c74c5329b0 87296894c588f3b29e0df6c8bfef65b0bab91efe21d36f159f53c99bafdab11c]
+    }
+    copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
+    finite = copies.all? do |document|
+      jobs = field(document, 'jobs')
+      jobs.keys.map(&:value).sort == %w[changes platform-contracts make-all elixir-checks claude-checks mac-runner].sort &&
       audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
     end
     if finite

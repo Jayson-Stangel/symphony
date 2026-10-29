@@ -877,6 +877,13 @@ source, complete change inventory, prior subject and native effects still requir
 operator approval before the single combined candidate. No version bump or
 production promotion is needed for this nonpublishing dev path.
 
+Unrequested owned-Mac selectors do not allocate a controller runner. Application
+selection follows the existing npm/contracts predicate, including fast draft
+contracts. Package selection additionally requires ready native Mac/fixture inputs;
+Linux-only qualification accepts exactly an omitted Mac selector. Required joins
+expect success only for requested selectors and exact `skipped` otherwise. A
+selected failure, cancellation or missing result cannot become an omission.
+
 ### Full ExUnit evidence boundary (JAY-716)
 
 The full-coverage controller accepts an original same-repository PR proof only
@@ -908,8 +915,8 @@ symlinks refuse. A 24-hour version-check throttle can preserve the original chec
 timestamp; ordinary registry requests may still refresh data. Changed raw fetch
 metadata causes fresh qualification, never timestamp editing or an equality claim.
 The same aggregate 64 MiB compressed, 256 MiB expanded and 10,000-entry limits cover
-all four checkpoints; actual hosted size remains unmeasured. Hex must remain
-unchanged through sealing. Following online setup, early offline `mix deps.get`
+all four checkpoints; actual hosted size remains unmeasured. The
+protected pre-test archive remains unchanged through sealing. Following online setup, early offline `mix deps.get`
 proves the resolution required again by Dialyzer. All test dependencies then
 compile online, including the pinned test-only native dependency. Its documented
 `ELIXIR_MAKE_CACHE_DIR` points to the exact private `/cache/native-fetch` bind.
@@ -920,8 +927,21 @@ manifest, complete input measurement or full suite. The actual empty fetch
 directory is fingerprinted; no fifth archive or home-directory transfer is used.
 The application keeps its default logger: exact `elixir/log` is a generated
 writable bind, required empty and included in the pre-coverage input identity.
-Post-test log output is allowed but is not transferred as a cache checkpoint. ExUnit's own API initializes the empty failures manifest before the
-checkpoint. A protected `main` push can consume the same original proof after
+Post-test log output is allowed but is not transferred as a cache checkpoint.
+ExUnit's own API initializes the empty failures manifest before the
+checkpoint. Immediately before executing coverage, the controller recomputes the
+complete input fingerprint and verifies protected pre-test/Hex archives outside
+container binds. Its strict schema4 execution record binds those actual starting
+inputs and checkpoint hashes before the container starts. Test outputs may change
+live cache files; sealing checks the protected starting world rather than requiring
+outputs to equal inputs. Original API provenance, full successful stages, coverage,
+source/runtime equality and final archive bounds remain required; schema3 cannot
+qualify. If qualification fails or no proof is created, a separate unqualified
+diagnostic artifact retains only eight known public JSON records plus its index,
+bounded to1MiB and3days. It contains no caches, home trees or ambient environment
+dump and is never accepted as qualification. Healthy `REUSED` consumers create
+neither a new original receipt nor a diagnostic artifact. A protected `main` push
+can consume the same original proof after
 authenticating actual dev-to-main promotion; this code does not authorize promotion.
 Unsupported sources retain the ordinary mise/Mix cache and fresh command. API work
 is bounded to 30 seconds and 80 GETs, with at most three dev history rows and one

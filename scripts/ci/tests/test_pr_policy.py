@@ -149,6 +149,29 @@ jobs:
             finally:os.chdir(previous)
 
 
+    def test_exact_package_selector_join_seam_and_unknown_controls_remain_conservative(self):
+        path='.github/workflows/package-checks.yml';after=workflow('package-checks');before=after
+        fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())['package_selector_before']
+        for name,body in fixture['jobs'].items():before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
+        unknown=after.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1)
+        cases=[('reviewed',before,after,{'portable'}),
+            ('unknown join',before,after.replace('test "$MAC_RUNNER_RESULT" = skipped','test "$MAC_RUNNER_RESULT" = success',1),classifier.consumers(path)),
+            ('unknown job',before,unknown,classifier.consumers(path)),
+            ('preexisting unknown consumer',before.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1),unknown,classifier.consumers(path)),
+            ('native payload',before,after.replace('test \"$(uname -s)/$(uname -m)\" = Darwin/arm64','test false # changed native payload',1),classifier.consumers(path)),
+            ('trigger',before,after.replace('branches: [dev, main]','branches: [dev]',1),classifier.consumers(path)),
+            ('global permissions',before,after.replace('contents: read','contents: write',1),classifier.consumers(path))]
+        with tempfile.TemporaryDirectory() as directory:
+            history=History(directory);history.put('runner/Dockerfile',RECIPE);previous=os.getcwd();os.chdir(directory)
+            try:
+                for name,old,new,expected in cases:
+                    history.put(path,old);base=history.commit();history.put(path,new);head=history.commit()
+                    event=dict(before=base,after=head,ref='refs/heads/dev');paths=classifier.changed_paths(event,'push')
+                    with self.subTest(name=name):
+                        route=classifier.event_routing(paths,event,'push')[0]
+                        self.assertEqual({key for key in classifier.COMPONENTS if route[key]},expected)
+            finally:os.chdir(previous)
+
     def test_known_policy_tests_and_actual_consumer_families(self):
         cases = {
             'scripts/release/README.md': {'portable'},
@@ -417,7 +440,7 @@ class DraftGates(unittest.TestCase):
             for value in ('', 'invalid', 'TRUE'):
                 self.assertNotEqual(self.execute(guard, **(good | {field: value})), 0)
         self.assertNotEqual(self.execute(guard, **(good | {'POLICY': 'false'})), 0)
-        self.assertEqual(self.execute(guard, **(good | {'NPM': 'false', 'PROCESS_RESULT': 'skipped'})), 0)
+        self.assertEqual(self.execute(guard, **(good | {'NPM': 'false', 'PROCESS_RESULT': 'skipped', 'MAC_RUNNER_RESULT':'skipped'})), 0)
         self.assertNotEqual(self.execute(guard, **(good | {'NPM': 'false'})), 0)
 
     def test_cheap_tests_precede_expensive_deferral_and_readiness_events_share_cancellation(self):

@@ -17,10 +17,10 @@ import sys
 import time
 
 import elixir_coverage_profile as profile
-from validation_inputs import UnknownInput, command, controlled_environment, digest
+from validation_inputs import UnknownInput, command, controlled_environment, digest, file_identity
 from validation_evidence import (Fresh, Service, REPOSITORY, WORKFLOW, SHA, MAX_ARTIFACT,
                                  current_context, coverage_summary, immutable_tree,
-                                 latest_proof, merged_pr_proof, repository, strict_json, tree_controls)
+                                 latest_proof, merged_pr_proof, repository, strict_json, tree_controls, validate_input_profile, difference_facets)
 
 
 def require(value, message):
@@ -321,16 +321,45 @@ def decide():
     summary('Coverage decision: '+decision['mode']+f"; verification {decision['verification_seconds']}s; original {decision.get('original_run_url','none')}; reason {decision.get('reason','verified exact original inputs')}.")
 
 
+def protected_precheckpoints(root,state,inputs):
+    validate_input_profile(inputs,strict_json(profile.PROFILE_PATH.read_bytes()))
+    metadata={};raw={}
+    for name,target,record in (('test',root/'elixir/_build/test','sidecar.json'),('hex',state/'hex','hex-sidecar.json')):
+        value=read(state/record)
+        rows=[row for row in inputs['identity']['public_inputs'] if type(row) is dict and row.get('path')==str(target)]
+        require(type(value) is dict and set(value)=={'sha256','size','cache'}
+                and len(rows)==1 and value['cache']==rows[0], 'protected '+name+' checkpoint is not bound to recorded start inputs')
+        path=state/(name+'-cache.tar.gz');identity=file_identity(path)
+        require(identity['uid']==os.getuid() and identity['gid']==os.getgid() and identity['mode']==0o600
+                and 0<identity['size']<=cache.MAX_COMPRESSED,'protected '+name+' archive is unsafe or oversized')
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+        with os.fdopen(fd,'rb') as stream:payload=stream.read(cache.MAX_COMPRESSED+1)
+        require(len(payload)==identity['size']==value['size'] and hashlib.sha256(payload).hexdigest()==identity['sha256']==value['sha256'],
+                'protected '+name+' original archive bytes changed')
+        metadata[name]=value;raw[name]=payload
+    return metadata,raw
+
+
 def execute():
-    root,_,source,state,_=paths();prepared=read(state/'prepared.json')
+    root,_,source,state,_=paths();prepared=read(state/'prepared.json');execution={};started=False
     require(prepared['source']==source,'prepared source changed')
     if prepared['ordinary']:
         environment=dict(os.environ);environment.pop('GH_TOKEN',None);environment.pop('GITHUB_TOKEN',None)
         seconds=run(['make','elixir-ci'],root,environment,log=state/'coverage.log')
     else:
+        recorded=read(state/'inputs.json')
+        current=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
+        require(current['sha256']==recorded['sha256']==digest(recorded['identity']),
+                'full input drift before execution: '+difference_facets(recorded['identity'],current['identity']))
+        checkpoints,_=protected_precheckpoints(root,state,recorded)
+        execution=dict(mode='EXECUTING',start_inputs_sha256=recorded['sha256'],precoverage_checkpoints=checkpoints)
+        # This host record and the protected PRE archives are outside all writable
+        # container binds. Persist before starting so failures retain the world.
+        store(state/'execution.json',execution,new=True);started=True
         seconds=phase_run(root,state,'coverage',['mix','test','--cover','--seed','0','--max-failures','1'],log=state/'coverage.log')
-    store(state/'execution.json',dict(mode='EXECUTED',exit_code=0,seconds=seconds,
-        coverage_log_sha256=hashlib.sha256((state/'coverage.log').read_bytes()).hexdigest()),new=True)
+    execution.update(mode='EXECUTED',exit_code=0,seconds=seconds,
+        coverage_log_sha256=hashlib.sha256((state/'coverage.log').read_bytes()).hexdigest())
+    store(state/'execution.json',execution,new=not started)
     output(mode='EXECUTED',origin='');summary(f'EXECUTED: actual full qualification {seconds}s; other stages remain required.')
 
 
@@ -349,8 +378,14 @@ def dialyzer():
 
 
 def seal():
-    root,temporary,source,state,_=paths();available=False;stage='prepared_record'
+    root,temporary,source,state,_=paths();available=False;stage='prepared_record';reason='qualified original receipt created'
     try:
+        decision=state/'decision.json'
+        if decision.exists() and read(decision).get('mode')=='REUSED':
+            store(state/'seal-status.json',dict(schema_version=1,kind='seal-status-not-qualification',available=False,
+                stage='reused_original',reason='REUSED retains its original identity; no new baseline is minted'))
+            summary('REUSED: original proof retained; no new original receipt or healthy-consumer diagnostics.')
+            output(available=False);return
         require(read(state/'prepared.json')==dict(source=source,supported=True,ordinary=False),'unsupported original')
         stage='dialyzer_record'
         require(read(state/'dialyzer.json')==dict(source=source,success=True),'fresh Dialyzer missing')
@@ -362,19 +397,10 @@ def seal():
         execution['summary']=coverage_summary((state/'coverage.log').read_bytes(),strict_json(profile.PROFILE_PATH.read_bytes()))
         stage='producer_context'
         caller=context(client(temporary),source);require(caller['eligible_producer'],'ineligible original producer')
-        stage='native_fetch_scratch'
-        oci.require_empty_native_fetch(state)
-        stage='checkpoint_records'
-        sides={'test':read(state/'sidecar.json'),'hex':read(state/'hex-sidecar.json')}
-        for name,path,options in (('hex',state/'hex',dict(private_root=state)),('test',root/'elixir/_build/test',{})):
-            stage=name+'_checkpoint'
-            observed=cache.identity(path,root,**options);expected=sides[name]['cache']
-            def facet(value):
-                sha=value.get('sha256');sha=sha if isinstance(sha,str) and len(sha)==64 and all(c in '0123456789abcdef' for c in sha) else 'unknown'
-                entries=value.get('files');size=value.get('bytes')
-                return dict(sha256=sha,files=entries if type(entries) is int else 'unknown',bytes=size if type(size) is int else 'unknown')
-            require(observed==expected,'precoverage '+name+' checkpoint changed; expected='+str(facet(expected))+' observed='+str(facet(observed)))
-        raw={'test':(state/'test-cache.tar.gz').read_bytes(),'hex':(state/'hex-cache.tar.gz').read_bytes()}
+        stage='protected_start_inputs'
+        sides,raw=protected_precheckpoints(root,state,inputs)
+        require(execution.get('start_inputs_sha256')==inputs['sha256'] and execution.get('precoverage_checkpoints')==sides,
+                'successful execution lacks its protected start inputs/checkpoint binding')
         for name,path in (('deps',root/'elixir/deps'),('dev',root/'elixir/_build/dev')):
             stage=name+'_archive';raw[name],sides[name]=cache.create(path,root)
         stage='aggregate_archive_bounds'
@@ -383,7 +409,7 @@ def seal():
                 and sum(value['cache']['files'] for value in sides.values())<=cache.MAX_ENTRIES,'combined checkpoint exceeds bounds')
         stage='receipt_write'
         proof=state/'proof';proof.mkdir(mode=0o700)
-        store(proof/'receipt.json',dict(schema_version=3,family='full-exunit-coverage',inputs_sha256=inputs['sha256'],
+        store(proof/'receipt.json',dict(schema_version=4,family='full-exunit-coverage',inputs_sha256=inputs['sha256'],
             sidecar=sides,checkpoints=dict(test='PRE_COVERAGE',hex='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
             cache_origin=read(state/'warm.json'),producer=dict(repository=REPOSITORY,repository_id=caller['repository_id'],
             run_id=caller['run_id'],attempt=caller['attempt'],job_id=caller['job_id'],source=source,workflow=WORKFLOW),execution=execution),new=True)
@@ -394,7 +420,51 @@ def seal():
         reason=str(error) if type(error) in (Fresh,UnknownInput,ValueError) else 'malformed public record'
         summary('No reusable original receipt; stage='+stage+'; reason='+reason+'. Qualification execution status is unchanged.')
     except (OSError,KeyError,TypeError,AttributeError) as error:
-        summary('No reusable original receipt; stage='+stage+'; reason='+type(error).__name__+'. Qualification execution status is unchanged.')
+        reason=type(error).__name__
+        summary('No reusable original receipt; stage='+stage+'; reason='+reason+'. Qualification execution status is unchanged.')
+    store(state/'seal-status.json',dict(schema_version=1,kind='seal-status-not-qualification',available=available,
+        stage='complete' if available else stage,reason=reason))
+    output(available=available)
+
+
+DIAGNOSTIC_RECORDS=('inputs.json','execution.json','sidecar.json','hex-sidecar.json',
+                    'prepared.json','dialyzer.json','warm.json','seal-status.json')
+MAX_DIAGNOSTICS=1024*1024
+
+
+def diagnostics():
+    _,_,source,state,_=paths();available=False
+    try:
+        require(not state.is_symlink(),'diagnostic state is symlinked')
+        state.mkdir(mode=0o700,exist_ok=True)
+        require(state.stat().st_uid==os.getuid() and not state.stat().st_mode & 0o077,'diagnostic state is unsafe')
+        records={};rejected=[]
+        for name in DIAGNOSTIC_RECORDS:
+            path=state/name
+            if not path.exists():continue
+            try:
+                read(path)  # Validate a known private public JSON record first.
+                identity=file_identity(path)
+                fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+                with os.fdopen(fd,'rb') as stream:raw=stream.read(MAX_DIAGNOSTICS+1)
+                require(len(raw)==identity['size'] and hashlib.sha256(raw).hexdigest()==identity['sha256'],
+                        'public diagnostic record changed')
+                records[name]=raw
+            except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError,AttributeError):
+                rejected.append(name)
+        status=dict(schema_version=1,kind='unqualified-full-coverage-diagnostics',qualified=False,source=source,
+                    run_id=int(os.environ['GITHUB_RUN_ID']),attempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
+                    present=sorted(records),missing=sorted(set(DIAGNOSTIC_RECORDS)-records.keys()),rejected=rejected)
+        records['diagnostic-status.json']=(json.dumps(status,sort_keys=True,indent=2)+'\n').encode()
+        require(sum(map(len,records.values()))<=MAX_DIAGNOSTICS,'public diagnostic payload exceeds1MiB')
+        directory=state/'diagnostics';directory.mkdir(mode=0o700)
+        for name,raw in records.items():
+            fd=os.open(directory/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'wb') as target:target.write(raw)
+        available=True
+        summary('Unqualified public input diagnostics prepared; bounded1MiB, no cache payloads or environment dump; never qualification evidence.')
+    except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError,AttributeError):
+        summary('Unqualified public input diagnostics unavailable or outside1MiB bound; no unknown/private payload uploaded.')
     output(available=available)
 
 
@@ -405,7 +475,7 @@ def cleanup():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('select','capability','oci_setup','warm','prepare','measure','decide','execute','reused','dialyzer','seal','cleanup'))
+    parser.add_argument('phase', choices=('select','capability','oci_setup','warm','prepare','measure','decide','execute','reused','dialyzer','seal','diagnostics','cleanup'))
     phase = parser.parse_args().phase
     globals()[dict(select='select_profile').get(phase, phase)]()
 

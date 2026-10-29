@@ -46,7 +46,7 @@ def env_for(flags):
     platform = 'all'
     if fixtures == 'false' and macos != linux:
         platform = 'macos' if macos == 'true' else 'linux_x86_64'
-    return dict(MAC_RUNNER_RESULT='success', RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
+    return dict(MAC_RUNNER_RESULT='success' if macos=='true' or fixtures=='true' else 'skipped', RESULT='success', CODE='true', PORTABLE_REQUIRED=portable,
                 MACOS=macos, LINUX=linux, FIXTURES=fixtures, NATIVE_REQUIRED=str(native).lower(),
                 PLATFORM=platform, PORTABLE='success', PACKAGE='success' if native else 'skipped',
                 READY='true', GITHUB_SHA='a'*40, GITHUB_STEP_SUMMARY=os.devnull)
@@ -204,9 +204,9 @@ class Consumers(unittest.TestCase):
             route = classifier.decisions([path])
             values = {'needs.changes.outputs.native': str(route['native']).lower(),
                       'needs.changes.result': 'success', 'needs.qualification.result': 'success',
-                      'needs.host-policy.result': 'success', 'needs.mac-runner.result': 'success', 'needs.changes.outputs.ready': 'true'}
+                      'needs.host-policy.result': 'success', 'needs.mac-runner.result': 'success' if route['package_macos'] or route['fixtures'] else 'skipped', 'needs.changes.outputs.package_macos':str(route['package_macos']).lower(), 'needs.changes.outputs.fixtures':str(route['fixtures']).lower(), 'needs.changes.outputs.ready': 'true'}
             self.assertEqual(expression(condition, values), route['native'], path)
-            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result', 'needs.mac-runner.result'):
+            for key in ('needs.changes.result', 'needs.qualification.result', 'needs.host-policy.result'):
                 for status in ('failure', 'cancelled', 'skipped', ''):
                     self.assertFalse(expression(condition, dict(values, **{key: status})), (path, key, status))
             if path == 'scripts/package/linux/Package.resolved':

@@ -78,7 +78,6 @@ jobs:
           MAC_RUNNER_RESULT: ${{ needs.mac-runner.result }}
         run: |
           test "$RESULT" = success
-          test "$MAC_RUNNER_RESULT" = success
           case "$CODE" in true|false) ;; *) exit 1 ;; esac
           case "$POLICY" in true|false) ;; *) exit 1 ;; esac
           for flag in "$CLAUDE" "$READY" "$NPM" "$READINESS" "$CONFIG" "$CONTRACTS"; do
@@ -111,8 +110,10 @@ jobs:
             test "$POLICY" = true
           fi
           if [ "$NPM" = true ] || [ "$CONTRACTS" = true ]; then
+            test "$MAC_RUNNER_RESULT" = success
             test "$PROCESS_RESULT" = success
           else
+            test "$MAC_RUNNER_RESULT" = skipped
             test "$PROCESS_RESULT" = skipped
           fi
       - name: Check out source
@@ -290,6 +291,20 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Prepare bounded unqualified public input diagnostics
+        id: diagnostics
+        if: always() && steps.profile.outputs.supported == 'true' && (failure() || (steps.producer.outputs.available != 'true' && steps.evidence.outputs.mode != 'REUSED'))
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py diagnostics
+      - name: Retain unqualified public input diagnostics
+        if: always() && steps.diagnostics.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: elixir-coverage-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-coverage-v2/diagnostics/
+          retention-days: 3
+          if-no-files-found: error
+          compression-level: 1
+
       - name: Remove owned OCI execution resources
         if: always() && steps.profile.outputs.supported == 'true'
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py cleanup
@@ -325,7 +340,7 @@ jobs:
   mac-runner:
     name: Select owned Mac first for platform contracts
     needs: changes
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && (needs.changes.outputs.npm == 'true' || needs.changes.outputs.contracts == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     outputs:
