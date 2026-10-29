@@ -93,6 +93,16 @@ class OriginalProof(unittest.TestCase):
                 with self.assertRaises(evidence.Fresh):self.verify()
                 self.receipt=saved
 
+    def test_refusal_diagnostics_name_only_finite_safe_profile_facets(self):
+        original=dict(execution=dict(runtime=dict(image=dict(Id='original'),container=dict(cpu=['model']))),
+                      public_inputs=[dict(path='/public/state/hex',sha256='original')])
+        changed=deepcopy(original);changed['execution']['runtime']['container']['cpu']=['different']
+        changed['public_inputs'][0]['sha256']='different'
+        self.assertEqual(evidence.difference_facets(original,changed),'cpu,public_hex')
+        original['environment']=dict(DUMMY_SECRET='never-print-value');changed['environment']={}
+        actual=evidence.difference_facets(original,changed)
+        self.assertIn('public_environment',actual);self.assertNotIn('never-print-value',actual)
+
     def test_failed_cancelled_incomplete_foreign_manual_pr_stale_producer_never_authorizes(self):
         original = deepcopy(self.run)
         variants = [dict(status='completed', conclusion=value) for value in ('failure', 'cancelled', 'skipped', None)]

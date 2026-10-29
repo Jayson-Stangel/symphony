@@ -272,6 +272,33 @@ def coverage_summary(raw, profile):
     return result
 
 
+def difference_facets(original, current):
+    # Finite public profile facets, never recursive values/environment dumps.
+    def field(value, *keys):
+        for key in keys:
+            value=value.get(key) if type(value) is dict else None
+        return value
+    facets=[]
+    for name,keys in (
+        ('source',('execution','source')),('image',('execution','runtime','image')),
+        ('kernel',('execution','runtime','container','kernel')),('cpu',('execution','runtime','container','cpu')),
+        ('processors',('execution','runtime','container','processors')),('cgroup',('execution','runtime','container','cgroup')),
+        ('limits',('execution','runtime','container','rlimits')),('isolation',('execution','runtime','container','status')),
+        ('mounts',('execution','runtime','container','mounts')),('network_config',('execution','runtime','container','network_files')),
+        ('docker',('execution','runtime','docker')),('engine',('execution','runtime','engine')),
+        ('public_tools',('execution','public_tools')),('compile_protocol',('execution','compile_protocol')),
+        ('controllers',('controllers',)),('public_environment',('environment',))):
+        if field(original,*keys)!=field(current,*keys):facets.append(name)
+    roots={'/elixir/deps':'dependency_cache','/elixir/_build/test':'compiler_test',
+           '/runner/claude/node_modules':'npm_inputs','/hex':'public_hex','/mix':'public_mix','/home':'private_home'}
+    for suffix,name in roots.items():
+        def selected(value):
+            rows=value.get('public_inputs',[]) if type(value) is dict else []
+            return [row for row in rows if type(row) is dict and type(row.get('path')) is str and row['path'].endswith(suffix)]
+        if selected(original)!=selected(current):facets.append(name)
+    return ','.join(facets) or 'other_profile_input'
+
+
 def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, restore=False):
     from validation_inputs import digest
     if merged_source is None:
@@ -294,12 +321,12 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
             and inputs.get('sha256') == digest(inputs['identity']), 'original complete input manifest integrity differs')
     if restore == 'warm':
         require(type(inputs['identity'].get('execution')) is dict and bool(inputs['identity']['execution'])
-                and inputs['identity']['execution'] == current['identity'].get('execution'), 'actual OCI/source/tool/build runtime differs')
+                and inputs['identity']['execution'] == current['identity'].get('execution'), 'actual OCI/source/tool/build runtime differs: '+difference_facets(inputs['identity'],current['identity']))
     elif restore:
         require(without_test_cache(inputs) == without_test_cache(current), 'non-cache actual validation inputs differ')
     else:
         require(inputs['sha256'] == current['sha256'] == digest(current['identity']),
-                'actual effective validation inputs differ')
+                'actual effective validation inputs differ: '+difference_facets(inputs['identity'],current['identity']))
     sidecar = receipt.get('sidecar')
     require(type(sidecar) is dict and set(sidecar) == {'test','dev','deps','hex'}, 'finite checkpoint inventory differs')
     for name, metadata in sidecar.items():

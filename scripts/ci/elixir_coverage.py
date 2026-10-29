@@ -208,10 +208,12 @@ def warm():
         (state/'seed.zip').write_bytes(result.pop('bundle_bytes'));os.chmod(state/'seed.zip',0o600)
         decision=dict(mode='RESTORED',artifact_id=result['artifact_id'],artifact_digest=result['artifact_digest'],
                       original=result['original'],original_run_url=result['original_run_url'])
-    except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError,AttributeError):
-        pass
+    except (Fresh,UnknownInput) as error:
+        decision['reason']=str(error)
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):
+        decision['reason']='unavailable or malformed public evidence'
     store(state/'warm.json',decision,new=True)
-    summary('Validation build input cache: '+decision['mode']+'. This is not reused qualification.')
+    summary('Validation build input cache: '+decision['mode']+'; '+decision.get('reason','authenticated original public checkpoints')+'. This is not reused qualification.')
 
 
 def install_bundle(root,state,result):
@@ -307,11 +309,13 @@ def decide():
                 decision=latest_proof(service,inputs,strict_json(profile.PROFILE_PATH.read_bytes()),envelope['controls'],
                     consumer_repository_id=caller['repository_id'],trusted_dev_revision=caller.get('proof_revision',caller['trusted_dev_revision']))
             for key in ('sidecar_bytes','sidecar','original_inputs','bundle_bytes'):decision.pop(key,None)
-    except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError,AttributeError):
-        decision=dict(mode='EXECUTED',reason='trusted complete original evidence unavailable or incompatible')
+    except (Fresh,UnknownInput) as error:
+        decision=dict(mode='EXECUTED',reason=str(error))
+    except (OSError,ValueError,KeyError,TypeError,AttributeError):
+        decision=dict(mode='EXECUTED',reason='trusted complete original evidence unavailable or malformed')
     decision['verification_seconds']=round(time.monotonic()-started,3)
     store(state/'decision.json',decision,new=True);output(mode=decision['mode'],origin=decision.get('original_run_url',''))
-    summary('Coverage decision: '+decision['mode']+f"; verification {decision['verification_seconds']}s; original {decision.get('original_run_url','none')}.")
+    summary('Coverage decision: '+decision['mode']+f"; verification {decision['verification_seconds']}s; original {decision.get('original_run_url','none')}; reason {decision.get('reason','verified exact original inputs')}.")
 
 
 def execute():
