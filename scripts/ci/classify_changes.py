@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Conservative event-wide code and browser classification; no API or dependencies."""
+import ast
 import importlib.util
 import json
 import os
@@ -74,9 +75,8 @@ def browser_selection(paths, event=None, name=None):
         '.dockerignore', 'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh',
         '.github/workflows/browser-smoke.yml',
         '.github/workflows/change-classification.yml', 'runner/browser/smoke-image.sh',
-        'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
+        'scripts/release/runner_inputs.py',
         'scripts/release/runner-cache-policy.sh', 'scripts/release/runner-smoke.sh',
-        'scripts/release/package-lifecycle.py',
     }
     prefixes = ('.github/actions/build-runner/',)
     nonbrowser_actions = ('.github/actions/configure-runner-cache/',
@@ -90,6 +90,7 @@ def browser_selection(paths, event=None, name=None):
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
                 (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
                  and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
+                                  'scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb',
                                   'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
                                   'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
                                   'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py',
@@ -194,10 +195,14 @@ def consumer_selection(path):
     if path in ('.github/pull_request_template.md', '.github/workflows/pr-description-lint.yml',
                 'scripts/ci/check_pr_body.py'):
         return set(), 'always-on PR metadata validation'
+    if path == 'scripts/ci/tests/fixtures/pr165-ci-routing.json':
+        return set(), 'exact historical CI routing policy fixture; no runtime consumer'
     if path.startswith('scripts/ci/tests/'):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
             return set(), 'cheap CI policy regression; executed by the always-on policy suite'
         return ALL, 'unknown CI regression input: conservative full qualification'
+    if path in ('scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb'):
+        return {'portable'}, 'known CI selection policy; unconditional policy regressions and portable workflow contracts'
     if path == 'scripts/ci/release_tests.py':
         return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
     if path == 'scripts/ci/packaged_apparmor.py':
@@ -402,13 +407,42 @@ def presentation_only(path, base, head):
         'YAML comparison unavailable or refused; ordinary conservative path policy applies')
 
 
+def portable_inventory_only(base, head):
+    """Only added names in the explicit portable inventory, never executor edits."""
+    try:
+        parsed = []
+        inventories = []
+        for revision in (base, head):
+            source = git('show', revision + ':scripts/ci/release_tests.py').decode()
+            tree = ast.parse(source)
+            assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                           and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                           and node.targets[0].id == 'PORTABLE']
+            if len(assignments) != 1 or not isinstance(assignments[0].value, ast.Set):
+                return False
+            values = assignments[0].value.elts
+            if not all(isinstance(item, ast.Constant) and type(item.value) is str
+                       and re.fullmatch(r'test_[A-Za-z0-9_]+\.py', item.value) for item in values):
+                return False
+            names = {item.value for item in values}
+            if len(names) != len(values):
+                return False
+            inventories.append(names)
+            tree.body.remove(assignments[0])
+            parsed.append(ast.dump(tree, include_attributes=False))
+        return parsed[0] == parsed[1] and inventories[0] < inventories[1]
+    except (ValueError, SyntaxError, UnicodeError, OSError, subprocess.SubprocessError):
+        return False
+
+
 def event_routing(paths, event, name):
     triggers = {key: [] for key in COMPONENTS}
     presentation = []
     fallbacks = []
     active = []
     selected_consumers = set()
-    if not paths:
+    if not paths or name not in ('pull_request', 'push') or (
+            name == 'push' and str(event.get('ref', '')).startswith('refs/tags/')):
         fallbacks.append('Full-event policy or unavailable/empty event diff requires all consumers')
         return decisions([]), {key: [] for key in COMPONENTS}, [], [], fallbacks
     try:
@@ -426,6 +460,13 @@ def event_routing(paths, event, name):
         selected, rule = consumer_selection(path)
         if fallback:
             selected, rule = ALL, 'unsupported or unavailable workflow comparison: conservative full qualification'
+        if path == 'scripts/ci/release_tests.py' and base and portable_inventory_only(base, head):
+            selected, rule = {'portable'}, 'only audited PORTABLE inventory additions; executor and native inventories unchanged'
+        if path == '.github/workflows/burrito-release.yml' and base:
+            if workflow_comparison(path, base, head).get('manual_controller_only') is True:
+                selected, rule = {'portable'}, 'known manual-only controller changed; ordinary policy/portable contracts, no payload inputs'
+            else:
+                selected, rule = ALL, 'unknown manual workflow controls or trigger changes: conservative full qualification'
         if path == '.github/workflows/make-all.yml' and base:
             families = workflow_comparison(path, base, head).get('fast_workflow_families')
             if families and set(families) <= {'npm', 'readiness', 'codex_config'}:

@@ -79,6 +79,20 @@ begin
   before = presentation(parsed(input.fetch('before')), input.fetch('path'))
   after = presentation(parsed(input.fetch('after')), input.fetch('path'))
   result = {'presentation_only' => before == after}
+  if input.fetch('path') == '.github/workflows/burrito-release.yml' && !result['presentation_only']
+    known = %w[production-source qualification host-policy runners build controller-diagnostics mac-runner-build mac-runner-controller-diagnostics]
+    ordinary = [before, after].map do |document|
+      events = field(document, 'on')
+      raise 'unknown engine workflow trigger' unless events.is_a?(Hash) && events.keys.map(&:value) == ['workflow_dispatch']
+      jobs = field(document, 'jobs')
+      raise 'unknown engine controller job' unless jobs.keys.all? { |id| known.include?(id.value) }
+      document.delete(key(document, 'on'))
+      document.delete(key(document, 'jobs'))
+      document
+    end
+    raise 'unknown engine workflow global controls' unless ordinary[0] == ordinary[1]
+    result['manual_controller_only'] = true
+  end
   if input.fetch('path') == '.github/workflows/runner-integration.yml' && !result['presentation_only']
     # Only these existing jobs are manual composition/signing consumers. Global
     # settings and ordinary classification/browser jobs remain browser controls.
