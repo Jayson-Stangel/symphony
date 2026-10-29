@@ -159,12 +159,17 @@ class CacheBuildTimingTest(unittest.TestCase):
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         records = [
             {'digest': '1', 'name': 'importing cache manifest from gha:scope'},
-            {'digest': '2', 'name': 'exporting cache to GitHub Actions Cache'},
+            {'digest': '2', 'name': 'exporting to GitHub Actions Cache'},
+            {'digest': '5', 'name': 'exporting cache to registry'},
             {'digest': '3', 'name': 'exporting to docker image format'},
             {'digest': '4', 'name': '[common 1/1] COPY runtime /app', 'cached': True}]
         for item in records:
             item.update(started='2026-10-28T00:00:00.000000123Z', completed='2026-10-28T00:00:10.000000456Z')
         result = module.build_timings(json.dumps({'vertexes': records}))
+        by_vertex = {i['vertex_id']: i['category'] for i in result['intervals']}
+        self.assertEqual(by_vertex['2'], 'cache_export')
+        self.assertEqual(by_vertex['5'], 'cache_export')
+        self.assertEqual(by_vertex['3'], 'image_export_load')
         self.assertEqual({i['category'] for i in result['intervals']},
                          {'cache_import', 'cache_export', 'image_export_load', 'build'})
         self.assertTrue(all(i['seconds']==10 for i in result['intervals']))
