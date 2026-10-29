@@ -122,7 +122,7 @@ begin
     families = []
     compared = [before, after].map do |document|
       jobs = field(document, 'jobs')
-      raise 'unknown application job' unless jobs.keys.all? { |id| %w[changes platform-contracts make-all].include?(id.value) }
+      raise 'unknown application job' unless jobs.keys.all? { |id| %w[changes platform-contracts make-all elixir-checks claude-checks mac-runner].include?(id.value) }
       jobs.each_value do |job|
         field(job, 'steps', []).each do |step|
           run = field(step, 'run')

@@ -75,6 +75,53 @@ jobs:
             finally:
                 os.chdir(previous)
 
+    def test_current_application_jobs_preserve_fast_command_routing_and_control_boundaries(self):
+        path = '.github/workflows/make-all.yml'
+        before = (ROOT / path).read_text()
+        fast = {'npm', 'readiness', 'codex_config'}
+        cases = []
+        for command in ('python3 runner/test_codex_readiness.py',
+                        'python3 scripts/ci/release_tests.py codex-config',
+                        'python3 runner/test_npm_cache.py'):
+            line = '        run: ' + command
+            self.assertEqual(before.count(line), 1)
+            changed = before.replace(line, '        run: |\n          ' + command + '\n          ' + command, 1)
+            cases.append((command, changed, fast, False))
+        cases.extend([
+            ('unknown job', cases[0][1].replace('jobs:\n',
+                'jobs:\n  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n', 1), classifier.ALL, True),
+            ('selector timeout', before.replace('timeout-minutes: 8', 'timeout-minutes: 9', 1),
+                classifier.consumers(path), False),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            history = History(folder)
+            history.put('runner/Dockerfile', RECIPE)
+            history.put(path, before)
+            base = history.commit()
+            for name, changed, expected, browser in cases:
+                history.put(path, changed)
+                head = history.commit()
+                events = (
+                    ('pull_request', {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}, 'draft': False}}),
+                    ('push', {'before': base, 'after': head}),
+                )
+                previous = os.getcwd()
+                os.chdir(folder)
+                try:
+                    for event_name, event in events:
+                        paths = classifier.changed_paths(event, event_name)
+                        route, _, _, _, fallbacks = classifier.event_routing(paths, event, event_name)
+                        selected = {key for key in classifier.COMPONENTS if route[key]}
+                        with self.subTest(change=name, event=event_name):
+                            self.assertEqual(selected, expected)
+                            self.assertEqual(classifier.browser_selection(paths, event, event_name)[0], browser)
+                            self.assertEqual(bool(fallbacks), name == 'unknown job')
+                            comparison = classifier.workflow_comparison(path, base, head)
+                            if name == 'selector timeout':
+                                self.assertNotIn('fast_workflow_families', comparison)
+                finally:
+                    os.chdir(previous)
+
     def test_known_policy_tests_and_actual_consumer_families(self):
         cases = {
             'runner/test_npm_cache.py': {'npm'},
