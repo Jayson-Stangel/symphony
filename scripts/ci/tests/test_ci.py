@@ -504,7 +504,11 @@ print(json.dumps(r,sort_keys=True))
                                         and 'ALL' in value['HostConfig']['CapDrop']
                                         and any(v.startswith('no-new-privileges') for v in value['HostConfig']['SecurityOpt']),
                                         'actual-container-isolation-differs')
-                                successful('cleanup-remove-' + name[-8:], ['rm', '-f', name], cleanup=True, timeout=4)
+                                exact_id = value['Id']
+                                if value['State']['Running']:
+                                    successful('cleanup-stop-' + name[-8:], ['stop', '--time', '1', exact_id],
+                                               cleanup=True, timeout=3)
+                                successful('cleanup-remove-' + name[-8:], ['rm', exact_id], cleanup=True, timeout=4)
                                 result['cleanup'].append({'container': name, 'removed': True})
                         except Exception:result['cleanup'].append({'container': name, 'removed': False})
                     for n, tag in enumerate(tags):
