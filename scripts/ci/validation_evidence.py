@@ -21,11 +21,12 @@ import zipfile
 REPOSITORY = 'Jayson-Stangel/symphony'
 WORKFLOW = '.github/workflows/make-all.yml'
 JOB = 'Elixir quality, build and full coverage'
-MAX_ARTIFACT = 1024 * 1024
+MAX_ARTIFACT = 65 * 1024 * 1024
+MAX_PROOF = 1024 * 1024
 MAX_AGE = timedelta(days=7)
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 DIGEST = re.compile(r'[0-9a-f]{64}\Z')
-STEPS = ('Prepare controlled full Elixir qualification',
+STEPS = ('Set up mise tools', 'Prepare controlled full Elixir qualification',
          'Measure complete full-coverage inputs',
          'Choose fresh or verified full-coverage evidence',
          'Execute full ExUnit coverage (EXECUTED)',
@@ -79,7 +80,7 @@ def instant(value):
 
 class Service:
     """Finite GET-only client; no retries or service mutation capability."""
-    def __init__(self, token, home, *, seconds=30, maximum_requests=24):
+    def __init__(self, token, home, *, seconds=45, maximum_requests=40):
         require(type(token) is str and bool(token), 'workflow evidence read credential is unavailable')
         self.environment = dict(PATH='/usr/bin:/bin', HOME=str(home), GH_CONFIG_DIR=str(Path(home) / 'gh'),
                                 GH_TOKEN=token, GH_HOST='github.com', GH_PROMPT_DISABLED='1')
@@ -132,6 +133,21 @@ def repository(value):
     require(type(value) is dict and value.get('full_name') == REPOSITORY and positive(value.get('id')),
             'foreign repository identity')
     return value['id']
+
+
+def original_run(run, *, now=None):
+    now = now or datetime.now(timezone.utc)
+    require(type(run) is dict and positive(run.get('id')) and positive(run.get('run_attempt')),
+            'missing original run/attempt identity')
+    require(repository(run.get('head_repository')) == repository(run.get('repository')),
+            'foreign/fork original repository')
+    require(run.get('event') in ('push', 'pull_request') and run.get('path') == WORKFLOW
+            and SHA.fullmatch(run.get('head_sha', '')), 'foreign original workflow/source')
+    require(now - MAX_AGE <= instant(run.get('created_at')) <= now + timedelta(minutes=1), 'stale/future original')
+    require(run.get('status') == 'completed' and run.get('conclusion') == 'success', 'latest original did not succeed')
+    if run['event'] == 'push':
+        require(run.get('head_branch') == 'dev', 'non-dev original push')
+    return run
 
 
 def trusted_dev_run(run, *, terminal=True, now=None):
@@ -220,17 +236,17 @@ def archive(raw, meta):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
             entries = bundle.infolist()
-            require(len(entries) == 3 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log'},
+            require(len(entries) == 4 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log', 'test-cache.tar.gz'},
                     'unexpected/duplicate original proof archive members')
             require(all(not entry.is_dir() and not entry.flag_bits & 1
                         and not stat.S_ISLNK(entry.external_attr >> 16)
-                        and 0 < entry.file_size <= MAX_ARTIFACT for entry in entries)
+                        and 0 < entry.file_size <= (64 * MAX_PROOF if entry.filename == 'test-cache.tar.gz' else MAX_PROOF) for entry in entries)
                     and sum(entry.file_size for entry in entries) <= 2 * MAX_ARTIFACT,
                     'unsafe/oversized original proof members')
             values = {entry.filename: bundle.read(entry) for entry in entries}
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         raise Fresh('corrupt original proof archive') from None
-    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log']
+    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log'], values['test-cache.tar.gz']
 
 
 def coverage_summary(raw, profile):
@@ -250,24 +266,35 @@ def coverage_summary(raw, profile):
     return result
 
 
-def verify_bundle(run, job, meta, raw, current, profile):
+def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, restore=False):
     from validation_inputs import digest
-    trusted_dev_run(run)
+    if merged_source is None:
+        trusted_dev_run(run)
+    else:
+        original_run(run)
+        require(run['event'] == 'pull_request', 'merged origin is not a PR workflow')
     actual_job(dict(jobs=[job], total_count=1), run)
     stages = successful_steps(job)
     artifact_metadata(meta, run, stages[-1])
-    receipt, inputs, log = archive(raw, meta)
-    require(type(receipt) is dict and receipt.get('schema_version') == 1
+    receipt, inputs, log, cache = archive(raw, meta)
+    require(type(receipt) is dict and receipt.get('schema_version') == 2
             and type(receipt.get('schema_version')) is int
             and receipt.get('family') == 'full-exunit-coverage', 'unsupported original receipt format')
     producer = receipt.get('producer')
     require(producer == dict(repository=REPOSITORY, repository_id=repository(run['repository']),
                              run_id=run['id'], attempt=run['run_attempt'], job_id=job['id'],
-                             source=run['head_sha'], workflow=WORKFLOW), 'receipt origin differs from actual service provenance')
+                             source=merged_source or run['head_sha'], workflow=WORKFLOW), 'receipt origin differs from actual service provenance')
     require(type(inputs) is dict and type(inputs.get('identity')) is dict
             and inputs.get('sha256') == digest(inputs['identity']), 'original complete input manifest integrity differs')
-    require(inputs['sha256'] == current['sha256'] == digest(current['identity']),
-            'actual effective validation inputs differ')
+    if restore:
+        require(without_test_cache(inputs) == without_test_cache(current), 'non-cache actual validation inputs differ')
+    else:
+        require(inputs['sha256'] == current['sha256'] == digest(current['identity']),
+                'actual effective validation inputs differ')
+    sidecar = receipt.get('sidecar')
+    require(type(sidecar) is dict and sidecar.get('sha256') == hashlib.sha256(cache).hexdigest()
+            and sidecar.get('size') == len(cache), 'original sidecar integrity differs')
+    require(receipt.get('clean_preparation') == 'no-mise-or-compiled-cache-v1', 'untrusted cache origin')
     require(receipt.get('inputs_sha256') == inputs['sha256'], 'receipt is not bound to original complete inputs')
     execution = receipt.get('execution')
     require(type(execution) is dict and execution.get('mode') == 'EXECUTED'
@@ -277,9 +304,9 @@ def verify_bundle(run, job, meta, raw, current, profile):
     require(execution.get('summary') == coverage_summary(log, profile), 'receipt summary differs from original test output')
     seconds = execution.get('seconds')
     require(type(seconds) in (int, float) and 0 < seconds <= 1200, 'invalid original execution duration')
-    service_seconds = (instant(stages[3]['completed_at']) - instant(stages[3]['started_at'])).total_seconds()
+    service_seconds = (instant(stages[STEPS.index('Execute full ExUnit coverage (EXECUTED)')]['completed_at']) - instant(stages[STEPS.index('Execute full ExUnit coverage (EXECUTED)')]['started_at'])).total_seconds()
     require(seconds <= service_seconds + 2, 'execution duration is outside the actual executed step')
-    return dict(mode='REUSED', original=producer, artifact_id=meta['id'], artifact_digest=meta['digest'],
+    return dict(mode='REUSED', sidecar_bytes=cache, sidecar=sidecar, original_inputs=inputs, original=producer, artifact_id=meta['id'], artifact_digest=meta['digest'],
                 inputs_sha256=inputs['sha256'], original_coverage_seconds=seconds,
                 original_run_url=f"https://github.com/{REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}",
                 original_job_url=f"https://github.com/{REPOSITORY}/actions/runs/{run['id']}/job/{job['id']}",
@@ -370,7 +397,18 @@ def latest_proof(service, current, profile, trusted_controls, *, consumer_reposi
                     and matching[0].get('head_sha') == run['head_sha'],
                     'skipped family is not bound to this successful exact attempt')
             continue
-        job = actual_job(jobs, run)
+        primary = actual_job(jobs, run)
+        reused = [step for step in primary.get('steps', []) if step.get('name') == 'Retain upstream full-coverage proof (REUSED)']
+        if len(reused) == 1 and reused[0].get('conclusion') == 'success':
+            executed = [step for step in primary.get('steps', []) if step.get('name') == 'Execute full ExUnit coverage (EXECUTED)']
+            require(len(executed) == 1 and executed[0].get('status') == 'completed'
+                    and executed[0].get('conclusion') == 'skipped', 'dev reuse did not omit only the verified full suite')
+            result = merged_pr_proof(service, run['head_sha'], current, profile, trusted_controls, consumer_repository_id)
+            latest = trusted_dev_run(service.read('actions/runs/' + str(run['id'])))
+            require(latest['id'] == run['id'] and latest['run_attempt'] == run['run_attempt']
+                    and latest['head_sha'] == run['head_sha'], 'selected dev latest attempt changed during original verification')
+            return result
+        job = primary
         steps = successful_steps(job)
         artifacts = service.read(f"actions/runs/{run['id']}/artifacts?per_page=100")
         require(type(artifacts) is dict and type(artifacts.get('artifacts')) is list
@@ -382,7 +420,7 @@ def latest_proof(service, current, profile, trusted_controls, *, consumer_reposi
         meta = artifact_metadata(service.read('actions/artifacts/' + str(matches[0]['id'])), run, steps[-1])
         require(meta['id'] == matches[0]['id'], 'artifact API identity differs from requested artifact')
         raw = service.read('actions/artifacts/' + str(meta['id']) + '/zip', binary=True, maximum=MAX_ARTIFACT)
-        result = verify_bundle(run, job, meta, raw, current, profile)
+        result = verify_bundle(run, job, meta, raw, current, profile, restore=True)
         # A stale list/attempt cannot authorize reuse during a new rerun.
         latest = trusted_dev_run(service.read('actions/runs/' + str(run['id'])))
         require(latest['run_attempt'] == run['run_attempt'] and latest['head_sha'] == run['head_sha'],
@@ -424,7 +462,7 @@ def current_context(service, *, run_id, attempt, source, event, ref, pr_number=N
                     and type(lineage.get('merge_base_commit')) is dict
                     and lineage['merge_base_commit'].get('sha') == source,
                     'producer source is outside protected dev history')
-            value['eligible_producer'] = True
+            value.update(eligible_producer=True, eligible_consumer=True)
     elif event == 'pull_request':
         require(positive(pr_number) and ref == f'refs/pull/{pr_number}/merge', 'actual PR merge reference differs')
         pr = service.read('pulls/' + str(pr_number))
@@ -439,6 +477,10 @@ def current_context(service, *, run_id, attempt, source, event, ref, pr_number=N
                 and run['head_repository'].get('id') == head['repo'].get('id')
                 and run['head_repository'].get('full_name') == head['repo'].get('full_name'),
                 'caller run and PR head repositories differ')
+        if (base.get('ref') == 'dev' and head['repo'].get('id') == base['repo'].get('id') == repo_id
+                and head['repo'].get('full_name') == REPOSITORY and pr.get('state') == 'open'
+                and pr.get('draft') is False and pr.get('merge_commit_sha') == source):
+            value['eligible_producer'] = True
         # Ordinary feature/fork PRs qualify fresh. Only the protected same-repo
         # dev→main caller can enter immutable-controller loading/reuse.
         if (head.get('ref') == 'dev' and base.get('ref') == 'main'
@@ -457,3 +499,87 @@ def current_context(service, *, run_id, attempt, source, event, ref, pr_number=N
                         == [base['sha'], head['sha']], 'tested merge parents/base/head differ')
             value.update(eligible_consumer=True, pr_number=pr_number, head=head['sha'], base=base['sha'])
     return value
+
+
+def without_test_cache(inputs):
+    """Compare every actual input before accepting any executable archive bytes."""
+    from copy import deepcopy
+    from validation_inputs import digest
+    require(type(inputs) is dict and inputs.get('sha256') == digest(inputs.get('identity')),
+            'complete input identity is invalid')
+    value = deepcopy(inputs['identity'])
+    rows = value.get('public_inputs')
+    require(type(rows) is list and all(type(row) is dict for row in rows), 'public runtime inventory unavailable')
+    matches = [row for row in rows if row.get('path') == '/home/runner/work/symphony/symphony/elixir/_build/test']
+    require(len(matches) == 1, 'exact test cache inventory unavailable')
+    rows.remove(matches[0])
+    return value
+
+
+def merged_pr_proof(service, merge_source, current, profile, trusted_controls, repository_id):
+    """Only a final same-repository PR actually merged at this protected commit.
+
+    The original PR workflow is untrusted before merge. Immutable tested merge
+    tree/controller equality to the actual protected merge authenticates it now;
+    service run/job/attempt/steps, clean setup and artifact provenance still apply.
+    No artifact is downloaded or materialized before these service checks.
+    """
+    require(SHA.fullmatch(merge_source), 'invalid protected merge source')
+    merged, merged_tree = immutable_tree(service, merge_source)
+    require(tree_controls(merged_tree) == trusted_controls, 'merged controllers differ')
+    parents = merged.get('parents')
+    require(type(parents) is list and len(parents) == 2
+            and all(type(row) is dict and SHA.fullmatch(row.get('sha', '')) for row in parents),
+            'only actual two-parent reviewed merges can reuse PR evidence')
+    prs = service.read('commits/' + merge_source + '/pulls?per_page=10')
+    require(type(prs) is list and len(prs) <= 10 and all(type(row) is dict for row in prs),
+            'merged PR association unavailable')
+    matches = [row for row in prs if row.get('merge_commit_sha') == merge_source]
+    require(len(matches) == 1 and positive(matches[0].get('number')), 'ambiguous actual merged PR')
+    pr = service.read('pulls/' + str(matches[0]['number']))
+    require(type(pr) is dict and pr.get('number') == matches[0]['number'] and pr.get('merged') is True
+            and pr.get('state') == 'closed' and pr.get('merge_commit_sha') == merge_source,
+            'original PR is not actually merged into protected dev')
+    head, base = pr.get('head'), pr.get('base')
+    require(type(head) is dict and type(base) is dict and base.get('ref') == 'dev'
+            and repository(head.get('repo')) == repository(base.get('repo')) == repository_id
+            and head.get('sha') == parents[1]['sha'], 'foreign/fork or non-final merged PR head')
+    listing = service.read('actions/workflows/make-all.yml/runs?event=pull_request&head_sha=' + head['sha'] + '&per_page=3')
+    require(type(listing) is dict and type(listing.get('workflow_runs')) is list
+            and 0 < len(listing['workflow_runs']) <= 3, 'bounded original PR run unavailable')
+    candidates = listing['workflow_runs']
+    require(all(type(row) is dict and positive(row.get('id')) for row in candidates), 'malformed original PR history')
+    require([instant(row.get('created_at')) for row in candidates] == sorted(
+            [instant(row.get('created_at')) for row in candidates], reverse=True), 'PR history ordering differs')
+    # Never walk past a newer failed/in-progress/missing original qualification.
+    run = service.read('actions/runs/' + str(candidates[0]['id']))
+    original_run(run)
+    require(run['id'] == candidates[0]['id'], 'original PR run response identity differs')
+    require(run.get('event') == 'pull_request' and run.get('head_sha') == head['sha']
+            and repository(run.get('repository')) == repository_id, 'original run is not the actual merged PR')
+    jobs = service.read(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
+    required_join(jobs, run)
+    job = actual_job(jobs, run)
+    stages = successful_steps(job)
+    artifacts = service.read(f"actions/runs/{run['id']}/artifacts?per_page=100")
+    require(type(artifacts) is dict and type(artifacts.get('artifacts')) is list
+            and artifacts.get('total_count') == len(artifacts['artifacts']), 'incomplete original PR artifact inventory')
+    matches = [row for row in artifacts['artifacts'] if type(row) is dict
+               and row.get('name') == f"elixir-full-coverage-{run['id']}-{run['run_attempt']}"]
+    require(len(matches) == 1 and positive(matches[0].get('id')), 'missing original PR artifact')
+    meta = artifact_metadata(service.read('actions/artifacts/' + str(matches[0]['id'])), run, stages[-1])
+    require(meta['id'] == matches[0]['id'], 'original artifact response identity differs')
+    raw = service.read('actions/artifacts/' + str(meta['id']) + '/zip', binary=True, maximum=MAX_ARTIFACT)
+    receipt, _, _, _ = archive(raw, meta)
+    source = receipt.get('producer', {}).get('source')
+    require(type(source) is str and SHA.fullmatch(source), 'original tested merge source unavailable')
+    tested, tested_tree = immutable_tree(service, source)
+    require(tested.get('tree') == merged.get('tree') and tested.get('parents') == parents
+            and tree_controls(tested_tree) == trusted_controls, 'original tested merge/tree/base/head differs from protected merge')
+    result = verify_bundle(run, job, meta, raw, current, profile, merged_source=source, restore=True)
+    final = original_run(service.read('actions/runs/' + str(run['id'])))
+    require(final['run_attempt'] == run['run_attempt'] and final['head_sha'] == run['head_sha'],
+            'original PR latest attempt changed during verification')
+    final_meta = artifact_metadata(service.read('actions/artifacts/' + str(meta['id'])), final, stages[-1])
+    require(final_meta['id'] == meta['id'] and final_meta['digest'] == meta['digest'], 'original immutable artifact changed')
+    return result

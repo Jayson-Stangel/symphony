@@ -79,12 +79,33 @@ class ExistingJobPhases(unittest.TestCase):
                 return dict(MIX_ENV='test', HEX_OFFLINE='1', PATH='/fixed/toolchain:/usr/bin:/bin')
             with patch.object(controller, 'paths', return_value=(root, root, 'a'*40, state, root/'selection')), \
                  patch.object(controller, 'read', side_effect=read), \
-                 patch.object(controller, 'run', side_effect=lambda *args, **options: calls.append(args)):
+                 patch.object(controller, 'run', side_effect=lambda *args, **options: calls.append(args)), \
+                 patch.object(controller, 'summary'):
                 controller.dialyzer()
             self.assertEqual(calls[0][0], ['make', 'dialyzer'])
             self.assertEqual(calls[0][2]['MIX_ENV'], 'dev')
             self.assertNotIn('HEX_OFFLINE', calls[0][2])
             self.assertEqual(json.loads((state/'dialyzer.json').read_text()), dict(source='a'*40, success=True))
+
+
+    def test_sidecar_swap_requires_final_full_identity_and_rolls_back_on_any_mismatch(self):
+        import validation_cache
+        from validation_inputs import digest
+        for match in (True, False):
+            with self.subTest(match=match), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);target=root/'elixir/_build/test';target.mkdir(parents=True)
+                (target/'compiled').write_bytes(b'original authenticated public compiler bytes')
+                raw,meta=validation_cache.create(target,root)
+                (target/'compiled').write_bytes(b'fresh local fallback compiler bytes')
+                decision=dict(sidecar_bytes=raw,sidecar=meta,original_inputs={},inputs_sha256='a'*64)
+                with patch.object(controller,'read',return_value={}),patch.object(controller.profile,'fingerprint',return_value=dict(sha256=('a' if match else 'b')*64)):
+                    if match:controller.install_sidecar(root,root,'c'*40,decision)
+                    else:
+                        with self.assertRaises(ValueError):controller.install_sidecar(root,root,'c'*40,decision)
+                expected=b'original authenticated public compiler bytes' if match else b'fresh local fallback compiler bytes'
+                self.assertEqual((target/'compiled').read_bytes(),expected)
+                self.assertFalse(target.with_name('.test-evidence-v1').exists())
+                if match:self.assertNotIn('sidecar_bytes',decision)
 
 
     def test_actual_workflow_preserves_evidence_addresses_and_always_fresh_dialyzer(self):
@@ -98,7 +119,9 @@ class ExistingJobPhases(unittest.TestCase):
         self.assertNotIn('continue-on-error:', block)
         self.assertIn('steps.controller.outputs.trusted !=', block)
         self.assertIn('steps.controller.outputs.trusted ==', block)
-        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/dev'", block)
+        self.assertIn("os.environ.get('GITHUB_REF') == 'refs/heads/dev'", block)
+        self.assertIn('cache: false', block)
+        self.assertNotIn('uses: actions/cache@', block)
         self.assertIn('retention-days: 7', block)
 
 

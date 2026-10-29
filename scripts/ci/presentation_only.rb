@@ -2,6 +2,7 @@
 # Scalar spelling/quoting is retained; unsupported syntax can never grant omission.
 require 'json'
 require 'psych'
+require 'digest'
 Scalar = Struct.new(:value, :plain, :quoted)
 
 def parsed(source)
@@ -68,6 +69,19 @@ def presentation(value, path)
   value
 end
 
+# Finite reviewed job bodies, not a generic exemption for application controls.
+def job_identity(value)
+  encode = lambda do |item|
+    case item
+    when Scalar then [item.value, item.plain, item.quoted]
+    when Hash then item.map { |key, child| [encode.call(key), encode.call(child)] }
+    when Array then item.map { |child| encode.call(child) }
+    else item
+    end
+  end
+  Digest::SHA256.hexdigest(JSON.generate(encode.call(value)))
+end
+
 begin
   input = JSON.parse(STDIN.read)
   if input['before'].nil? || input['after'].nil?
@@ -113,6 +127,21 @@ begin
     result['browser_control_changed'] = ordinary[0] != ordinary[1]
   end
   if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
+    # Only this reviewed coverage seam may change the shared required join.
+    # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
+    audited = {
+      'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 40c45ec9253396761f796ae2e4d02b36e88f2c528cba94889f99efbeed21692b],
+      'elixir-checks' => %w[27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 911bbc9a73f606928be42fab48220e53b7d7f8391ed4cd0e07197296f0846e6a]
+    }
+    copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
+    finite = copies.all? do |document|
+      jobs = field(document, 'jobs')
+      audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
+    end
+    if finite
+      copies.each { |document| field(document, 'jobs').delete_if { |id, _| audited.key?(id.value) } }
+      result['elixir_profile_only'] = true if copies[0] == copies[1]
+    end
     known = {
       'python3 runner/test_codex_readiness.py' => 'readiness',
       'python3 scripts/ci/release_tests.py codex-config' => 'codex_config',

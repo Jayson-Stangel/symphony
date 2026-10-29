@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+from unittest.mock import patch
 import sys
 import unittest
 import zipfile
@@ -38,26 +39,30 @@ class OriginalProof(unittest.TestCase):
                         status='completed', conclusion='success', labels=['ubuntu-24.04'],
                         runner_id=1000001, runner_group_id=0, runner_group_name='GitHub Actions', steps=stages)
         self.profile = dict(expected_tests=685, expected_linux_skips=10, measured_coverage=100.0)
-        self.inputs = dict(identity=dict(audited_full_input_fixture=True))
+        self.inputs = dict(identity=dict(audited_full_input_fixture=True, public_inputs=[
+            dict(path='/home/runner/work/symphony/symphony/elixir/_build/test', sha256='f'*64, files=1, bytes=1)]))
         self.inputs['sha256'] = digest(self.inputs['identity'])
         self.log = b'Finished in 4.0 seconds\n685 tests, 0 failures, 10 skipped\n| 100.00% | Total |\n'
-        self.receipt = dict(schema_version=1, family='full-exunit-coverage',
+        self.receipt = dict(schema_version=2, family='full-exunit-coverage', clean_preparation='no-mise-or-compiled-cache-v1',
             producer=dict(repository=evidence.REPOSITORY, repository_id=77, run_id=101, attempt=2,
                           job_id=501, source='a' * 40, workflow=evidence.WORKFLOW),
             inputs_sha256=self.inputs['sha256'], execution=dict(mode='EXECUTED', exit_code=0,
                 seconds=4.0, coverage_log_sha256=hashlib.sha256(self.log).hexdigest(),
                 summary=dict(tests=685, failures=0, skipped=10, measured_coverage=100.0)))
         self.meta = dict(id=901, name='elixir-full-coverage-101-2', expired=False, size_in_bytes=100,
-                         created_at=timestamp(-37), expires_at=timestamp(3600),
+                         created_at=timestamp(-27), expires_at=timestamp(3600),
                          workflow_run=dict(id=101, head_sha='a' * 40))
         self.pack()
 
     def pack(self, *, extra=None):
+        sidecar = b'inert test-cache fixture, never installed by these provenance tests'
+        self.receipt['sidecar'] = dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar))
         target = io.BytesIO()
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('receipt.json', json.dumps(self.receipt))
             archive.writestr('inputs.json', json.dumps(self.inputs))
             archive.writestr('coverage.log', self.log)
+            archive.writestr('test-cache.tar.gz', sidecar)
             if extra:
                 archive.writestr(*extra)
         self.raw = target.getvalue()
@@ -161,6 +166,74 @@ class OriginalProof(unittest.TestCase):
                 evidence.strict_json(raw)
 
 
+    def merged_service(self, *, change_pr=None, change_run=None, different_merge=False, rerun=False):
+        repo = dict(full_name=evidence.REPOSITORY, id=77)
+        merged_source, tested_source = 'e'*40, 'c'*40
+        parents = [dict(sha='d'*40), dict(sha='a'*40)]
+        tree = dict(sha='b'*40, truncated=False, tree=[dict(path=evidence.WORKFLOW, mode='100644', type='blob', sha='f'*40)])
+        pr = dict(number=44, merged=True, state='closed', merge_commit_sha=merged_source,
+                  head=dict(sha='a'*40, ref='feature', repo=repo), base=dict(sha='d'*40, ref='dev', repo=repo))
+        if change_pr: pr.update(change_pr)
+        run = dict(self.run, event='pull_request', head_branch='feature')
+        if change_run: run.update(change_run)
+        self.receipt['producer']['source'] = tested_source
+        self.pack()
+        job = dict(self.job)
+        joins = [dict(id=700+i, name=name, run_id=run['id'], run_attempt=run['run_attempt'],
+                      head_sha=run['head_sha'], status='completed', conclusion='success')
+                 for i,name in enumerate(('Classify changes / Classify event inputs','Application checks'))]
+        requests=[]
+        def read(path, **options):
+            requests.append(path)
+            if path.startswith('git/commits/'):
+                source=path.rsplit('/',1)[1]
+                return dict(sha=source, tree=dict(sha=('9'*40 if different_merge and source==tested_source else 'b'*40)), parents=parents)
+            if path.startswith('git/trees/'):return tree
+            if path.startswith('commits/'):return [dict(number=44,merge_commit_sha=merged_source)]
+            if path=='pulls/44':return pr
+            if path.startswith('actions/workflows/'):return dict(workflow_runs=[run])
+            if path=='actions/runs/101':return dict(run,run_attempt=3) if rerun and requests.count(path)>1 else run
+            if path=='actions/runs/101/attempts/2/jobs?per_page=100':return dict(total_count=3,jobs=[job,*joins])
+            if path=='actions/runs/101/artifacts?per_page=100':return dict(total_count=1,artifacts=[self.meta])
+            if path=='actions/artifacts/901':return self.meta
+            if path=='actions/artifacts/901/zip':return self.raw
+            raise AssertionError('unexpected request: '+path)
+        class FakeService:
+            pass
+        service=FakeService();service.read=read
+        return service,evidence.tree_controls(tree),requests
+
+    def test_actual_merged_pr_origin_allows_only_inert_original_bytes_after_api_authentication(self):
+        service,controls,requests=self.merged_service()
+        current=deepcopy(self.inputs);current['identity']['public_inputs'][0]['sha256']='0'*64
+        current['sha256']=digest(current['identity'])
+        result=evidence.merged_pr_proof(service,'e'*40,current,self.profile,controls,77)
+        self.assertEqual(result['mode'],'REUSED')
+        self.assertEqual(result['original']['source'],'c'*40)
+        self.assertEqual(result['original']['run_id'],101)
+        self.assertIsInstance(result['sidecar_bytes'],bytes)
+        self.assertLess(requests.index('pulls/44'),requests.index('actions/artifacts/901/zip'))
+
+    def test_fork_unmerged_failed_new_attempt_and_different_tested_tree_refuse(self):
+        for options in (dict(change_pr=dict(merged=False)), dict(change_pr=dict(state='open')),
+                dict(change_pr=dict(head=dict(sha='a'*40,repo=dict(full_name='foreign/repo',id=88)))),
+                dict(change_run=dict(conclusion='failure')),dict(different_merge=True),dict(rerun=True)):
+            with self.subTest(options=options):
+                service,controls,_=self.merged_service(**options)
+                with self.assertRaises(evidence.Fresh):
+                    evidence.merged_pr_proof(service,'e'*40,self.inputs,self.profile,controls,77)
+
+    def test_changed_noncache_runtime_or_missing_test_cache_never_returns_loadable_bytes(self):
+        for change in ('runtime','missing'):
+            service,controls,_=self.merged_service()
+            current=deepcopy(self.inputs)
+            if change=='runtime':current['identity']['actual_toolchain']='changed'
+            else:current['identity']['public_inputs']=[]
+            current['sha256']=digest(current['identity'])
+            with self.assertRaises(evidence.Fresh):
+                evidence.merged_pr_proof(service,'e'*40,current,self.profile,controls,77)
+
+
     def history_service(self, *, newest_failure=False, newest_missing=False, omitted=False):
         original_run = deepcopy(self.run)
         previous = dict(original_run, id=102, head_sha='d' * 40)
@@ -218,6 +291,27 @@ class OriginalProof(unittest.TestCase):
             with self.subTest(variant=variant), self.assertRaises(evidence.Fresh):
                 evidence.latest_proof(service, self.inputs, self.profile, trusted, consumer_repository_id=77, trusted_dev_revision='e' * 40)
             self.assertNotIn('actions/runs/101', requests)
+
+    def test_reused_dev_link_rechecks_latest_attempt_after_original_pr_verification(self):
+        for change in (dict(run_attempt=3),dict(conclusion='failure'),dict(status='in_progress'),dict(head_sha='9'*40)):
+            with self.subTest(change=change):
+                service,controls,requests=self.history_service()
+                original=service.read
+                def read(path,**options):
+                    value=original(path,**options)
+                    if path=='actions/runs/102/attempts/2/jobs?per_page=100':
+                        value['jobs'][0]['steps']=deepcopy(value['jobs'][0]['steps'])
+                        value['jobs'][0]['steps'][-1]['conclusion']='success'
+                        executed=next(step for step in value['jobs'][0]['steps'] if step['name']=='Execute full ExUnit coverage (EXECUTED)')
+                        executed['conclusion']='skipped'
+                    if path=='actions/runs/102' and requests.count(path)>1:return dict(value,**change)
+                    return value
+                service.read=read
+                with patch.object(evidence,'merged_pr_proof',return_value=dict(mode='REUSED',original=dict(run_id=101))):
+                    with self.assertRaises(evidence.Fresh):
+                        evidence.latest_proof(service,self.inputs,self.profile,controls,consumer_repository_id=77,trusted_dev_revision='e'*40)
+                self.assertEqual(requests.count('actions/runs/102'),2)
+
 
     def test_only_verified_successful_intentional_omission_can_cross_to_older_original(self):
         service, trusted, requests = self.history_service(omitted=True)

@@ -17,7 +17,7 @@ import time
 REPOSITORY = 'Jayson-Stangel/symphony'
 FILES = ('validation_inputs.py', 'elixir_coverage_profile.py', 'elixir-coverage-profile.json',
          'validation_evidence.py', 'elixir_coverage.py', 'classify_changes.py',
-         'release_tests.py', 'presentation_only.rb')
+         'release_tests.py', 'presentation_only.rb', 'validation_cache.py')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
 
@@ -29,15 +29,16 @@ def main():
     deadline = time.monotonic() + 30
     api_home = temporary / 'symphony-evidence-bootstrap-api-v1'
     try:
-        if not (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
+        eligible_dev = os.environ.get('GITHUB_EVENT_NAME') == 'push' and os.environ.get('GITHUB_REF') == 'refs/heads/dev'
+        if not (eligible_dev or (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
                 and os.environ.get('GITHUB_HEAD_REF') == 'dev'
                 and os.environ.get('GITHUB_BASE_REF') == 'main'
-                and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY):
+                and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY)):
             raise ValueError('ordinary caller executes fresh')
         api_home.mkdir(mode=0o700)
         environment = dict(PATH='/usr/bin:/bin', HOME=str(api_home), GH_CONFIG_DIR=str(api_home / 'gh'),
                            GH_TOKEN=os.environ['GH_TOKEN'], GH_HOST='github.com', GH_PROMPT_DISABLED='1')
-        remaining_calls = 14
+        remaining_calls = 15
         def get(path):
             nonlocal remaining_calls
             remaining_calls -= 1
@@ -89,7 +90,7 @@ def main():
         caller = evidence.current_context(service, run_id=int(os.environ['GITHUB_RUN_ID']),
             attempt=int(os.environ['GITHUB_RUN_ATTEMPT']), source=os.environ['GITHUB_SHA'],
             event=os.environ['GITHUB_EVENT_NAME'], ref=os.environ['GITHUB_REF'],
-            pr_number=int(os.environ['COVERAGE_PR_NUMBER']))
+            pr_number=int(os.environ['COVERAGE_PR_NUMBER']) if os.environ.get('COVERAGE_PR_NUMBER') else None)
         if not caller['eligible_consumer'] or caller['trusted_dev_revision'] != revision:
             raise ValueError('actual caller differs from immutable protected dev source')
         _, tested_tree = evidence.immutable_tree(service, os.environ['GITHUB_SHA'])

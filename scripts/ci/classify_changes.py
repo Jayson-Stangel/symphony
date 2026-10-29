@@ -91,6 +91,10 @@ def browser_selection(paths, event=None, name=None):
                 (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
                  and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
                                   'scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb',
+                                  'scripts/ci/validation_inputs.py', 'scripts/ci/validation_evidence.py',
+                                  'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
+                                  'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
+                                  'scripts/ci/validation_cache.py',
                                   'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
                                   'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
                                   'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py',
@@ -138,7 +142,7 @@ ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
     'test_application_families.py', 'test_elixir_coverage.py',
-    'test_validation_inputs.py', 'test_validation_evidence.py',
+    'test_validation_inputs.py', 'test_validation_evidence.py', 'test_validation_cache.py',
     'test_application_families.py', 'test_packaged_apparmor.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
@@ -197,7 +201,8 @@ def consumer_selection(path):
     if path in ('.github/pull_request_template.md', '.github/workflows/pr-description-lint.yml',
                 'scripts/ci/check_pr_body.py'):
         return set(), 'always-on PR metadata validation'
-    if path == 'scripts/ci/tests/fixtures/pr165-ci-routing.json':
+    if path in ('scripts/ci/tests/fixtures/pr165-ci-routing.json',
+                'scripts/ci/tests/fixtures/coverage-job-before.json'):
         return set(), 'exact historical CI routing policy fixture; no runtime consumer'
     if path.startswith('scripts/ci/tests/'):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
@@ -205,8 +210,9 @@ def consumer_selection(path):
         return ALL, 'unknown CI regression input: conservative full qualification'
     if path in ('scripts/ci/validation_inputs.py', 'scripts/ci/validation_evidence.py',
                 'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
-                'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py'):
-        return ALL, 'full validation input, source trust or evidence control: conservative full qualification'
+                'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
+                'scripts/ci/validation_cache.py'):
+        return {'application', 'portable'}, 'audited full-coverage input/provenance control; Elixir and policy contracts only'
     if path in ('scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb'):
         return {'portable'}, 'known CI selection policy; unconditional policy regressions and portable workflow contracts'
     if path == 'scripts/ci/release_tests.py':
@@ -474,7 +480,10 @@ def event_routing(paths, event, name):
             else:
                 selected, rule = ALL, 'unknown manual workflow controls or trigger changes: conservative full qualification'
         if path == '.github/workflows/make-all.yml' and base:
-            families = workflow_comparison(path, base, head).get('fast_workflow_families')
+            comparison = workflow_comparison(path, base, head)
+            if comparison.get('elixir_profile_only') is True:
+                selected, rule = {'application', 'portable'}, 'exact audited full-coverage workflow seam; other family controllers unchanged'
+            families = comparison.get('fast_workflow_families')
             if families and set(families) <= {'npm', 'readiness', 'codex_config'}:
                 selected, rule = set(families), 'only audited cheap test commands changed; other workflow controls identical'
         selected_consumers.update(selected)

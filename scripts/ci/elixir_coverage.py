@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shutil
+
+import validation_cache as cache
 import stat
 import subprocess
 import sys
@@ -16,7 +19,7 @@ import elixir_coverage_profile as profile
 from validation_inputs import UnknownInput, command, controlled_environment, digest
 from validation_evidence import (Fresh, Service, REPOSITORY, WORKFLOW, SHA, MAX_ARTIFACT,
                                  current_context, coverage_summary, immutable_tree,
-                                 latest_proof, repository, strict_json, tree_controls)
+                                 latest_proof, merged_pr_proof, repository, strict_json, tree_controls)
 
 
 def require(value, message):
@@ -171,11 +174,11 @@ def prepare():
     # The same private paths precede all compilation. Existing quality/build
     # commands retain their ordinary dev Mix environment; test compile is test.
     development = dict(environment, MIX_ENV='dev'); development.pop('HEX_OFFLINE')
-    run(['make', 'setup', 'build', 'fmt-check', 'lint', 'claude-setup'], root, development)
-    run(['mix', 'compile'], root, environment)
+    preparation_seconds = run(['make', 'setup', 'build', 'fmt-check', 'lint', 'claude-setup'], root, development)
+    test_compile_seconds = run(['mix', 'compile'], root, environment)
     store(state / 'environment.json', environment, new=True)
     store(state / 'prepared.json', dict(source=source, supported=True, ordinary=False), new=True)
-    summary('EXECUTED: fresh dependencies, npm installation, build, formatting, specs/Credo and test compilation. Hosted default schedulers are retained.')
+    summary(f'EXECUTED: fresh dependency resolution/build/formatting/lint/npm {preparation_seconds}s; test compilation {test_compile_seconds}s. No compiled or toolchain cache restored. Hosted default schedulers are retained.')
 
 
 def measure():
@@ -188,9 +191,17 @@ def measure():
     started = time.monotonic()
     try:
         measured = profile.fingerprint(root, source, read(state / 'environment.json'), os.environ)
+        sidecar_started = time.monotonic()
+        raw, metadata = cache.create(root / 'elixir/_build/test', root)
+        cache_row = next(row for row in measured['identity']['public_inputs'] if row['path'] == str(root / 'elixir/_build/test'))
+        require(metadata['cache'] == cache_row, 'test cache changed after complete measurement')
+        (state / 'test-cache.tar.gz').write_bytes(raw)
+        os.chmod(state / 'test-cache.tar.gz', 0o600)
+        store(state / 'sidecar.json', metadata, new=True)
+        sidecar_seconds = round(time.monotonic() - sidecar_started, 3)
         store(state / 'inputs.json', measured, new=True)
         output(available=True, input_sha256=measured['sha256'])
-        summary(f"Complete public input profile: {measured['files']} entries, {measured['bytes']} bytes, {measured['elapsed_seconds']} seconds. No reuse has been authorized.")
+        summary(f"Complete public input profile: {measured['files']} entries, {measured['bytes']} bytes, {measured['elapsed_seconds']} seconds. Sidecar {len(raw)} compressed bytes in {sidecar_seconds}s; total measurement/archive {time.monotonic() - started:.3f}s. No reuse has been authorized.")
     except (UnknownInput, Fresh) as error:
         output(available=False)
         summary(f'Full input equivalence unavailable after {time.monotonic() - started:.3f}s: {error}. Full suite executes fresh; no reusable producer receipt.')
@@ -216,15 +227,55 @@ def decide():
                         'protected dev source changed during preparation')
                 _, current_tree = immutable_tree(service, source)
                 require(tree_controls(current_tree) == envelope['controls'], 'tested workflow/controllers differ from protected dev')
-                decision = latest_proof(service, read(state / 'inputs.json'), strict_json(profile.PROFILE_PATH.read_bytes()),
-                                        envelope['controls'], consumer_repository_id=caller['repository_id'],
-                                        trusted_dev_revision=caller['trusted_dev_revision'])
+                inputs = read(state / 'inputs.json')
+                description = strict_json(profile.PROFILE_PATH.read_bytes())
+                if os.environ['GITHUB_EVENT_NAME'] == 'push':
+                    decision = merged_pr_proof(service, source, inputs, description,
+                                               envelope['controls'], caller['repository_id'])
+                else:
+                    decision = latest_proof(service, inputs, description, envelope['controls'],
+                        consumer_repository_id=caller['repository_id'], trusted_dev_revision=caller['trusted_dev_revision'])
+                # API provenance and every non-cache actual input matched before
+                # even parsing/materializing these authenticated executable bytes.
+                install_sidecar(root, state, source, decision)
+
     except (Fresh, UnknownInput, OSError, ValueError, KeyError, TypeError, AttributeError):
         decision = dict(mode='EXECUTED', reason='trusted complete upstream evidence unavailable or incompatible')
     decision['verification_seconds'] = round(time.monotonic() - started, 3)
     store(state / 'decision.json', decision, new=True)
     output(mode=decision['mode'], origin=decision.get('original_run_url', ''))
     summary('Coverage decision: ' + decision['mode'] + f" (verification {decision['verification_seconds']}s)" + ('. Original: ' + decision['original_run_url'] if decision['mode'] == 'REUSED' else '. Full suite will execute.'))
+
+
+def install_sidecar(root, state, source, decision):
+    target = root / 'elixir/_build/test'
+    staging, backup = target.with_name('.test-evidence-v1'), target.with_name('.test-fresh-v1')
+    require(target.is_dir() and not target.is_symlink() and not staging.exists()
+            and not backup.exists() and not backup.is_symlink(), 'test-cache swap is not exclusively owned')
+    installed = False
+    try:
+        cache.stage(decision['sidecar_bytes'], decision['sidecar'], staging, root)
+        target.rename(backup)
+        try:
+            staging.rename(target)
+        except OSError:
+            backup.rename(target)
+            raise
+        installed = True
+        actual = profile.fingerprint(root, source, read(state / 'environment.json'), os.environ)
+        require(actual['sha256'] == decision['inputs_sha256'], 'restored full actual input identity differs')
+    except (Fresh, UnknownInput, OSError, ValueError, KeyError, TypeError):
+        if installed:
+            target.rename(staging)
+            backup.rename(target)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    # Keep the freshly compiled local cache as an inert fallback until job end.
+    decision.pop('sidecar_bytes')
+    decision.pop('original_inputs')
+    decision.pop('sidecar')
 
 
 def execute():
@@ -257,12 +308,13 @@ def dialyzer():
     require(prepared['source'] == source, 'prepared source changed')
     if not prepared['ordinary']:
         environment = dict(read(state / 'environment.json'), MIX_ENV='dev'); environment.pop('HEX_OFFLINE')
-        run(['make', 'dialyzer'], root, environment)
+        seconds = run(['make', 'dialyzer'], root, environment)
+        summary(f'EXECUTED: fresh Dialyzer including any cold PLT/dependency work {seconds}s.')
     store(state / 'dialyzer.json', dict(source=source, success=True), new=True)
 
 
 def seal():
-    _, temporary, source, state, _ = paths()
+    root, temporary, source, state, _ = paths()
     available = False
     try:
         prepared = read(state / 'prepared.json')
@@ -274,14 +326,18 @@ def seal():
         require(inputs['sha256'] == digest(inputs['identity']), 'complete producer input identity differs')
         execution['summary'] = coverage_summary((state / 'coverage.log').read_bytes(), strict_json(profile.PROFILE_PATH.read_bytes()))
         caller = context(client(temporary), source)
-        require(caller['eligible_producer'] is True, 'only actual protected dev push can mint producer evidence')
+        require(caller['eligible_producer'] is True, 'only actual same-repository supported producer can retain original evidence')
+        sidecar = read(state / 'sidecar.json')
+        require(cache.identity(root / 'elixir/_build/test', root) == sidecar['cache'], 'test cache changed during qualification')
         proof = state / 'proof'; proof.mkdir(mode=0o700)
-        store(proof / 'receipt.json', dict(schema_version=1, family='full-exunit-coverage', inputs_sha256=inputs['sha256'],
+        store(proof / 'receipt.json', dict(schema_version=2, family='full-exunit-coverage', inputs_sha256=inputs['sha256'],
+              sidecar=sidecar, clean_preparation='no-mise-or-compiled-cache-v1',
               producer=dict(repository=REPOSITORY, repository_id=caller['repository_id'], run_id=caller['run_id'],
                             attempt=caller['attempt'], job_id=caller['job_id'], source=source, workflow=WORKFLOW),
               execution=execution), new=True)
         store(proof / 'inputs.json', inputs, new=True)
         (proof / 'coverage.log').write_bytes((state / 'coverage.log').read_bytes())
+        (proof / 'test-cache.tar.gz').write_bytes((state / 'test-cache.tar.gz').read_bytes())
         available = True
     except (Fresh, UnknownInput, OSError, ValueError, KeyError, TypeError, AttributeError):
         summary('No transferable producer receipt: this caller/profile lacks complete original executed evidence. Fresh qualification status is unchanged.')

@@ -122,6 +122,33 @@ jobs:
                 finally:
                     os.chdir(previous)
 
+    def test_audited_coverage_seam_selects_only_elixir_and_policy_unknown_controls_do_not(self):
+        path='.github/workflows/make-all.yml'
+        after=workflow('make-all')
+        before=after
+        fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())
+        for name,body in fixture['jobs'].items():
+            before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
+        cases=[('audited',after,{'application','portable'},False),
+            ('unknown job',after.replace('jobs:\n','jobs:\n  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n',1),classifier.ALL,True),
+            ('changed trigger',after.replace('      - dev','      - other-branch',1),classifier.consumers(path),False),
+            ('unknown command',after.replace('scripts/ci/elixir_coverage.py prepare','scripts/ci/unknown.py prepare',1),classifier.consumers(path),False)]
+        with tempfile.TemporaryDirectory() as folder:
+            history=History(folder);history.put('runner/Dockerfile',RECIPE);history.put(path,before);base=history.commit()
+            previous=os.getcwd();os.chdir(folder)
+            try:
+                for name,changed,expected,browser in cases:
+                    self.assertNotEqual(before,changed)
+                    history.put(path,changed);head=history.commit()
+                    event=dict(before=base,after=head,ref='refs/heads/dev')
+                    paths=classifier.changed_paths(event,'push')
+                    route=classifier.event_routing(paths,event,'push')[0]
+                    with self.subTest(change=name):
+                        self.assertEqual({key for key in classifier.COMPONENTS if route[key]},expected)
+                        self.assertEqual(classifier.browser_required(paths,event,'push'),browser)
+            finally:os.chdir(previous)
+
+
     def test_known_policy_tests_and_actual_consumer_families(self):
         cases = {
             'runner/test_npm_cache.py': {'npm'},
@@ -141,12 +168,14 @@ jobs:
             'scripts/ci/tests/test_validation_inputs.py': set(),
             'scripts/ci/tests/test_validation_evidence.py': set(),
             'scripts/ci/tests/test_elixir_coverage.py': set(),
-            'scripts/ci/elixir_coverage.py': classifier.ALL,
-            'scripts/ci/elixir_coverage_bootstrap.py': classifier.ALL,
-            'scripts/ci/elixir_coverage_profile.py': classifier.ALL,
-            'scripts/ci/elixir-coverage-profile.json': classifier.ALL,
-            'scripts/ci/validation_inputs.py': classifier.ALL,
-            'scripts/ci/validation_evidence.py': classifier.ALL,
+            'scripts/ci/elixir_coverage.py': {'application', 'portable'},
+            'scripts/ci/elixir_coverage_bootstrap.py': {'application', 'portable'},
+            'scripts/ci/elixir_coverage_profile.py': {'application', 'portable'},
+            'scripts/ci/elixir-coverage-profile.json': {'application', 'portable'},
+            'scripts/ci/validation_inputs.py': {'application', 'portable'},
+            'scripts/ci/validation_evidence.py': {'application', 'portable'},
+            'scripts/ci/validation_cache.py': {'application', 'portable'},
+            'scripts/ci/tests/test_validation_cache.py': set(),
             'scripts/ci/tests/test_packaged_apparmor.py': set(),
             'scripts/ci/packaged_apparmor.py': {'portable'},
             'scripts/codex-apparmor.profile': {'portable', 'package_macos', 'package_linux', 'application'},
