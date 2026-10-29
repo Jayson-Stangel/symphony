@@ -82,20 +82,35 @@ AUDITED_NATIVE_STEPS = {
 }
 
 
+# Reviewed complete source variants: original ec2be6e, integration 6af4e45,
+# and the default-off bootstrap caller at a36c1f7. No runtime auto-acceptance.
+# Whole-source admission also covers YAML aliases, quoted/duplicate keys and
+# metadata outside the first selected job. Future workflow changes require
+# affected-owner review of a new explicit fingerprint, even for unrelated edits.
+AUDITED_NATIVE_WORKFLOWS = {
+    'runner-release': {
+        'd52762aa3178f5d60f09403893f533d1b446dcffecbf02afa0f7464c806f62d9',
+        'da3eba8c657f54ef27741d1ad7520c3751106ba921f2544de87df787349acb24',
+        'eb220badc9a93bb02a84fbc93ff597b7e0992cd1d5ef4bfce5202bd519ecd563',
+    },
+    'package-checks': {
+        'df48744bd32860a69821dd559962e90e9706f32afe5655afdce0c4adc2bc3b83',
+        'a1918221a790e59eff3a669ef167c9fa420be802950401b8f8ca26c151a434cf',
+    },
+}
+
+
 def owned_mac_job(stage, source, root, helper=False):
     """Positive executed native guard at its exact trusted source, never label inference."""
     require(stage.get('status') == 'completed' and stage.get('conclusion') == 'success', 'native job failed')
     workflow = 'package-checks' if helper else 'runner-release'
     text = subprocess.check_output(['git', '-C', str(root), 'show', source+':.github/workflows/'+workflow+'.yml'], text=True)
+    require(hashlib.sha256(text.encode()).hexdigest() in AUDITED_NATIVE_WORKFLOWS[workflow],
+            'native workflow source is outside the finite audited configurations')
     key = 'native-host-package' if helper else 'packaged-candidate'
     jobs = text.split('  '+key+':\n')
     require(len(jobs)==2,'native source job missing or ambiguous')
     body = re.split(r'\n  [a-z][a-z0-9-]*:',jobs[1],maxsplit=1)[0]
-    header = text.split('jobs:',1)[0]
-    job_header = body.split('    steps:',1)[0]
-    require(not re.search(r'^(?:defaults|env):',header,re.M)
-            and not re.search(r'^    (?:defaults|env|continue-on-error):',job_header,re.M),
-            'native workflow/job defaults or error masking overrides are unsupported')
     for (audited_workflow,name),digest in AUDITED_NATIVE_STEPS.items():
         if audited_workflow != workflow:
             continue

@@ -410,6 +410,27 @@ class BaselineBootstrapTest(unittest.TestCase):
                 with self.subTest(workflow=workflow,defaults=True),patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
                     self.b.owned_mac_job(stage,'a'*40,Path('.'),helper=helper)
 
+    def test_quoted_flow_alias_and_duplicate_job_overrides_are_not_native_proof(self):
+        root=Path(__file__).parents[3]
+        text=(root/'.github/workflows/runner-release.yml').read_text()
+        stage=dict(status='completed',conclusion='success',steps=[dict(name=name,number=n,status='completed',conclusion='success')
+            for n,name in enumerate(['Require actual native Mac prerequisites','Verify qualified helper source, platform and checksum',
+                                     'Build source-bound native candidate archives'],1)])
+        variants=[
+            '    "defaults":\n      run:\n        shell: bash {0}\n',
+            "    'defaults': {run: {shell: 'bash {0}'}}\n",
+            '    "env": {BASH_ENV: /tmp/loose-shell}\n',
+            '    "continue-on-error": true\n',
+            '    <<: {defaults: {run: {shell: "bash {0}"}}}\n',
+        ]
+        changed=[text.replace('  packaged-candidate:\n','  packaged-candidate:\n'+value) for value in variants]
+        changed.append('x-shell: &loose {run: {shell: "bash {0}"}}\n'+
+                       text.replace('  packaged-candidate:\n','  packaged-candidate:\n    "defaults": *loose\n'))
+        changed.append(text+'\n  "packaged-candidate": {runs-on: macos-14, steps: []}\n')
+        for number,bad in enumerate(changed):
+            with self.subTest(variant=number),patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
+                self.b.owned_mac_job(stage,'a'*40,Path('.'))
+
     def test_helper_requires_service_and_inner_digest_cpu_and_compiled_source(self):
         import struct
         source=self.b.ORIGINAL['source_revision']

@@ -851,6 +851,12 @@ helper architecture. Owned Mac provenance requires its actual source's native
 OS/CPU/version guard, successful ordered helper/package steps and a bounded
 original helper receipt whose bytes match the packaged helper. A private label
 or capacity-ready status alone proves neither native execution nor qualification.
+Owned-Mac source validation accepts only explicitly audited whole-workflow
+fingerprints and exact relied-on step configurations. Unknown workflow text
+refuses, including quoted keys, aliases, duplicate jobs and shell/error overrides.
+This intentionally requires another owner review when those workflows change;
+it is not a general YAML or shell equivalence checker. The final combined source
+fingerprint must be reviewed after integration before candidate execution.
 
 The existing `scripts/release/package-lifecycle.py` consumer must repeat-install
 that exact original baseline as an ordinary user, assert its installed source,
