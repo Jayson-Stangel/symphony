@@ -110,19 +110,43 @@ def context(service, source):
 
 
 def capability():
-    _, temporary, source, _, _ = paths()
+    _, temporary, source, _, selected = paths()
+    supported = read(selected).get('supported') is True
+    # Environment selects only whether failure must stop this required job.
+    # Actual API caller metadata still supplies every eligibility decision.
+    required = supported and (
+        (os.environ.get('GITHUB_EVENT_NAME') == 'push'
+         and os.environ.get('GITHUB_REF') in ('refs/heads/dev', 'refs/heads/main'))
+        or (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
+            and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY))
     try:
         service = client(temporary)
         value = context(service, source)
+        if required:
+            require(value['eligible_consumer'] or value['eligible_producer'],
+                    'supported caller is not actually eligible')
+            revision = value['trusted_dev_revision']
+            require(type(revision) is str and SHA.fullmatch(revision),
+                    'authenticated protected dev revision unavailable')
+            comparison = service.read('compare/' + revision + '...' + revision)
+            require(type(comparison) is dict and comparison.get('status') == 'identical'
+                    and type(comparison.get('merge_base_commit')) is dict
+                    and comparison['merge_base_commit'].get('sha') == revision,
+                    'protected dev self comparison differs')
         artifacts = service.read('actions/artifacts?per_page=1')
         require(type(artifacts) is dict and type(artifacts.get('artifacts')) is list,
                 'artifact read returned malformed metadata')
-        store(temporary / 'symphony-evidence-capability.json', dict(available=True, source=source, context=value))
+        store(temporary / 'symphony-evidence-capability.json', dict(available=True, source=source, context=value,
+              protected_compare=required))
         output(available=True)
-        summary('Evidence capability: actual workflow-token run/job/source and artifact metadata GETs succeeded; this is not reuse authorization.')
+        summary('Evidence capability: actual workflow-token run/job/source and artifact metadata GETs succeeded; protected self comparison=' + str(required).lower() + '; this is not reuse authorization.')
     except (Fresh, ValueError, KeyError, TypeError, OSError):
-        store(temporary / 'symphony-evidence-capability.json', dict(available=False, source=source))
+        store(temporary / 'symphony-evidence-capability.json', dict(available=False, source=source,
+              reason='required_supported_profile_evidence_unavailable' if required else 'fresh_fallback'))
         output(available=False)
+        if required:
+            summary('Required supported-profile evidence boundary failed before preparation; actual caller, protected self comparison and artifact GET capability are required.')
+            raise Fresh('required supported-profile evidence capability unavailable') from None
         summary('Evidence service unavailable or caller ineligible; full fresh qualification remains required.')
 
 

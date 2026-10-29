@@ -21,6 +21,39 @@ finally:
     sys.path[:] = before
 
 
+class ProductionServicePaths(unittest.TestCase):
+    def test_only_full_immutable_compare_paths_cross_the_real_guard(self):
+        import tempfile
+        a='a'*40;b='b'*40;valid='compare/'+a+'...'+b
+        self.assertTrue(evidence.safe_api_path(valid))
+        self.assertTrue(evidence.safe_api_path('compare/'+a+'...'+a))
+        invalid=[None,'','compare','compare?per_page=1', '/'+valid,valid+'?per_page=1',valid+'#fragment',
+            valid.replace('...','..'),valid.replace('...','....'),
+            valid.replace(a,'a'*39),valid.replace(b,'B'*40),
+            valid.replace('...','%2e%2e%2e'),valid.replace(a,'../'+a),
+            'compare/refs/heads/dev...'+b,'compare/owner:dev...'+b,
+            'https://api.github.com/repos/'+valid,valid+'/extra',
+            'git/trees/../commits/'+a,'actions/runs/%2e%2e/1',
+            'https://api.github.com/repos/owner/repo/branches/dev',
+            'actions/runs/1?per_page=%31']
+        # Neither encoded aliases nor foreign URLs may enter repository routes.
+        with tempfile.TemporaryDirectory() as home:
+            service=evidence.Service('inert-test-credential',home)
+            for path in invalid:
+                with self.subTest(path=path),patch.object(evidence.subprocess,'Popen') as process,self.assertRaisesRegex(evidence.Fresh,'unsafe evidence API path'):
+                    service.read(path)
+                process.assert_not_called()
+                service.binary_cache[path]=b'inert untrusted cached bytes'
+                with patch.object(evidence.subprocess,'Popen') as process,self.assertRaisesRegex(evidence.Fresh,'unsafe evidence API path'):
+                    service.read(path,binary=True)
+                process.assert_not_called()
+            self.assertEqual(service.remaining,80)
+        for path in ('branches/dev','git/trees/'+a+'?recursive=1',
+                'actions/workflows/make-all.yml/runs?branch=dev&event=push&per_page=3',
+                'commits/'+a+'/pulls?per_page=10'):
+            self.assertTrue(evidence.safe_api_path(path))
+
+
 class OriginalProof(unittest.TestCase):
     def setUp(self):
         now = datetime.now(timezone.utc)

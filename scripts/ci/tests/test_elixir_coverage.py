@@ -45,6 +45,58 @@ def precoverage_fixture(outer):
     return root,state,inputs
 
 
+class RequiredEvidenceCapability(unittest.TestCase):
+    def test_supported_trusted_namespaces_fail_before_preparation_on_boundary_errors(self):
+        from unittest.mock import Mock
+        from validation_evidence import Fresh
+        for event,ref,head in (('push','refs/heads/dev',''),('push','refs/heads/main',''),
+                ('pull_request','refs/pull/200/merge',controller.REPOSITORY)):
+            for defect in ('context','ineligible','missing-revision','compare-error','status','merge-base','artifact'):
+                with self.subTest(event=event,defect=defect),tempfile.TemporaryDirectory() as directory:
+                    root=Path(directory);selection=root/'selection'
+                    controller.store(selection,dict(supported=True))
+                    caller=dict(eligible_consumer=False,eligible_producer=True,trusted_dev_revision='b'*40)
+                    if defect=='ineligible':caller['eligible_producer']=False
+                    if defect=='missing-revision':caller.pop('trusted_dev_revision')
+                    service=Mock()
+                    def read(path):
+                        if path.startswith('compare/'):
+                            self.assertEqual(path,'compare/'+'b'*40+'...'+'b'*40)
+                            if defect=='compare-error':raise Fresh('inert boundary refusal')
+                            return dict(status='ahead' if defect=='status' else 'identical',merge_base_commit=dict(sha='c'*40 if defect=='merge-base' else 'b'*40))
+                        self.assertEqual(path,'actions/artifacts?per_page=1')
+                        return {} if defect=='artifact' else dict(artifacts=[])
+                    service.read.side_effect=read
+                    with patch.object(controller,'paths',return_value=(root,root,'a'*40,root,selection)),patch.object(controller,'client',return_value=service),patch.object(controller,'context',side_effect=Fresh('inert context refusal') if defect=='context' else None,return_value=caller),patch.object(controller,'output'),patch.object(controller,'summary'),patch.object(controller,'phase_run') as prepare,patch.dict(os.environ,dict(GITHUB_EVENT_NAME=event,GITHUB_REF=ref,COVERAGE_HEAD_REPOSITORY=head)),self.assertRaisesRegex(Fresh,'required supported-profile'):
+                        controller.capability()
+                    prepare.assert_not_called()
+                    self.assertEqual(controller.read(root/'symphony-evidence-capability.json')['reason'],'required_supported_profile_evidence_unavailable')
+
+    def test_unsupported_and_fork_callers_keep_fresh_fallback_without_compare(self):
+        from unittest.mock import Mock
+        from validation_evidence import Fresh
+        for supported,head in ((False,controller.REPOSITORY),(True,'foreign/repository')):
+            for available in (False,True):
+                with self.subTest(supported=supported,available=available),tempfile.TemporaryDirectory() as directory:
+                    root=Path(directory);selection=root/'selection';controller.store(selection,dict(supported=supported))
+                    service=Mock();service.read.return_value=dict(artifacts=[])
+                    with patch.object(controller,'paths',return_value=(root,root,'a'*40,root,selection)),patch.object(controller,'client',return_value=service),patch.object(controller,'context',side_effect=None if available else Fresh('inert unavailable'),return_value=dict(eligible_consumer=False,eligible_producer=False)),patch.object(controller,'output'),patch.object(controller,'summary'),patch.dict(os.environ,dict(GITHUB_EVENT_NAME='pull_request',GITHUB_REF='refs/pull/200/merge',COVERAGE_HEAD_REPOSITORY=head)):
+                        controller.capability()
+                    self.assertFalse(any(call.args[0].startswith('compare/') for call in service.read.call_args_list))
+                    self.assertEqual(controller.read(root/'symphony-evidence-capability.json')['available'],available)
+
+    def test_supported_actual_caller_uses_authenticated_dev_not_temporary_merge(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);selection=root/'selection';controller.store(selection,dict(supported=True))
+            service=Mock();service.read.side_effect=[dict(status='identical',merge_base_commit=dict(sha='b'*40)),dict(artifacts=[])]
+            caller=dict(eligible_consumer=False,eligible_producer=True,trusted_dev_revision='b'*40)
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,root,selection)),patch.object(controller,'client',return_value=service),patch.object(controller,'context',return_value=caller),patch.object(controller,'output'),patch.object(controller,'summary'),patch.dict(os.environ,dict(GITHUB_EVENT_NAME='pull_request',GITHUB_REF='refs/pull/200/merge',COVERAGE_HEAD_REPOSITORY=controller.REPOSITORY)):
+                controller.capability()
+            self.assertEqual([call.args[0] for call in service.read.call_args_list],['compare/'+'b'*40+'...'+'b'*40,'actions/artifacts?per_page=1'])
+            self.assertTrue(controller.read(root/'symphony-evidence-capability.json')['protected_compare'])
+
+
 class ProtectedStartingWorld(unittest.TestCase):
     def test_input_drift_or_prearchive_tampering_refuses_before_any_test_container(self):
         from copy import deepcopy

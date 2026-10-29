@@ -905,6 +905,14 @@ Docker-generated DNS. Resolver file identity, actual runtime bytes and mount
 semantics remain fingerprinted, and CPU capability differences still require
 fresh qualification. Native and artifact qualification remain separate. No image is published or included in evidence.
 
+For a supported profile in the same repository's ready PR or protected push,
+the existing capability stage authenticates the actual caller, then performs a
+real workflow-token self-comparison GET of the authenticated protected `dev`
+revision. The response must be identical with that exact merge base. Failure of
+this caller, compare or artifact-read boundary fails the required job before
+costly preparation or coverage. This proves API access, not ancestry or reuse.
+Unsupported profiles and untrusted forks retain ordinary fresh qualification.
+
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle
 contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus separate
