@@ -21,7 +21,7 @@ DIRECTORY = Path(__file__).parent
 RECIPE = DIRECTORY / 'elixir-coverage.Dockerfile'
 PUBLIC = {name: DIRECTORY / ('elixir-coverage.' + name) for name in ('passwd', 'group')}
 GENERATED = ('elixir/deps', 'elixir/_build/dev', 'elixir/_build/test',
-             'elixir/bin', 'elixir/cover', 'runner/claude/node_modules')
+             'elixir/bin', 'elixir/cover', 'elixir/log', 'runner/claude/node_modules')
 PRIVATE = {'home': '/home/ci', 'tmp': '/tmp', 'mix': '/cache/mix',
            'hex': '/cache/hex', 'npm': '/cache/npm', 'native_fetch': '/cache/native-fetch'}
 SOURCE = '/home/runner/work/symphony/symphony'
@@ -241,6 +241,8 @@ for line in Path('/proc/self/mountinfo').read_text().splitlines():
   mounts.append([dest,sorted(p[5].split(',')),p[i+1]])
 assert any(p=='/' and 'ro' in flags for p,flags,fs in mounts)
 assert any(p=='/home/runner/work/symphony/symphony' and 'ro' in flags for p,flags,fs in mounts)
+log=Path('/home/runner/work/symphony/symphony/elixir/log')/'symphony-preflight-output'
+log.write_bytes(b'owned log output capability');log.unlink()
 for parent in ['/home/ci','/tmp','/cache/mix','/cache/hex','/cache/native-fetch']:
  f=Path(parent)/'symphony-preflight';f.write_text('#!/bin/sh\nexit 0\n');f.chmod(0o700);subprocess.run([str(f)],check=True);f.unlink()
 p=subprocess.Popen(['sleep','30'],start_new_session=True)
@@ -288,6 +290,13 @@ def clean_tmp(state):
     require(path.is_dir() and not path.is_symlink() and path.stat().st_uid == os.getuid(), 'private scratch is not owned')
     shutil.rmtree(path); path.mkdir(mode=0o700)
 
+
+
+def require_empty_log(root):
+    path=root/'elixir/log'
+    require(path.is_dir() and not path.is_symlink() and path.stat().st_uid==os.getuid()
+            and path.resolve().is_relative_to(root.resolve()) and not any(path.iterdir()),
+            'application log output is not an exact owned empty initial input')
 
 
 def native_fetch_path(state):

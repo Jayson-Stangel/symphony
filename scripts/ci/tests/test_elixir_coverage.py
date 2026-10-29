@@ -160,6 +160,7 @@ class OwnedOCIProtocol(unittest.TestCase):
         self.assertIn('none',args)
         self.assertNotIn('--cpus',args);self.assertNotIn('--memory',args)
         self.assertIn('type=bind,src=/source,dst='+oci.SOURCE+',readonly',args)
+        self.assertIn('type=bind,src=/source/elixir/log,dst='+oci.SOURCE+'/elixir/log',args)
         self.assertNotIn('/var/run/docker.sock',str(args))
         self.assertNotIn('GH_TOKEN',str(args));self.assertNotIn('--privileged',args)
 
@@ -177,12 +178,13 @@ class OwnedOCIProtocol(unittest.TestCase):
             HostConfig=dict(ReadonlyRootfs=True,Privileged=False,NetworkMode='none',CapDrop=['ALL'],SecurityOpt=['no-new-privileges']),
             Mounts=[dict(Destination=target,Source=source,RW=rw,Type='bind') for target,(source,rw) in expected.items()])
         self.assertEqual(oci.admit(actual,root,state,value,network=False)['network'],'none')
-        for change in ('network','privileged','source-rw','extra-mount','secret','cpu-limit'):
+        for change in ('network','privileged','source-rw','log-ro','extra-mount','secret','cpu-limit'):
             with self.subTest(change=change):
                 wrong=deepcopy(actual)
                 if change=='network':wrong['HostConfig']['NetworkMode']='bridge'
                 elif change=='privileged':wrong['HostConfig']['Privileged']=True
                 elif change=='source-rw':wrong['Mounts'][0]['RW']=True
+                elif change=='log-ro':next(m for m in wrong['Mounts'] if m['Destination']==oci.SOURCE+'/elixir/log')['RW']=False
                 elif change=='extra-mount':wrong['Mounts'].append(dict(Destination='/root',Source='/home/runner',RW=True,Type='bind'))
                 elif change=='secret':wrong['Config']['Env'].append('GH_TOKEN=dummy-secret')
                 else:wrong['HostConfig']['NanoCpus']=2000000000
@@ -257,6 +259,17 @@ class OwnedOCIProtocol(unittest.TestCase):
                 controller.prepare()
             self.assertEqual(steps,['prepare','offline-resolution','test-dependencies-online','test-compile'])
             self.assertEqual(installed.read_bytes(),b'actual installed raw native bytes')
+
+    def test_default_log_is_owned_empty_initial_input_and_postexecution_output_is_not_deleted(self):
+        from validation_inputs import UnknownInput
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);log=root/'elixir/log';log.mkdir(parents=True)
+            controller.oci.require_empty_log(root)
+            output=log/'symphony.log';output.write_bytes(b'actual application output')
+            with self.assertRaises(UnknownInput):controller.oci.require_empty_log(root)
+            self.assertEqual(output.read_bytes(),b'actual application output')
+            output.unlink();log.rmdir();other=root/'other';other.mkdir();log.symlink_to(other,target_is_directory=True)
+            with self.assertRaises(UnknownInput):controller.oci.require_empty_log(root)
 
     def test_cleanup_entrypoint_handles_intent_without_completed_image_record(self):
         with tempfile.TemporaryDirectory() as directory:

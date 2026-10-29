@@ -15,7 +15,7 @@ from validation_inputs import UnknownInput, digest, tree_identity, tracked_sourc
 import validation_oci as oci
 
 PROFILE_PATH = Path(__file__).with_name('elixir-coverage-profile.json')
-GENERATED = ('elixir/deps', 'elixir/_build', 'elixir/bin/symphony', 'elixir/cover', 'runner/claude/node_modules')
+GENERATED = ('elixir/deps', 'elixir/_build', 'elixir/bin/symphony', 'elixir/cover', 'elixir/log', 'runner/claude/node_modules')
 EXPLICIT_SOURCE = {'.github/pull_request_template.md','scripts/codex-apparmor.profile','scripts/codex-seccomp.json'}
 CONTROL_FILES = frozenset({
  '.github/workflows/make-all.yml','.github/workflows/change-classification.yml',
@@ -101,9 +101,10 @@ def execution_identity(root, revision, state):
 
 def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     started = time.monotonic(); public_environment(environment)
+    oci.require_empty_log(Path(root))
     root=Path(root);state=Path(parent['RUNNER_TEMP'])/'symphony-coverage-v2'
     execution=execution_identity(root,revision,state)
-    roots=[root/'elixir/deps',root/'elixir/_build/test',root/'runner/claude/node_modules',
+    roots=[root/'elixir/deps',root/'elixir/_build/test',root/'runner/claude/node_modules',root/'elixir/log',
            state/'mix',state/'hex',state/'home',state/'native_fetch']
     identities=[]
     for item in roots:

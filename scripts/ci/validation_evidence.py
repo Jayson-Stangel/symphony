@@ -289,7 +289,7 @@ def difference_facets(original, current):
         ('public_tools',('execution','public_tools')),('compile_protocol',('execution','compile_protocol')),
         ('controllers',('controllers',)),('public_environment',('environment',))):
         if field(original,*keys)!=field(current,*keys):facets.append(name)
-    roots={'/elixir/deps':'dependency_cache','/elixir/_build/test':'compiler_test',
+    roots={'/elixir/deps':'dependency_cache','/elixir/_build/test':'compiler_test','/elixir/log':'initial_application_log',
            '/runner/claude/node_modules':'npm_inputs','/hex':'public_hex','/mix':'public_mix','/home':'private_home','/native_fetch':'public_native_fetch'}
     for suffix,name in roots.items():
         def selected(value):

@@ -917,7 +917,10 @@ After that container exits, only the known public fetch scratch is discarded;
 installed NIF/dependency/BEAM bytes remain untouched in the four checkpoints. An
 offline compile guard then proves those installed outputs suffice before the
 manifest, complete input measurement or full suite. The actual empty fetch
-directory is fingerprinted; no fifth archive or home-directory transfer is used. ExUnit's own API initializes the empty failures manifest before the
+directory is fingerprinted; no fifth archive or home-directory transfer is used.
+The application keeps its default logger: exact `elixir/log` is a generated
+writable bind, required empty and included in the pre-coverage input identity.
+Post-test log output is allowed but is not transferred as a cache checkpoint. ExUnit's own API initializes the empty failures manifest before the
 checkpoint. A protected `main` push can consume the same original proof after
 authenticating actual dev-to-main promotion; this code does not authorize promotion.
 Unsupported sources retain the ordinary mise/Mix cache and fresh command. API work
