@@ -329,6 +329,7 @@ jobs:
         id: capacity-probe
         env:
           SELECT_TARGET_REQUESTED: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
           SELECT_JOB_KEY: build
@@ -337,6 +338,7 @@ jobs:
         id: selected
         env:
           SELECT_TARGET_REQUESTED: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
@@ -360,6 +362,7 @@ jobs:
         id: capacity-probe
         env:
           SELECT_TARGET_REQUESTED: ${{ inputs.controller_only }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
           SELECT_JOB_KEY: controller-diagnostics
@@ -368,6 +371,7 @@ jobs:
         id: selected
         env:
           SELECT_TARGET_REQUESTED: ${{ inputs.controller_only }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml

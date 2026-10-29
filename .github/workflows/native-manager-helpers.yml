@@ -130,6 +130,7 @@ jobs:
       - name: Prove actual workflow-token capacity read before host preparation
         id: capacity-probe
         env:
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           SELECT_WORKFLOW_PATH: .github/workflows/native-manager-helpers.yml
           SELECT_JOB_KEY: helper
@@ -137,6 +138,7 @@ jobs:
       - name: Prefer prepared owned capacity; report pre-execution fallback
         id: selected
         env:
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/native-manager-helpers.yml

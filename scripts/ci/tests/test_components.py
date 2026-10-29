@@ -16,6 +16,18 @@ def workflow(name):
     return (ROOT / '.github/workflows' / (name + '.yml')).read_text()
 
 
+def historical_selector_workflow(name):
+    """Reconstruct the audited selector fixture before persistent routing.
+
+    These historical omission tests must not silently audit new selector inputs.
+    The live workflow remains subject to conservative behavioral qualification.
+    """
+    text = workflow(name)
+    line = '          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}\n'
+    assert text.count(line) == 2, 'persistent selector fixture changed'
+    return text.replace(line, '')
+
+
 def job(text, name):
     return re.split(r'\n  [a-z][a-z0-9-]*:', text.split('  ' + name + ':\n', 1)[1])[0]
 

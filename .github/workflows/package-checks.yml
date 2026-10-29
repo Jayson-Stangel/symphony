@@ -344,6 +344,7 @@ jobs:
         id: capacity-probe
         env:
           SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           SELECT_WORKFLOW_PATH: .github/workflows/package-checks.yml
           SELECT_JOB_KEY: native-host-package
@@ -352,6 +353,7 @@ jobs:
         id: selected
         env:
           SELECT_TARGET_REQUESTED: ${{ needs.changes.outputs.package_macos == 'true' || needs.changes.outputs.fixtures == 'true' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/package-checks.yml

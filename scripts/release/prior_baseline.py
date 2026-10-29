@@ -119,6 +119,7 @@ AUDITED_NATIVE_STEPS = {
 # affected-owner review of a new explicit fingerprint, even for unrelated edits.
 AUDITED_NATIVE_WORKFLOWS = {
     'runner-release': {
+        '8e99083f7598b36c6c223c507c263520ec062d9f348354a35d5456f078abf0ea',  # Persistent-capacity selector only; native producer bodies unchanged.
         'd52762aa3178f5d60f09403893f533d1b446dcffecbf02afa0f7464c806f62d9',
         'da3eba8c657f54ef27741d1ad7520c3751106ba921f2544de87df787349acb24',
         'eb220badc9a93bb02a84fbc93ff597b7e0992cd1d5ef4bfce5202bd519ecd563',
@@ -128,6 +129,7 @@ AUDITED_NATIVE_WORKFLOWS = {
         'ebb3d201fe42f0ae683d6ace4f6ca5937004f89178dda29197dae85b01f5c6ca',
     },
     'package-checks': {
+        '81422eb2a2c939d60743630d407928f2fc25e06029fdc3621c954aadc89ec6af',  # Persistent-capacity selector only; native producer bodies unchanged.
         # Native owner cleared exact selector-only policy e257; all native steps unchanged.
         'df30ac4e989bdf1ec344d6f6e06bef88ee2d190b24297c93e5dd2c2845ee1a87',
         'df48744bd32860a69821dd559962e90e9706f32afe5655afdce0c4adc2bc3b83',

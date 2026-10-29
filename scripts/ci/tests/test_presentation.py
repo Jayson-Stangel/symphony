@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_ci import ROOT, classifier
+from test_components import historical_selector_workflow
 
 WORKFLOW = 'name: Old workflow\non:\n  pull_request:\njobs:\n  check:\n    name: Old job\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Old step\n        run: echo true\n'
 ACTION = 'name: Old action\ndescription: Stable\nruns:\n  using: composite\n  steps:\n    - name: Old step\n      shell: bash\n      run: echo true\n'
@@ -134,7 +135,7 @@ class PresentationOnly(unittest.TestCase):
         # Frozen pre-selector controls remain the reviewed finite baseline.
         for name in ('make-all', 'package-checks'):
             path = '.github/workflows/' + name + '.yml'
-            after = (ROOT / path).read_text()
+            after = historical_selector_workflow(name)
             before = after
             for current, original in SELECTOR_REVERSALS[name]:
                 self.assertIn(current, before)
@@ -144,6 +145,8 @@ class PresentationOnly(unittest.TestCase):
                     input=json.dumps(dict(path=path, before=before, after=value)), text=True, capture_output=True)
                 return result.returncode == 0 and json.loads(result.stdout).get('mac_selector_policy_only') is True
             self.assertTrue(policy(after), name)
+            # Persistent routing is new behavior, outside the historical audit.
+            self.assertFalse(policy((ROOT / path).read_text()), name)
             for altered in (after.replace('permissions:', 'unknown-global: true\npermissions:', 1),
                     after.replace('  pull_request:', '  unknown_event:', 1),
                     after + '\n  unknown-job:\n    runs-on: ubuntu-24.04\n    steps: [{run: "true"}]\n',
