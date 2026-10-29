@@ -27,7 +27,7 @@ def build_timings(raw):
             continue
         name = vertex['name']
         category = ('cache_import' if name.startswith('importing cache manifest') else
-                    'cache_export' if name.startswith('exporting cache') else
+                    'cache_export' if name.startswith(('exporting cache', 'exporting to GitHub Actions Cache')) else
                     'image_export_load' if name.startswith(('exporting to ', 'importing to docker')) else 'build')
         start, end = instant(vertex['started']), instant(vertex['completed'])
         if end < start:
