@@ -34,7 +34,7 @@ def command(argv, **kwargs):
 
 def service(root=RUNNER):
     # Normal runner configuration produced by config.sh / svc.sh install.
-    config = json.loads((root / '.runner').read_text())
+    config = json.loads((root / '.runner').read_text(encoding='utf-8-sig'))
     require(config.get('gitHubUrl', '').rstrip('/') == REPOSITORY and config.get('agentName') == NAME,
             'runner must be registered only to the Symphony repository')
     plist = Path((root / '.service').read_text().strip())

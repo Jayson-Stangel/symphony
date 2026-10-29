@@ -118,6 +118,11 @@ class NativeConfig(unittest.TestCase):
                 service.assert_not_called()
             self.assertFalse(any(c[0] in ('sudo','launchctl') for c in calls))
 
+    def test_native_runner_utf8_bom_configuration_is_read_without_changing_scope(self):
+        config=self.root/'.runner'
+        config.write_bytes(bytes.fromhex('efbbbf')+config.read_bytes())
+        self.assertIn('actions.runner.symphony',self.service()[0])
+
     def test_native_configuration_is_repository_only_not_shared(self):
         self.assertIn('actions.runner.symphony',self.service()[0])
         for config in (dict(gitHubUrl='https://github.com/other/repo',agentName=runner.NAME),
