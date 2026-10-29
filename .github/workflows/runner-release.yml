@@ -31,6 +31,10 @@ on:
         description: Exact old schema1 run retained across bridge and schema2 updates
         type: string
         default: ''
+      require_reuse:
+        description: Refuse runner builds when any selected component lacks verified reusable originals
+        type: boolean
+        default: false
       manager_only_update:
         description: Require unchanged components and test actual manager-only update/rollback
         type: boolean
@@ -101,6 +105,10 @@ on:
         description: Exact old schema1 run retained across bridge and schema2 updates
         type: string
         default: ''
+      require_reuse:
+        description: Refuse runner builds when any selected component lacks verified reusable originals
+        type: boolean
+        default: false
       manager_only_update:
         description: Require unchanged components and test actual manager-only update/rollback
         type: boolean
@@ -251,6 +259,7 @@ jobs:
           BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          REQUIRE_REUSE: ${{ inputs.require_reuse }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
         run: |
@@ -264,6 +273,7 @@ jobs:
           fi
           if [ "$MANAGER_ONLY_UPDATE" = true ]; then test -n "$PREVIOUS_ARTIFACT_RUN"; fi
           args=()
+          if [ "${REQUIRE_REUSE:-false}" = true ]; then args+=(--require-reuse); fi
           if [ "${PREPARE_RELEASE:-false}" = true ]; then args+=(--production); fi
           if [ "$MANIFEST_SCHEMA" = 1 ]; then args+=(--compatible-originals); fi
           if [ -n "$BASELINE_RUN" ]; then args+=(--baseline-run "$BASELINE_RUN"); fi
@@ -277,6 +287,8 @@ jobs:
           plan = json.load(open('component-plan.json'))
           assert plan.get('manager_source_revision') == os.environ['GITHUB_SHA'] and plan.get('planning_complete') is True
           assert type(plan['has_builds']) is bool
+          if os.environ.get('REQUIRE_REUSE') == 'true':
+              assert plan['has_builds'] is False, 'required component reuse would require runner builds'
           if os.environ['MANAGER_ONLY_UPDATE'] == 'true':
               assert plan['has_builds'] is False, 'declared manager-only update would require runner builds'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
