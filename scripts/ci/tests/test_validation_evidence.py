@@ -159,13 +159,38 @@ class OriginalProof(unittest.TestCase):
                 with self.subTest(stage=index, conclusion=conclusion):
                     self.job = deepcopy(original)
                     self.job['steps'][index]['conclusion'] = conclusion
-                    with self.assertRaises(evidence.Fresh):
-                        self.verify()
+                    if evidence.STEPS[index] == evidence.WARM_STEP and conclusion == 'skipped':
+                        self.assertEqual(self.verify()['mode'],'REUSED')
+                    else:
+                        with self.assertRaises(evidence.Fresh):
+                            self.verify()
         self.job = deepcopy(original)
         self.job['steps'].pop(3)
         with self.assertRaises(evidence.Fresh):
             self.verify()
         self.job = original
+
+    def test_skipped_warm_requires_clean_origin_and_unique_completed_ordered_stage(self):
+        index=evidence.STEPS.index(evidence.WARM_STEP);original=deepcopy(self.job)
+        for conclusion,origin,allowed in (('success','CLEAN',True),('skipped','CLEAN',True),
+                ('success','RESTORED',True),('skipped','RESTORED',False)):
+            with self.subTest(conclusion=conclusion,origin=origin):
+                self.job=deepcopy(original);self.job['steps'][index]['conclusion']=conclusion
+                self.receipt['cache_origin']['mode']=origin;self.pack()
+                if allowed:self.assertEqual(self.verify()['mode'],'REUSED')
+                else:
+                    with self.assertRaisesRegex(evidence.Fresh,'skipped warm'):self.verify()
+        self.receipt['cache_origin']['mode']='CLEAN';self.pack()
+        for case in ('missing','duplicate','inprogress','unordered','badtime'):
+            with self.subTest(case=case):
+                self.job=deepcopy(original);step=self.job['steps'][index];step['conclusion']='skipped'
+                if case=='missing':self.job['steps'].pop(index)
+                elif case=='duplicate':self.job['steps'].append(deepcopy(step))
+                elif case=='inprogress':step['status']='in_progress'
+                elif case=='unordered':step['number']=self.job['steps'][index+1]['number']
+                else:step['started_at']='invalid'
+                with self.assertRaises(evidence.Fresh):self.verify()
+        self.job=original
 
     def test_reused_or_wrapper_only_success_cannot_mint_an_original(self):
         self.job['steps'][-1]['conclusion'] = 'success'

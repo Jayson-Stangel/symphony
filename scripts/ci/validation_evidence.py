@@ -26,7 +26,8 @@ MAX_PROOF = 1024 * 1024
 MAX_AGE = timedelta(days=7)
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 DIGEST = re.compile(r'[0-9a-f]{64}\Z')
-STEPS = ('Prove read-only OCI tool and isolation profile', 'Authenticate protected-origin cache before preparation', 'Prepare controlled full Elixir qualification',
+WARM_STEP = 'Authenticate protected-origin cache before preparation'
+STEPS = ('Prove read-only OCI tool and isolation profile', WARM_STEP, 'Prepare controlled full Elixir qualification',
          'Measure complete full-coverage inputs',
          'Choose fresh or verified full-coverage evidence',
          'Execute full ExUnit coverage (EXECUTED)',
@@ -200,7 +201,10 @@ def successful_steps(job):
         matches = [step for step in steps if step.get('name') == name]
         require(len(matches) == 1, 'missing/ambiguous original executed stage')
         step = matches[0]
-        require(step.get('status') == 'completed' and step.get('conclusion') == 'success'
+        # Warm restoration is optional preparation, never qualification. Its
+        # intentional skip is coupled to CLEAN receipt provenance below.
+        allowed = ('success','skipped') if name == WARM_STEP else ('success',)
+        require(step.get('status') == 'completed' and step.get('conclusion') in allowed
                 and positive(step.get('number')), 'original stage was skipped/failed/cancelled')
         require(instant(step.get('started_at')) <= instant(step.get('completed_at')),
                 'invalid original executed stage timing')
@@ -354,6 +358,8 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
             'checkpoint timing is not explicit')
     require(type(receipt.get('cache_origin')) is dict and receipt['cache_origin'].get('mode') in ('CLEAN','RESTORED'),
             'original cache provenance unavailable')
+    require(stages[STEPS.index(WARM_STEP)]['conclusion'] == 'success'
+            or receipt['cache_origin']['mode'] == 'CLEAN', 'skipped warm stage cannot claim a restored cache origin')
     require(receipt.get('inputs_sha256') == inputs['sha256'], 'receipt is not bound to original complete inputs')
     execution = receipt.get('execution')
     require(type(execution) is dict and execution.get('mode') == 'EXECUTED'
