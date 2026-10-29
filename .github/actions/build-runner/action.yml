@@ -28,6 +28,12 @@ inputs:
   cache-variant:
     description: Optional separate diagnostic cache snapshot
     default: ''
+  trusted-cache-fallback:
+    description: Disable only for isolated export-mode diagnostics; ordinary builds retain trusted fallback
+    default: 'true'
+  cache-mode:
+    description: Explicit diagnostic export mode; production policy stays max until measured
+    default: max
   export-cache:
     description: Export successful layers; false keeps diagnostic recipe changes read-only
     default: 'true'
@@ -44,6 +50,7 @@ runs:
         TARGET: ${{ inputs.target }}
         CACHE_VARIANT: ${{ inputs.cache-variant }}
         CACHE_EXPORT: ${{ inputs.export-cache }}
+        CACHE_MODE: ${{ inputs.cache-mode }}
       run: bash scripts/release/runner-cache-policy.sh
     - name: Set up native image builder
       if: inputs.builder == ''
@@ -75,10 +82,10 @@ runs:
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-codex
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-claude
           type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-${{ steps.cache.outputs.base_namespace }}-browser-tools
-          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-codex
-          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-claude
-          type=gha,scope=runner-v1-${{ steps.cache.outputs.arch }}-trusted-browser-tools
-        cache-to: ${{ inputs.export-cache == 'true' && format('type=gha,scope=runner-v1-{0}-{1}-{2},mode=max', steps.cache.outputs.arch, steps.cache.outputs.namespace, inputs.target) || '' }}
+          ${{ inputs.trusted-cache-fallback == 'true' && format('type=gha,scope=runner-v1-{0}-trusted-codex', steps.cache.outputs.arch) || '' }}
+          ${{ inputs.trusted-cache-fallback == 'true' && format('type=gha,scope=runner-v1-{0}-trusted-claude', steps.cache.outputs.arch) || '' }}
+          ${{ inputs.trusted-cache-fallback == 'true' && format('type=gha,scope=runner-v1-{0}-trusted-browser-tools', steps.cache.outputs.arch) || '' }}
+        cache-to: ${{ inputs.export-cache == 'true' && format('type=gha,scope=runner-v1-{0}-{1}-{2},mode={3}', steps.cache.outputs.arch, steps.cache.outputs.namespace, inputs.target, inputs.cache-mode) || '' }}
     - name: Retain build measurement
       if: inputs.evidence-name != ''
       shell: bash
@@ -89,15 +96,26 @@ runs:
         IMAGE_ID: ${{ steps.build.outputs.imageid }}
         SOURCE_REVISION: ${{ inputs.revision }}
         COLD: ${{ inputs.no-cache }}
+        CACHE_MODE: ${{ inputs.cache-mode }}
+        CACHE_EXPORT: ${{ inputs.export-cache }}
       run: |
         python3 - <<'PYCODE'
-        import json, os, pathlib, time
+        import json, os, pathlib, subprocess, time
         phase = os.environ['PHASE']
         assert phase in ('cold', 'warm', 'changed')
         root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'runner-cache-measurements'
         root.mkdir(exist_ok=True)
+        build_elapsed = time.time() - int(os.environ['STARTED'])
+        metadata = json.loads(os.environ['BUILD_METADATA'])
+        ref = metadata['buildx.build.ref']
+        status = root / (phase + '-build-status.jsonl')
+        with status.open('wb') as output:
+            subprocess.run(['docker', 'buildx', 'history', 'logs', '--builder', ref.split('/')[0], '--progress', 'rawjson', ref.rsplit('/', 1)[1]],
+                           check=True, stdout=output, stderr=subprocess.STDOUT)
+        subprocess.run(['python3', 'scripts/release/runner-cache-probe.py', 'build-timing', phase, str(status)], check=True)
         (root / (phase + '-build.json')).write_text(json.dumps({
-            'phase': phase, 'elapsed_seconds': time.time() - int(os.environ['STARTED']),
+            'phase': phase, 'cache_mode': os.environ['CACHE_MODE'],
+            'cache_export_enabled': os.environ['CACHE_EXPORT'] == 'true', 'elapsed_seconds': build_elapsed,
             'no_cache': os.environ['COLD'] == 'true', 'source_revision': os.environ['SOURCE_REVISION'],
-            'image_id': os.environ['IMAGE_ID'], 'metadata': json.loads(os.environ['BUILD_METADATA'])}, indent=2))
+            'image_id': os.environ['IMAGE_ID'], 'builder_ref': ref, 'metadata': metadata}, indent=2))
         PYCODE
