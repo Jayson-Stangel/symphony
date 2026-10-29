@@ -291,7 +291,7 @@ class NativeOCICompatibilityDiagnostic(unittest.TestCase):
                  'docker.io/hexpm/elixir@sha256:df1f6fe1ffb340380b5089bdf4eed8fcef2305e5909e272b4587fb7864b7ab10']
         result = {'label': 'JAY716_NATIVE_OCI_DIAGNOSTIC_V1', 'diagnostic_only': True,
                   'eligible_evidence': False, 'limits': limits, 'profile': profile,
-                  'events': [], 'images': [], 'containers': [], 'cleanup': [],
+                  'events': [], 'images': [], 'containers': [], 'cleanup': [], 'pinned_bases': bases,
                   'public_bases_and_bounded_cache_retained': True,
                   'shared_prune': False, 'result': 'STOP_BEFORE_EFFECTS'}
         prefix = []
@@ -429,6 +429,9 @@ class NativeOCICompatibilityDiagnostic(unittest.TestCase):
                                    '--build-arg', 'SOURCE_DATE_EPOCH=0', '--load', '--progress', 'plain', '--tag', tag, str(context)], timeout=25)
                         result['images'].append(inspect_image('image-' + str(n), tag))
                     first, second = result['images']
+                    require(re.fullmatch(r'1970-01-01T00:00:00(?:\.0+)?Z', first.get('Created') or '')
+                            and re.fullmatch(r'1970-01-01T00:00:00(?:\.0+)?Z', second.get('Created') or ''),
+                            'source-date-epoch-not-applied-STOP')
                     result['identical_actual_image_fields'] = {key: first[key] == second[key] for key in ('Id', 'Created', 'Config', 'RootFS')}
                     require(all(result['identical_actual_image_fields'].values()), 'actual-image-config-rootfs-identity-differs-STOP')
                     require(first['Config']['User'] == '1001:1001' and first['Config']['Labels'].get('com.symphony.ci.profile') == profile,
@@ -513,6 +516,16 @@ print(json.dumps(r,sort_keys=True))
                                 successful('cleanup-tag-' + str(n), ['image', 'rm', tag], cleanup=True, timeout=4)
                                 result['cleanup'].append({'tag': tag, 'removed': True})
                         except Exception:result['cleanup'].append({'tag': tag, 'removed': False})
+                    try:
+                        remaining = successful('owned-containers-after', ['ps', '-a', '--filter',
+                            'label=com.symphony.task=' + owner, '--format', '{{.ID}}'], cleanup=True, timeout=3)
+                        remaining_tags = successful('owned-tags-after', ['image', 'ls', '--format',
+                            '{{.Repository}}:{{.Tag}}'], cleanup=True, timeout=3).decode().splitlines()
+                        require(not remaining.strip() and not any(tag in remaining_tags for tag in tags),
+                                'owned-cleanup-presence-remains')
+                        result['cleanup_verified_absent'] = True
+                    except Exception:
+                        result['cleanup_verified_absent'] = False
                     disk_guard()
         except Exception as error:
             result['result'] = 'STOP_DATA_NOT_QUALIFICATION';result['reason'] = str(error)[:200]
@@ -522,7 +535,9 @@ print(json.dumps(r,sort_keys=True))
                 encoded = json.dumps(result, sort_keys=True, separators=(',', ':'))
                 self.assertLessEqual(len(encoded.encode()), 64 * 1024 - 128)
                 print('JAY716_NATIVE_OCI_DIAGNOSTIC_JSON=' + encoded, flush=True)
-                self.assertTrue(all(row['removed'] for row in result['cleanup']), 'owned cleanup unverified; no retry')
+                self.assertTrue(all(row['removed'] for row in result['cleanup'])
+                                and (not (tags or containers) or result.get('cleanup_verified_absent') is True),
+                                'owned cleanup unverified; no retry')
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous)
