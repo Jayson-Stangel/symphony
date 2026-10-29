@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from test_ci import ROOT, classifier
-from test_components import env_for, expression, job, scripts, workflow
+from test_components import env_for, expression, historical_selector_workflow, job, scripts, workflow
 from test_release_tests import RELEASE
 from test_browser_routing import RECIPE
 
@@ -124,12 +124,13 @@ jobs:
 
     def test_audited_coverage_seam_selects_only_elixir_and_policy_unknown_controls_do_not(self):
         path='.github/workflows/make-all.yml'
-        after=workflow('make-all')
+        after=historical_selector_workflow('make-all')
         before=after
         fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())
         for name,body in fixture['jobs'].items():
             before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
         cases=[('audited',after,{'application','portable'},False),
+            ('persistent routing',workflow('make-all'),classifier.consumers(path),False),
             ('unknown job',after.replace('jobs:\n','jobs:\n  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n',1),classifier.ALL,True),
             ('changed trigger',after.replace('      - dev','      - other-branch',1),classifier.consumers(path),False),
             ('unknown command',after.replace('scripts/ci/elixir_coverage.py prepare','scripts/ci/unknown.py prepare',1),classifier.consumers(path),False)]
@@ -150,11 +151,12 @@ jobs:
 
 
     def test_exact_package_selector_join_seam_and_unknown_controls_remain_conservative(self):
-        path='.github/workflows/package-checks.yml';after=workflow('package-checks');before=after
+        path='.github/workflows/package-checks.yml';after=historical_selector_workflow('package-checks');before=after
         fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())['package_selector_before']
         for name,body in fixture['jobs'].items():before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
         unknown=after.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1)
         cases=[('reviewed',before,after,{'portable'}),
+            ('persistent routing',before,workflow('package-checks'),classifier.consumers(path)),
             ('unknown join',before,after.replace('test "$MAC_RUNNER_RESULT" = skipped','test "$MAC_RUNNER_RESULT" = success',1),classifier.consumers(path)),
             ('unknown job',before,unknown,classifier.consumers(path)),
             ('preexisting unknown consumer',before.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1),unknown,classifier.consumers(path)),

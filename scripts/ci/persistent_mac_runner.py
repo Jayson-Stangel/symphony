@@ -66,7 +66,7 @@ def guest_start(root=RUNNER):
     target, plist = service(root)
     disabled = command(['launchctl', 'print-disabled', f'gui/{os.getuid()}']).decode()
     label = target.rsplit('/', 1)[1]
-    require(not re.search('"' + re.escape(label) + r'"\s*=>\s*true', disabled),
+    require(not re.search('"' + re.escape(label) + r'"\s*=>\s*(?:true|disabled)\b', disabled),
             'runner service disabled after unsafe cleanup; operator repair required')
     # Inspect native state, never kickstart -k an accepting service. A loaded
     # LaunchAgent may have exited; loaded does not mean running.

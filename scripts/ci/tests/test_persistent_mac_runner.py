@@ -145,10 +145,12 @@ class NativeConfig(unittest.TestCase):
             kick=[c for c in calls if c[:2]==['launchctl','kickstart']]
             self.assertEqual(len(kick),0 if active else 1)
             self.assertFalse(any('-k' in c or 'enable' in c for c in calls))
-        def disabled(argv,**kw):
-            return b'{"actions.runner.symphony" => true}' if argv[:2]==['launchctl','print-disabled'] else cmd(argv,**kw)
-        with patch.object(runner,'service',return_value=(target,plist)),patch.object(Path,'home',return_value=Path('/Users/admin')),             patch.object(runner.sys,'version_info',(3,13)),patch.object(runner,'command',side_effect=disabled),             patch.object(runner.subprocess,'run') as print_service,self.assertRaises(RuntimeError):runner.guest_start(self.root)
-        print_service.assert_not_called()
+        for representation in (b'true',b'disabled'):
+            def disabled(argv,**kw):
+                return b'{"actions.runner.symphony" => '+representation+b'}' if argv[:2]==['launchctl','print-disabled'] else cmd(argv,**kw)
+            with patch.object(runner,'service',return_value=(target,plist)),patch.object(Path,'home',return_value=Path('/Users/admin')),             patch.object(runner.sys,'version_info',(3,13)),patch.object(runner,'command',side_effect=disabled),             patch.object(runner.subprocess,'run') as print_service,self.assertRaises(RuntimeError):runner.guest_start(self.root)
+            print_service.assert_not_called()
+
     def test_actual_tempfile_dmg_and_checkout_credentials_clean_without_touching_foreign_mount(self):
         with patch.dict(os.environ,{'TMPDIR':str(self.work/'_temp')}),patch.object(tempfile,'tempdir',None):
             with tempfile.TemporaryDirectory() as actual_temp:
