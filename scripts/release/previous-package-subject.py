@@ -51,9 +51,7 @@ def select(run_id,root,fetch=proof.api,bootstrap=None):
         trusted=False
         artifacts.require(os.environ.get('GITHUB_EVENT_NAME')=='workflow_dispatch','pre-merge historical subject requires exact manual selection')
     artifacts.require(not bootstrap or trusted, 'bootstrap requires verified trusted original lineage')
-    artifacts.require(subprocess.run(['git','-C',str(root),'merge-base','--is-ancestor',source,controller],
-                                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0,
-                      'historical subject is outside this manager lineage')
+    prior_baseline.manager_lineage(source,controller,root,bootstrap,trusted)
     inventory=fetch(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")
     artifacts.require(inventory.get('total_count',0)<=100,'historical stage discovery incomplete')
     jobs=inventory['jobs'];native={};helper_receipts={};owned_mac_package=False;mac_package_stage=None

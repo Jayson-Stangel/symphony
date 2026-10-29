@@ -176,6 +176,53 @@ class PreviousSubjectTest(unittest.TestCase):
             stage['conclusion']='skipped';self.jobs.append(copy.deepcopy(stage))
             with self.assertRaises(ValueError):subject.select(123,self.source,self.api,bootstrap='explicit fixture')
 
+    def test_promoted_release_selection_preserves_original_subject_and_pending_status(self):
+        # Exercise select(), descriptor validation and real Git together, not a
+        # mocked ancestor result. The service artifacts remain opaque fixtures.
+        old = self.revision
+        def git(*args, input=None):
+            return subprocess.check_output(['git', '-C', str(self.source),
+                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', *args],
+                input=input, text=True).strip()
+        tree = git('rev-parse', 'HEAD^{tree}')
+        promoted = git('commit-tree', tree, '-p', old, input='reviewed dev source\n')
+        released = git('commit-tree', tree, '-p', old, '-p', promoted, input='main promotion\n')
+        controller = git('commit-tree', tree, '-p', promoted, input='continuing dev\n')
+        git('checkout', '--quiet', '--detach', controller)
+        self.revision = released
+        self.run['head_sha'] = released
+        for item in self.artifacts:
+            item['workflow_run']['head_sha'] = released
+            if item['name'] in ('runner-candidate-metadata', 'packaged-candidate'):
+                with zipfile.ZipFile(io.BytesIO(self.payloads[item['id']])) as archive:
+                    files = {name: archive.read(name) for name in archive.namelist()}
+                files['release.json'] = files['release.json'].replace(old.encode(), released.encode())
+                raw = zipped(files)
+                self.payloads[item['id']] = raw
+                item.update(digest='sha256:' + hashlib.sha256(raw).hexdigest(), size_in_bytes=len(raw))
+        lifecycle = next(j for j in self.jobs if j['name'] == 'ubuntu-package-lifecycle')
+        lifecycle['conclusion'] = 'skipped'
+        package = next(a for a in self.artifacts if a['name'] == 'packaged-candidate')
+        original = dict(run_id=123, run_attempt=1, source_revision=released,
+            lifecycle_job_id=lifecycle['id'], package_artifact_id=package['id'],
+            package_artifact_digest=package['digest'])
+        desc = dict(original, candidate_source_revision=controller)
+        env = dict(GITHUB_SHA=controller, GITHUB_REF='refs/heads/dev', GITHUB_REF_TYPE='branch',
+            GITHUB_ACTOR='Jayson-Stangel', GITHUB_TRIGGERING_ACTOR='Jayson-Stangel',
+            GITHUB_WORKFLOW_REF='Jayson-Stangel/symphony/.github/workflows/burrito-release.yml@refs/heads/dev',
+            GITHUB_RUN_ID='777', GITHUB_RUN_ATTEMPT='1', PREVIOUS_ARTIFACT_RUN='123',
+            PREPARE_RELEASE='false', COMPOSE_PACKAGES='true', MANAGER_ONLY_UPDATE='false',
+            PREVIOUS_REVISION='', LEGACY_ARTIFACT_RUN='')
+        with patch.object(subject.prior_baseline, 'ORIGINAL', original), patch.dict(os.environ, env):
+            selected = subject.select(123, self.source, self.api, bootstrap=json.dumps(desc))
+            self.assertEqual(selected['source_revision'], released)
+            self.assertEqual(selected['package_artifact']['id'], package['id'])
+            self.assertEqual(selected['package_artifact']['digest'], package['digest'])
+            self.assertEqual(selected['baseline_status'], 'UNQUALIFIED_PENDING')
+            self.assertEqual(lifecycle['conclusion'], 'skipped')
+            with self.assertRaisesRegex(ValueError, 'outside this manager lineage'):
+                subject.select(123, self.source, self.api)  # No generic promotion exemption.
+
     def test_current_display_names_select_the_same_actual_historical_jobs(self):
         for item in self.jobs:
             old=item['name']
@@ -336,6 +383,102 @@ class PreviousSubjectTest(unittest.TestCase):
             subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',corrupt)
         self.assertFalse((self.root/'packages/previous').exists())
         self.assertFalse((self.root/'images/previous').exists())
+
+
+class PromotionLineageTest(unittest.TestCase):
+    """Real Git promotion history; no service/native qualification claimed."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.git('init', '--quiet', '-b', 'main')
+        self.git('config', 'user.name', 'Fixture')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        (self.root / 'runtime').write_text('old runtime')
+        self.git('add', 'runtime'); self.git('commit', '--quiet', '-m', 'main base')
+        self.base = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '--quiet', '-b', 'dev')
+        (self.root / 'runtime').write_text('promoted runtime')
+        self.git('commit', '--quiet', '-am', 'reviewed dev source')
+        self.promoted = self.git('rev-parse', 'HEAD')
+        self.tree = self.git('rev-parse', 'HEAD^{tree}')
+        self.git('checkout', '--quiet', 'main')
+        self.git('merge', '--quiet', '--no-ff', 'dev', '-m', 'release promotion')
+        self.release = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '--quiet', 'dev')
+        (self.root / 'runtime').write_text('continuing dev runtime')
+        self.git('commit', '--quiet', '-am', 'later dev')
+        self.controller = self.git('rev-parse', 'HEAD')
+        self.original = dict(subject.prior_baseline.ORIGINAL, source_revision=self.release)
+        self.descriptor = dict(self.original, candidate_source_revision=self.controller)
+        self.pin = patch.object(subject.prior_baseline, 'ORIGINAL', self.original)
+        self.pin.start(); self.addCleanup(self.pin.stop)
+
+    def git(self, *args, input=None):
+        return subprocess.check_output(['git', '-C', str(self.root), *args], input=input,
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+
+    def commit(self, tree, *parents):
+        args = ['commit-tree', tree]
+        for parent in parents:
+            args += ['-p', parent]
+        return self.git(*args, input='alternate real history\n')
+
+    def check(self, source=None, controller=None, descriptor=None, trusted=True):
+        subject.prior_baseline.manager_lineage(source or self.release, controller or self.controller,
+            self.root, self.descriptor if descriptor is None else descriptor, trusted)
+
+    def test_tree_preserving_main_promotion_is_not_dev_ancestor_but_valid_pinned_bootstrap(self):
+        result = subprocess.run(['git', '-C', str(self.root), 'merge-base', '--is-ancestor',
+                                 self.release, self.controller], capture_output=True)
+        self.assertEqual(result.returncode, 1)  # Exact failure from the real candidate.
+        self.assertEqual(self.git('show', '-s', '--format=%P', self.release).split(),
+                         [self.base, self.promoted])
+        self.assertEqual(self.git('rev-parse', self.release + '^{tree}'), self.tree)
+        self.check()
+        self.assertEqual(self.descriptor['source_revision'], self.release)  # Never relabel B.
+
+    def test_ordinary_ancestor_keeps_existing_nonbootstrap_behavior(self):
+        self.check(source=self.promoted, descriptor={}, trusted=False)
+
+    def test_fallback_requires_exact_pinned_descriptor_and_trusted_original(self):
+        for descriptor, trusted in (({}, True), (self.descriptor, False),
+                (dict(self.descriptor, source_revision=self.promoted), True),
+                (dict(self.descriptor, candidate_source_revision=self.base), True)):
+            with self.subTest(descriptor=descriptor, trusted=trusted), self.assertRaises(ValueError):
+                self.check(descriptor=descriptor, trusted=trusted)
+        with self.assertRaises(ValueError):
+            self.check(source=self.commit(self.tree, self.base, self.promoted))
+
+    def test_equal_tree_or_shared_history_does_not_admit_foreign_parent_or_controller(self):
+        foreign = self.commit(self.tree, self.base)
+        release = self.commit(self.tree, self.base, foreign)
+        for original, controller in ((release, self.controller), (self.release, foreign)):
+            pinned = dict(self.original, source_revision=original)
+            desc = dict(pinned, candidate_source_revision=controller)
+            with self.subTest(original=original, controller=controller), \
+                    patch.object(subject.prior_baseline, 'ORIGINAL', pinned), self.assertRaises(ValueError):
+                self.check(source=original, controller=controller, descriptor=desc)
+
+    def test_changed_merge_tree_single_parent_and_octopus_refuse(self):
+        changed = self.git('rev-parse', self.controller + '^{tree}')
+        other = self.commit(self.tree, self.base)
+        for release in (self.commit(changed, self.base, self.promoted),
+                        self.commit(self.tree, self.promoted),
+                        self.commit(self.tree, self.base, self.promoted, other)):
+            pinned = dict(self.original, source_revision=release)
+            desc = dict(pinned, candidate_source_revision=self.controller)
+            with self.subTest(release=release), patch.object(subject.prior_baseline, 'ORIGINAL', pinned), \
+                    self.assertRaises(ValueError):
+                self.check(source=release, descriptor=desc)
+
+    def test_missing_objects_and_git_errors_refuse(self):
+        for source, controller in (('f'*40, self.controller), (self.release, 'f'*40)):
+            with self.subTest(source=source, controller=controller), self.assertRaises(ValueError):
+                self.check(source=source, controller=controller)
+        with tempfile.TemporaryDirectory() as not_a_repository, self.assertRaises(ValueError):
+            subject.prior_baseline.manager_lineage(self.release, self.controller,
+                Path(not_a_repository), self.descriptor, True)
 
 
 class BaselineBootstrapTest(unittest.TestCase):
