@@ -104,7 +104,7 @@ def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     root=Path(root);state=Path(parent['RUNNER_TEMP'])/'symphony-coverage-v2'
     execution=execution_identity(root,revision,state)
     roots=[root/'elixir/deps',root/'elixir/_build/test',root/'runner/claude/node_modules',
-           state/'mix',state/'hex',state/'home']
+           state/'mix',state/'hex',state/'home',state/'native_fetch']
     identities=[]
     for item in roots:
         value,_=tree_identity(item,allowed_roots=[root,state],deadline=started+budget_seconds)

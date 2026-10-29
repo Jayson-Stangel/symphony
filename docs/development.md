@@ -910,8 +910,14 @@ metadata causes fresh qualification, never timestamp editing or an equality clai
 The same aggregate 64 MiB compressed, 256 MiB expanded and 10,000-entry limits cover
 all four checkpoints; actual hosted size remains unmeasured. Hex must remain
 unchanged through sealing. Following online setup, early offline `mix deps.get`
-proves the resolution required again by Dialyzer before test compilation or the
-full suite. ExUnit's own API initializes the empty failures manifest before the
+proves the resolution required again by Dialyzer. All test dependencies then
+compile online, including the pinned test-only native dependency. Its documented
+`ELIXIR_MAKE_CACHE_DIR` points to the exact private `/cache/native-fetch` bind.
+After that container exits, only the known public fetch scratch is discarded;
+installed NIF/dependency/BEAM bytes remain untouched in the four checkpoints. An
+offline compile guard then proves those installed outputs suffice before the
+manifest, complete input measurement or full suite. The actual empty fetch
+directory is fingerprinted; no fifth archive or home-directory transfer is used. ExUnit's own API initializes the empty failures manifest before the
 checkpoint. A protected `main` push can consume the same original proof after
 authenticating actual dev-to-main promotion; this code does not authorize promotion.
 Unsupported sources retain the ordinary mise/Mix cache and fresh command. API work

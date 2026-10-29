@@ -191,8 +191,8 @@ class OwnedOCIProtocol(unittest.TestCase):
     def test_public_hex_registry_is_retained_for_early_offline_resolution(self):
         from validation_inputs import UnknownInput
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);state=root/'state';state.mkdir()
-            for name in ('hex','mix'): (state/name).mkdir()
+            root=Path(directory);state=root/'state';state.mkdir(mode=0o700)
+            for name in ('hex','mix','native_fetch'): (state/name).mkdir(mode=0o700)
             (state/'hex/cache.bin').write_bytes(b'public timestamped fetch metadata')
             (state/'mix/tool.beam').write_bytes(b'actual executable bytes')
             steps=[]
@@ -205,7 +205,7 @@ class OwnedOCIProtocol(unittest.TestCase):
                 return 1
             with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'):
                 controller.prepare()
-            self.assertEqual(steps,['prepare','offline-resolution','test-compile','native-manifest'])
+            self.assertEqual(steps,['prepare','offline-resolution','test-dependencies-online','test-compile','native-manifest'])
             self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
             self.assertEqual(controller.oci.environment()['HEX_OFFLINE'],'1')
             self.assertNotIn('HEX_OFFLINE',controller.oci.environment(network=True))
@@ -217,6 +217,46 @@ class OwnedOCIProtocol(unittest.TestCase):
             with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=unavailable),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
                 controller.prepare()
             self.assertEqual(steps,['prepare','offline-resolution'])
+
+    def test_online_test_dependencies_then_exact_fetch_cleanup_preserves_installed_output(self):
+        from validation_inputs import UnknownInput
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);state=root/'state';state.mkdir(mode=0o700)
+            scratch=state/'native_fetch';scratch.mkdir(mode=0o700)
+            installed=root/'elixir/_build/test/lib/lazy_html/priv/liblazy_html.so'
+            installed.parent.mkdir(parents=True)
+            steps=[]
+            def phase(source,private,name,*args,**kwargs):
+                steps.append(name)
+                if name=='test-dependencies-online':
+                    self.assertEqual(args[0],['mix','compile']);self.assertEqual(kwargs,dict(network=True))
+                    (scratch/'lazy_html-nif-2.16-x86_64-linux-gnu-0.1.10.tar.gz').write_bytes(b'public download scratch')
+                    installed.write_bytes(b'actual installed raw native bytes')
+                if name=='test-compile':
+                    self.assertNotIn('network',kwargs)
+                    self.assertEqual(list(scratch.iterdir()),[])
+                    self.assertEqual(installed.read_bytes(),b'actual installed raw native bytes')
+                return 1
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'):
+                controller.prepare()
+            self.assertEqual(steps,['prepare','offline-resolution','test-dependencies-online','test-compile','native-manifest'])
+            self.assertEqual(controller.oci.environment()['ELIXIR_MAKE_CACHE_DIR'],'/cache/native-fetch')
+            (scratch/'unknown').write_bytes(b'preserve unsupported input')
+            with self.assertRaises(UnknownInput):controller.oci.clean_native_fetch(state)
+            self.assertTrue((scratch/'unknown').is_file())
+            with self.assertRaises(UnknownInput):controller.oci.require_empty_native_fetch(state)
+            (scratch/'unknown').unlink();(scratch/'link').symlink_to(installed)
+            with self.assertRaises(UnknownInput):controller.oci.clean_native_fetch(state)
+            self.assertEqual(installed.read_bytes(),b'actual installed raw native bytes')
+            (scratch/'link').unlink();steps.clear()
+            def blocked(source,private,name,*args,**kwargs):
+                result=phase(source,private,name,*args,**kwargs)
+                if name=='test-compile':raise UnknownInput('offline installed outputs unavailable')
+                return result
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=blocked),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
+                controller.prepare()
+            self.assertEqual(steps,['prepare','offline-resolution','test-dependencies-online','test-compile'])
+            self.assertEqual(installed.read_bytes(),b'actual installed raw native bytes')
 
     def test_cleanup_entrypoint_handles_intent_without_completed_image_record(self):
         with tempfile.TemporaryDirectory() as directory:

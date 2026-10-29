@@ -23,7 +23,7 @@ PUBLIC = {name: DIRECTORY / ('elixir-coverage.' + name) for name in ('passwd', '
 GENERATED = ('elixir/deps', 'elixir/_build/dev', 'elixir/_build/test',
              'elixir/bin', 'elixir/cover', 'runner/claude/node_modules')
 PRIVATE = {'home': '/home/ci', 'tmp': '/tmp', 'mix': '/cache/mix',
-           'hex': '/cache/hex', 'npm': '/cache/npm'}
+           'hex': '/cache/hex', 'npm': '/cache/npm', 'native_fetch': '/cache/native-fetch'}
 SOURCE = '/home/runner/work/symphony/symphony'
 FAMILY = 'full-exunit-oci-v2'
 
@@ -130,7 +130,7 @@ def record(state):
 
 def environment(mix='test', *, network=False):
     value = dict(HOME='/home/ci', TMPDIR='/tmp', MIX_HOME='/cache/mix', MIX_ARCHIVES='/cache/mix/archives',
-        HEX_HOME='/cache/hex', MIX_ENV=mix, LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC', CI='true',
+        HEX_HOME='/cache/hex', ELIXIR_MAKE_CACHE_DIR='/cache/native-fetch', MIX_ENV=mix, LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC', CI='true',
         PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_COUNT='0',
         PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
@@ -237,11 +237,11 @@ assert not Path('/var/run/docker.sock').exists() and sorted(os.listdir('/sys/cla
 mounts=[]
 for line in Path('/proc/self/mountinfo').read_text().splitlines():
  p=line.split();i=p.index('-');dest=p[4]
- if dest in ['/', '/etc/passwd','/etc/group','/home/ci','/tmp','/cache/mix','/cache/hex','/cache/npm'] or dest.startswith('/home/runner/work/symphony/symphony'):
+ if dest in ['/', '/etc/passwd','/etc/group','/home/ci','/tmp','/cache/mix','/cache/hex','/cache/npm','/cache/native-fetch'] or dest.startswith('/home/runner/work/symphony/symphony'):
   mounts.append([dest,sorted(p[5].split(',')),p[i+1]])
 assert any(p=='/' and 'ro' in flags for p,flags,fs in mounts)
 assert any(p=='/home/runner/work/symphony/symphony' and 'ro' in flags for p,flags,fs in mounts)
-for parent in ['/home/ci','/tmp','/cache/mix','/cache/hex']:
+for parent in ['/home/ci','/tmp','/cache/mix','/cache/hex','/cache/native-fetch']:
  f=Path(parent)/'symphony-preflight';f.write_text('#!/bin/sh\nexit 0\n');f.chmod(0o700);subprocess.run([str(f)],check=True);f.unlink()
 p=subprocess.Popen(['sleep','30'],start_new_session=True)
 try:
@@ -288,6 +288,29 @@ def clean_tmp(state):
     require(path.is_dir() and not path.is_symlink() and path.stat().st_uid == os.getuid(), 'private scratch is not owned')
     shutil.rmtree(path); path.mkdir(mode=0o700)
 
+
+
+def native_fetch_path(state):
+    path=state/'native_fetch'
+    require(state.is_dir() and not state.is_symlink() and state.stat().st_uid==os.getuid()
+            and not state.stat().st_mode & 0o077 and path.is_dir() and not path.is_symlink()
+            and path.stat().st_uid==os.getuid() and not path.stat().st_mode & 0o077,
+            'native fetch scratch is not exact owned private state')
+    return path
+
+
+def clean_native_fetch(state):
+    path=native_fetch_path(state)
+    children=list(path.iterdir())
+    require(all(child.name=='lazy_html-nif-2.16-x86_64-linux-gnu-0.1.10.tar.gz'
+                and child.is_file() and not child.is_symlink() and child.stat().st_uid==os.getuid()
+                for child in children), 'unknown native fetch scratch; refuse deletion')
+    for child in children:child.unlink()
+    path.rmdir();path.mkdir(mode=0o700)
+
+
+def require_empty_native_fetch(state):
+    require(not any(native_fetch_path(state).iterdir()), 'native fetch scratch is not empty before offline qualification')
 
 
 def cleanup(state):

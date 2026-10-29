@@ -290,7 +290,7 @@ def difference_facets(original, current):
         ('controllers',('controllers',)),('public_environment',('environment',))):
         if field(original,*keys)!=field(current,*keys):facets.append(name)
     roots={'/elixir/deps':'dependency_cache','/elixir/_build/test':'compiler_test',
-           '/runner/claude/node_modules':'npm_inputs','/hex':'public_hex','/mix':'public_mix','/home':'private_home'}
+           '/runner/claude/node_modules':'npm_inputs','/hex':'public_hex','/mix':'public_mix','/home':'private_home','/native_fetch':'public_native_fetch'}
     for suffix,name in roots.items():
         def selected(value):
             rows=value.get('public_inputs',[]) if type(value) is dict else []

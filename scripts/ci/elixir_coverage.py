@@ -258,12 +258,14 @@ def prepare():
     environment=oci.environment();profile.public_environment(environment)
     development=phase_run(root,state,'prepare',['make','setup','build','fmt-check','lint','claude-setup'],mix='dev',network=True)
     phase_run(root,state,'offline-resolution',['mix','deps.get'],mix='dev')
+    online=phase_run(root,state,'test-dependencies-online',['mix','compile'],network=True)
+    oci.clean_native_fetch(state)
     compiled=phase_run(root,state,'test-compile',['mix','compile'])
     phase_run(root,state,'native-manifest',['mix','run','--no-start','-e',
         'ExUnit.FailuresManifest.write!(ExUnit.FailuresManifest.new(), Path.join(Mix.Project.manifest_path(), ".mix_test_failures"))'])
     store(state/'environment.json',environment,new=True)
     store(state/'prepared.json',dict(source=source,supported=True,ordinary=False),new=True)
-    summary(f'EXECUTED: fresh setup/build/format/lint/npm {development}s; test compile {compiled}s; pinned ExUnit native empty-manifest initialization. Hosted scheduler defaults retained.')
+    summary(f'EXECUTED: fresh setup/build/format/lint/npm {development}s; online all-test-dependency compile {online}s; offline compile guard {compiled}s; pinned ExUnit native empty-manifest initialization. Hosted scheduler defaults retained.')
 
 
 def measure():
@@ -272,6 +274,7 @@ def measure():
     if prepared['ordinary']:output(available=False);return
     # A supported OCI profile that cannot describe its actual inputs refuses
     # here before spending another full suite/PLT run on an unprovable profile.
+    oci.require_empty_native_fetch(state)
     inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'])
     summary(f"Early four-checkpoint bound: {inventory['entries']} entries/{inventory['bytes']} raw bytes; final post-PLT bounds remain required.")
     started=time.monotonic();measured=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
@@ -354,6 +357,7 @@ def seal():
         inputs=read(state/'inputs.json');require(inputs['sha256']==digest(inputs['identity']),'producer identity invalid')
         execution['summary']=coverage_summary((state/'coverage.log').read_bytes(),strict_json(profile.PROFILE_PATH.read_bytes()))
         caller=context(client(temporary),source);require(caller['eligible_producer'],'ineligible original producer')
+        oci.require_empty_native_fetch(state)
         sides={'test':read(state/'sidecar.json'),'hex':read(state/'hex-sidecar.json')}
         require(cache.identity(state/'hex',root,private_root=state)==sides['hex']['cache'],'precoverage Hex checkpoint changed')
         require(cache.identity(root/'elixir/_build/test',root)==sides['test']['cache'],'precoverage test cache changed')
