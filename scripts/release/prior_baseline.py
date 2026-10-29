@@ -55,6 +55,36 @@ def descriptor(raw, env=None):
     return value
 
 
+def manager_lineage(source, controller, root, bootstrap, trusted):
+    """Keep ordinary ancestry; admit only the pinned tree-preserving promotion."""
+    require(re.fullmatch('[a-f0-9]{40}', source or '') and
+            re.fullmatch('[a-f0-9]{40}', controller or ''), 'invalid historical manager revision')
+    def ancestor(before, after):
+        result = subprocess.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', before, after],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        require(result.returncode in (0, 1), 'historical manager lineage Git check failed')
+        return result.returncode == 0
+    if ancestor(source, controller):
+        return
+    # A main promotion merge is not an ancestor of continuing dev. Its exact
+    # released tree can still be the promoted dev parent, without relabeling B.
+    # This exception is available only to the validated, authenticated pinned
+    # bootstrap; equal trees or a shared merge base alone never establish it.
+    require(bootstrap and trusted and source == ORIGINAL['source_revision'] == bootstrap['source_revision']
+            and controller == bootstrap['candidate_source_revision'],
+            'historical subject is outside this manager lineage')
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(root), *args],
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+    parents = git('show', '-s', '--format=%P', source).split()
+    require(len(parents) == 2 and len(set(parents)) == 2,
+            'bootstrap original is not an exact two-parent promotion merge')
+    promoted = parents[1]
+    require(git('rev-parse', source + '^{tree}') == git('rev-parse', promoted + '^{tree}')
+            and ancestor(promoted, controller),
+            'bootstrap released tree is not its ancestral promoted dev parent')
+
+
 def successful(stage, name):
     found = [s for s in stage.get('steps', []) if s.get('name') == name]
     require(len(found) == 1 and found[0].get('status') == 'completed' and found[0].get('conclusion') == 'success',
