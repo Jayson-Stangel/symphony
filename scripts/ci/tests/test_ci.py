@@ -264,5 +264,315 @@ class WorkflowContracts(unittest.TestCase):
         self.assertIn('check_pr_body.py --event',text)
 
 
+class RuntimeInventoryDiagnostic(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true'
+                         and os.environ.get('RUNNER_OS') == 'Linux'
+                         and os.environ.get('ImageOS') == 'ubuntu24',
+                         'temporary data probe requires actual GitHub Ubuntu 24 runner')
+    def test_public_runtime_inventory_diagnostic_only(self):
+        """Temporary unmerged DATA probe; never eligibility or qualification."""
+        import hashlib
+        import shutil
+        import signal
+        import stat
+        import sys
+
+        started = time.monotonic()
+        deadline = started + 110
+        limits = {'seconds': 115, 'read_bytes': 8 * 1024 ** 3 - 1024 ** 2,
+                  'hashed_files': 100_000, 'json_bytes': 1024 ** 2 - 128}
+        result = {'label': 'JAY716_PUBLIC_RUNTIME_DIAGNOSTIC_V1',
+                  'diagnostic_only': True, 'eligible_evidence': False,
+                  'limits': limits, 'image': {}, 'runner': {}, 'roots': [],
+                  'resolutions': [], 'inventory': [], 'inventory_truncated': False,
+                  'bytes_read': 0, 'hashed_files': 0, 'first_budget_path': None}
+        inventory_size = 0
+        manifest = None
+        pending = None
+
+        class Budget(Exception):
+            pass
+
+        def check(path):
+            nonlocal pending
+            pending = str(path)
+            if time.monotonic() >= deadline:
+                raise Budget('time')
+            if result['hashed_files'] >= limits['hashed_files']:
+                raise Budget('file-count')
+            if result['bytes_read'] >= limits['read_bytes']:
+                raise Budget('read-bytes')
+
+        def alarm(_signum, _frame):
+            raise Budget('wall-clock-alarm')
+
+        def record(row):
+            nonlocal inventory_size
+            encoded = json.dumps(row, sort_keys=True, separators=(',', ':'))
+            if manifest is not None:
+                manifest.update(encoded.encode() + b'\n')
+            if inventory_size + len(encoded.encode()) <= 640_000:
+                result['inventory'].append(row)
+                inventory_size += len(encoded.encode())
+            else:
+                result['inventory_truncated'] = True
+
+        allowed = [Path(p) for p in ('/usr/bin', '/usr/local/bin', '/usr/sbin',
+                    '/usr/lib', '/usr/local/lib', '/lib', '/lib64',
+                    '/usr/share/git-core', '/usr/share/zoneinfo',
+                    '/usr/share/ca-certificates', '/etc/profile.d',
+                    '/etc/ssl', '/etc/ld.so.conf.d')]
+        exact = {Path(p) for p in ('/etc/os-release', '/etc/profile',
+                 '/etc/nsswitch.conf', '/etc/ld.so.cache', '/etc/ld.so.conf',
+                 '/etc/ld.so.preload', '/etc/resolv.conf', '/etc/hosts',
+                 '/etc/gai.conf', '/etc/host.conf', '/etc/environment',
+                 '/etc/python3.12/sitecustomize.py', '/etc/ssl/openssl.cnf')}
+
+        def inside(path):
+            return path in exact or any(path == p or path.is_relative_to(p)
+                                        for p in allowed)
+
+        def file_bytes(path, info):
+            check(path)
+            if info.st_size > limits['read_bytes'] - result['bytes_read']:
+                raise Budget('read-bytes-next-file')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                         | os.O_NONBLOCK)
+            value = hashlib.sha256()
+            try:
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino, opened.st_mode) != (info.st_dev, info.st_ino, info.st_mode):
+                    return {'error': 'changed-before-read'}
+                if not stat.S_ISREG(opened.st_mode):
+                    return {'error': 'not-regular'}
+                result['hashed_files'] += 1
+                while True:
+                    check(path)
+                    left = limits['read_bytes'] - result['bytes_read']
+                    chunk = os.read(fd, min(1024 * 1024, left))
+                    if not chunk:
+                        break
+                    result['bytes_read'] += len(chunk)
+                    value.update(chunk)
+                after = os.fstat(fd)
+                original = (info.st_dev, info.st_ino, info.st_size, info.st_mode,
+                            info.st_uid, info.st_gid, info.st_mtime_ns, info.st_ctime_ns)
+                final = (after.st_dev, after.st_ino, after.st_size, after.st_mode,
+                         after.st_uid, after.st_gid, after.st_mtime_ns, after.st_ctime_ns)
+                return {'sha256': value.hexdigest(), 'size': info.st_size,
+                        'changed_while_reading': original != final}
+            finally:
+                os.close(fd)
+
+        # Global visited destinations prevent aliases from recursively rehashing
+        # shared /bin↔/usr/bin and library/Git symlink targets.
+        visited = set()
+
+        def visit(path, summary, active):
+            check(path)
+            row = {'path': str(path)}
+            try:
+                info = path.lstat()
+                row.update(mode=stat.S_IMODE(info.st_mode), uid=info.st_uid,
+                           gid=info.st_gid)
+                if stat.S_ISLNK(info.st_mode):
+                    row.update(kind='symlink', target=os.readlink(path))
+                    record(row)
+                    try:
+                        target = path.resolve(strict=False)
+                    except RuntimeError:
+                        record({'path': str(path), 'error': 'symlink-cycle'})
+                        return
+                    if not inside(target):
+                        record({'path': str(path), 'error': 'unfollowed-public-root-escape',
+                                'resolved': str(target)})
+                    elif target in active:
+                        record({'path': str(path), 'error': 'symlink-cycle'})
+                    else:
+                        visit(target, summary, active | {path})
+                    return
+                actual = path.absolute()
+                if actual in active:
+                    record({'path': str(path), 'error': 'directory-cycle'})
+                    return
+                if actual in visited:
+                    summary['aliases_skipped'] += 1
+                    return
+                visited.add(actual)
+                if stat.S_ISDIR(info.st_mode):
+                    row['kind'] = 'directory'
+                    summary['directories'] += 1
+                    record(row)
+                    # scandir streaming avoids an unbounded directory listing.
+                    with os.scandir(path) as children:
+                        for child in children:
+                            visit(Path(child.path), summary, active | {actual})
+                elif stat.S_ISREG(info.st_mode):
+                    if path.name in {'.credentials', '.credentials_rsaparams', '.env',
+                                     '.netrc', '.npmrc', '.pypirc', 'auth.json',
+                                     'id_rsa', 'id_ed25519'}:
+                        record({'path': str(path), 'kind': 'excluded-nonpublic-name'})
+                        return
+                    row.update(kind='file', **file_bytes(path, info))
+                    summary['files'] += 1
+                    record(row)
+                else:
+                    record({'path': str(path), 'kind': 'unread-special-file'})
+            except FileNotFoundError:
+                record({'path': str(path), 'kind': 'absent'})
+            except OSError as error:
+                record({'path': str(path), 'error': type(error).__name__})
+
+        previous = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, alarm)
+        signal.setitimer(signal.ITIMER_REAL, limits['seconds'])
+        try:
+            # Only public worker executable/status ancestry; never environ/cmdline.
+            pid = os.getppid()
+            for _ in range(12):
+                check("/proc/worker-ancestry")
+                try:
+                    proc = Path('/proc') / str(pid)
+                    exe = (proc / 'exe').resolve(strict=True)
+                    if exe.name == 'Runner.Worker' and exe.parent.name == 'bin':
+                        worker = exe.parent.parent
+                        result['runner'] = {'worker_executable': str(exe),
+                                            'public_roots': [str(worker / x) for x in ('bin', 'externals')]}
+                        allowed.extend([worker / 'bin', worker / 'externals'])
+                        break
+                    data = (proc / 'status').read_text()
+                    match = re.search(r'^PPid:\s+(\d+)$', data, re.M)
+                    if not match or int(match[1]) <= 0:
+                        break
+                    pid = int(match[1])
+                except (OSError, RuntimeError):
+                    break
+
+            # Only these two documented public image labels; never env dumps.
+            for name in ('ImageOS', 'ImageVersion'):
+                value = os.environ.get(name, '')
+                result['image'][name] = value if re.fullmatch(r'[A-Za-z0-9_.-]{0,80}', value) else 'invalid-public-label'
+            os_release = Path('/etc/os-release').read_text()
+            if not re.search(r'^ID=ubuntu$', os_release, re.M) or not re.search(r'^VERSION_ID="24\.04"$', os_release, re.M):
+                result['refusal'] = 'actual os-release is outside Ubuntu24 profile'
+                return
+            # Finite audited command lookup, in parent, canonical-profile and
+            # actual reduced child contexts. Do not execute any resolved file.
+            names = ('erl', 'elixir', 'mix', 'node', 'python3', 'bash', 'sh', 'env',
+                     'git', 'cat', 'timeout', 'kill', 'sleep', 'ps', 'id', 'uname',
+                     'readlink', 'dirname', 'basename', 'mkdir', 'chmod', 'cp',
+                     'mv', 'rm', 'ln', 'mktemp', 'sed', 'awk', 'grep', 'tr',
+                     'cut', 'sort', 'head', 'tail', 'stat', 'flock', 'sha256sum',
+                     'shasum', 'ssh', 'ssh-keygen', 'docker', 'curl', 'gh')
+            parent_path = os.environ.get('PATH', '')
+            tool_dirs = []
+            tool_roots = []
+            for name in ('elixir', 'erl', 'node', 'python3'):
+                found = shutil.which(name)
+                if found:
+                    try:
+                        selected = Path(found).resolve(strict=True)
+                        if (inside(selected) or selected.is_relative_to('/opt/hostedtoolcache')
+                                or selected.is_relative_to('/home/runner/.local/share/mise/installs')):
+                            if not inside(selected):
+                                allowed.append(selected.parent.parent)
+                            if name != 'python3':
+                                tool_dirs.append(str(selected.parent))
+                            if str(selected.parent.parent) not in ('/usr', '/usr/local', '/'):
+                                tool_roots.append(str(selected.parent.parent))
+                    except (OSError, RuntimeError):
+                        pass
+            contexts = {'parent': parent_path,
+                        'canonical': ':'.join(dict.fromkeys(tool_dirs + ['/usr/bin', '/bin'])),
+                        'child': '/usr/local/bin:/usr/bin:/bin',
+                        'apparmor': '/usr/sbin:/usr/bin:/sbin:/bin'}
+            for label, search in contexts.items():
+                directories = list(dict.fromkeys(search.split(':')))
+                for name in names:
+                    check(name)
+                    candidates = []
+                    for folder in directories[:40]:
+                        path = Path(folder) / name
+                        if not Path(folder).is_absolute() or not inside(path):
+                            candidates.append({'path': str(path), 'unfollowed': 'outside-public-roots'})
+                            continue
+                        present = os.path.lexists(path)
+                        item = {'path': str(path), 'present': present}
+                        if present:
+                            item['executable'] = os.access(path, os.X_OK)
+                            try:
+                                item['resolved'] = str(path.resolve(strict=False))
+                            except RuntimeError:
+                                item['error'] = 'symlink-cycle'
+                        candidates.append(item)
+                    result['resolutions'].append({'context': label, 'name': name,
+                                                  'candidates': candidates})
+            result['python_startup'] = {
+                'executable': str(Path(sys.executable).resolve()),
+                'version': list(sys.version_info[:3]),
+                'public_search_paths': [p for p in sys.path if p and Path(p).is_absolute()
+                                        and inside(Path(p))],
+                'nonpublic_search_paths_not_read': sum(1 for p in sys.path
+                    if not p or not Path(p).is_absolute() or not inside(Path(p)))}
+            result['tool_roots_present'] = list(dict.fromkeys(tool_roots))
+            # Prioritize small implicit inputs before potentially huge roots.
+            roots = list(map(str, sorted(exact))) + [
+                '/etc/profile.d', '/etc/ld.so.conf.d', '/usr/lib/python3.12',
+                '/usr/lib/python3/dist-packages', '/usr/local/lib/python3.12/dist-packages',
+                '/usr/local/lib/python3.12/site-packages',
+                *result['python_startup']['public_search_paths'], '/usr/lib/git-core',
+                '/usr/share/git-core', '/usr/share/zoneinfo', '/usr/lib/locale',
+                '/etc/ssl/certs', '/usr/share/ca-certificates',
+                '/usr/bin', '/usr/local/bin', '/usr/sbin', '/usr/lib/x86_64-linux-gnu',
+                *tool_roots, *result['runner'].get('public_roots', [])]
+            result['root_plan'] = list(dict.fromkeys(roots))
+            for value in result['root_plan']:
+                check(value)
+                root = Path(value)
+                summary = {'path': value, 'files': 0, 'directories': 0,
+                           'aliases_skipped': 0, 'bytes': 0, 'complete': False}
+                before = result['bytes_read']
+                tick = time.monotonic()
+                result['roots'].append(summary)
+                manifest = hashlib.sha256()
+                try:
+                    visit(root, summary, set())
+                    summary['complete'] = True
+                finally:
+                    summary['observed_manifest_sha256'] = manifest.hexdigest()
+                    summary['seconds'] = round(time.monotonic() - tick, 6)
+                    summary['bytes'] = result['bytes_read'] - before
+        except Budget as error:
+            result['budget_stop'] = str(error)
+            result['first_budget_path'] = pending
+        finally:
+            # Reserve at most the remaining119s wall budget for serialization/log IO.
+            def output_alarm(_signum, _frame):
+                raise TimeoutError('diagnostic output exceeded total wall bound')
+            signal.signal(signal.SIGALRM, output_alarm)
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, 119 - (time.monotonic() - started)))
+            result['elapsed_seconds'] = round(time.monotonic() - started, 6)
+            result['scope'] = 'read-only public DATA, never validation reuse; missing runtimes are absent, not installed'
+            encoded = json.dumps(result, sort_keys=True, indent=1)
+            # Fail visibly if a future edit invalidates the explicit log bound.
+            if len(encoded.encode()) > limits['json_bytes']:
+                result['inventory'] = []
+                result['inventory_truncated'] = True
+                result['output_bound_refusal'] = True
+                encoded = json.dumps(result, sort_keys=True, indent=1)
+            if len(encoded.encode()) > limits['json_bytes']:
+                result['resolutions'] = []
+                result['output_bound_refusal'] = True
+                encoded = json.dumps(result, sort_keys=True, indent=1)
+            self.assertLessEqual(len(encoded.encode()), limits['json_bytes'])
+            try:
+                print('JAY716_PUBLIC_RUNTIME_DIAGNOSTIC_JSON_BEGIN', flush=True)
+                print(encoded, flush=True)
+                print('JAY716_PUBLIC_RUNTIME_DIAGNOSTIC_JSON_END', flush=True)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+
+
 if __name__ == '__main__':
     unittest.main()
