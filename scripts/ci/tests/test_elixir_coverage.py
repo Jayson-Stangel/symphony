@@ -195,11 +195,14 @@ class OwnedOCIProtocol(unittest.TestCase):
             steps=[]
             def phase(source,private,name,*args,**kwargs):
                 steps.append(name)
-                if name=='test-compile':self.assertEqual(list((state/'hex').iterdir()),[])
+                if name=='offline-resolution':
+                    self.assertEqual(list((state/'hex').iterdir()),[])
+                    self.assertEqual(args[0],['mix','deps.get']);self.assertEqual(kwargs,dict(mix='dev'))
+                if name=='test-compile':self.assertIn('offline-resolution',steps)
                 return 1
             with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'):
                 controller.prepare()
-            self.assertEqual(steps,['prepare','test-compile','native-manifest'])
+            self.assertEqual(steps,['prepare','offline-resolution','test-compile','native-manifest'])
             self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
             self.assertEqual(controller.oci.environment()['HEX_OFFLINE'],'1')
             self.assertNotIn('HEX_OFFLINE',controller.oci.environment(network=True))
@@ -210,6 +213,15 @@ class OwnedOCIProtocol(unittest.TestCase):
             with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
                 controller.prepare()
             self.assertEqual(steps,['prepare'])
+            (state/'hex').unlink();(state/'hex').mkdir()
+            steps.clear()
+            def unavailable(source,private,name,*args,**kwargs):
+                steps.append(name)
+                if name=='offline-resolution':raise UnknownInput('offline dependency registry unavailable')
+                return 1
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=unavailable),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
+                controller.prepare()
+            self.assertEqual(steps,['prepare','offline-resolution'])
 
     def test_cleanup_entrypoint_handles_intent_without_completed_image_record(self):
         with tempfile.TemporaryDirectory() as directory:

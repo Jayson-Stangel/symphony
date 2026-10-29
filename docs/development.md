@@ -913,8 +913,9 @@ been removed, the exact private Hex fetch directory is discarded and recreated
 empty. Following compilation, tests and Dialyzer use `HEX_OFFLINE=1`; actual Hex
 archive/tool bytes in Mix home and raw dependency/compiler bytes remain bound.
 This creates the execution input before qualification rather than altering any
-observed timestamp or executable bytes. If offline preparation needs unavailable
-registry data it fails before the full suite. ExUnit's own API initializes the empty failures
+observed timestamp or executable bytes. An early offline `mix deps.get` in the development environment proves the
+resolution required again by Dialyzer before test compilation or the full suite.
+Unavailable registry data therefore fails before expensive qualification. ExUnit's own API initializes the empty failures
 manifest before the checkpoint. A protected `main` push can consume the same
 original proof after authenticating the actual dev-to-main promotion; this code
 does not authorize promotion. Unsupported sources retain the ordinary mise/Mix

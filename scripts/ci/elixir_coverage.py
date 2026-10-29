@@ -256,6 +256,7 @@ def prepare():
     environment=oci.environment();profile.public_environment(environment)
     development=phase_run(root,state,'prepare',['make','setup','build','fmt-check','lint','claude-setup'],mix='dev',network=True)
     oci.clean_hex(state)
+    phase_run(root,state,'offline-resolution',['mix','deps.get'],mix='dev')
     compiled=phase_run(root,state,'test-compile',['mix','compile'])
     phase_run(root,state,'native-manifest',['mix','run','--no-start','-e',
         'ExUnit.FailuresManifest.write!(ExUnit.FailuresManifest.new(), Path.join(Mix.Project.manifest_path(), ".mix_test_failures"))'])
