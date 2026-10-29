@@ -214,33 +214,20 @@ cache ref restrictions also prevent a PR merge-ref cache from replacing a base
 branch cache. No cache job receives publication credentials. Cache receipts and
 hits prove reuse, not agent/browser/engine behavior or artifact availability.
 
-For a bounded nonpublishing benchmark, manually run `runner-release` with
-`cache_probe=true`. It skips the normal candidate/package pipeline and runs both
-providers on native Linux AMD64 and ARM64. Each job builds with `no-cache`, commits
-an actual documentation-only source change and rebuilds warm, then commits a real
-browser dependency-build recipe change and rebuilds again. All three actual
-images retain their own source labels, push only to a disposable loopback registry
-and execute the normal Git/browser/empty-tracker/graceful-stop qualification.
-These synthetic source commits are diagnostics, never release candidates. After
-that run completes, run the same branch again with both `cache_probe=true` and
-`cache_probe_restore=true`. The second isolated run skips the cold build and
-imports the first run's exported GHA cache into a fresh builder. Inspect actual
-cache-import and layer-hit logs before claiming persistent cross-run reuse; a
-same-job hit alone is insufficient. The changed-recipe build imports the baseline
-snapshot but disables cache export, preserving the original dependency graph and
-avoiding an extra large snapshot that could evict the next run's warm baseline.
-Every build action also creates its own builder, so the ordinary three-phase probe exercises the cache service rather
-than relying on a previously populated daemon builder.
+The obsolete composite-action `cache-probe` dispatch interface is retired. The
+bounded nonpublishing comparison now selects `cache_controller_revision` at the
+exact approved current dev source, with package composition disabled and
+`retain_diagnostic=true`. It is fixed to Claude ARM64 and compares serial and
+explicit overlapping max export through the real candidate controller. Serial
+export remains the ordinary default. See the bounded cache export comparison in
+`docs/development.md` for its scope and evidence limits.
 
-Retained `runner-cache-*` artifacts contain source/digest records, qualification
-logs and measured build/load, archive export/compression CPU/wall time, size and
-checksum costs. Docker build records and CI logs retain per-layer cache outcomes;
-job metadata supplies queue and critical-path times. The probe deletes its large
-measurement archives after hashing and does not claim payload upload/download
-or archive replay evidence. Those remain the candidate/lifecycle consumers' proof.
-Compare actual results before reporting an improvement; unexecuted targets remain
-open acceptance. No production publication, installed manager or existing runtime
-is involved.
+The shared timing parser and Browser's `build-runner` action remain active.
+Historical `runner-cache-*` receipts retain their original provenance; they do
+not establish a cold controller baseline, cross-run service reuse or a measured
+improvement for this new path. Exact-source resource approval and actual measured
+results remain required before claiming savings. No production publication,
+installed manager or existing runtime is involved.
 
 Ordinary event planning and original payload retrieval
 ----------------------------------------------------

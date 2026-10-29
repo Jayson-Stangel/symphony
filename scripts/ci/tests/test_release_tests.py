@@ -115,7 +115,6 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='a'*40)), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', PREVIOUS_REVISION='invalid')), 0)
-        self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', CACHE_PROBE='true', DIAGNOSTIC_ARTIFACT_RUN='123')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
 
@@ -171,25 +170,25 @@ class WorkflowGuardTest(unittest.TestCase):
         good=dict(LOCAL_RESULT='success',LOCAL_REVISION='a'*40,CALLER_REVISION='',CONTROLLER_COMPARISON='true',
                   CONTROLLER_REVISION='a'*40,GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_REF='refs/heads/dev',
                   GITHUB_REPOSITORY='Jayson-Stangel/symphony',GITHUB_ACTOR='Jayson-Stangel',GITHUB_TRIGGERING_ACTOR='Jayson-Stangel',
-                  GITHUB_RUN_ATTEMPT='1',CACHE_PROBE_PROVIDER='claude',CACHE_PROBE_ARCHITECTURE='arm64',
-                  CACHE_PROBE='false',CACHE_EXPORT_COMPARISON='false',CACHE_PROBE_RESTORE='false',PREPARE_RELEASE='false',
+                  GITHUB_RUN_ATTEMPT='1',PREPARE_RELEASE='false',
                   COMPOSE_PACKAGES='false',MANAGER_ONLY_UPDATE='false',PACKAGED_PREPARATION='false',RETAIN_DIAGNOSTIC='true')
         name='Require exact successful local or caller-owned preflight'
         self.assertEqual(self.guard('runner-release.yml',name,good),0)
         for field,value in [('CONTROLLER_REVISION','b'*40),('GITHUB_REF','refs/heads/main'),('GITHUB_EVENT_NAME','push'),
                             ('GITHUB_ACTOR','foreign'),('GITHUB_TRIGGERING_ACTOR','foreign'),('GITHUB_RUN_ATTEMPT','2'),
-                            ('CACHE_PROBE_PROVIDER','codex'),('CACHE_PROBE_ARCHITECTURE','x86_64'),('CACHE_OVERLAP','true'),('COMPOSE_PACKAGES','true'),
-                            ('PREPARE_RELEASE','true'),('CACHE_PROBE','true'),('CACHE_EXPORT_COMPARISON','true'),
-                            ('CACHE_PROBE_RESTORE','true'),('PREVIOUS_ARTIFACT_RUN','123'),('LEGACY_ARTIFACT_RUN','123'),
+                            ('CACHE_OVERLAP','true'),('COMPOSE_PACKAGES','true'),
+                            ('PREPARE_RELEASE','true'),('PREVIOUS_ARTIFACT_RUN','123'),('LEGACY_ARTIFACT_RUN','123'),('BOOTSTRAP_PREVIOUS','proof.json'),
                             ('RESUME_NATIVE','123'),('BASELINE_RUN','123'),('COMPONENT_PLAN','artifact'),
                             ('DIAGNOSTIC_ARTIFACT_RUN','123'),('TRANSFER_REPLAY','123'),('TRANSFER_TIMING','123'),
                             ('TRANSFER_DIAGNOSTIC','123'),('PACKAGED_PREPARATION','true'),('RETAIN_DIAGNOSTIC','false')]:
             with self.subTest(field=field):self.assertNotEqual(self.guard('runner-release.yml',name,dict(good,**{field:value})),0)
         root=Path(__file__).resolve().parents[3]
         workflow=(root/'.github/workflows/runner-release.yml').read_text()
-        diagnostic=workflow.split('  cache-controller-comparison:\n')[1].split('  cache-probe:',1)[0]
+        diagnostic=workflow.split('  cache-controller-comparison:\n')[1].split('  packaged-candidate:',1)[0]
         self.assertIn('runs-on: ubuntu-24.04-arm',diagnostic)
         self.assertIn('strategy: [serial, overlap]',diagnostic)
+        self.assertIn("'claude','arm64'",diagnostic)
+        self.assertIn('Linux/aarch64',diagnostic)
         self.assertNotIn('include:',diagnostic)
         self.assertIn('timeout-minutes: 60',diagnostic)
         self.assertIn('scripts/release/build-candidate-runners.sh',diagnostic)
@@ -310,7 +309,7 @@ class ReusedPreflightSchedulingTest(unittest.TestCase):
                 'packaged-candidate': ['candidate-metadata', 'package-inputs'],
                 'packaged-candidate-metadata': ['packaged-candidate'],
                 'ubuntu-package-lifecycle': ['packaged-candidate-metadata'],
-                'lifecycle-diagnostic': ['qualification'], 'cache-probe': ['qualification']},
+                'lifecycle-diagnostic': ['qualification'], 'cache-controller-comparison': ['qualification']},
             'runner-integration.yml': {'manager-package': ['manager-inputs','helpers']},
             'current-manager-package.yml': {'package':['host-policy'],'metadata':['package']},
             'native-manager-helpers.yml': {'helper':['host-policy'],'qualification':['helper']},
