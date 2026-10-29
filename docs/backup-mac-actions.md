@@ -1,3 +1,133 @@
+# Persistent Symphony Mac CI capacity
+
+The current JAY-782 implementation is a normal repository-scoped GitHub Actions
+runner in one dedicated persistent macOS14 ARM64 VM. Actions supplies the queue
+and runs one job at a time. Successful jobs retain the VM and registration.
+No per-job operator grant, custom queue, copied private driver or cleanup receipt
+is part of this route. Older one-off preparation below is historical, not an
+activation prerequisite. This document/source change does not activate anything.
+
+## Current routing
+
+Set repository variable `SYMPHONY_PERSISTENT_MAC_RUNNER=symphony-macos14` only during
+separately approved activation. Existing selectors then reuse their current
+owner/repository/source/event checks and output the fixed native runner label;
+they do not wait for a per-job capacity reply. Empty preserves the existing route.
+Keep the old disposable `SYMPHONY_BACKUP_MAC_PERMIT` absent while this route is on.
+
+| Existing consumer | Persistent capacity |
+| --- | --- |
+| `make-all.yml / platform-contracts` | Ordinary selected Mac process contracts; required Application checks unchanged |
+| `package-checks.yml / native-host-package` | Ordinary selected Mac native helper/fixture qualification; Package qualification unchanged |
+| `native-manager-helpers.yml / helper` | Existing credential-free Mac helper used by runner-integration |
+| `current-manager-package.yml / package` | Existing credential-free Mac package used by runner-integration |
+| `runner-release.yml / packaged-candidate` | Existing nonpublishing manual Mac candidate package |
+| `burrito-release.yml / build, controller-diagnostics` | Existing nonproduction manual engine/controller jobs |
+
+Production preparation, publication, signing/import and privileged release-package
+selectors keep their current route. Linux selection, all native job bodies,
+required checks, timeouts, cancellation and artifact identities remain unchanged.
+Historical native provenance still checks original source/steps/artifact digests;
+only exact routing-only workflow fingerprints are added. No old VM-deleted proof
+is reinterpreted as proof about this retained VM. Labels/ifs are routing, not an
+access barrier; registration is to this repository only. Current GitHub access
+controls remain in force. This change adds no fork-policy or approval project.
+
+## Minimal activation plan — held for separate approval
+
+Target this Mac's dedicated Tart home
+`/Users/jayson/Library/Application Support/Symphony Mac CI Persistent`, VM
+`symphony-ci-macos14`, separate from pristine base/default Tart storage, stable
+Symphony and personal host state. Clone/prepare it only under a later approved
+activation. Record its real MAC address for the start command. Keep no host
+filesystem shares, clipboard, credential/socket forwarding or ambient production
+signing credentials. Use the existing native macOS14 ARM64 tools in the VM.
+
+Register the normal runner **inside that VM** with `config.sh`, using only
+`--url https://github.com/Jayson-Stangel/symphony`, `--name symphony-macos14`,
+`--labels symphony-macos14`, `--no-default-labels`, and the normal persistent work
+directory `_work`. Supply a separately provisioned repository registration token
+through the runner's supported prompt, never source, argv examples or logs. Do not
+use organization/shared registration or `--ephemeral`. This source task does not
+provision credentials or run config.sh.
+
+Install the reviewed `persistent_mac_runner.py` and executable
+`persistent-mac-job-completed.sh` outside `_work`, at
+`/Users/admin/.local/share/persistent_mac_runner.py` and
+`/Users/admin/.local/share/persistent-mac-job-completed.sh`. In the native runner
+root `/Users/admin/.local/share/symphony-ci-runner-25a`, configure its normal `.env`:
+
+```text
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/Users/admin/.local/share/persistent-mac-job-completed.sh
+TMPDIR=/Users/admin/.local/share/symphony-ci-runner-25a/_work/_temp
+```
+
+The dedicated temp directory must exist. Keep the runner's default process
+cleanup enabled. Native checkout post actions remove checkout credentials; the
+small completed hook detaches DMG images backed by this runner's work/temp and
+removes its checkout workspace. The runner then cleans tracked orphan processes
+in FinalizeJob and native temp after log uploads. Do not delete active temp from
+the hook or scan/delete shared host temp. Retain only normal runner credentials,
+configuration, tools and approved caches; normal maintenance also bounds logs.
+
+Use native `./svc.sh install` and `./svc.sh start` in the guest user account. The
+native macOS service is a user LaunchAgent: its guest login/session must actually
+exist. Its RunAtLoad/RunnerService behavior is supplied by Actions, not a new
+supervisor. The hook unloads and disables this native service on an observed
+unsafe cleanup failure; stopping only Runner.Listener would let its native wrapper
+restart it. Disabled state requires deliberate operator repair, not automatic
+reset or re-enable. If native service stop cannot be established, the hook tries
+to halt the dedicated guest and reports uncertainty through normal logs.
+
+After approved installation, the host start/check command is:
+
+```sh
+python3 scripts/ci/persistent_mac_runner.py start \
+  --tart '/Users/jayson/Library/Application Support/Symphony Mac CI/tools/tart.app/Contents/MacOS/tart' \
+  --mac-address ACTUAL_REVIEWED_VM_MAC
+```
+
+It checks the separate VM path/owner/name/MAC, starts it if off, or preserves it
+if already running. It waits briefly for native guest exec, then starts/checks
+the normal service once, preserving an active instance. An exited but loaded
+service uses native kickstart without `-k`; an unloaded service uses bootstrap
+without `load -w` or enable, preserving native disabled state.
+A disabled service refuses startup. No host command is required between jobs.
+The physical Mac must be powered, awake and network-connected. An offline VM
+cannot boot itself from a queued job; this explicit start path does not promise
+wake-on-queue. Host startup automation would be a separate activation choice.
+
+## Native mechanism and proof limits
+
+The pinned Actions runner2.338.0 source
+[`JobDispatcher`](https://github.com/actions/runner/blob/197ca027b90de199464dee3bb9ff198a1db60967/src/Runner.Listener/JobDispatcher.cs#L32)
+serializes jobs. Its completed hook is an awaited post step in
+[`JobExtension`](https://github.com/actions/runner/blob/197ca027b90de199464dee3bb9ff198a1db60967/src/Runner.Worker/JobExtension.cs#L523),
+before native orphan cleanup. Hook failure alone does not stop the listener;
+native service disable/bootout is used on an observed unsafe cleanup failure.
+Native [`RunnerService`](https://github.com/actions/runner/blob/197ca027b90de199464dee3bb9ff198a1db60967/src/Misc/layoutbin/RunnerService.js)
+can restart a failed listener, which is why that whole service is stopped.
+
+Cancellation normally reaches native cleanup, but a killed/crashed worker or
+initialization failure can omit the completed hook; native cleanup also reports
+some failures without quarantining itself. This implementation does not claim
+universal fail-closed containment for every crash, nor add a supervisor to obtain
+it. Inspect native logs/state after such failures before further use. A later
+activation check must prove actual guest login/service startup, two queued
+eligible jobs on the same VM, cancellation, observed cleanup failure preventing
+another job, normal native cleanup, repository scope and retained provenance.
+Local inert fixtures/source inspection are not real guest or provider proof.
+No VM boot, registration, settings, live CI, installation or publication is
+authorized by this runbook.
+
+---
+
+## Historical one-off/disposable preparation
+
+The following material describes the earlier bounded one-off experiments and
+source interfaces. Its service-freeze, grant and teardown requirements are not
+requirements of the persistent native-runner route above.
+
 # Backup Mac Actions runbook
 
 JAY-763 provides an optional, source-bound fallback for existing Mac checks in a

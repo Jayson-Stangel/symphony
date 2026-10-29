@@ -63,6 +63,37 @@ def request_from_event(env, event, consumer, job_key, verify=verify_live):
         raise Refusal('handoff caller metadata is incomplete') from None
 
 
+
+PERSISTENT_LABEL = 'symphony-macos14'
+# Existing credential-free consumers only; this map routes capacity, not security.
+PERSISTENT_TARGETS = {
+    '.github/workflows/make-all.yml': {'platform-contracts'},
+    '.github/workflows/package-checks.yml': {'native-host-package'},
+    '.github/workflows/native-manager-helpers.yml': {'helper'},
+    '.github/workflows/current-manager-package.yml': {'package'},
+    '.github/workflows/runner-release.yml': {'packaged-candidate'},
+    '.github/workflows/burrito-release.yml': {'build', 'controller-diagnostics'},
+}
+
+
+def persistent_runner(env, event, consumer, job_key, requested=True, verify=verify_live):
+    configured = env.get('PERSISTENT_MAC_RUNNER', '')
+    if not configured or not requested:
+        return None
+    if configured != PERSISTENT_LABEL:
+        raise Refusal('persistent Mac runner label differs from the configured repository runner')
+    if consumer not in PERSISTENT_TARGETS or job_key not in PERSISTENT_TARGETS[consumer]:
+        return None
+    if any(str(event.get('inputs', {}).get(k, '')).lower() == 'true'
+           for k in ('production_prepare', 'prepare_release', 'publish')):
+        return None
+    request, _ = request_from_event(env, event, consumer, job_key, verify=verify)
+    if request is None:
+        return None
+    return dict(path='persistent', runner=PERSISTENT_LABEL,
+                reason='repository persistent Mac runner; native Actions queue')
+
+
 def read_statuses(source, read=github_read, *, timeout=None):
     """Bounded GET-only capability probe and response inventory; no retries."""
     if not isinstance(source, str) or not SHA.fullmatch(source):
@@ -123,6 +154,19 @@ def main():
         if requested not in {'true', 'false'}:
             raise Refusal('Mac target request classification is invalid')
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+        persistent = persistent_runner(os.environ, event, os.environ['SELECT_WORKFLOW_PATH'],
+            os.environ['SELECT_JOB_KEY'], requested == 'true')
+        if persistent is not None:
+            if os.environ.get('BACKUP_MAC_PERMIT'):
+                raise Refusal('persistent and disposable Mac routes must not be active together')
+            if sys.argv[1:] == ['--probe']:
+                print('eligible=true\nstatus_read=not-required\npersistent=true')
+            elif not sys.argv[1:]:
+                print('runner=' + persistent['runner'])
+                print(persistent['reason'], file=sys.stderr)
+            else:
+                raise Refusal('unknown persistent Mac selector argument')
+            return 0
         if sys.argv[1:] == ['--probe']:
             if requested == 'false':
                 print('eligible=false')
