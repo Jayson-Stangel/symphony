@@ -5,6 +5,7 @@ import importlib.util
 import io
 import os
 import json
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(ROOT/"scripts/release"))
 spec = importlib.util.spec_from_file_location("package_lifecycle", ROOT / "scripts/release/package-lifecycle.py")
 lifecycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lifecycle)
