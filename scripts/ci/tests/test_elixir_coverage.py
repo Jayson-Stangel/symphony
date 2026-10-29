@@ -108,6 +108,22 @@ class ExistingJobPhases(unittest.TestCase):
                 if match:self.assertNotIn('sidecar_bytes',decision)
 
 
+    def test_only_a_supported_profile_refuses_both_ordinary_executable_cache_restores(self):
+        import re
+        from test_components import job, workflow
+        block=job(workflow('make-all'),'elixir-checks')
+        mise=block.split('      - name: Set up mise tools\n',1)[1].split('      - name:',1)[0]
+        compiled=block.split('      - name: Cache ordinary deps and build\n',1)[1].split('      - name:',1)[0]
+        condition=re.search(r'^          cache: \$\{\{ (.*?) \}\}$',mise,re.M)[1]
+        guard=re.search(r'^        if: (.*)$',compiled,re.M)[1]
+        self.assertEqual(condition,guard)
+        for supported,expected in (('true',False),('false',True),('',False),('unknown',False)):
+            # This exact supported=false predicate drives both action cache
+            # restore/save and the old compiled-cache restore boundary.
+            observed=eval(condition.replace('steps.profile.outputs.supported',repr(supported)),{'__builtins__':{}})
+            self.assertEqual(observed,expected)
+
+
     def test_actual_workflow_preserves_evidence_addresses_and_always_fresh_dialyzer(self):
         from test_components import job, workflow
         from validation_evidence import JOB, STEPS
@@ -120,8 +136,11 @@ class ExistingJobPhases(unittest.TestCase):
         self.assertIn('steps.controller.outputs.trusted !=', block)
         self.assertIn('steps.controller.outputs.trusted ==', block)
         self.assertIn("os.environ.get('GITHUB_REF') == 'refs/heads/dev'", block)
-        self.assertIn('cache: false', block)
-        self.assertNotIn('uses: actions/cache@', block)
+        self.assertIn("cache: ${{ steps.profile.outputs.supported == 'false' }}", block)
+        self.assertIn("      - name: Cache ordinary deps and build\n        if: steps.profile.outputs.supported == 'false'", block)
+        self.assertIn("key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}", block)
+        self.assertIn('            ${{ runner.os }}-mix-', block)
+        self.assertLess(block.index('Select audited coverage preparation'), block.index('Set up mise tools'))
         self.assertIn('retention-days: 7', block)
 
 

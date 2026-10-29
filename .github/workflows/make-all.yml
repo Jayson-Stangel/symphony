@@ -173,15 +173,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Select audited coverage preparation and isolated cache family
+        id: profile
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py select
       - name: Set up mise tools
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
-          cache: false
+          cache: ${{ steps.profile.outputs.supported == 'false' }}
           working_directory: elixir
-      - name: Select audited coverage preparation and isolated cache family
-        id: profile
-        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py select
+      - name: Cache ordinary deps and build
+        if: steps.profile.outputs.supported == 'false'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
       - name: Prove actual read-only evidence service access
         env:
           GH_TOKEN: ${{ github.token }}

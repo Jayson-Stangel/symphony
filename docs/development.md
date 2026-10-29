@@ -883,3 +883,31 @@ Fresh proof names both original and current identities and preserves the old
 source, complete change inventory, prior subject and native effects still require
 operator approval before the single combined candidate. No version bump or
 production promotion is needed for this nonpublishing dev path.
+
+### Full ExUnit evidence boundary (JAY-716)
+
+The full-coverage controller accepts an original same-repository PR proof only
+once that exact PR head and tested merge are authenticated against its actual
+protected `dev` merge. A `dev` → `main` PR can retain that original proof through
+verified successful `dev` history. Forks, unmerged PRs, newer failed attempts,
+missing provenance, changed audited sources, or different execution inputs run
+fresh. The required Application wrapper distinguishes `EXECUTED`, `REUSED` and
+`OMITTED` and preserves the original run, attempt, job and artifact identities.
+
+Only the finite reviewed source/runtime profile may produce reusable evidence.
+Its toolchain and compiled dependency caches are not restored; dependency setup,
+build, formatting, lint and Dialyzer still execute. Unsupported sources keep the
+ordinary mise cache and original `Linux-mix-…` cache route and run the existing
+fresh command. The supported producer's bounded public `_build/test` sidecar is
+an immutable validation input, never product or native artifact qualification.
+The protected verifier authenticates it before materialization, compares all
+other actual inputs, and requires complete raw input equality after restoration.
+It does not normalize compiler bytes or ownership to manufacture a match.
+
+This operates within the existing reviewed root-workflow trust boundary; it does
+not enforce a required workflow against a root workflow that removes validation.
+Local profile/archive fixtures do not establish hosted equivalence or savings.
+The first ordinary PR and merged `dev` run must establish clean setup, original
+provenance, actual cache restoration and net benefit including cold toolchain,
+dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
+requires diagnosis before further experiments.

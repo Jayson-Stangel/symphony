@@ -131,7 +131,7 @@ begin
     # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
     audited = {
       'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 40c45ec9253396761f796ae2e4d02b36e88f2c528cba94889f99efbeed21692b],
-      'elixir-checks' => %w[27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 911bbc9a73f606928be42fab48220e53b7d7f8391ed4cd0e07197296f0846e6a]
+      'elixir-checks' => %w[27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 c3850fa08100ef2876b8d26a446a8e7a263a4d15009cc1bbc141bc6400c9923e]
     }
     copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
     finite = copies.all? do |document|
