@@ -88,10 +88,26 @@ class ApplicationFamilies(unittest.TestCase):
                 env = dict(os.environ, **good, CODE=elixir, CLAUDE=claude,
                            ELIXIR_RESULT=er, CLAUDE_RESULT=cr)
                 env['READY'] = ready
+                env['ELIXIR_MODE'] = 'EXECUTED' if elixir == ready == 'true' else ''
+                env['ELIXIR_ORIGIN'] = ''
                 expected = er == ('success' if elixir == ready == 'true' else 'skipped')
                 expected &= cr == ('success' if claude == ready == 'true' else 'skipped')
                 actual = subprocess.run(['bash', '-e', '-c', command], env=env, capture_output=True)
                 self.assertEqual(actual.returncode == 0, expected, (elixir, claude, ready, er, cr))
+
+    def test_required_join_distinguishes_verified_reuse_executed_and_omitted(self):
+        command = scripts(job(workflow('make-all'), 'make-all'))[0]
+        base = dict(os.environ, RESULT='success', POLICY='true', READY='true', CODE='true', CLAUDE='false',
+            NPM='false', READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped',
+            MAC_RUNNER_RESULT='success', ELIXIR_RESULT='success', CLAUDE_RESULT='skipped', GITHUB_STEP_SUMMARY=os.devnull)
+        for mode, origin, valid in (('EXECUTED', '', True), ('REUSED',
+                'https://github.com/Jayson-Stangel/symphony/actions/runs/101/attempts/2', True),
+                ('REUSED', '', False), ('REUSED', 'https://foreign/repo/101', False),
+                ('', '', False), ('OMITTED', '', False), ('EXECUTED', 'fabricated-original', False)):
+            with self.subTest(mode=mode, origin=origin):
+                result = subprocess.run(['bash', '-e', '-c', command],
+                    env=dict(base, ELIXIR_MODE=mode, ELIXIR_ORIGIN=origin), capture_output=True)
+                self.assertEqual(result.returncode == 0, valid)
 
     def test_make_all_retains_full_coverage_and_claude_suite(self):
         result = subprocess.run(['make', '-n', '-C', str(ROOT / 'elixir'), 'all'], capture_output=True, text=True, check=True)

@@ -7,6 +7,7 @@ from observing two matching commit IDs.
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -15,13 +16,6 @@ import time
 from validation_inputs import UnknownInput, command, digest, linux_platform, tree_identity, tracked_source, untracked_inputs
 
 PROFILE_PATH = Path(__file__).with_name('elixir-coverage-profile.json')
-CONTROL_PATHS = (
-    '.github/workflows/make-all.yml', '.github/workflows/change-classification.yml',
-    'scripts/ci/classify_changes.py', 'scripts/ci/release_tests.py',
-    'scripts/ci/presentation_only.rb', 'scripts/ci/validation_inputs.py',
-    'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
-    'scripts/ci/validation_evidence.py', 'scripts/ci/elixir_coverage.py',
-)
 GENERATED = ('elixir/deps', 'elixir/_build', 'elixir/bin/symphony',
              'elixir/cover', 'runner/claude/node_modules')
 EXPLICIT_SOURCE = {'.github/pull_request_template.md', 'scripts/codex-apparmor.profile',
@@ -71,7 +65,7 @@ def control_path(path):
 
 def controls(root, revision):
     # An added unknown CI control must not inherit an older full-coverage proof.
-    # The finite loader list above is distinct from the complete control identity.
+    # The finite bootstrap loader list is distinct from the complete control identity.
     value, rows = tracked_source(root, revision, lambda path: not control_path(path))
     return dict(identity=value, files={row[0]: row[2] for row in rows})
 
@@ -94,6 +88,30 @@ def executable_path(parent):
         raise UnknownInput('actual tool paths must precede mutable mise shims')
     directories = list(dict.fromkeys(str(selected[name].parent) for name in ('elixir', 'erl', 'node')))
     return ':'.join([*directories, '/usr/bin', '/bin']), selected
+
+
+def runner_runtime(proc=Path('/proc'), pid=None):
+    """Bind the actual ancestor worker's public binaries, never its credentials."""
+    pid = os.getppid() if pid is None else pid
+    for _ in range(12):
+        if not isinstance(pid, int) or pid <= 0:
+            break
+        directory = proc / str(pid)
+        try:
+            executable = (directory / 'exe').resolve(strict=True)
+            if executable.name == 'Runner.Worker':
+                root = executable.parent.parent
+                roots = [root / 'bin', root / 'externals']
+                if executable.parent.name != 'bin' or not all(path.is_dir() for path in roots):
+                    raise UnknownInput('actual hosted worker runtime is incomplete')
+                return roots
+            match = re.search(r'^PPid:\s+(\d+)$', (directory / 'status').read_text(), re.M)
+            if not match:
+                break
+            pid = int(match[1])
+        except OSError:
+            break
+    raise UnknownInput('actual hosted worker public runtime is unavailable')
 
 
 def public_system_roots():
@@ -175,11 +193,11 @@ def external_settings(environment):
 
 
 def public_environment(environment, parent):
-    fixed = dict(HEX_OFFLINE='1', MIX_ENV='test', ERL_FLAGS='+S 2:2', LANG='C.UTF-8',
+    fixed = dict(HEX_OFFLINE='1', MIX_ENV='test', LANG='C.UTF-8',
                  LC_ALL='C.UTF-8', TZ='UTC', CI='true', GIT_CONFIG_NOSYSTEM='1',
                  GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_COUNT='0',
                  PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
-    paths = {'PATH', 'HOME', 'TMPDIR', 'HEX_HOME', 'MIX_HOME', 'MIX_ARCHIVES', 'MIX_REBAR3'}
+    paths = {'PATH', 'HOME', 'TMPDIR', 'HEX_HOME', 'MIX_HOME', 'MIX_ARCHIVES'}
     if (type(environment) is not dict or set(environment) != set(fixed) | paths
             or any(type(value) is not str for value in environment.values())
             or any(environment.get(key) != value for key, value in fixed.items())):
@@ -197,6 +215,25 @@ def public_environment(environment, parent):
     return environment
 
 
+def runtime_settings(erl, environment):
+    code = (r'io:format("{\"schedulers\":~B,\"schedulers_online\":~B,'
+            r'\"dirty_cpu\":~B,\"dirty_cpu_online\":~B,\"dirty_io\":~B,'
+            r'\"async_threads\":~B}", [erlang:system_info(schedulers),'
+            'erlang:system_info(schedulers_online),erlang:system_info(dirty_cpu_schedulers),'
+            'erlang:system_info(dirty_cpu_schedulers_online),erlang:system_info(dirty_io_schedulers),'
+            'erlang:system_info(thread_pool_size)]), halt().')
+    try:
+        values = json.loads(command([str(erl), '-noshell', '-noinput', '-eval', code], env=environment))
+    except (ValueError, UnicodeError):
+        raise UnknownInput('actual OTP execution settings unavailable') from None
+    expected = {'schedulers', 'schedulers_online', 'dirty_cpu', 'dirty_cpu_online', 'dirty_io', 'async_threads'}
+    if type(values) is not dict or set(values) != expected or any(type(value) is not int or value < 0 for value in values.values()):
+        raise UnknownInput('actual OTP execution settings are not audited')
+    if values['schedulers_online'] <= 0:
+        raise UnknownInput('actual OTP scheduler count is unavailable')
+    return values
+
+
 def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     """Only public byte identities; no credential stores or ambient env dump."""
     started = time.monotonic()
@@ -205,11 +242,9 @@ def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     root = Path(root).resolve()
     profile = json.loads(PROFILE_PATH.read_text())
     source, rows = source_identity(root, revision)
-    if profile.get('version') != 1 or audited_code(rows) != profile.get('audited_source_sha256'):
+    if type(profile.get('version')) is not int or profile['version'] != 1 or audited_code(rows) != profile.get('audited_source_sha256'):
         raise UnknownInput('changed or unaudited full-coverage source profile')
     platform = linux_platform(parent)
-    if environment.get('MIX_ENV') != 'test' or environment.get('ERL_FLAGS') != '+S 2:2':
-        raise UnknownInput('unknown coverage execution settings')
     path, executables = executable_path(environment)
     if environment['PATH'] != path:
         raise UnknownInput('coverage executable search path is not canonical')
@@ -235,7 +270,8 @@ def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     if versions != profile.get('tool_versions'):
         raise UnknownInput('changed or unaudited runtime version')
     roots = [root / 'elixir/deps', root / 'elixir/_build/test',
-             root / 'runner/claude/node_modules', *tool_roots, mix_home, *public_system_roots()]
+             root / 'runner/claude/node_modules', *tool_roots, mix_home,
+             *runner_runtime(), *public_system_roots()]
     # Symlinks may lead into tracked priv/source or standard public system roots;
     # every followed destination is hashed, and source bytes are independently bound.
     allowed = [root, *roots, Path('/usr'), Path('/lib'), Path('/lib64'), Path('/opt'), Path('/etc/ssl/certs')]
@@ -245,7 +281,8 @@ def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
         identities.append(identity)
     value = dict(schema_version=1, family='full-exunit-coverage', profile_version=profile['version'],
                  source=source, controllers=controls(root, revision), environment=environment,
-                 platform=platform, external=external_settings(environment), public_inputs=identities,
+                 platform=platform, runtime=runtime_settings(executables['erl'], environment),
+                 external=external_settings(environment), public_inputs=identities,
                  command=['mix', 'test', '--cover', '--seed', '0', '--max-failures', '1'])
     if time.monotonic() - started > budget_seconds:
         raise UnknownInput('complete public profile exceeded its budget')

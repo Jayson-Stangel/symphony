@@ -240,8 +240,7 @@ class AuditedCoverageProfile(unittest.TestCase):
                 source = Path(directory) / 'source'; source.mkdir()
                 environment = inputs.controlled_environment(source, Path(directory) / 'symphony-coverage-v1',
                     dict(HOME='/public', PATH='/usr/bin:/bin'))
-                environment.update(MIX_ARCHIVES='/public/.mix/archives',
-                    MIX_REBAR3='/public/.mix/elixir/1-19-otp-28/rebar3', ERL_FLAGS='+S 2:2')
+                environment.update(MIX_ARCHIVES='/public/.mix/archives')
                 with self.assertRaisesRegex(self.profile.UnknownInput, 'changed or unaudited'):
                     self.profile.fingerprint(source, 'a' * 40, environment, dict(RUNNER_TEMP=directory))
                 platform_probe.assert_not_called()
@@ -268,6 +267,26 @@ class AuditedCoverageProfile(unittest.TestCase):
              patch.object(self.profile, 'tracked_source', return_value=({}, [['source.ex', '120000', 'a' * 64]])):
             with self.assertRaisesRegex(self.profile.UnknownInput, 'source symlinks'):
                 self.profile.source_identity('/unused', 'a' * 40)
+
+
+    def test_worker_fingerprint_roots_follow_actual_ancestor_and_exclude_credential_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            proc = root / 'proc'; proc.mkdir()
+            worker = root / 'runner'
+            (worker / 'bin').mkdir(parents=True); (worker / 'externals').mkdir()
+            executable = worker / 'bin/Runner.Worker'; executable.write_bytes(b'public runtime')
+            (worker / '.credentials').write_text('dummy credential store must not be traversed')
+            for pid, parent, target in ((10, 20, Path('/usr/bin/python3')), (20, 0, executable)):
+                current = proc / str(pid); current.mkdir()
+                (current / 'exe').symlink_to(target)
+                (current / 'status').write_text('PPid:\t' + str(parent) + '\n')
+            actual = self.profile.runner_runtime(proc, 10)
+            self.assertEqual(actual, [worker / 'bin', worker / 'externals'])
+            self.assertFalse(any((worker / '.credentials').is_relative_to(path) for path in actual))
+            (proc / '20/exe').unlink()
+            with self.assertRaises(self.profile.UnknownInput):
+                self.profile.runner_runtime(proc, 10)
 
 
 if __name__ == '__main__':

@@ -135,7 +135,8 @@ COMPONENTS = ('application', 'claude', 'portable', 'package_macos', 'package_lin
 ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
-    'test_application_families.py',
+    'test_application_families.py', 'test_elixir_coverage.py',
+    'test_validation_inputs.py', 'test_validation_evidence.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
@@ -193,6 +194,10 @@ def consumer_selection(path):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
             return set(), 'cheap CI policy regression; executed by the always-on policy suite'
         return ALL, 'unknown CI regression input: conservative full qualification'
+    if path in ('scripts/ci/validation_inputs.py', 'scripts/ci/validation_evidence.py',
+                'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
+                'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py'):
+        return ALL, 'full validation input, source trust or evidence control: conservative full qualification'
     if path == 'scripts/ci/release_tests.py':
         return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
     if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',

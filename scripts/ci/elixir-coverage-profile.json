@@ -21,10 +21,11 @@
   "expected_tests": 685,
   "expected_linux_skips": 10,
   "measured_coverage": 100.0,
-  "cache_profile": "private-coverage-v1",
+  "cache_profile": "exunit-private-v1",
   "limitations": [
     "Only this reviewed source/runtime consumer profile may reuse. Changed or unknown validation source/tool/platform state runs fresh.",
     "Build, formatting, lint, dependency resolution, compilation, Dialyzer, other test families and artifact/native qualification always remain fresh.",
-    "Local Mac feasibility is not eligible hosted evidence."
+    "Local Mac feasibility is not eligible hosted evidence.",
+    "Hosted default scheduler/concurrency settings are retained and fingerprinted; local bounded +S2 feasibility is not hosted command acceptance."
   ]
 }

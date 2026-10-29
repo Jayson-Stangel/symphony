@@ -65,6 +65,8 @@ jobs:
           CODE: ${{ needs.changes.outputs.application }}
           CLAUDE: ${{ needs.changes.outputs.claude }}
           ELIXIR_RESULT: ${{ needs.elixir-checks.result }}
+          ELIXIR_MODE: ${{ needs.elixir-checks.outputs.coverage_mode }}
+          ELIXIR_ORIGIN: ${{ needs.elixir-checks.outputs.coverage_origin }}
           CLAUDE_RESULT: ${{ needs.claude-checks.result }}
           POLICY: ${{ needs.changes.outputs.policy }}
           READY: ${{ needs.changes.outputs.ready }}
@@ -88,11 +90,21 @@ jobs:
             else selected=$CLAUDE; observed=$CLAUDE_RESULT; fi
             if [ "$selected" = true ] && [ "$READY" = true ]; then
               test "$observed" = success
+              if [ "$family" = elixir ]; then
+                case "$ELIXIR_MODE" in
+                  EXECUTED) test -z "$ELIXIR_ORIGIN" || exit 1 ;;
+                  REUSED) [[ "$ELIXIR_ORIGIN" =~ ^https://github.com/Jayson-Stangel/symphony/actions/runs/[1-9][0-9]*/attempts/[1-9][0-9]*$ ]] || exit 1 ;;
+                  *) exit 1 ;;
+                esac
+              fi
             else
               test "$observed" = skipped
+              if [ "$family" = elixir ]; then test -z "$ELIXIR_MODE$ELIXIR_ORIGIN" || exit 1; fi
             fi
             if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-              echo "$family family: selected=$selected, ready=$READY, result=$observed (success means executed; skipped means omitted or deferred)." >> "$GITHUB_STEP_SUMMARY"
+              if [ "$family" = elixir ]; then mode=${ELIXIR_MODE:-OMITTED};
+              elif [ "$observed" = success ]; then mode=EXECUTED; else mode=OMITTED; fi
+              echo "$family family: $mode; selected=$selected, ready=$READY, result=$observed; Elixir original=${ELIXIR_ORIGIN:-none}. Other selected stages remain fresh." >> "$GITHUB_STEP_SUMMARY"
             fi
           done
           if [ "$NPM" = true ] || [ "$READINESS" = true ] || [ "$CONFIG" = true ] || [ "$CONTRACTS" = true ]; then
@@ -150,32 +162,124 @@ jobs:
     needs: changes
     if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
     runs-on: ubuntu-24.04
+    outputs:
+      coverage_mode: ${{ steps.executed.outputs.mode || steps.reused.outputs.mode }}
+      coverage_origin: ${{ steps.reused.outputs.origin }}
+    env:
+      COVERAGE_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      COVERAGE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up mise tools
-        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
           cache: true
           working_directory: elixir
-
+      - name: Select audited coverage preparation and isolated cache family
+        id: profile
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py select
       - name: Cache deps and build
-        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
+        id: coverage-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             elixir/deps
             elixir/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
+          key: ${{ runner.os }}-${{ steps.profile.outputs.cache_family }}-${{ hashFiles('elixir/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
-
-      - name: Verify full Elixir family
-        if: needs.changes.outputs.application == 'true' && needs.changes.outputs.ready == 'true'
-        working-directory: elixir
-        run: make elixir-ci
+            ${{ runner.os }}-${{ steps.profile.outputs.cache_family }}-
+      - name: Prove actual read-only evidence service access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py capability
+      - name: Prepare controlled full Elixir qualification
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py prepare
+      - name: Load immutable protected-dev coverage controller or force fresh
+        id: controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          /usr/bin/python3 -B -I - <<'PY'
+          import base64, hashlib, json, os, re, subprocess
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']) / 'scripts/ci'
+          selected = root
+          trusted = False
+          # The root workflow is reviewed/unchanged; candidate modules do not
+          # decide whether they may skip tests. Feature/fork paths stay fresh.
+          eligible = (os.environ['GITHUB_EVENT_NAME'] == 'pull_request'
+              and os.environ.get('GITHUB_HEAD_REF') == 'dev'
+              and os.environ.get('GITHUB_BASE_REF') == 'main'
+              and os.environ.get('COVERAGE_HEAD_REPOSITORY') == 'Jayson-Stangel/symphony')
+          if eligible:
+              try:
+                  temporary = Path(os.environ['RUNNER_TEMP'])
+                  home = temporary / 'symphony-coverage-bootstrap-fetch-v1'
+                  home.mkdir(mode=0o700)
+                  environment = dict(PATH='/usr/bin:/bin', HOME=str(home), GH_CONFIG_DIR=str(home / 'gh'),
+                      GH_TOKEN=os.environ['GH_TOKEN'], GH_HOST='github.com', GH_PROMPT_DISABLED='1')
+                  def get(path):
+                      raw = subprocess.check_output(['/usr/bin/gh', 'api', '--method', 'GET',
+                          'repos/Jayson-Stangel/symphony/' + path], env=environment,
+                          stderr=subprocess.DEVNULL, timeout=8)
+                      if len(raw) > 256 * 1024: raise ValueError('bounded immutable source required')
+                      return json.loads(raw)
+                  dev = get('branches/dev')
+                  revision = dev['commit']['sha']
+                  if dev.get('protected') is not True or not re.fullmatch('[0-9a-f]{40}', revision):
+                      raise ValueError('protected dev source unavailable')
+                  value = get('contents/scripts/ci/elixir_coverage_bootstrap.py?ref=' + revision)
+                  raw = base64.b64decode(''.join(value['content'].split()), validate=True)
+                  actual = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+                  if value.get('encoding') != 'base64' or actual != value.get('sha'):
+                      raise ValueError('immutable bootstrap bytes differ')
+                  path = temporary / 'symphony-coverage-bootstrap.py'
+                  fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                  with os.fdopen(fd, 'wb') as target: target.write(raw)
+                  # Only immutable upstream stdlib bootstrap code executes here.
+                  subprocess.run(['/usr/bin/python3', '-B', '-I', str(path)], check=True, timeout=35)
+                  raise SystemExit(0)
+              except (ValueError, OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+                  pass
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as target:
+              target.write('controller=' + str(selected) + '\ntrusted=false\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as target:
+              target.write('No eligible immutable dev-to-main controller; full coverage is forced fresh.\n')
+          PY
+      - name: Measure complete full-coverage inputs
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" measure
+      - name: Choose fresh or verified full-coverage evidence
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" decide
+      - name: Execute full ExUnit coverage (EXECUTED)
+        id: executed
+        if: steps.controller.outputs.trusted != 'true' || steps.evidence.outputs.mode != 'REUSED'
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" execute
+      - name: Retain upstream full-coverage proof (REUSED)
+        id: reused
+        if: steps.controller.outputs.trusted == 'true' && steps.evidence.outputs.mode == 'REUSED'
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" reused
+      - name: Verify fresh Dialyzer
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" dialyzer
+      - name: Prepare original executed coverage proof
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" seal
+      - name: Retain original executed coverage proof
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && steps.producer.outputs.available == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: elixir-full-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/symphony-coverage-v1/proof/
+          retention-days: 7
+          if-no-files-found: error
 
   claude-checks:
     name: Claude syntax and Node tests
