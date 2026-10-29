@@ -376,9 +376,11 @@ Its dependency closure follows the actual consumers:
 - `.github/workflows/runner-integration.yml` owns ordinary browser/global controls.
   Strict YAML comparison can exclude changes confined to its audited manual-only
   jobs and dispatch inputs. New jobs or uncertain YAML stay conservative.
-- `.github/workflows/change-classification.yml` and shared `scripts/ci/` controls
-  own routing and required wrappers. Explicitly inventoried policy regression files
-  under `scripts/ci/tests/` run cheaply without image builds; unknown tests stay broad.
+- `.github/workflows/change-classification.yml` and unknown shared `scripts/ci/`
+  controls retain broad qualification. The known classifier and YAML comparator
+  run the unconditional policy regressions and portable workflow contracts without
+  browser builds. Explicitly inventoried policy regression files under
+  `scripts/ci/tests/` also run cheaply; unknown tests stay broad.
 
 Keep this set aligned with new COPY sources, build stages and invoked tools.
 Application source changes alone do not change the browser-stage source closure;
@@ -452,13 +454,25 @@ must not leave its sole executor omitted.
 
 Mac admission/preflight/watchdog controllers select their dependency-free policy
 tests and portable workflow contracts. Changing their unit tests runs the policy
-suite without native helper or browser builds. The release suite inventory itself
-selects portable, both package hosts, native process fixtures, launcher contracts
-and Codex configuration tests because it controls those executors; it does not
-change Elixir, Claude or browser execution. Classifier/comparison algorithms and
-unknown inputs retain broad fail-closed qualification. Browser qualification still
-follows actual Docker stages/COPY inputs and shared build/trust controls; a suite
-inventory edit alone is not a browser runtime input.
+suite without native helper or browser builds. The known classifier and YAML
+comparator likewise select policy regressions and portable workflow contracts.
+Unknown CI controls and tests retain broad fail-closed qualification.
+
+The release suite inventory normally selects portable, both package hosts, native
+process fixtures, launcher contracts and Codex configuration tests because it
+controls those executors; it does not change Elixir, Claude or browser execution.
+A narrow exception selects portable only when the sole Python AST change adds
+unique valid test filenames to the single top-level literal `PORTABLE` set.
+Removals, executor changes and native inventory changes retain their affected
+families. Browser qualification follows actual Docker stages/COPY inputs and
+shared build/trust controls; an inventory edit alone is not a browser runtime input.
+
+On ordinary PR and push events, changes confined to the audited
+`burrito-release.yml` manual controller select portable workflow contracts when
+both workflow versions remain `workflow_dispatch`-only, use only the eight audited
+job IDs, and preserve all other global controls. Unknown jobs, trigger changes or
+global changes select full qualification. Manual and tag events retain complete
+qualification regardless of these ordinary-event comparisons.
 
 ### Stable application family contract (JAY-765)
 
