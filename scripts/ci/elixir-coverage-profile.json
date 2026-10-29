@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "audited_revision": "8c5cac45e5cbaec0d3353e97688f24a9d24b245c",
   "audited_source_sha256": "c4571f14b0803434138433b09ee2a32fc208db04c08bea24be54be6640e4ae8f",
   "audited_source_files": 200,
@@ -21,11 +21,12 @@
   "expected_tests": 685,
   "expected_linux_skips": 10,
   "measured_coverage": 100.0,
-  "cache_profile": "exunit-private-v1",
+  "cache_profile": "full-exunit-oci-v2",
   "limitations": [
-    "Only this reviewed source/runtime consumer profile may reuse. Changed or unknown validation source/tool/platform state runs fresh.",
-    "Build, formatting, lint, dependency resolution, compilation, Dialyzer, other test families and artifact/native qualification always remain fresh.",
-    "Local Mac feasibility is not eligible hosted evidence.",
-    "Hosted default scheduler/concurrency settings are retained and fingerprinted; local bounded +S2 feasibility is not hosted command acceptance."
+    "Only the audited 200-source family and actual read-only OCI identity may reuse.",
+    "Unknown image/runtime/source/cache state stays fresh or refuses before compilation.",
+    "Fresh quality/build/npm/compilation/Dialyzer remain required; native/artifact families remain separate.",
+    "Default hosted CPU/concurrency is retained; 2CPU/2GiB preflight proofs are not full qualification.",
+    "Hosted image equality/full685/100/provenance/cache restoration/suppression/net benefit remain open acceptance."
   ]
 }

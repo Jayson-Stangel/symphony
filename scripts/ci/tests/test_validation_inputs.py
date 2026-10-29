@@ -197,12 +197,12 @@ class AuditedCoverageProfile(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(excluded(name))
 
-    def test_every_excluded_unknown_ci_control_is_bound_by_control_inventory(self):
-        for name in ('scripts/ci/new-controller.py', 'scripts/ci/tests/test_unknown.py',
-                     '.github/workflows/new-workflow.yml', '.github/actions/new/action.yml'):
-            self.assertTrue(self.profile.source_exclusion()(name))
+    def test_finite_actual_controllers_do_not_bind_unrelated_release_workflows(self):
+        for name in ('scripts/ci/validation_oci.py', 'scripts/ci/elixir-coverage.Dockerfile',
+                     '.github/workflows/make-all.yml', 'scripts/ci/classify_changes.py'):
             self.assertTrue(self.profile.control_path(name))
-        self.assertFalse(self.profile.control_path('elixir/lib/new.ex'))
+        for name in ('.github/workflows/burrito-release.yml','scripts/ci/tests/test_unknown.py'):
+            self.assertFalse(self.profile.control_path(name))
 
     def test_reviewed_source_pin_does_not_bind_one_machine_uid_but_runtime_identity_does(self):
         first = [['lib.ex', '100644', 'a' * 64, 0o644, 1001, 1001]]
@@ -212,53 +212,16 @@ class AuditedCoverageProfile(unittest.TestCase):
         second[0][2] = 'b' * 64
         self.assertNotEqual(self.profile.audited_code(first), self.profile.audited_code(second))
 
-    def test_canonical_tool_path_removes_ambient_provider_cli_directories(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            binary = root / 'bin'; binary.mkdir()
-            for name in ('erl', 'elixir', 'mix', 'node'):
-                path = binary / name; path.write_text('#!/bin/sh\nexit 0\n'); path.chmod(0o755)
-            result, selected = self.profile.executable_path(dict(PATH=str(binary) + ':/foreign/provider/bin'))
-            self.assertEqual(result, str(binary.resolve()) + ':/usr/bin:/bin')
-            self.assertEqual(set(selected), {'erl', 'elixir', 'mix', 'node'})
-            alternate = root / 'alternate'; alternate.mkdir()
-            (binary / 'mix').unlink()
-            path = alternate / 'mix'; path.write_text('#!/bin/sh\nexit 0\n'); path.chmod(0o755)
-            with self.assertRaises(self.profile.UnknownInput):
-                self.profile.executable_path(dict(PATH=str(binary) + ':' + str(alternate)))
-
-    def test_changed_source_refuses_before_platform_or_expensive_public_tree_probes(self):
-        from unittest.mock import patch
-        import json
-        with tempfile.TemporaryDirectory() as directory:
-            descriptor = Path(directory) / 'profile.json'
-            descriptor.write_text(json.dumps(dict(version=1, audited_source_sha256='not-the-source')))
-            with patch.object(self.profile, 'PROFILE_PATH', descriptor), \
-                 patch.object(self.profile, 'source_identity', return_value=({}, [['actual-input']])), \
-                 patch.object(self.profile, 'linux_platform') as platform_probe, \
-                 patch.object(self.profile, 'tree_identity') as tree_probe:
-                source = Path(directory) / 'source'; source.mkdir()
-                environment = inputs.controlled_environment(source, Path(directory) / 'symphony-coverage-v1',
-                    dict(HOME='/public', PATH='/usr/bin:/bin'))
-                environment.update(MIX_ARCHIVES='/public/.mix/archives')
-                with self.assertRaisesRegex(self.profile.UnknownInput, 'changed or unaudited'):
-                    self.profile.fingerprint(source, 'a' * 40, environment, dict(RUNNER_TEMP=directory))
-                platform_probe.assert_not_called()
-                tree_probe.assert_not_called()
-
-
     def test_extra_environment_never_reaches_probes_serialization_or_diagnostics(self):
         from unittest.mock import patch
         for key in ('GH_TOKEN', 'OPENAI_API_KEY', 'UNREVIEWED_SETTING'):
             with self.subTest(key=key), patch.object(self.profile, 'source_identity') as source_probe, \
-                 patch.object(self.profile, 'linux_platform') as platform_probe, \
                  patch.object(self.profile, 'tree_identity') as tree_probe:
                 with self.assertRaises(self.profile.UnknownInput) as result:
                     self.profile.fingerprint('/does-not-exist', 'a' * 40, {key: 'dummy-secret-value'}, {})
                 self.assertNotIn('dummy-secret-value', str(result.exception))
                 self.assertNotIn(key, str(result.exception))
                 source_probe.assert_not_called()
-                platform_probe.assert_not_called()
                 tree_probe.assert_not_called()
 
     def test_profile_refuses_source_symlinks_instead_of_claiming_target_equivalence(self):
@@ -269,24 +232,6 @@ class AuditedCoverageProfile(unittest.TestCase):
                 self.profile.source_identity('/unused', 'a' * 40)
 
 
-    def test_worker_fingerprint_roots_follow_actual_ancestor_and_exclude_credential_store(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            proc = root / 'proc'; proc.mkdir()
-            worker = root / 'runner'
-            (worker / 'bin').mkdir(parents=True); (worker / 'externals').mkdir()
-            executable = worker / 'bin/Runner.Worker'; executable.write_bytes(b'public runtime')
-            (worker / '.credentials').write_text('dummy credential store must not be traversed')
-            for pid, parent, target in ((10, 20, Path('/usr/bin/python3')), (20, 0, executable)):
-                current = proc / str(pid); current.mkdir()
-                (current / 'exe').symlink_to(target)
-                (current / 'status').write_text('PPid:\t' + str(parent) + '\n')
-            actual = self.profile.runner_runtime(proc, 10)
-            self.assertEqual(actual, [worker / 'bin', worker / 'externals'])
-            self.assertFalse(any((worker / '.credentials').is_relative_to(path) for path in actual))
-            (proc / '20/exe').unlink()
-            with self.assertRaises(self.profile.UnknownInput):
-                self.profile.runner_runtime(proc, 10)
 
 
 if __name__ == '__main__':

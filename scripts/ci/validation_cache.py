@@ -47,7 +47,7 @@ def create(root, repository):
     paths = [root, *sorted(root.rglob('*'))]
     require(len(paths) <= MAX_ENTRIES and sum(path.stat().st_size for path in paths if path.is_file() and not path.is_symlink()) <= MAX_EXPANDED)
     target = io.BytesIO()
-    with tarfile.open(fileobj=target, mode='w:gz', dereference=False) as bundle:
+    with tarfile.open(fileobj=target, mode='w:gz', dereference=False, compresslevel=1) as bundle:
         for path in paths:
             name = '.' if path == root else path.relative_to(root).as_posix()
             info = bundle.gettarinfo(str(path), arcname=name)

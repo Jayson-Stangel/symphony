@@ -17,7 +17,8 @@ import time
 REPOSITORY = 'Jayson-Stangel/symphony'
 FILES = ('validation_inputs.py', 'elixir_coverage_profile.py', 'elixir-coverage-profile.json',
          'validation_evidence.py', 'elixir_coverage.py', 'classify_changes.py',
-         'release_tests.py', 'presentation_only.rb', 'validation_cache.py')
+         'release_tests.py', 'presentation_only.rb', 'validation_cache.py', 'validation_oci.py')
+DATA = ('elixir-coverage.Dockerfile', 'elixir-coverage.passwd', 'elixir-coverage.group')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 
 
@@ -29,12 +30,11 @@ def main():
     deadline = time.monotonic() + 30
     api_home = temporary / 'symphony-evidence-bootstrap-api-v1'
     try:
-        eligible_dev = os.environ.get('GITHUB_EVENT_NAME') == 'push' and os.environ.get('GITHUB_REF') == 'refs/heads/dev'
-        if not (eligible_dev or (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
-                and os.environ.get('GITHUB_HEAD_REF') == 'dev'
-                and os.environ.get('GITHUB_BASE_REF') == 'main'
-                and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY)):
-            raise ValueError('ordinary caller executes fresh')
+        eligible_push = os.environ.get('GITHUB_EVENT_NAME') == 'push' and os.environ.get('GITHUB_REF') in ('refs/heads/dev','refs/heads/main')
+        eligible_pr = (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
+                       and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY)
+        if not (eligible_push or eligible_pr):
+            raise ValueError('foreign caller executes fresh')
         api_home.mkdir(mode=0o700)
         environment = dict(PATH='/usr/bin:/bin', HOME=str(api_home), GH_CONFIG_DIR=str(api_home / 'gh'),
                            GH_TOKEN=os.environ['GH_TOKEN'], GH_HOST='github.com', GH_PROMPT_DISABLED='1')
@@ -82,6 +82,18 @@ def main():
             fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'wb') as target:
                 target.write(raw)
+        # Data consumes no extra API calls: bind candidate bytes to the immutable
+        # protected tree's actual Git blob identity before copying them.
+        for name in DATA:
+            found = [row for row in rows if row.get('path') == 'scripts/ci/' + name]
+            source = candidate / name
+            if len(found) != 1 or found[0].get('mode') != '100644' or source.is_symlink():
+                raise ValueError('trusted OCI data is absent or unsupported')
+            raw = source.read_bytes()
+            if len(raw) > 65536 or hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() != found[0]['sha']:
+                raise ValueError('OCI data differs from immutable protected tree')
+            fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as target: target.write(raw)
         # All imported Python code is now the immutable upstream snapshot.
         sys.path.insert(0, str(directory))
         import validation_evidence as evidence
@@ -91,7 +103,7 @@ def main():
             attempt=int(os.environ['GITHUB_RUN_ATTEMPT']), source=os.environ['GITHUB_SHA'],
             event=os.environ['GITHUB_EVENT_NAME'], ref=os.environ['GITHUB_REF'],
             pr_number=int(os.environ['COVERAGE_PR_NUMBER']) if os.environ.get('COVERAGE_PR_NUMBER') else None)
-        if not caller['eligible_consumer'] or caller['trusted_dev_revision'] != revision:
+        if not (caller['eligible_consumer'] or caller['eligible_producer']) or caller['trusted_dev_revision'] != revision:
             raise ValueError('actual caller differs from immutable protected dev source')
         _, tested_tree = evidence.immutable_tree(service, os.environ['GITHUB_SHA'])
         controls = evidence.tree_controls(tree)

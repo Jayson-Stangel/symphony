@@ -21,12 +21,12 @@ import zipfile
 REPOSITORY = 'Jayson-Stangel/symphony'
 WORKFLOW = '.github/workflows/make-all.yml'
 JOB = 'Elixir quality, build and full coverage'
-MAX_ARTIFACT = 65 * 1024 * 1024
+MAX_ARTIFACT = 68 * 1024 * 1024
 MAX_PROOF = 1024 * 1024
 MAX_AGE = timedelta(days=7)
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 DIGEST = re.compile(r'[0-9a-f]{64}\Z')
-STEPS = ('Set up mise tools', 'Prepare controlled full Elixir qualification',
+STEPS = ('Prove read-only OCI tool and isolation profile', 'Authenticate protected-origin cache before preparation', 'Prepare controlled full Elixir qualification',
          'Measure complete full-coverage inputs',
          'Choose fresh or verified full-coverage evidence',
          'Execute full ExUnit coverage (EXECUTED)',
@@ -80,17 +80,22 @@ def instant(value):
 
 class Service:
     """Finite GET-only client; no retries or service mutation capability."""
-    def __init__(self, token, home, *, seconds=45, maximum_requests=40):
+    def __init__(self, token, home, *, seconds=30, maximum_requests=80):
         require(type(token) is str and bool(token), 'workflow evidence read credential is unavailable')
         self.environment = dict(PATH='/usr/bin:/bin', HOME=str(home), GH_CONFIG_DIR=str(Path(home) / 'gh'),
                                 GH_TOKEN=token, GH_HOST='github.com', GH_PROMPT_DISABLED='1')
         self.deadline = time.monotonic() + seconds
         self.remaining = maximum_requests
         self.binary_flag = None
+        self.binary_cache = {}
 
     def read(self, path, *, binary=False, maximum=2 * 1024 * 1024):
         require(type(path) is str and re.fullmatch(r'[A-Za-z0-9_./?=&%:-]+', path)
                 and not path.startswith('/') and '..' not in path, 'unsafe evidence API path')
+        if binary and path in self.binary_cache:
+            value=self.binary_cache[path]
+            require(type(value) is bytes and len(value)<=maximum,'cached immutable payload exceeds bound')
+            return value
         self.remaining -= 1
         require(self.remaining >= 0 and time.monotonic() < self.deadline, 'evidence service budget exhausted')
         if binary and self.binary_flag is None:
@@ -236,17 +241,18 @@ def archive(raw, meta):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
             entries = bundle.infolist()
-            require(len(entries) == 4 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log', 'test-cache.tar.gz'},
+            require(len(entries) == 6 and {entry.filename for entry in entries} == {'receipt.json', 'inputs.json', 'coverage.log', 'test-cache.tar.gz', 'dev-cache.tar.gz', 'deps-cache.tar.gz'},
                     'unexpected/duplicate original proof archive members')
             require(all(not entry.is_dir() and not entry.flag_bits & 1
                         and not stat.S_ISLNK(entry.external_attr >> 16)
-                        and 0 < entry.file_size <= (64 * MAX_PROOF if entry.filename == 'test-cache.tar.gz' else MAX_PROOF) for entry in entries)
-                    and sum(entry.file_size for entry in entries) <= 2 * MAX_ARTIFACT,
+                        and 0 < entry.file_size <= (64 * MAX_PROOF if entry.filename.endswith('-cache.tar.gz') else MAX_PROOF) for entry in entries)
+                    and sum(entry.file_size for entry in entries if entry.filename.endswith('-cache.tar.gz')) <= 64 * MAX_PROOF
+                    and sum(entry.file_size for entry in entries) <= 67 * MAX_PROOF,
                     'unsafe/oversized original proof members')
             values = {entry.filename: bundle.read(entry) for entry in entries}
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         raise Fresh('corrupt original proof archive') from None
-    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log'], values['test-cache.tar.gz']
+    return strict_json(values['receipt.json']), strict_json(values['inputs.json']), values['coverage.log'], {name:values[name+'-cache.tar.gz'] for name in ('test','dev','deps')}
 
 
 def coverage_summary(raw, profile):
@@ -277,7 +283,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
     stages = successful_steps(job)
     artifact_metadata(meta, run, stages[-1])
     receipt, inputs, log, cache = archive(raw, meta)
-    require(type(receipt) is dict and receipt.get('schema_version') == 2
+    require(type(receipt) is dict and receipt.get('schema_version') == 3
             and type(receipt.get('schema_version')) is int
             and receipt.get('family') == 'full-exunit-coverage', 'unsupported original receipt format')
     producer = receipt.get('producer')
@@ -286,15 +292,27 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
                              source=merged_source or run['head_sha'], workflow=WORKFLOW), 'receipt origin differs from actual service provenance')
     require(type(inputs) is dict and type(inputs.get('identity')) is dict
             and inputs.get('sha256') == digest(inputs['identity']), 'original complete input manifest integrity differs')
-    if restore:
+    if restore == 'warm':
+        require(type(inputs['identity'].get('execution')) is dict and bool(inputs['identity']['execution'])
+                and inputs['identity']['execution'] == current['identity'].get('execution'), 'actual OCI/source/tool/build runtime differs')
+    elif restore:
         require(without_test_cache(inputs) == without_test_cache(current), 'non-cache actual validation inputs differ')
     else:
         require(inputs['sha256'] == current['sha256'] == digest(current['identity']),
                 'actual effective validation inputs differ')
     sidecar = receipt.get('sidecar')
-    require(type(sidecar) is dict and sidecar.get('sha256') == hashlib.sha256(cache).hexdigest()
-            and sidecar.get('size') == len(cache), 'original sidecar integrity differs')
-    require(receipt.get('clean_preparation') == 'no-mise-or-compiled-cache-v1', 'untrusted cache origin')
+    require(type(sidecar) is dict and set(sidecar) == {'test','dev','deps'}, 'finite checkpoint inventory differs')
+    for name, metadata in sidecar.items():
+        require(type(metadata) is dict and metadata.get('sha256') == hashlib.sha256(cache[name]).hexdigest()
+                and metadata.get('size') == len(cache[name]), 'original checkpoint integrity differs')
+    inventories=[value.get('cache',{}) for value in sidecar.values()]
+    require(all(type(row.get(key)) is int and row[key]>=0 for row in inventories for key in ('files','bytes'))
+            and sum(row['files'] for row in inventories)<=10000
+            and sum(row['bytes'] for row in inventories)<=256*1024*1024, 'checkpoint aggregate exceeds finite profile')
+    require(receipt.get('checkpoints') == dict(test='PRE_COVERAGE',deps='POST_DIALYZER',dev='POST_DIALYZER'),
+            'checkpoint timing is not explicit')
+    require(type(receipt.get('cache_origin')) is dict and receipt['cache_origin'].get('mode') in ('CLEAN','RESTORED'),
+            'original cache provenance unavailable')
     require(receipt.get('inputs_sha256') == inputs['sha256'], 'receipt is not bound to original complete inputs')
     execution = receipt.get('execution')
     require(type(execution) is dict and execution.get('mode') == 'EXECUTED'
@@ -306,7 +324,7 @@ def verify_bundle(run, job, meta, raw, current, profile, *, merged_source=None, 
     require(type(seconds) in (int, float) and 0 < seconds <= 1200, 'invalid original execution duration')
     service_seconds = (instant(stages[STEPS.index('Execute full ExUnit coverage (EXECUTED)')]['completed_at']) - instant(stages[STEPS.index('Execute full ExUnit coverage (EXECUTED)')]['started_at'])).total_seconds()
     require(seconds <= service_seconds + 2, 'execution duration is outside the actual executed step')
-    return dict(mode='REUSED', sidecar_bytes=cache, sidecar=sidecar, original_inputs=inputs, original=producer, artifact_id=meta['id'], artifact_digest=meta['digest'],
+    return dict(mode='REUSED', bundle_bytes=raw, sidecar_bytes=cache, sidecar=sidecar, original_inputs=inputs, original=producer, artifact_id=meta['id'], artifact_digest=meta['digest'],
                 inputs_sha256=inputs['sha256'], original_coverage_seconds=seconds,
                 original_run_url=f"https://github.com/{REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}",
                 original_job_url=f"https://github.com/{REPOSITORY}/actions/runs/{run['id']}/job/{job['id']}",
@@ -353,7 +371,7 @@ def required_join(jobs, run):
                 'original classification/required join did not succeed in this exact attempt')
 
 
-def latest_proof(service, current, profile, trusted_controls, *, consumer_repository_id, trusted_dev_revision):
+def latest_proof(service, current, profile, trusted_controls, *, consumer_repository_id, trusted_dev_revision, warm=False):
     """At most three real protected-dev runs; never bypass a selected failure.
 
     A successful whole workflow with a skipped full-family job can be crossed
@@ -403,7 +421,7 @@ def latest_proof(service, current, profile, trusted_controls, *, consumer_reposi
             executed = [step for step in primary.get('steps', []) if step.get('name') == 'Execute full ExUnit coverage (EXECUTED)']
             require(len(executed) == 1 and executed[0].get('status') == 'completed'
                     and executed[0].get('conclusion') == 'skipped', 'dev reuse did not omit only the verified full suite')
-            result = merged_pr_proof(service, run['head_sha'], current, profile, trusted_controls, consumer_repository_id)
+            result = merged_pr_proof(service, run['head_sha'], current, profile, trusted_controls, consumer_repository_id, warm=warm)
             latest = trusted_dev_run(service.read('actions/runs/' + str(run['id'])))
             require(latest['id'] == run['id'] and latest['run_attempt'] == run['run_attempt']
                     and latest['head_sha'] == run['head_sha'], 'selected dev latest attempt changed during original verification')
@@ -420,7 +438,7 @@ def latest_proof(service, current, profile, trusted_controls, *, consumer_reposi
         meta = artifact_metadata(service.read('actions/artifacts/' + str(matches[0]['id'])), run, steps[-1])
         require(meta['id'] == matches[0]['id'], 'artifact API identity differs from requested artifact')
         raw = service.read('actions/artifacts/' + str(meta['id']) + '/zip', binary=True, maximum=MAX_ARTIFACT)
-        result = verify_bundle(run, job, meta, raw, current, profile, restore=True)
+        result = verify_bundle(run, job, meta, raw, current, profile, restore='warm' if warm else False)
         # A stale list/attempt cannot authorize reuse during a new rerun.
         latest = trusted_dev_run(service.read('actions/runs/' + str(run['id'])))
         require(latest['run_attempt'] == run['run_attempt'] and latest['head_sha'] == run['head_sha'],
@@ -463,6 +481,28 @@ def current_context(service, *, run_id, attempt, source, event, ref, pr_number=N
                     and lineage['merge_base_commit'].get('sha') == source,
                     'producer source is outside protected dev history')
             value.update(eligible_producer=True, eligible_consumer=True)
+        else:
+            main=service.read('branches/main')
+            require(type(main) is dict and main.get('name')=='main' and main.get('protected') is True,
+                    'protected main unavailable')
+            commit,source_tree=immutable_tree(service,source)
+            parents=commit.get('parents')
+            require(type(parents) is list and len(parents)==2 and all(type(row) is dict and SHA.fullmatch(row.get('sha','')) for row in parents), 'unknown main promotion shape')
+            prs=service.read('commits/'+source+'/pulls?per_page=10')
+            require(type(prs) is list and len(prs)<=10,'promotion association unavailable')
+            matches=[row for row in prs if type(row) is dict and row.get('merge_commit_sha')==source]
+            require(len(matches)==1 and positive(matches[0].get('number')),'ambiguous actual promotion PR')
+            promotion=service.read('pulls/'+str(matches[0]['number']))
+            head,base=promotion.get('head'),promotion.get('base')
+            require(promotion.get('merged') is True and promotion.get('state')=='closed' and promotion.get('merge_commit_sha')==source
+                    and type(head) is dict and type(base) is dict and head.get('ref')=='dev' and base.get('ref')=='main'
+                    and repository(head.get('repo'))==repository(base.get('repo'))==repo_id
+                    and head.get('sha')==parents[1]['sha'],'actual main merge is not the authenticated dev promotion')
+            promoted,_=immutable_tree(service,head['sha'])
+            require(promoted['tree']==commit['tree'],'main promotion tree differs from qualified dev head')
+            lineage=service.read('compare/'+head['sha']+'...'+trusted_dev)
+            require(lineage.get('status') in ('ahead','identical') and lineage.get('merge_base_commit',{}).get('sha')==head['sha'], 'promoted source outside protected dev history')
+            value.update(eligible_consumer=True,proof_revision=head['sha'],promotion_pr=promotion['number'])
     elif event == 'pull_request':
         require(positive(pr_number) and ref == f'refs/pull/{pr_number}/merge', 'actual PR merge reference differs')
         pr = service.read('pulls/' + str(pr_number))
@@ -516,7 +556,7 @@ def without_test_cache(inputs):
     return value
 
 
-def merged_pr_proof(service, merge_source, current, profile, trusted_controls, repository_id):
+def merged_pr_proof(service, merge_source, current, profile, trusted_controls, repository_id, *, warm=False):
     """Only a final same-repository PR actually merged at this protected commit.
 
     The original PR workflow is untrusted before merge. Immutable tested merge
@@ -576,7 +616,7 @@ def merged_pr_proof(service, merge_source, current, profile, trusted_controls, r
     tested, tested_tree = immutable_tree(service, source)
     require(tested.get('tree') == merged.get('tree') and tested.get('parents') == parents
             and tree_controls(tested_tree) == trusted_controls, 'original tested merge/tree/base/head differs from protected merge')
-    result = verify_bundle(run, job, meta, raw, current, profile, merged_source=source, restore=True)
+    result = verify_bundle(run, job, meta, raw, current, profile, merged_source=source, restore='warm' if warm else False)
     final = original_run(service.read('actions/runs/' + str(run['id'])))
     require(final['run_attempt'] == run['run_attempt'] and final['head_sha'] == run['head_sha'],
             'original PR latest attempt changed during verification')

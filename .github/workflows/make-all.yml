@@ -177,6 +177,7 @@ jobs:
         id: profile
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py select
       - name: Set up mise tools
+        if: steps.profile.outputs.supported == 'false'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
@@ -196,8 +197,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py capability
-      - name: Prepare controlled full Elixir qualification
-        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py prepare
       - name: Load immutable protected-dev coverage controller or force fresh
         id: controller
         env:
@@ -211,10 +210,8 @@ jobs:
           trusted = False
           # The root workflow is reviewed/unchanged; candidate modules do not
           # decide whether they may skip tests. Feature/fork paths stay fresh.
-          eligible = ((os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ.get('GITHUB_REF') == 'refs/heads/dev')
+          eligible = ((os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ.get('GITHUB_REF') in ('refs/heads/dev','refs/heads/main'))
               or (os.environ['GITHUB_EVENT_NAME'] == 'pull_request'
-              and os.environ.get('GITHUB_HEAD_REF') == 'dev'
-              and os.environ.get('GITHUB_BASE_REF') == 'main'
               and os.environ.get('COVERAGE_HEAD_REPOSITORY') == 'Jayson-Stangel/symphony'))
           if eligible:
               try:
@@ -251,8 +248,18 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as target:
               target.write('No eligible immutable protected-dev controller; full coverage is forced fresh.\n')
           PY
+      - name: Prove read-only OCI tool and isolation profile
+        if: steps.profile.outputs.supported == 'true'
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py oci_setup
+      - name: Authenticate protected-origin cache before preparation
+        if: steps.profile.outputs.supported == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" warm
+      - name: Prepare controlled full Elixir qualification
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py prepare
       - name: Measure complete full-coverage inputs
-        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" measure
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py measure
       - name: Choose fresh or verified full-coverage evidence
         id: evidence
         env:
@@ -261,27 +268,31 @@ jobs:
       - name: Execute full ExUnit coverage (EXECUTED)
         id: executed
         if: steps.controller.outputs.trusted != 'true' || steps.evidence.outputs.mode != 'REUSED'
-        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" execute
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py execute
       - name: Retain upstream full-coverage proof (REUSED)
         id: reused
         if: steps.controller.outputs.trusted == 'true' && steps.evidence.outputs.mode == 'REUSED'
         run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" reused
       - name: Verify fresh Dialyzer
-        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" dialyzer
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py dialyzer
       - name: Prepare original executed coverage proof
         id: producer
         env:
           GH_TOKEN: ${{ github.token }}
-        run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" seal
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py seal
       - name: Retain original executed coverage proof
         if: steps.producer.outputs.available == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: elixir-full-coverage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/symphony-coverage-v1/proof/
+          path: ${{ runner.temp }}/symphony-coverage-v2/proof/
           retention-days: 7
           if-no-files-found: error
           compression-level: 0
+
+      - name: Remove owned OCI execution resources
+        if: always() && steps.profile.outputs.supported == 'true'
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py cleanup
 
   claude-checks:
     name: Claude syntax and Node tests

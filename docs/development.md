@@ -894,15 +894,26 @@ missing provenance, changed audited sources, or different execution inputs run
 fresh. The required Application wrapper distinguishes `EXECUTED`, `REUSED` and
 `OMITTED` and preserves the original run, attempt, job and artifact identities.
 
-Only the finite reviewed source/runtime profile may produce reusable evidence.
-Its toolchain and compiled dependency caches are not restored; dependency setup,
-build, formatting, lint and Dialyzer still execute. Unsupported sources keep the
-ordinary mise cache and original `Linux-mix-…` cache route and run the existing
-fresh command. The supported producer's bounded public `_build/test` sidecar is
-an immutable validation input, never product or native artifact qualification.
-The protected verifier authenticates it before materialization, compares all
-other actual inputs, and requires complete raw input equality after restoration.
-It does not normalize compiler bytes or ownership to manufacture a match.
+Only the finite reviewed 200-source profile may produce reusable evidence. Its
+actual pinned-vendor OCI image/config/rootfs, recipe, generated public identity
+files, kernel/Docker/CPU/isolation settings and public inputs must match. Each
+phase has a read-only root/source, a non-root identity, and explicit private
+writable binds; coverage starts without external networking. Native and artifact
+qualification remain separate. No image is published or included in evidence.
+
+Protected code authenticates an original merged PR or protected-dev producer
+before installing any dependency or compiler cache. The bounded public bundle
+contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus a separate
+pre-coverage `_build/test` checkpoint. All three validate before becoming visible;
+raw bytes, modes, ownership and allowed links remain exact. No global Mix home or
+core PLTs are restored. Fresh build, formatting, lint, npm setup, compilation and
+ordinary Dialyzer still execute. ExUnit's own API initializes the empty failures
+manifest before the checkpoint. A protected `main` push can consume the same
+original proof after authenticating the actual dev-to-main promotion; this code
+does not authorize promotion. Unsupported sources retain the ordinary mise/Mix
+cache and fresh command. API work is bounded to 30 seconds and 80 GETs, with at
+most three dev history rows and one original PR link. Unavailable evidence stays
+fresh; an unobservable supported execution profile refuses before the full suite.
 
 This operates within the existing reviewed root-workflow trust boundary; it does
 not enforce a required workflow against a root workflow that removes validation.

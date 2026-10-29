@@ -39,30 +39,32 @@ class OriginalProof(unittest.TestCase):
                         status='completed', conclusion='success', labels=['ubuntu-24.04'],
                         runner_id=1000001, runner_group_id=0, runner_group_name='GitHub Actions', steps=stages)
         self.profile = dict(expected_tests=685, expected_linux_skips=10, measured_coverage=100.0)
-        self.inputs = dict(identity=dict(audited_full_input_fixture=True, public_inputs=[
+        self.inputs = dict(identity=dict(execution=dict(audited_oci_fixture=True), audited_full_input_fixture=True, public_inputs=[
             dict(path='/home/runner/work/symphony/symphony/elixir/_build/test', sha256='f'*64, files=1, bytes=1)]))
         self.inputs['sha256'] = digest(self.inputs['identity'])
         self.log = b'Finished in 4.0 seconds\n685 tests, 0 failures, 10 skipped\n| 100.00% | Total |\n'
-        self.receipt = dict(schema_version=2, family='full-exunit-coverage', clean_preparation='no-mise-or-compiled-cache-v1',
+        self.receipt = dict(schema_version=3, family='full-exunit-coverage', clean_preparation='no-mise-or-compiled-cache-v1',
             producer=dict(repository=evidence.REPOSITORY, repository_id=77, run_id=101, attempt=2,
                           job_id=501, source='a' * 40, workflow=evidence.WORKFLOW),
             inputs_sha256=self.inputs['sha256'], execution=dict(mode='EXECUTED', exit_code=0,
                 seconds=4.0, coverage_log_sha256=hashlib.sha256(self.log).hexdigest(),
                 summary=dict(tests=685, failures=0, skipped=10, measured_coverage=100.0)))
         self.meta = dict(id=901, name='elixir-full-coverage-101-2', expired=False, size_in_bytes=100,
-                         created_at=timestamp(-27), expires_at=timestamp(3600),
+                         created_at=timestamp(-17), expires_at=timestamp(3600),
                          workflow_run=dict(id=101, head_sha='a' * 40))
         self.pack()
 
     def pack(self, *, extra=None):
         sidecar = b'inert test-cache fixture, never installed by these provenance tests'
-        self.receipt['sidecar'] = dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar))
+        self.receipt['sidecar'] = {name: dict(sha256=hashlib.sha256(sidecar).hexdigest(), size=len(sidecar),cache=dict(files=1,bytes=1)) for name in ('test','dev','deps')}
+        self.receipt['checkpoints'] = dict(test='PRE_COVERAGE',dev='POST_DIALYZER',deps='POST_DIALYZER')
+        self.receipt['cache_origin'] = dict(mode='CLEAN')
         target = io.BytesIO()
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('receipt.json', json.dumps(self.receipt))
             archive.writestr('inputs.json', json.dumps(self.inputs))
             archive.writestr('coverage.log', self.log)
-            archive.writestr('test-cache.tar.gz', sidecar)
+            for name in ('test','dev','deps'): archive.writestr(name+'-cache.tar.gz', sidecar)
             if extra:
                 archive.writestr(*extra)
         self.raw = target.getvalue()
@@ -207,11 +209,11 @@ class OriginalProof(unittest.TestCase):
         service,controls,requests=self.merged_service()
         current=deepcopy(self.inputs);current['identity']['public_inputs'][0]['sha256']='0'*64
         current['sha256']=digest(current['identity'])
-        result=evidence.merged_pr_proof(service,'e'*40,current,self.profile,controls,77)
+        result=evidence.merged_pr_proof(service,'e'*40,current,self.profile,controls,77,warm=True)
         self.assertEqual(result['mode'],'REUSED')
         self.assertEqual(result['original']['source'],'c'*40)
         self.assertEqual(result['original']['run_id'],101)
-        self.assertIsInstance(result['sidecar_bytes'],bytes)
+        self.assertEqual(set(result['sidecar_bytes']),{'test','dev','deps'})
         self.assertLess(requests.index('pulls/44'),requests.index('actions/artifacts/901/zip'))
 
     def test_fork_unmerged_failed_new_attempt_and_different_tested_tree_refuse(self):
@@ -387,6 +389,46 @@ class OriginalProof(unittest.TestCase):
                     with self.assertRaises(evidence.Fresh):
                         evidence.current_context(self.caller_service(variant), run_id=101, attempt=2,
                             source='e' * 40, event='pull_request', ref='refs/pull/123/merge', pr_number=123)
+
+
+    def test_actual_protected_main_push_consumes_only_authenticated_dev_promotion(self):
+        for invalid in (None,'tree','foreign','parent','unprotected'):
+            with self.subTest(invalid=invalid):
+                repo=dict(full_name=evidence.REPOSITORY,id=77)
+                run=dict(self.run,event='push',head_branch='main',head_sha='e'*40)
+                job=dict(self.job,status='in_progress',conclusion=None,head_sha='e'*40)
+                commit=dict(sha='e'*40,tree=dict(sha='b'*40),parents=[dict(sha='c'*40),dict(sha='d'*40)])
+                tree=dict(sha='b'*40,truncated=False,tree=[])
+                promotion=dict(number=44,merged=True,state='closed',merge_commit_sha='e'*40,
+                    head=dict(ref='dev',sha='d'*40,repo=repo),base=dict(ref='main',sha='c'*40,repo=repo))
+                if invalid=='foreign':promotion['head']['repo']=dict(full_name='foreign/fork',id=78)
+                if invalid=='parent':commit['parents'][1]['sha']='9'*40
+                routes={'actions/runs/101':run,'actions/runs/101/attempts/2/jobs?per_page=100':dict(total_count=1,jobs=[job]),
+                    'branches/dev':dict(name='dev',protected=True,commit=dict(sha='d'*40)),
+                    'branches/main':dict(name='main',protected=invalid!='unprotected',commit=dict(sha='e'*40)),
+                    'git/commits/'+'e'*40:commit,'git/trees/'+'b'*40+'?recursive=1':tree,
+                    'commits/'+'e'*40+'/pulls?per_page=10':[dict(number=44,merge_commit_sha='e'*40)],'pulls/44':promotion,
+                    'git/commits/'+'d'*40:dict(sha='d'*40,tree=dict(sha=('8' if invalid=='tree' else 'b')*40)),
+                    'git/trees/'+'8'*40+'?recursive=1':dict(sha='8'*40,truncated=False,tree=[]),
+                    'compare/'+'d'*40+'...'+'d'*40:dict(status='identical',merge_base_commit=dict(sha='d'*40))}
+                class Service:
+                    def read(self,path):return routes[path]
+                if invalid:
+                    with self.assertRaises(evidence.Fresh):evidence.current_context(Service(),run_id=101,attempt=2,source='e'*40,event='push',ref='refs/heads/main')
+                else:
+                    result=evidence.current_context(Service(),run_id=101,attempt=2,source='e'*40,event='push',ref='refs/heads/main')
+                    self.assertTrue(result['eligible_consumer']);self.assertFalse(result['eligible_producer'])
+                    self.assertEqual(result['proof_revision'],'d'*40)
+
+    def test_bounded_request_budget_covers_three_history_rows_and_original_link(self):
+        import inspect
+        import elixir_coverage_bootstrap as bootstrap
+        # Main context11 + tested-control2 + listing1 + two intentional omissions6each
+        # + reused-dev row6 + original merged-PR verification15 + latest-dev barrier1.
+        maximum=11+2+1+2*6+6+15+1
+        self.assertEqual(len(bootstrap.FILES)+3,13)
+        self.assertLessEqual(maximum,inspect.signature(evidence.Service).parameters['maximum_requests'].default)
+        self.assertEqual(inspect.signature(evidence.Service).parameters['seconds'].default,30)
 
 
 if __name__ == '__main__':
