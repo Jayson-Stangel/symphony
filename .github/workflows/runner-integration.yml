@@ -6,6 +6,14 @@ on:
     branches: [dev, main]
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
       sign_macos:
         description: Only sign/notarize an explicitly approved already-qualified exact dev candidate
         type: boolean
@@ -38,6 +46,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'latest' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
 jobs:
+  packaged-host-consent:
+    name: Require reviewed installed host preparation
+    if: github.event_name == 'workflow_dispatch' && !inputs.sign_macos
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
+      - name: Refuse unconsented installed qualification
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+
   sign-macos:
     name: Sign approved macOS candidate
     if: github.event_name == 'workflow_dispatch' && inputs.sign_macos && github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha
@@ -122,7 +159,7 @@ jobs:
         run: echo "Browser qualification of selected immutable images runs in installed manager integration; no separate reference image build." >> "$GITHUB_STEP_SUMMARY"
   portable:
     name: Portable preflight
-    needs: changes
+    needs: [changes, packaged-host-consent]
     if: ${{ !inputs.sign_macos && (github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true') }}
     uses: ./.github/workflows/release-preflight.yml
   helpers:
@@ -168,6 +205,8 @@ jobs:
       component_plan_artifact: ${{ needs.plan.outputs.artifact_name }}
       baseline_run: ${{ inputs.baseline_run }}
       compose_packages: false
+      packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
+      packaged_host_revision: ${{ inputs.packaged_host_revision }}
       retain_diagnostic: true
       publish: false
     permissions:
@@ -315,9 +354,16 @@ jobs:
         id: codex-apparmor
         if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Execute the installed current manager with original immutable runners
         if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+          PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
         run: python3 scripts/release/package-lifecycle.py --current-manager-only packages "$RUNNER_TEMP/original-runners" evidence
       - name: Prove anonymous closure refusal with a separate tiny owned synthetic registry
         if: github.event_name == 'workflow_dispatch' && inputs.distribution_alias && needs.changes.outputs.code == 'true'
@@ -345,12 +391,21 @@ jobs:
       - name: Remove only CI-owned Codex AppArmor policy
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
+      - name: Require installed host cleanup receipt
+        if: ${{ always() && steps.codex-apparmor.outcome == 'success' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Retain disposable host policy diagnostics
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-apparmor-current-manager-integration
-          path: ${{ runner.temp }}/codex-apparmor-*.log
+          path: ${{ runner.temp }}/codex-apparmor-*
           if-no-files-found: error
           retention-days: 30

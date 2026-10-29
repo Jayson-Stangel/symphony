@@ -92,7 +92,8 @@ def browser_selection(paths, event=None, name=None):
                  and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
                                   'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
                                   'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
-                                  'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py')) or
+                                  'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py',
+                                  'scripts/ci/packaged_apparmor.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -135,7 +136,7 @@ COMPONENTS = ('application', 'claude', 'portable', 'package_macos', 'package_lin
 ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
-    'test_application_families.py',
+    'test_application_families.py', 'test_packaged_apparmor.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
@@ -195,6 +196,8 @@ def consumer_selection(path):
         return ALL, 'unknown CI regression input: conservative full qualification'
     if path == 'scripts/ci/release_tests.py':
         return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
+    if path == 'scripts/ci/packaged_apparmor.py':
+        return {'portable'}, 'manual packaged host preparation controller; portable refusal and policy contracts'
     if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
                 'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
                 'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py'):
@@ -241,6 +244,8 @@ def consumer_selection(path):
         return PACKAGES | {'application', 'fixtures', 'contracts', 'codex_config'}, 'installed manager launch/update and native process input'
     if path in ('scripts/symphony-environment.sh', 'scripts/symphony-apparmor.sh', 'scripts/symphony-runner-import.sh', 'scripts/symphony-runner-provision.sh'):
         return PACKAGES | {'application', 'contracts'}, 'installed environment input'
+    if path == 'scripts/codex-apparmor.profile':
+        return PACKAGES | {'application'}, 'packaged policy bytes and actual ExUnit sandbox-policy consumer'
     if path.startswith('scripts/package/linux/') or path == 'scripts/release/build-linux-host-helper.sh':
         return {'portable', 'package_linux'}, 'Linux helper source, SDK or build input'
     if path.startswith('scripts/package/'):

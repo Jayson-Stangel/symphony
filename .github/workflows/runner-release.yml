@@ -3,6 +3,14 @@ name: Runner release
 on:
   workflow_call:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -53,6 +61,14 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -151,6 +167,35 @@ concurrency:
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  packaged-host-consent:
+    name: Require reviewed manual package host preparation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
+      - name: Refuse unconsented selected native package qualification
+        if: inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+
   component-plan:
     name: Validate component plan
     needs: qualification
@@ -442,11 +487,40 @@ jobs:
           python3 scripts/release/manager_version.py
           mkdir -p dist
           bash scripts/release/build-manager-package.sh "$PWD/metadata/release.json" "$PWD/dist" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$RUNNER_TEMP/qualified-helper/symphony-host"
+      - name: Prepare actual packaged Linux AppArmor command
+        id: packaged-apparmor
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Clean only verified package-owned native policy and persistence
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence dist/linux-apparmor-acceptance.json
+      - name: Require package preparation and cleanup evidence
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Retain native package preparation diagnostics even on failure
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ github.job }}-linux-apparmor-evidence
+          path: dist/linux-apparmor-acceptance.*
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release-platform-${{ matrix.platform }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/linux-apparmor-acceptance.json
           if-no-files-found: error
 
   packaged-release:
@@ -486,6 +560,11 @@ jobs:
           verify_packages(Path('dist'), os.environ['GITHUB_SHA'])
           PYCODE
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
+      - name: Reject missing or mismatched Linux package preparation receipt
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages dist --manifest dist/release.json --evidence dist/linux-apparmor-acceptance.json
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -751,6 +830,33 @@ jobs:
             if [ "$selection" = previous ]; then helper="$RUNNER_TEMP/qualified-prior-helper/symphony-host"; fi
             bash scripts/release/build-manager-package.sh "$manifest" "$destination" "$PLATFORM" "$source" "$revision" ${helper:+"$helper"}
           done
+      - name: Prepare actual packaged Linux AppArmor command
+        id: packaged-apparmor
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Clean only verified package-owned native policy and persistence
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence dist/linux-apparmor-acceptance.json
+      - name: Require package preparation and cleanup evidence
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Retain native package preparation diagnostics even on failure
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ github.job }}-linux-apparmor-evidence
+          path: dist/linux-apparmor-acceptance.*
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -793,6 +899,11 @@ jobs:
             python3 scripts/release/artifacts.py validate "$directory/release.json"
             (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
           done
+      - name: Reject missing or mismatched Linux package preparation receipt
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence packages/linux-apparmor-acceptance.json
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -817,6 +928,9 @@ jobs:
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+          PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
         run: |
           mkdir -p evidence
           python3 - <<'PYCODE'
@@ -859,10 +973,16 @@ jobs:
       - name: Prepare shipped Codex AppArmor on disposable host
         id: codex-apparmor
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
         env:
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+          PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
         run: |
           args=()
           if [ "$MANAGER_ONLY_UPDATE" = true ]; then args+=(--manager-only-update); fi
@@ -889,13 +1009,22 @@ jobs:
       - name: Remove only CI-owned Codex AppArmor policy
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
+      - name: Require installed host cleanup receipt
+        if: ${{ always() && steps.codex-apparmor.outcome == 'success' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Retain disposable host policy diagnostics
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-apparmor-installed-lifecycle
-          path: ${{ runner.temp }}/codex-apparmor-*.log
+          path: ${{ runner.temp }}/codex-apparmor-*
           if-no-files-found: error
           retention-days: 30
 
@@ -1057,14 +1186,15 @@ jobs:
           retention-days: 30
   portable:
     name: Portable preflight
+    needs: packaged-host-consent
     if: inputs.preflight_revision == '' && inputs.resume_native_run == ''
     uses: ./.github/workflows/release-preflight.yml
   qualification:
     name: Validate preflight inputs
     outputs:
       final_only: ${{ steps.validated.outputs.final_only }}
-    needs: portable
-    if: ${{ always() && inputs.resume_native_run == '' }}
+    needs: [portable, packaged-host-consent]
+    if: ${{ always() && needs.packaged-host-consent.result == 'success' && inputs.resume_native_run == '' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require exact successful local or caller-owned preflight

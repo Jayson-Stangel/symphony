@@ -265,8 +265,9 @@ class AppArmorWorkflowTest(unittest.TestCase):
                     prep = block[prepare:qualify]
                     clean = block[cleanup:evidence]
                     self.assertIn('id: codex-apparmor', prep)
-                    self.assertIn('prepare-codex-apparmor.sh prepare', prep)
-                    self.assertIn('prepare-codex-apparmor.sh cleanup', clean)
+                    packaged = job in ('ubuntu-package-lifecycle', 'listener-and-cleanup')
+                    self.assertIn('packaged_apparmor.py prepare' if packaged else 'prepare-codex-apparmor.sh prepare', prep)
+                    self.assertIn('packaged_apparmor.py cleanup' if packaged else 'prepare-codex-apparmor.sh cleanup', clean)
                     self.assertIn('always()', clean)
                     self.assertNotIn('continue-on-error', prep + clean)
                     if job in ('candidate', 'cache-probe', 'transfer-replay'):
@@ -279,9 +280,9 @@ class AppArmorWorkflowTest(unittest.TestCase):
                         self.assertIn('shell: bash', step)
                         run = re.search(r'^        run: (.+)$', step, re.M).group(1)
                         with tempfile.TemporaryDirectory() as directory:
-                            helper = Path(directory) / 'scripts/ci/prepare-codex-apparmor.sh'
+                            helper = Path(directory) / ('scripts/ci/packaged_apparmor.py' if packaged else 'scripts/ci/prepare-codex-apparmor.sh')
                             helper.parent.mkdir(parents=True)
-                            helper.write_text('#!/bin/sh\nexit 37\n')
+                            helper.write_text('raise SystemExit(37)\n' if packaged else '#!/bin/sh\nexit 37\n')
                             result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', run],
                                                     cwd=directory, env=dict(os.environ, RUNNER_TEMP=directory), capture_output=True)
                             self.assertEqual(result.returncode, 37)
