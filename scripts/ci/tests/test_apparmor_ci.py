@@ -241,7 +241,6 @@ class AppArmorWorkflowTest(unittest.TestCase):
         jobs = {
             'runner-release.yml': {
                 'candidate': 'Build exact native runner candidates and verify digest pulls',
-                'cache-probe': 'Prepare isolated registry and evidence',
                 'ubuntu-package-lifecycle': 'Real source-independent Ubuntu 26.04 manager lifecycle',
                 'lifecycle-diagnostic': 'Diagnose actual Ubuntu lifecycle using selected real artifacts',
                 'transfer-replay': 'Real checksum, Docker load and model-free runtime proof',
@@ -270,7 +269,7 @@ class AppArmorWorkflowTest(unittest.TestCase):
                     self.assertIn('packaged_apparmor.py cleanup' if packaged else 'prepare-codex-apparmor.sh cleanup', clean)
                     self.assertIn('always()', clean)
                     self.assertNotIn('continue-on-error', prep + clean)
-                    if job in ('candidate', 'cache-probe', 'transfer-replay'):
+                    if job in ('candidate', 'transfer-replay'):
                         self.assertIn("if: matrix.provider == 'codex'", prep)
                     if job == 'listener-and-cleanup':
                         self.assertIn("github.event_name == 'workflow_dispatch'", prep)

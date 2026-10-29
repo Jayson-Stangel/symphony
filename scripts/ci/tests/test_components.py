@@ -190,7 +190,7 @@ class Consumers(unittest.TestCase):
             self.assertIn("needs: changes", block)
             self.assertNotIn('platform-contracts', block)
             self.assertIn("if: needs.changes.outputs." + output + " == 'true' && needs.changes.outputs.ready == 'true'", block)
-        self.assertIn('elixir_coverage.py" execute', job(text, 'elixir-checks'))
+        self.assertIn('run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py execute', job(text, 'elixir-checks'))
         self.assertIn("steps.controller.outputs.trusted != 'true' || steps.evidence.outputs.mode != 'REUSED'", job(text, 'elixir-checks'))
         self.assertNotIn('make all', job(text, 'elixir-checks'))
         self.assertIn('run: make -C elixir claude-ci', job(text, 'claude-checks'))
