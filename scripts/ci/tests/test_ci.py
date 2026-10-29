@@ -399,13 +399,42 @@ class NativeOCICompatibilityDiagnostic(unittest.TestCase):
                 root_disk = Path(info['DockerRootDir'])
                 initial_free = shutil.disk_usage(root_disk).free
                 require(initial_free >= 12 * 1024 ** 3, 'insufficient-task-disk-headroom')
-                builder = json.loads(successful('builder-before', ['buildx', 'inspect', 'default', '--format', '{{json .}}'], timeout=10))
-                require(builder.get('Driver') == 'docker' and builder.get('Nodes')
-                        and all(n.get('Status') == 'running' for n in builder['Nodes']), 'no-running-integrated-docker-builder')
-                result['builder'] = {'driver': builder['Driver'], 'nodes': [{k: n.get(k) for k in ('Name', 'Endpoint', 'Status', 'Buildkit')} for n in builder['Nodes']]}
                 try:
-                    for n, base in enumerate(bases):
-                        successful('pull-' + str(n), ['pull', '--platform', 'linux/amd64', base], timeout=35)
+                    # First decisive runtime result precedes any plugin/parser gate.
+                    successful('pull-hexpm', ['pull', '--platform', 'linux/amd64', bases[1]], timeout=35)
+                    baseline = b"set +e\nprintf '' | timeout 20 mix --version </dev/null 2>&1\ns=$?\nprintf '\\nSOURCE_BASE_MIX_EXIT %s\\n' \"$s\"\n"
+                    code, raw = command('source-mix-first', run_args(owner + '-source', bases[1], '/bin/sh')[:-1] + ['-s'],
+                                        stdin=baseline, timeout=25)
+                    marker = re.search(rb'SOURCE_BASE_MIX_EXIT (\d+)', raw)
+                    result['source_mix_baseline'] = {'executor_exit': code,
+                        'output_sha256': hashlib.sha256(raw).hexdigest(),
+                        'exit': int(marker[1]) if marker else None,
+                        'output_bytes': len(raw), 'text': raw[-4096:].decode(errors='replace'),
+                        'text_truncated': len(raw) > 4096}
+                    require(code == 0 and marker and int(marker[1]) == 0, 'source-native-mix-failed-STOP')
+                    # Discover only existing public system plugins, never user config/auth.
+                    plugin_dirs = []
+                    for public in ('/usr/libexec/docker/cli-plugins', '/usr/lib/docker/cli-plugins',
+                                   '/usr/local/lib/docker/cli-plugins'):
+                        plugin = Path(public) / 'docker-buildx'
+                        if plugin.is_file() and os.access(plugin, os.X_OK):
+                            resolved = plugin.resolve()
+                            if resolved.is_relative_to('/usr/libexec') or resolved.is_relative_to('/usr/lib') or resolved.is_relative_to('/usr/local') or resolved.is_relative_to('/usr/bin'):
+                                plugin_dirs.append(public)
+                    (config / 'config.json').write_text(json.dumps({'cliPluginsExtraDirs': plugin_dirs}) + '\n')
+                    code, version = command('builder-version', ['buildx', 'version'], timeout=10)
+                    result['builder'] = {'public_plugin_dirs': plugin_dirs, 'version_exit': code,
+                        'version_text': version[:1024].decode(errors='replace'), 'version_text_truncated': len(version) > 1024}
+                    require(code == 0, 'local-builder-version-failed-STOP')
+                    code, raw = command('builder-inspect', ['buildx', 'inspect', 'default'], timeout=10)
+                    text = raw.decode(errors='replace')
+                    result['builder'].update(inspect_exit=code, inspect_text=text[:4096], inspect_text_truncated=len(raw) > 4096)
+                    drivers = re.findall(r'^Driver:\s*(\S+)\s*$', text, re.M)
+                    statuses = re.findall(r'^Status:\s*(\S+)\s*$', text, re.M)
+                    require(code == 0 and drivers == ['docker'] and statuses
+                            and all(status == 'running' for status in statuses),
+                            'plain-builder-not-uniquely-running-driver-docker-STOP')
+                    successful('pull-node', ['pull', '--platform', 'linux/amd64', bases[0]], timeout=35)
                     context = folder / 'context';context.mkdir(mode=0o700)
                     dockerfile = ('ARG SOURCE_DATE_EPOCH=0\nFROM ' + bases[1] + ' AS otp\nFROM ' + bases[0] + '\n'
                                   'COPY --from=otp /usr/local/ /usr/local/\nCOPY passwd /etc/passwd\nCOPY group /etc/group\n'
@@ -474,14 +503,6 @@ print(json.dumps(r,sort_keys=True))
                     code, raw = command('combined-primitives', run_args(owner + '-combined', tags[0], 'python3'), stdin=probe.encode(), timeout=30)
                     require(code == 0 and len(raw) < 16384, 'primitive-executor-failed')
                     result['primitives'] = json.loads(raw)
-                    if result['primitives'].get('failed_tool') == 'mix':
-                        # Explicit single baseline only after the named Mix failure;
-                        # both commands use non-TTY/devnull stdin and same isolation.
-                        baseline = b"set +e\nprintf '' | timeout 20 mix --version </dev/null 2>&1\ns=$?\nprintf '\\nSOURCE_BASE_MIX_EXIT %s\\n' \"$s\"\n"
-                        code, raw = command('source-mix-baseline', run_args(owner + '-source', bases[1], '/bin/sh')[:-1] + ['-s'], stdin=baseline, timeout=25)
-                        result['source_mix_baseline'] = {'executor_exit': code, 'output_sha256': hashlib.sha256(raw).hexdigest(),
-                                                         'exit': int(re.search(rb'SOURCE_BASE_MIX_EXIT (\d+)', raw)[1]) if re.search(rb'SOURCE_BASE_MIX_EXIT (\d+)', raw) else None,
-                                                         'tail': raw[-2304:].decode(errors='replace')}
                     require(result['primitives'].get('result') == 'PASS_NATIVE_COMPATIBILITY_PRIMITIVES_ONLY', 'actual-native-primitive-failed-STOP')
                     result['result'] = 'PASS_NATIVE_COMPATIBILITY_AND_TWO_FRESH_IDENTICAL_IMAGES_ONLY'
                 except Exception as error:
