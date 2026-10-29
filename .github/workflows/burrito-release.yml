@@ -20,6 +20,10 @@ on:
         description: Exact explicitly authorized original native-record run for nonpublishing manual composition
         type: string
         default: ''
+      cache_export_overlap:
+        description: Experimental same-builder max export overlap; serial remains the default
+        type: boolean
+        default: false
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -121,6 +125,7 @@ jobs:
       packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
       packaged_host_revision: ${{ inputs.packaged_host_revision }}
       baseline_run: ${{ inputs.baseline_run }}
+      cache_export_overlap: ${{ inputs.cache_export_overlap }}
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
       previous_artifact_run: ${{ inputs.previous_artifact_run }}
