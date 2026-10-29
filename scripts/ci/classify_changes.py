@@ -165,6 +165,7 @@ PORTABLE_RELEASE = {
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
     'previous-package-subject.py',
+    'prior_baseline.py',
     'probe-registry-closure.py',
     'record.py',
     'recover_native_record.py',
@@ -177,6 +178,9 @@ PORTABLE_RELEASE = {
     'test_registry.py',
     'staging_archive.py',
     'staging_ingress.py',
+    'transport_compatibility.py',
+    'transport_fixture.py',
+    'fixtures/transport-fixture-v1.json',
     'verify-prior-source.py',
 }
 
