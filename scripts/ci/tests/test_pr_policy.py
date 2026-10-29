@@ -122,8 +122,59 @@ jobs:
                 finally:
                     os.chdir(previous)
 
+    def test_audited_coverage_seam_selects_only_elixir_and_policy_unknown_controls_do_not(self):
+        path='.github/workflows/make-all.yml'
+        after=workflow('make-all')
+        before=after
+        fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())
+        for name,body in fixture['jobs'].items():
+            before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
+        cases=[('audited',after,{'application','portable'},False),
+            ('unknown job',after.replace('jobs:\n','jobs:\n  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n',1),classifier.ALL,True),
+            ('changed trigger',after.replace('      - dev','      - other-branch',1),classifier.consumers(path),False),
+            ('unknown command',after.replace('scripts/ci/elixir_coverage.py prepare','scripts/ci/unknown.py prepare',1),classifier.consumers(path),False)]
+        with tempfile.TemporaryDirectory() as folder:
+            history=History(folder);history.put('runner/Dockerfile',RECIPE);history.put(path,before);base=history.commit()
+            previous=os.getcwd();os.chdir(folder)
+            try:
+                for name,changed,expected,browser in cases:
+                    self.assertNotEqual(before,changed)
+                    history.put(path,changed);head=history.commit()
+                    event=dict(before=base,after=head,ref='refs/heads/dev')
+                    paths=classifier.changed_paths(event,'push')
+                    route=classifier.event_routing(paths,event,'push')[0]
+                    with self.subTest(change=name):
+                        self.assertEqual({key for key in classifier.COMPONENTS if route[key]},expected)
+                        self.assertEqual(classifier.browser_required(paths,event,'push'),browser)
+            finally:os.chdir(previous)
+
+
+    def test_exact_package_selector_join_seam_and_unknown_controls_remain_conservative(self):
+        path='.github/workflows/package-checks.yml';after=workflow('package-checks');before=after
+        fixture=json.loads((ROOT/'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())['package_selector_before']
+        for name,body in fixture['jobs'].items():before=before.replace('  '+name+':\n'+job(after,name),'  '+name+':\n'+body,1)
+        unknown=after.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1)
+        cases=[('reviewed',before,after,{'portable'}),
+            ('unknown join',before,after.replace('test "$MAC_RUNNER_RESULT" = skipped','test "$MAC_RUNNER_RESULT" = success',1),classifier.consumers(path)),
+            ('unknown job',before,unknown,classifier.consumers(path)),
+            ('preexisting unknown consumer',before.replace('jobs:\n','jobs:\n  unknown-consumer:\n    needs: mac-runner\n    runs-on: ubuntu-latest\n    steps: []\n',1),unknown,classifier.consumers(path)),
+            ('native payload',before,after.replace('test \"$(uname -s)/$(uname -m)\" = Darwin/arm64','test false # changed native payload',1),classifier.consumers(path)),
+            ('trigger',before,after.replace('branches: [dev, main]','branches: [dev]',1),classifier.consumers(path)),
+            ('global permissions',before,after.replace('contents: read','contents: write',1),classifier.consumers(path))]
+        with tempfile.TemporaryDirectory() as directory:
+            history=History(directory);history.put('runner/Dockerfile',RECIPE);previous=os.getcwd();os.chdir(directory)
+            try:
+                for name,old,new,expected in cases:
+                    history.put(path,old);base=history.commit();history.put(path,new);head=history.commit()
+                    event=dict(before=base,after=head,ref='refs/heads/dev');paths=classifier.changed_paths(event,'push')
+                    with self.subTest(name=name):
+                        route=classifier.event_routing(paths,event,'push')[0]
+                        self.assertEqual({key for key in classifier.COMPONENTS if route[key]},expected)
+            finally:os.chdir(previous)
+
     def test_known_policy_tests_and_actual_consumer_families(self):
         cases = {
+            'scripts/release/README.md': {'portable'},
             'runner/test_npm_cache.py': {'npm'},
             'runner/test_npm_cache_lifecycle.py': {'npm'},
             'runner/test_codex_readiness.py': {'readiness'},
@@ -138,6 +189,21 @@ jobs:
             'scripts/release/tests/test_readiness_stages.py': {'contracts'},
             'scripts/release/tests/codex_config_fixture.py': {'contracts'},
             'scripts/ci/tests/test_pr_policy.py': set(),
+            'scripts/ci/tests/test_validation_inputs.py': set(),
+            'scripts/ci/tests/test_validation_evidence.py': set(),
+            'scripts/ci/tests/test_elixir_coverage.py': set(),
+            'scripts/ci/elixir_coverage.py': {'application', 'portable'},
+            'scripts/ci/validation_oci.py': {'application', 'portable'},
+            'scripts/ci/elixir-coverage.Dockerfile': {'application', 'portable'},
+            'scripts/ci/elixir-coverage.passwd': {'application', 'portable'},
+            'scripts/ci/elixir-coverage.group': {'application', 'portable'},
+            'scripts/ci/elixir_coverage_bootstrap.py': {'application', 'portable'},
+            'scripts/ci/elixir_coverage_profile.py': {'application', 'portable'},
+            'scripts/ci/elixir-coverage-profile.json': {'application', 'portable'},
+            'scripts/ci/validation_inputs.py': {'application', 'portable'},
+            'scripts/ci/validation_evidence.py': {'application', 'portable'},
+            'scripts/ci/validation_cache.py': {'application', 'portable'},
+            'scripts/ci/tests/test_validation_cache.py': set(),
             'scripts/ci/tests/test_packaged_apparmor.py': set(),
             'scripts/ci/packaged_apparmor.py': {'portable'},
             'scripts/codex-apparmor.profile': {'portable', 'package_macos', 'package_linux', 'application'},
@@ -147,11 +213,32 @@ jobs:
         for path, selected in cases.items():
             with self.subTest(path=path):
                 self.assertEqual(classifier.consumers(path), selected)
-        for path in ('scripts/ci/tests/test_unknown.py', 'scripts/release/tests/test_unknown.py'):
+        for path in ('scripts/ci/tests/test_unknown.py', 'scripts/release/tests/test_unknown.py',
+                     'scripts/release/UNKNOWN.md', 'scripts/new/README.md'):
             self.assertEqual(classifier.consumers(path), classifier.ALL)
         mixed = classifier.decisions(['runner/test_npm_cache_lifecycle.py', 'scripts/package/linux/Package.resolved'])
         self.assertTrue(mixed['npm'] and mixed['package_linux'] and mixed['portable'])
         self.assertFalse(mixed['package_macos'] or mixed['application'] or mixed['fixtures'])
+
+    def test_exact_release_readme_keeps_policy_and_unknown_or_runtime_inputs_conservative(self):
+        with tempfile.TemporaryDirectory() as folder:
+            history=History(folder);history.put('runner/Dockerfile',RECIPE)
+            history.put('scripts/release/README.md','original release controller reference')
+            base=history.commit();previous=os.getcwd();os.chdir(folder)
+            try:
+                for changed,expected,browser in (
+                    ('scripts/release/README.md',{'portable'},False),
+                    ('scripts/release/UNKNOWN.md',classifier.ALL,True),
+                    ('scripts/new/README.md',classifier.ALL,True),
+                    ('elixir/lib/actual_runtime.ex',{'application'},False)):
+                    history.put(changed,'updated executable-consumer or reference contract')
+                    head=history.commit();event=dict(before=base,after=head,ref='refs/heads/dev')
+                    paths=classifier.changed_paths(event,'push');routing=classifier.event_routing(paths,event,'push')[0]
+                    with self.subTest(changed=changed):
+                        self.assertEqual({name for name in classifier.COMPONENTS if routing[name]},expected)
+                        self.assertEqual(classifier.browser_required(paths,event,'push'),browser)
+                    base=head
+            finally:os.chdir(previous)
 
     def test_manual_only_integration_changes_do_not_build_browser_but_global_changes_do(self):
         source = (ROOT/'.github/workflows/runner-integration.yml').read_text()

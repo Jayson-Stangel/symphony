@@ -148,7 +148,7 @@ class PresentationOnly(unittest.TestCase):
                     after.replace('  pull_request:', '  unknown_event:', 1),
                     after + '\n  unknown-job:\n    runs-on: ubuntu-24.04\n    steps: [{run: "true"}]\n',
                     after.replace('timeout-minutes: 8', 'timeout-minutes: 9', 1),
-                    after.replace('run: make elixir-ci', 'run: echo unreviewed', 1)
+                    after.replace('run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py execute', 'run: echo unreviewed', 1)
                         if name == 'make-all' else after.replace('scripts/package/', 'scripts/unknown-package/', 1)):
                 self.assertNotEqual(altered, after)
                 self.assertFalse(policy(altered), (name, altered))

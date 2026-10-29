@@ -146,21 +146,26 @@ begin
     end
   end
   if input.fetch('path') == '.github/workflows/make-all.yml' && !result['presentation_only']
-    # Only these reviewed selector seams may change required joins.
-    # New commands, predicates, triggers, jobs or a different rollup stay ordinary.
-    audited = {
-      'make-all' => %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 7c6c91472fd1e76f2e64479b6678652d0c88c5d8113ff975e5a3ff171b43c6f3],
-      'mac-runner' => %w[c0d947e5032f85257bf474be76efc3b83db9fb483ea691d3f0f1b5c74c5329b0 87296894c588f3b29e0df6c8bfef65b0bab91efe21d36f159f53c99bafdab11c]
-    }
+    # Exact reviewed complete states bind coverage and selector seams together.
+    # Ordinary selector transitions keep the Elixir job identical; capsule
+    # transitions require application qualification. Unknown bodies stay ordinary.
+    names = %w[make-all elixir-checks mac-runner]
+    states = [
+      %w[d06cae5c3c6549e7d75b214e8bbe4db2477269bf25a708026cf70835f3495dd1 27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 c0d947e5032f85257bf474be76efc3b83db9fb483ea691d3f0f1b5c74c5329b0],
+      %w[7c6c91472fd1e76f2e64479b6678652d0c88c5d8113ff975e5a3ff171b43c6f3 27b324fad2c0b5ff71df71450bada435682dcd0b9370f82ed648f9964d10ffb8 87296894c588f3b29e0df6c8bfef65b0bab91efe21d36f159f53c99bafdab11c],
+      %w[40c45ec9253396761f796ae2e4d02b36e88f2c528cba94889f99efbeed21692b bd15919df0d193fe7865a722f6aaae9838ad75b523e8d8f4fb427d651061c56a c0d947e5032f85257bf474be76efc3b83db9fb483ea691d3f0f1b5c74c5329b0],
+      %w[a0ad8ba9821a0bd840f4af10bc6c5bbaeaf9f28d243eedef2582edbeb9bb9fb6 bd15919df0d193fe7865a722f6aaae9838ad75b523e8d8f4fb427d651061c56a 87296894c588f3b29e0df6c8bfef65b0bab91efe21d36f159f53c99bafdab11c]
+    ]
     copies = [before, after].map { |document| Marshal.load(Marshal.dump(document)) }
+    identities = copies.map { |document| names.map { |name| job_identity(field(field(document, 'jobs'), name)) } }
     finite = copies.all? do |document|
-      jobs = field(document, 'jobs')
-      jobs.keys.map(&:value).sort == %w[changes platform-contracts make-all elixir-checks claude-checks mac-runner].sort &&
-      audited.all? { |name, identities| identities.include?(job_identity(field(jobs, name))) }
-    end
+      field(document, 'jobs').keys.map(&:value).sort == %w[changes platform-contracts make-all elixir-checks claude-checks mac-runner].sort
+    end && identities.all? { |identity| states.include?(identity) }
     if finite
-      copies.each { |document| field(document, 'jobs').delete_if { |id, _| audited.key?(id.value) } }
-      result['mac_selector_policy_only'] = true if copies[0] == copies[1]
+      copies.each { |document| field(document, 'jobs').delete_if { |id, _| names.include?(id.value) } }
+      if copies[0] == copies[1]
+        result[identities[0][1] == identities[1][1] ? 'mac_selector_policy_only' : 'elixir_profile_only'] = true
+      end
     end
     known = {
       'python3 runner/test_codex_readiness.py' => 'readiness',
