@@ -123,13 +123,44 @@ class PublicSidecar(unittest.TestCase):
                 with self.assertRaises(UnknownInput):cache.stage(raw,metadata,stage,root)
                 self.assertFalse(stage.exists())
 
-    def test_early_combined_inventory_refuses_before_fingerprinting_or_coverage(self):
+    def test_preserves_hex_regular_groupwrite_without_allowing_writable_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);target=root/'elixir/deps';target.mkdir(parents=True)
+            package=target/'bunt';package.mkdir();source=package/'mix.exs'
+            source.write_bytes(b'public locked Hex source bytes');source.chmod(0o664)
+            raw,metadata=cache.create(target,root)
+            stage=target.with_name('.deps-evidence-v2');cache.stage(raw,metadata,stage,root)
+            self.assertEqual((stage/'bunt/mix.exs').read_bytes(),source.read_bytes())
+            self.assertEqual((stage/'bunt/mix.exs').stat().st_mode&0o7777,0o664)
+            self.assertEqual(cache.identity(stage,root)['sha256'],metadata['cache']['sha256'])
+            package.chmod(0o775)
+            with self.assertRaisesRegex(UnknownInput,'unsafe mode.*bunt.*0775'):cache.create(target,root)
+
+    def test_early_combined_inventory_audits_all_four_member_policies(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);a=root/'a';b=root/'b';a.mkdir();b.mkdir();(a/'payload').write_bytes(b'1234')
-            self.assertEqual(cache.precheck([a,b]),dict(entries=3,bytes=4))
-            with patch.object(cache,'MAX_ENTRIES',2),self.assertRaises(UnknownInput):cache.precheck([a,b])
-            with patch.object(cache,'MAX_EXPANDED',3),self.assertRaises(UnknownInput):cache.precheck([a,b])
+            parent=Path(directory);root=parent/'source';root.mkdir();state=parent/'state';state.mkdir(mode=0o700)
+            roots=[root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex']
+            for path in roots:path.mkdir(parents=True)
+            (root/'elixir/mix.lock').write_text('  "bunt": {:hex, :bunt, "1.0.0"}\n')
+            payload=roots[0]/'payload';payload.write_bytes(b'1234');payload.chmod(0o664)
+            anchor=parent/'hardlink-anchor';anchor.write_bytes(b'outside audited roots')
+            check=lambda:cache.precheck(roots,root,private_root=state)
+            self.assertEqual(check(),dict(entries=5,bytes=4))
+            with patch.object(cache,'MAX_ENTRIES',4),self.assertRaises(UnknownInput):check()
+            with patch.object(cache,'MAX_EXPANDED',3),self.assertRaises(UnknownInput):check()
+            for target in roots:
+                for kind in ('world-write','special-mode','badlink','fifo','hardlink','group-write-directory'):
+                    with self.subTest(root=target.name,kind=kind):
+                        path=target/'offender'
+                        if kind=='badlink':path.symlink_to('/etc/passwd')
+                        elif kind=='fifo':os.mkfifo(path)
+                        elif kind=='hardlink':os.link(anchor,path)
+                        elif kind=='group-write-directory':path.mkdir();path.chmod(0o775)
+                        else:path.write_bytes(b'public fixture');path.chmod(0o666 if kind=='world-write' else 0o4644)
+                        with self.assertRaisesRegex(UnknownInput,'public archive .*offender'):check()
+                        if path.is_dir():path.rmdir()
+                        else:path.unlink()
 
 
 if __name__ == '__main__':

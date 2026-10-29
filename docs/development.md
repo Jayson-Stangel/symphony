@@ -907,7 +907,11 @@ contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus separate
 pre-coverage `_build/test` and exact private Hex checkpoints. Authenticated
 dependencies become visible first so audited compiler links resolve to their
 actual targets. All four validate before cached code executes; raw bytes, modes,
-ownership and allowed links remain exact. No Mix home or core PLTs are restored.
+ownership and allowed links remain exact. Original regular-file group-write bits
+(such as locked public Hex source mode `0664`) are preserved; world-write, special
+bits, group-writable directories and unaudited links refuse. The same finite
+member policy audits all four roots before coverage, then audits final archives
+again after Dialyzer. No Mix home or core PLTs are restored.
 Fresh DEV setup/build, formatting, lint, npm setup, offline dependency validation
 and ordinary Dialyzer still execute. Authenticated restored TEST inputs remain
 untouched before full proof comparison. Only a verified hit retains those compiled

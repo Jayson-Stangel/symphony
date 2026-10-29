@@ -287,7 +287,7 @@ def checkpoint_start(root,source,state,*,replace=False):
             require(value['uid']==os.getuid() and value['gid']==os.getgid() and value['mode']==0o600,
                     'provisional checkpoint replacement is not exact owned state')
     oci.require_empty_native_fetch(state)
-    inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'])
+    inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'],root,private_root=state)
     summary(f"Early four-checkpoint bound: {inventory['entries']} entries/{inventory['bytes']} raw bytes; final post-PLT bounds remain required.")
     started=time.monotonic();measured=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
     for name,target,record in (('test',root/'elixir/_build/test','sidecar.json'),('hex',state/'hex','hex-sidecar.json')):

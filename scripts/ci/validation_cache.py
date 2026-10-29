@@ -1,4 +1,4 @@
-"""One bounded public _build/test sidecar; never an executable trust decision.
+"""Bounded public deps/dev/test/Hex sidecars; never an executable trust decision.
 
 The protected consumer authenticates the original run and compares all other
 inputs before calling stage(). No archive extraction API or compiler-byte
@@ -9,6 +9,7 @@ from itertools import chain
 import gzip
 from decimal import Decimal, InvalidOperation
 import io
+import json
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -69,14 +70,43 @@ def original_mtime(row):
         raise UnknownInput('invalid original public archive timestamp') from None
 
 
-def precheck(roots):
+def member_policy(name, kind, mode, uid, gid, link, repository, *, private=False):
+    # Public regular files may carry their original group-write bit (Hex
+    # packages do). Never change modes to make an input eligible. Directories
+    # remain non-group-writable; symlink permissions have no write semantics.
+    category = None
+    if uid != os.getuid() or gid != os.getgid():
+        category = 'foreign ownership'
+    elif kind not in ('file','directory','symlink'):
+        category = 'special or hardlink member'
+    elif kind == 'symlink':
+        if private or LINKS.get(name) != link:
+            category = 'unaudited link'
+    elif mode & (0o7002 if kind == 'file' else 0o7022):
+        category = 'unsafe mode'
+    if category is None and private and not hex_member(name,kind == 'directory',repository):
+        category = 'nonpublic Hex member'
+    if category:
+        # Only bounded public relative names/modes; no file contents or ambient
+        # values. Preserve the actual offending facet at early and final gates.
+        raise UnknownInput('public archive '+category+': '+json.dumps(name[:160],ensure_ascii=True)+' mode '+format(mode,'04o'))
+
+
+def precheck(roots, repository, *, private_root):
     entries=total=0;deadline=time.monotonic()+5
+    repository=Path(repository).resolve();state=Path(private_root)
     for root in roots:
-        root=Path(root)
+        root=Path(root);private=root == state/'hex'
+        if private:private_hex(root,repository,state)
+        else:require(not root.is_symlink() and root.resolve() in {repository/'elixir/deps',repository/'elixir/_build/dev',repository/'elixir/_build/test'})
         for path in chain((root,),root.rglob('*')):
             info=path.lstat();entries+=1
-            require(stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode))
-            if stat.S_ISREG(info.st_mode):total+=info.st_size
+            kind='file' if stat.S_ISREG(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'symlink' if stat.S_ISLNK(info.st_mode) else 'special'
+            if kind == 'file' and info.st_nlink > 1:kind='hardlink'
+            member_policy('.' if path == root else path.relative_to(root).as_posix(),kind,
+                stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid,
+                os.readlink(path) if kind == 'symlink' else None,repository,private=private)
+            if kind == 'file':total+=info.st_size
             require(entries<=MAX_ENTRIES and total<=MAX_EXPANDED and time.monotonic()<deadline)
     return dict(entries=entries,bytes=total)
 
@@ -98,11 +128,9 @@ def create(root, repository, *, private_root=None):
         for path in paths:
             name = '.' if path == root else path.relative_to(root).as_posix()
             info = bundle.gettarinfo(str(path), arcname=name)
-            require(info.isdir() or info.isfile() or (info.issym() and LINKS.get(name) == info.linkname))
-            if private_root is not None:
-                require(not info.issym() and hex_member(name,info.isdir(),repository))
+            member_policy(name,'directory' if info.isdir() else 'file' if info.isfile() else 'symlink' if info.issym() else 'special',
+                info.mode,info.uid,info.gid,info.linkname,repository,private=private_root is not None)
             original_mtime(info)
-            require(info.uid == os.getuid() and info.gid == os.getgid() and (info.issym() or not info.mode & 0o7022))
             if info.isfile():
                 with path.open('rb') as data:
                     bundle.addfile(info, data)
@@ -141,11 +169,9 @@ def stage(raw, metadata, directory, repository, *, private_root=None):
                 name = PurePosixPath(row.name)
                 require(row.name == '.' or (not name.is_absolute() and '..' not in name.parts
                         and str(name) == row.name and row.name not in ('', './')))
-                require(row.name not in names and row.uid == os.getuid() and row.gid == os.getgid()
-                        and (row.issym() or not row.mode & 0o7022) and row.size >= 0)
-                require(row.isdir() or row.isfile() or (row.issym() and LINKS.get(row.name) == row.linkname))
-                if private_root is not None:
-                    require(not row.issym() and hex_member(row.name,row.isdir(),repository))
+                require(row.name not in names and row.size >= 0)
+                member_policy(row.name,'directory' if row.isdir() else 'file' if row.isfile() else 'symlink' if row.issym() else 'special',
+                    row.mode,row.uid,row.gid,row.linkname,repository,private=private_root is not None)
                 original_mtime(row)
                 names.add(row.name)
             by_name = {row.name: row for row in rows}
