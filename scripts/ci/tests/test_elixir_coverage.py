@@ -20,6 +20,7 @@ COVERAGE_FIXTURE=b'685 tests, 0 failures, 10 skipped\n| 100.00% | Total |\n'
 
 def precoverage_fixture(outer):
     root=outer/'source';root.mkdir();state=outer/'state';state.mkdir(mode=0o700)
+    (state/'native_fetch').mkdir(mode=0o700)
     (root/'elixir').mkdir();(root/'elixir/mix.lock').write_text('  "phoenix": {:hex, :phoenix, "1.0.0"}\n')
     targets={'test':root/'elixir/_build/test','hex':state/'hex'}
     for target in targets.values():target.mkdir(parents=True)
@@ -38,7 +39,7 @@ def precoverage_fixture(outer):
     inputs['sha256']=controller.digest(inputs['identity'])
     controller.store(state/'inputs.json',inputs,new=True)
     controller.store(state/'environment.json',controller.oci.environment(),new=True)
-    controller.store(state/'prepared.json',dict(source='a'*40,supported=True,ordinary=False),new=True)
+    controller.store(state/'prepared.json',dict(source='a'*40,supported=True,ordinary=False,test_inputs='FRESH'),new=True)
     controller.store(state/'dialyzer.json',dict(source='a'*40,success=True),new=True)
     controller.store(state/'warm.json',dict(mode='CLEAN'),new=True)
     return root,state,inputs
@@ -129,6 +130,67 @@ class ProtectedStartingWorld(unittest.TestCase):
                     self.assertFalse(any('cache.tar' in p.name or p.suffix=='.env' for p in files))
                     self.assertNotIn(b'dummy-secret-never-copy',b''.join(p.read_bytes() for p in files))
                     self.assertFalse(controller.read(state/'diagnostics/diagnostic-status.json')['qualified'])
+
+
+class PhasedReuse(unittest.TestCase):
+    def pending(self,directory):
+        root,state,inputs=precoverage_fixture(directory)
+        prepared=controller.read(state/'prepared.json');prepared['test_inputs']='PENDING';controller.store(state/'prepared.json',prepared)
+        envelope=directory/'symphony-trusted-coverage-v1';envelope.mkdir(mode=0o700)
+        controller.store(envelope/'trusted-source.json',dict(controls={},trusted_dev_revision='b'*40),new=True)
+        controller.store(state/'warm.json',dict(mode='RESTORED',consumer_eligible=True))
+        return root,state,inputs
+
+    def test_restored_consumer_preparation_keeps_test_cache_untouched_before_hit_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outer=Path(directory);root=outer/'source';root.mkdir();state=outer/'state';state.mkdir(mode=0o700)
+            controller.store(state/'warm.json',dict(mode='RESTORED',consumer_eligible=True),new=True)
+            controller.store(outer/'selection',dict(source='a'*40,supported=True),new=True)
+            calls=[]
+            with patch.object(controller,'paths',return_value=(root,outer,'a'*40,state,outer/'selection')),patch.object(controller,'phase_run',side_effect=lambda *args,**kwargs:calls.append((args[2],kwargs)) or 1),patch.object(controller,'compile_test_inputs') as compile_test,patch.object(controller,'summary'):
+                controller.prepare()
+            compile_test.assert_not_called();self.assertEqual([name for name,_ in calls],['prepare','offline-resolution'])
+            self.assertEqual(controller.read(state/'prepared.json')['test_inputs'],'PENDING')
+            self.assertEqual(calls[0][1],dict(mix='dev',network=True));self.assertEqual(calls[1][1],dict(mix='dev'))
+
+    def test_verified_hit_retains_test_inputs_without_compile_or_manifest_init(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outer=Path(directory);root,state,inputs=self.pending(outer);outputs=[]
+            original=(state/'test-cache.tar.gz').read_bytes()
+            with patch.object(controller,'paths',return_value=(root,outer,'a'*40,state,outer/'selection')),patch.object(controller,'client'),patch.object(controller,'context',return_value=dict(eligible_consumer=True,trusted_dev_revision='b'*40,repository_id=77)),patch.object(controller,'immutable_tree',return_value=({},{})),patch.object(controller,'tree_controls',return_value={}),patch.object(controller.profile,'fingerprint',return_value=inputs),patch.object(controller,'merged_pr_proof',return_value=dict(mode='REUSED',original_run_url='https://github.com/Jayson-Stangel/symphony/actions/runs/101/attempts/2')),patch.object(controller,'compile_test_inputs') as compile_test,patch.object(controller,'checkpoint_start') as checkpoint,patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary'),patch.dict(os.environ,dict(GITHUB_EVENT_NAME='push',GITHUB_REF='refs/heads/dev')):
+                controller.decide()
+            compile_test.assert_not_called();checkpoint.assert_not_called()
+            self.assertEqual(controller.read(state/'prepared.json')['test_inputs'],'RETAINED_VERIFIED')
+            self.assertEqual(outputs[0]['mode'],'REUSED');self.assertEqual((state/'test-cache.tar.gz').read_bytes(),original)
+
+    def test_miss_compiles_then_replaces_exact_provisional_checkpoints_before_execution(self):
+        import copy
+        from validation_evidence import Fresh
+        with tempfile.TemporaryDirectory() as directory:
+            outer=Path(directory);root,state,inputs=self.pending(outer);old=(state/'test-cache.tar.gz').read_bytes();calls=[]
+            def compile_test(*args):
+                calls.append('compile')
+                (root/'elixir/_build/test/compiled').write_bytes(b'INERT newly prepared test compiler bytes')
+            def fingerprint(*args,**kwargs):
+                value=copy.deepcopy(inputs)
+                value['identity']['public_inputs']=[controller.cache.identity(root/'elixir/_build/test',root),controller.cache.identity(state/'hex',root,private_root=state)]
+                value['sha256']=controller.digest(value['identity']);value.update(files=sum(row['files'] for row in value['identity']['public_inputs']),bytes=sum(row['bytes'] for row in value['identity']['public_inputs']))
+                return value
+            with patch.object(controller,'paths',return_value=(root,outer,'a'*40,state,outer/'selection')),patch.object(controller,'client'),patch.object(controller,'context',return_value=dict(eligible_consumer=True,trusted_dev_revision='b'*40,repository_id=77)),patch.object(controller,'immutable_tree',return_value=({},{})),patch.object(controller,'tree_controls',return_value={}),patch.object(controller.profile,'fingerprint',side_effect=fingerprint),patch.object(controller,'merged_pr_proof',side_effect=Fresh('INERT complete input mismatch')),patch.object(controller,'compile_test_inputs',side_effect=compile_test),patch.object(controller,'output'),patch.object(controller,'summary'),patch.dict(os.environ,dict(GITHUB_EVENT_NAME='push',GITHUB_REF='refs/heads/dev')):
+                controller.decide()
+            self.assertEqual(calls,['compile']);self.assertEqual(controller.read(state/'prepared.json')['test_inputs'],'FRESH')
+            current=controller.read(state/'inputs.json');self.assertNotEqual(current['sha256'],inputs['sha256'])
+            self.assertNotEqual((state/'test-cache.tar.gz').read_bytes(),old)
+            controller.protected_precheckpoints(root,state,current)
+            self.assertEqual(controller.read(state/'decision.json')['mode'],'EXECUTED')
+
+    def test_provisional_replacement_refuses_symlink_without_touching_target(self):
+        from validation_inputs import UnknownInput
+        with tempfile.TemporaryDirectory() as directory:
+            outer=Path(directory);root,state,_=self.pending(outer);other=outer/'preserve';other.write_bytes(b'preserve unrelated bytes')
+            path=state/'test-cache.tar.gz';path.unlink();path.symlink_to(other)
+            with patch.object(controller.profile,'fingerprint') as fingerprint,self.assertRaises(UnknownInput):controller.checkpoint_start(root,'a'*40,state,replace=True)
+            fingerprint.assert_not_called();self.assertEqual(other.read_bytes(),b'preserve unrelated bytes')
 
 
 class ExistingJobPhases(unittest.TestCase):
@@ -264,6 +326,7 @@ class ExistingJobPhases(unittest.TestCase):
         self.assertNotIn('continue-on-error:', block)
         self.assertIn('steps.controller.outputs.trusted !=', block)
         self.assertIn('steps.controller.outputs.trusted ==', block)
+        self.assertIn("      - name: Authenticate protected-origin cache before preparation\n        if: steps.profile.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'", block)
         self.assertIn("os.environ.get('GITHUB_REF') in ('refs/heads/dev','refs/heads/main')", block)
         self.assertIn("cache: ${{ steps.profile.outputs.supported == 'false' }}", block)
         self.assertIn("      - name: Cache ordinary deps and build\n        if: steps.profile.outputs.supported == 'false'", block)

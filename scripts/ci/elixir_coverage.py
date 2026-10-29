@@ -206,7 +206,7 @@ def warm():
                 consumer_repository_id=caller['repository_id'],trusted_dev_revision=caller.get('proof_revision',caller['trusted_dev_revision']),warm=True)
         install_bundle(root,state,result)
         (state/'seed.zip').write_bytes(result.pop('bundle_bytes'));os.chmod(state/'seed.zip',0o600)
-        decision=dict(mode='RESTORED',artifact_id=result['artifact_id'],artifact_digest=result['artifact_digest'],
+        decision=dict(mode='RESTORED',consumer_eligible=caller['eligible_consumer'],artifact_id=result['artifact_id'],artifact_digest=result['artifact_digest'],
                       original=result['original'],original_run_url=result['original_run_url'])
     except (Fresh,UnknownInput) as error:
         decision['reason']=str(error)
@@ -249,6 +249,15 @@ def install_bundle(root,state,result):
     for path in backups.values():shutil.rmtree(path)
 
 
+def compile_test_inputs(root,state):
+    online=phase_run(root,state,'test-dependencies-online',['mix','compile'],network=True)
+    oci.clean_native_fetch(state)
+    compiled=phase_run(root,state,'test-compile',['mix','compile'])
+    phase_run(root,state,'native-manifest',['mix','run','--no-start','-e',
+        'ExUnit.FailuresManifest.write!(ExUnit.FailuresManifest.new(), Path.join(Mix.Project.manifest_path(), ".mix_test_failures"))'])
+    summary(f'EXECUTED TEST preparation: online compile {online}s; offline guard {compiled}s; native empty-manifest initialization. No compiler/source bytes or timestamps normalized.')
+
+
 def prepare():
     root,_,source,state,selected=paths();selection=read(selected)
     require(selection['source']==source,'source selection changed')
@@ -258,44 +267,56 @@ def prepare():
     environment=oci.environment();profile.public_environment(environment)
     development=phase_run(root,state,'prepare',['make','setup','build','fmt-check','lint','claude-setup'],mix='dev',network=True)
     phase_run(root,state,'offline-resolution',['mix','deps.get'],mix='dev')
-    online=phase_run(root,state,'test-dependencies-online',['mix','compile'],network=True)
-    oci.clean_native_fetch(state)
-    compiled=phase_run(root,state,'test-compile',['mix','compile'])
-    phase_run(root,state,'native-manifest',['mix','run','--no-start','-e',
-        'ExUnit.FailuresManifest.write!(ExUnit.FailuresManifest.new(), Path.join(Mix.Project.manifest_path(), ".mix_test_failures"))'])
+    warm=read(state/'warm.json')
+    pending=warm.get('mode')=='RESTORED' and warm.get('consumer_eligible') is True
+    if not pending:compile_test_inputs(root,state)
     store(state/'environment.json',environment,new=True)
-    store(state/'prepared.json',dict(source=source,supported=True,ordinary=False),new=True)
-    summary(f'EXECUTED: fresh setup/build/format/lint/npm {development}s; online all-test-dependency compile {online}s; offline compile guard {compiled}s; pinned ExUnit native empty-manifest initialization. Hosted scheduler defaults retained.')
+    store(state/'prepared.json',dict(source=source,supported=True,ordinary=False,test_inputs='PENDING' if pending else 'FRESH'),new=True)
+    summary(f'EXECUTED fresh DEV setup/build/format/lint/npm {development}s and offline dependency validation. TEST inputs: '+('authenticated retained cache pending full comparison; no TEST compile/init yet.' if pending else 'freshly compiled; full suite required.'))
+
+
+CHECKPOINT_FILES=('inputs.json','sidecar.json','hex-sidecar.json','test-cache.tar.gz','hex-cache.tar.gz')
+
+
+def checkpoint_start(root,source,state,*,replace=False):
+    # Fallback may replace only these five exact owned host records, outside
+    # container binds. Any incomplete write refuses the immediate execution gate.
+    if replace:
+        for name in CHECKPOINT_FILES:
+            value=file_identity(state/name)
+            require(value['uid']==os.getuid() and value['gid']==os.getgid() and value['mode']==0o600,
+                    'provisional checkpoint replacement is not exact owned state')
+    oci.require_empty_native_fetch(state)
+    inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'])
+    summary(f"Early four-checkpoint bound: {inventory['entries']} entries/{inventory['bytes']} raw bytes; final post-PLT bounds remain required.")
+    started=time.monotonic();measured=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
+    for name,target,record in (('test',root/'elixir/_build/test','sidecar.json'),('hex',state/'hex','hex-sidecar.json')):
+        raw,metadata=cache.create(target,root,**(dict(private_root=state) if name=='hex' else {}))
+        row=next(row for row in measured['identity']['public_inputs'] if row['path']==str(target))
+        require(metadata['cache']==row,name+' cache changed after complete measurement')
+        fd=os.open(state/(name+'-cache.tar.gz'),os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW|(os.O_TRUNC if replace else os.O_EXCL),0o600)
+        with os.fdopen(fd,'wb') as output:output.write(raw)
+        store(state/record,metadata,new=not replace)
+    store(state/'inputs.json',measured,new=not replace)
+    summary(f"Complete OCI/public mutable input identity: {measured['files']} entries/{measured['bytes']} bytes; fingerprint+gzip1 checkpoint {time.monotonic()-started:.3f}s. No coverage reuse inferred.")
+    return measured
 
 
 def measure():
     root,_,source,state,_=paths();prepared=read(state/'prepared.json')
     require(prepared['source']==source,'prepared source changed')
     if prepared['ordinary']:output(available=False);return
-    # A supported OCI profile that cannot describe its actual inputs refuses
-    # here before spending another full suite/PLT run on an unprovable profile.
-    oci.require_empty_native_fetch(state)
-    inventory=cache.precheck([root/'elixir/deps',root/'elixir/_build/dev',root/'elixir/_build/test',state/'hex'])
-    summary(f"Early four-checkpoint bound: {inventory['entries']} entries/{inventory['bytes']} raw bytes; final post-PLT bounds remain required.")
-    started=time.monotonic();measured=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
-    raw,metadata=cache.create(root/'elixir/_build/test',root)
-    cache_row=next(row for row in measured['identity']['public_inputs'] if row['path']==str(root/'elixir/_build/test'))
-    require(metadata['cache']==cache_row,'test cache changed after complete measurement')
-    (state/'test-cache.tar.gz').write_bytes(raw);os.chmod(state/'test-cache.tar.gz',0o600)
-    hex_raw,hex_metadata=cache.create(state/'hex',root,private_root=state)
-    hex_row=next(row for row in measured['identity']['public_inputs'] if row['path']==str(state/'hex'))
-    require(hex_metadata['cache']==hex_row,'Hex checkpoint changed after complete measurement')
-    (state/'hex-cache.tar.gz').write_bytes(hex_raw);os.chmod(state/'hex-cache.tar.gz',0o600)
-    store(state/'hex-sidecar.json',hex_metadata,new=True)
-    store(state/'sidecar.json',metadata,new=True);store(state/'inputs.json',measured,new=True)
+    require(prepared.get('test_inputs') in ('FRESH','PENDING'),'unknown TEST preparation state')
+    measured=checkpoint_start(root,source,state)
     output(available=True,input_sha256=measured['sha256'])
-    summary(f"Complete OCI/public mutable input identity: {measured['files']} entries/{measured['bytes']} bytes; fingerprint+gzip1 checkpoint {time.monotonic()-started:.3f}s. No coverage reuse inferred.")
 
 
 def decide():
-    root,temporary,source,state,_=paths();started=time.monotonic()
+    root,temporary,source,state,_=paths();started=time.monotonic();prepared=read(state/'prepared.json')
     decision=dict(mode='EXECUTED',reason='full fresh qualification required')
     try:
+        require(prepared['source']==source,'prepared source changed')
+        if prepared['ordinary'] or prepared.get('test_inputs')!='PENDING':raise Fresh('ordinary or freshly compiled TEST inputs require execution')
         envelope=read(temporary/'symphony-trusted-coverage-v1'/'trusted-source.json')
         service=client(temporary);caller=context(service,source)
         if caller['eligible_consumer'] and (state/'inputs.json').exists():
@@ -317,6 +338,19 @@ def decide():
     except (OSError,ValueError,KeyError,TypeError,AttributeError):
         decision=dict(mode='EXECUTED',reason='trusted complete original evidence unavailable or malformed')
     decision['verification_seconds']=round(time.monotonic()-started,3)
+    if not prepared['ordinary'] and prepared.get('test_inputs')=='PENDING':
+        if decision['mode']=='REUSED':
+            prepared['test_inputs']='RETAINED_VERIFIED'
+            summary('REUSED: complete original PRE world verified before any TEST compilation or failures-manifest initialization; DEV checks remain fresh.')
+        else:
+            fallback=time.monotonic()
+            compile_test_inputs(root,state)
+            prepared['test_inputs']='FRESH'
+            store(state/'prepared.json',prepared)
+            checkpoint_start(root,source,state,replace=True)
+            decision['fallback_prepare_seconds']=round(time.monotonic()-fallback,3)
+            summary('EXECUTED fallback: freshly compiled TEST inputs replaced the provisional retained checkpoint before execution.')
+        store(state/'prepared.json',prepared)
     store(state/'decision.json',decision,new=True);output(mode=decision['mode'],origin=decision.get('original_run_url',''))
     summary('Coverage decision: '+decision['mode']+f"; verification {decision['verification_seconds']}s; original {decision.get('original_run_url','none')}; reason {decision.get('reason','verified exact original inputs')}.")
 
@@ -347,6 +381,7 @@ def execute():
         environment=dict(os.environ);environment.pop('GH_TOKEN',None);environment.pop('GITHUB_TOKEN',None)
         seconds=run(['make','elixir-ci'],root,environment,log=state/'coverage.log')
     else:
+        require(prepared.get('test_inputs')=='FRESH','executed original requires fresh TEST preparation')
         recorded=read(state/'inputs.json')
         current=profile.fingerprint(root,source,read(state/'environment.json'),os.environ)
         require(current['sha256']==recorded['sha256']==digest(recorded['identity']),
@@ -386,7 +421,7 @@ def seal():
                 stage='reused_original',reason='REUSED retains its original identity; no new baseline is minted'))
             summary('REUSED: original proof retained; no new original receipt or healthy-consumer diagnostics.')
             output(available=False);return
-        require(read(state/'prepared.json')==dict(source=source,supported=True,ordinary=False),'unsupported original')
+        require(read(state/'prepared.json')==dict(source=source,supported=True,ordinary=False,test_inputs='FRESH'),'unsupported original or nonfresh TEST preparation')
         stage='dialyzer_record'
         require(read(state/'dialyzer.json')==dict(source=source,success=True),'fresh Dialyzer missing')
         stage='execution_record'

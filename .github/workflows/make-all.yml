@@ -253,7 +253,7 @@ jobs:
         if: steps.profile.outputs.supported == 'true'
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py oci_setup
       - name: Authenticate protected-origin cache before preparation
-        if: steps.profile.outputs.supported == 'true'
+        if: steps.profile.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" warm

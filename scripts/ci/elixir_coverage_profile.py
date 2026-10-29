@@ -91,8 +91,8 @@ def execution_identity(root, revision, state):
     # cache-key/version assertion. Only validation-only functions may differ.
     tree = ast.parse((Path(root)/'scripts/ci/elixir_coverage.py').read_text())
     compile_functions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                         and node.name in ('prepare','run')]
-    if len(compile_functions) != 2:
+                         and node.name in ('prepare','compile_test_inputs','phase_run','run')]
+    if len(compile_functions) != 4:
         raise UnknownInput('finite build protocol unavailable')
     tools,_=tree_identity(state/'mix',allowed_roots=[state],deadline=time.monotonic()+15)
     return dict(profile='full-exunit-oci-v2', source=source, runtime=runtime, public_tools=tools,

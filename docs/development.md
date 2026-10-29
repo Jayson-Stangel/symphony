@@ -908,8 +908,12 @@ pre-coverage `_build/test` and exact private Hex checkpoints. Authenticated
 dependencies become visible first so audited compiler links resolve to their
 actual targets. All four validate before cached code executes; raw bytes, modes,
 ownership and allowed links remain exact. No Mix home or core PLTs are restored.
-Fresh build, formatting, lint, npm setup, compilation and ordinary Dialyzer still
-execute. Hex restores only raw `cache.bin` and lock-bound public tarballs under
+Fresh DEV setup/build, formatting, lint, npm setup, offline dependency validation
+and ordinary Dialyzer still execute. Authenticated restored TEST inputs remain
+untouched before full proof comparison. Only a verified hit retains those compiled
+TEST inputs; fresh/missing/incompatible proof performs ordinary online TEST
+compilation, fetch-scratch cleanup, offline compile and manifest initialization,
+then replaces the exact owned provisional PRE checkpoints before execution. Hex restores only raw `cache.bin` and lock-bound public tarballs under
 `packages/hexpm`; configuration, private repos, unknown files, temporary files and
 symlinks refuse. A 24-hour version-check throttle can preserve the original check
 timestamp; ordinary registry requests may still refresh data. Changed raw fetch
@@ -918,7 +922,8 @@ The same aggregate 64 MiB compressed, 256 MiB expanded and 10,000-entry limits c
 all four checkpoints; actual hosted size remains unmeasured. The
 protected pre-test archive remains unchanged through sealing. Following online setup, early offline `mix deps.get`
 proves the resolution required again by Dialyzer. All test dependencies then
-compile online, including the pinned test-only native dependency. Its documented
+compile online on a fresh path or miss, including the pinned test-only native
+dependency. Its documented
 `ELIXIR_MAKE_CACHE_DIR` points to the exact private `/cache/native-fetch` bind.
 After that container exits, only the known public fetch scratch is discarded;
 installed NIF/dependency/BEAM bytes remain untouched in the four checkpoints. An
@@ -932,7 +937,11 @@ ExUnit's own API initializes the empty failures manifest before the
 checkpoint. Immediately before executing coverage, the controller recomputes the
 complete input fingerprint and verifies protected pre-test/Hex archives outside
 container binds. Its strict schema4 execution record binds those actual starting
-inputs and checkpoint hashes before the container starts. Test outputs may change
+inputs and checkpoint hashes before the container starts. The actual-proven
+ordinary `mix test --cover --seed 0 --max-failures 1` remains unchanged, including
+its implicit compiler, application startup, all test modules and coverage output.
+No no-compile/prune override, source timestamp adjustment or POST-byte equality
+claim is used. Test outputs may change
 live cache files; sealing checks the protected starting world rather than requiring
 outputs to equal inputs. Original API provenance, full successful stages, coverage,
 source/runtime equality and final archive bounds remain required; schema3 cannot
