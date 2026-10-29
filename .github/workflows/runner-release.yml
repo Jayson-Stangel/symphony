@@ -1228,6 +1228,7 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           CONTROLLER_COMPARISON: ${{ inputs.cache_controller_revision != '' }}
           CONTROLLER_REVISION: ${{ inputs.cache_controller_revision }}
+          REQUIRE_REUSE: ${{ inputs.require_reuse }}
           CACHE_OVERLAP: ${{ inputs.cache_export_overlap }}
           RESUME_NATIVE: ${{ inputs.resume_native_run }}
           BASELINE_RUN: ${{ inputs.baseline_run }}
@@ -1253,6 +1254,7 @@ jobs:
             test "$GITHUB_ACTOR/$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel/Jayson-Stangel
             test "$GITHUB_RUN_ATTEMPT" = 1
             test "${CACHE_OVERLAP:-false}" = false
+            test "${REQUIRE_REUSE:-false}" = false
             [[ "$CONTROLLER_REVISION" =~ ^[a-f0-9]{40}$ ]]
             test "$CONTROLLER_REVISION" = "$GITHUB_SHA"
             test "${PREPARE_RELEASE:-false}/${COMPOSE_PACKAGES:-true}/${MANAGER_ONLY_UPDATE:-false}/${PACKAGED_PREPARATION:-false}" = false/false/false/false

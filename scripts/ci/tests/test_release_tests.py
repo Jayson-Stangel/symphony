@@ -176,7 +176,7 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertEqual(self.guard('runner-release.yml',name,good),0)
         for field,value in [('CONTROLLER_REVISION','b'*40),('GITHUB_REF','refs/heads/main'),('GITHUB_EVENT_NAME','push'),
                             ('GITHUB_ACTOR','foreign'),('GITHUB_TRIGGERING_ACTOR','foreign'),('GITHUB_RUN_ATTEMPT','2'),
-                            ('CACHE_OVERLAP','true'),('COMPOSE_PACKAGES','true'),
+                            ('CACHE_OVERLAP','true'),('REQUIRE_REUSE','true'),('COMPOSE_PACKAGES','true'),
                             ('PREPARE_RELEASE','true'),('PREVIOUS_ARTIFACT_RUN','123'),('LEGACY_ARTIFACT_RUN','123'),('BOOTSTRAP_PREVIOUS','proof.json'),
                             ('RESUME_NATIVE','123'),('BASELINE_RUN','123'),('COMPONENT_PLAN','artifact'),
                             ('DIAGNOSTIC_ARTIFACT_RUN','123'),('TRANSFER_REPLAY','123'),('TRANSFER_TIMING','123'),
