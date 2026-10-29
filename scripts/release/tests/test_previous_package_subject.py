@@ -94,6 +94,73 @@ class PreviousSubjectTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'historical subject stage'):
             subject.select(123,self.source,self.api,bootstrap='')
 
+    def mixed_owned_fixture(self, mac_payload=True, wrong_helper=False):
+        import struct
+        value,records,api,verify=self.independent_fixture()
+        package_job=next(j for j in self.jobs if j['name'].startswith('packaged-candidate (macos'))
+        package_job['labels']=['isolated-private-fixture']
+        helper_job=next(j for j in self.jobs if j['name']=='package-inputs / native-host-package (macos-14)')
+        helper_job.update(started_at='2026-10-22T00:00:00Z',completed_at='2026-10-22T23:59:59Z')
+        helper=bytes.fromhex('cffaedfe')+struct.pack('<I',0x100000c)+b'0'*24+self.revision.encode()
+        raw=zipped({'symphony-host':helper,'symphony-host.sha256':hashlib.sha256(helper).hexdigest()+'  symphony-host\n'})
+        identifier=9001;self.payloads[identifier]=raw
+        self.artifacts.append(dict(id=identifier,name='native-host-helper-macos-'+self.revision,
+            digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw),expired=False,
+            expires_at='2030-01-01T00:00:00Z',created_at='2026-10-22T12:00:00Z',
+            workflow_run={'id':123,'head_sha':self.revision}))
+        files={'host-platform':b'macos\n','release.json':json.dumps(value).encode(),
+               'libexec/symphony-host':helper+(b'altered' if wrong_helper else b'')}
+        files['files.sha256']=''.join(hashlib.sha256(raw).hexdigest()+'  ./'+name+'\n' for name,raw in files.items()).encode()
+        data=io.BytesIO()
+        with tarfile.open(fileobj=data,mode='w:gz') as archive:
+            for name,raw in files.items():
+                entry=tarfile.TarInfo(name);entry.size=len(raw);entry.mode=0o644;archive.addfile(entry,io.BytesIO(raw))
+        mac=data.getvalue();value['bundles']['macos']['sha256']=hashlib.sha256(mac).hexdigest()
+        value['bundle']=copy.deepcopy(value['bundles']['macos'])
+        with zipfile.ZipFile(io.BytesIO(self.payloads[self.artifacts[0]['id']])) as archive:
+            members={i.filename:archive.read(i) for i in archive.infolist()}
+        members['release.json']=json.dumps(value);raw=zipped(members);meta=self.artifacts[0]
+        self.payloads[meta['id']]=raw;meta.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw))
+        files={'release.json':json.dumps(value),value['bundles']['linux_x86_64']['filename']:b'opaque actual old Linux archive fixture'}
+        if mac_payload:files[value['bundles']['macos']['filename']]=mac
+        raw=zipped(files);package=self.artifacts[1];self.payloads[package['id']]=raw
+        package.update(digest='sha256:'+hashlib.sha256(raw).hexdigest(),size_in_bytes=len(raw))
+        return api,verify
+
+    def test_owned_package_with_hosted_helper_requires_common_receipt_and_mac_payload(self):
+        api,verify=self.mixed_owned_fixture(mac_payload=False)
+        with patch.object(subject.proof,'verify_origin',side_effect=verify), patch.object(subject.prior_baseline,'owned_mac_job') as native:
+            selected=subject.select(123,self.source,api)
+            self.assertEqual(native.call_count,2)  # Both owned producer AND hosted peer.
+            self.assertTrue(native.call_args.kwargs['helper'])
+        self.assertIn('macos',selected['manager_helper_receipts'])
+        with self.assertRaisesRegex(ValueError,'original Mac bundle missing'):
+            subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',self.download)
+        self.assertFalse((self.root/'packages/previous').exists())
+
+    def test_mixed_owned_package_hosted_helper_missing_immutable_helper_receipt_refuses(self):
+        api,verify=self.mixed_owned_fixture()
+        self.artifacts=[item for item in self.artifacts if not item['name'].startswith('native-host-helper-macos-')]
+        with patch.object(subject.proof,'verify_origin',side_effect=verify), patch.object(subject.prior_baseline,'owned_mac_job'):
+            with self.assertRaisesRegex(ValueError,'historical artifact missing or ambiguous'):
+                subject.select(123,self.source,api)
+
+    def test_mixed_owned_package_hosted_helper_matches_actual_packaged_helper_bytes(self):
+        api,verify=self.mixed_owned_fixture()
+        with patch.object(subject.proof,'verify_origin',side_effect=verify), patch.object(subject.prior_baseline,'owned_mac_job'):
+            selected=subject.select(123,self.source,api)
+        subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',self.download)
+        self.assertTrue((self.root/'packages/previous/release.json').is_file())
+        self.assertIn('macos',selected['manager_helper_receipts'])
+
+    def test_mixed_owned_package_hosted_helper_mismatched_packaged_bytes_refuse(self):
+        api,verify=self.mixed_owned_fixture(wrong_helper=True)
+        with patch.object(subject.proof,'verify_origin',side_effect=verify), patch.object(subject.prior_baseline,'owned_mac_job'):
+            selected=subject.select(123,self.source,api)
+        with self.assertRaisesRegex(ValueError,'packaged Mac helper differs'):
+            subject.retrieve(selected,self.root/'packages',self.root/'images',self.root/'evidence',self.download)
+        self.assertFalse((self.root/'packages/previous').exists())
+
     def test_exact_pending_selection_preserves_skipped_history_and_rejects_failed_or_duplicate(self):
         stage=next(s for s in self.jobs if s['name']=='ubuntu-package-lifecycle');stage['conclusion']='skipped'
         package=next(a for a in self.artifacts if a['name']=='packaged-candidate')
@@ -304,7 +371,7 @@ class BaselineBootstrapTest(unittest.TestCase):
         stage=dict(status='completed',conclusion='success',steps=[dict(name=name,number=n,status='completed',conclusion='success')
             for n,name in enumerate(['Require actual native Mac prerequisites','Verify qualified helper source, platform and checksum',
                                      'Build source-bound native candidate archives'],1)])
-        text="  packaged-candidate:\n      - name: Require actual native Mac prerequisites\n        if: matrix.platform == 'macos'\n        run: |\n"+'\n'.join('          '+line for line in self.b.NATIVE_GUARD.splitlines())+'\n      - name: Next\n'
+        text=(Path(__file__).parents[3]/'.github/workflows/runner-release.yml').read_text()
         with patch.object(self.b.subprocess,'check_output',return_value=text):
             self.b.owned_mac_job(stage,'a'*40,Path('.'))
             for broken in (dict(stage,conclusion='failure'),dict(stage,steps=stage['steps']*2),
@@ -313,6 +380,35 @@ class BaselineBootstrapTest(unittest.TestCase):
         for bad in (text.replace('Darwin/arm64','Darwin/x86_64'),text.replace('test "$(uname','true; test "$(uname'),text*2):
             with patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
                 self.b.owned_mac_job(stage,'a'*40,Path('.'))
+
+    def test_every_native_relied_step_requires_exact_fail_closed_configuration_and_body(self):
+        root=Path(__file__).parents[3]
+        for helper,workflow,key,names in ((False,'runner-release','packaged-candidate',
+                ['Require actual native Mac prerequisites','Verify qualified helper source, platform and checksum','Build source-bound native candidate archives']),
+                (True,'package-checks','native-host-package',
+                ['Require actual native Mac prerequisites','Build actual native macOS ARM64 helper','Native source-independent shared helper contracts'])):
+            text=(root/'.github/workflows'/str(workflow+'.yml')).read_text()
+            stage=dict(status='completed',conclusion='success',steps=[dict(name=name,number=n,status='completed',conclusion='success')
+                for n,name in enumerate(names,1)])
+            with patch.object(self.b.subprocess,'check_output',return_value=text):
+                self.b.owned_mac_job(stage,'a'*40,Path('.'),helper=helper)
+            for name in names:
+                marker='      - name: '+name+'\n'
+                for config in ('        continue-on-error: true\n','        continue-on-error: ${{ true }}\n',
+                               '        shell: bash {0}\n','        shell: sh -c {0}\n'):
+                    bad=text.replace(marker,marker+config)
+                    with self.subTest(workflow=workflow,step=name,config=config),patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
+                        self.b.owned_mac_job(stage,'a'*40,Path('.'),helper=helper)
+                prefix,target=text.split('  '+key+':\n',1)
+                before,after=target.split(marker,1)
+                bad=prefix+'  '+key+':\n'+before+marker+after.replace('        run: |\n','        run: |\n          set +e\n',1)
+                with self.subTest(workflow=workflow,step=name,command='set +e'),patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
+                    self.b.owned_mac_job(stage,'a'*40,Path('.'),helper=helper)
+            for bad in ('defaults:\n  run:\n    shell: bash {0}\n'+text,
+                        text.replace('  '+key+':\n','  '+key+':\n    defaults:\n      run:\n        shell: bash {0}\n'),
+                        text.replace('  '+key+':\n','  '+key+':\n    continue-on-error: true\n')):
+                with self.subTest(workflow=workflow,defaults=True),patch.object(self.b.subprocess,'check_output',return_value=bad),self.assertRaises(ValueError):
+                    self.b.owned_mac_job(stage,'a'*40,Path('.'),helper=helper)
 
     def test_helper_requires_service_and_inner_digest_cpu_and_compiled_source(self):
         import struct

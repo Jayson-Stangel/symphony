@@ -69,6 +69,19 @@ if [ "$BACKUP_MAC_SELECTED" = true ]; then
 fi'''
 
 
+# Exact full step configuration/body fingerprints audited at ec2be6e and unchanged
+# at 6af4e45. This is a finite supported contract, not a Bash/YAML interpreter.
+# Changed commands, env, ignored errors or shell settings require another review.
+AUDITED_NATIVE_STEPS = {
+    ('runner-release','Require actual native Mac prerequisites'): '9196c213afb603e5594f3fdeeda6473e12b88f62634012f310f9115c875c7d7b',
+    ('runner-release','Verify qualified helper source, platform and checksum'): '85aa5ea19b5995a34ae395d802f80a8b6b128947ce73771a537a3d170418f1dd',
+    ('runner-release','Build source-bound native candidate archives'): 'dcfe239aa433a68451f79bd760e50f9cd2b650799b36f11c12f39bc53cd995c7',
+    ('package-checks','Require actual native Mac prerequisites'): '1fa2974d19c354f5fe0f0117d97d8d0fb817da3a4baeb4e6f8dff4d1e96e7a3a',
+    ('package-checks','Build actual native macOS ARM64 helper'): '6abcc71147ee99a1f7b57e67ae667bb590026a8ceee358466ff51457cfb6374a',
+    ('package-checks','Native source-independent shared helper contracts'): '334330a4b055c8e8f1b1c06d5e60cd3e4ce46e303476aadac13c050d39e4fe17',
+}
+
+
 def owned_mac_job(stage, source, root, helper=False):
     """Positive executed native guard at its exact trusted source, never label inference."""
     require(stage.get('status') == 'completed' and stage.get('conclusion') == 'success', 'native job failed')
@@ -78,6 +91,19 @@ def owned_mac_job(stage, source, root, helper=False):
     jobs = text.split('  '+key+':\n')
     require(len(jobs)==2,'native source job missing or ambiguous')
     body = re.split(r'\n  [a-z][a-z0-9-]*:',jobs[1],maxsplit=1)[0]
+    header = text.split('jobs:',1)[0]
+    job_header = body.split('    steps:',1)[0]
+    require(not re.search(r'^(?:defaults|env):',header,re.M)
+            and not re.search(r'^    (?:defaults|env|continue-on-error):',job_header,re.M),
+            'native workflow/job defaults or error masking overrides are unsupported')
+    for (audited_workflow,name),digest in AUDITED_NATIVE_STEPS.items():
+        if audited_workflow != workflow:
+            continue
+        sections = body.split('      - name: '+name+'\n')
+        require(len(sections)==2,'native relied-on source step missing or ambiguous: '+name)
+        configuration = sections[1].split('\n      - ',1)[0].strip()
+        require(hashlib.sha256(configuration.encode()).hexdigest()==digest,
+                'native relied-on step configuration/body differs from fail-closed audited source: '+name)
     blocks = body.split('      - name: Require actual native Mac prerequisites\n')
     require(len(blocks) == 2, 'native source guard missing or ambiguous')
     block = blocks[1].split('\n      - name:', 1)[0]

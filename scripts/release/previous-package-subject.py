@@ -56,7 +56,7 @@ def select(run_id,root,fetch=proof.api,bootstrap=None):
                       'historical subject is outside this manager lineage')
     inventory=fetch(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")
     artifacts.require(inventory.get('total_count',0)<=100,'historical stage discovery incomplete')
-    jobs=inventory['jobs'];native={};helper_receipts={};owned_mac_package=False
+    jobs=inventory['jobs'];native={};helper_receipts={};owned_mac_package=False;mac_package_stage=None
     metadata=job(jobs,'candidate-metadata');packaged=job(jobs,'packaged-candidate-metadata')
     if bootstrap:
         values=[item for item in jobs if item['name'] in artifacts.candidate_job_names('ubuntu-package-lifecycle')]
@@ -74,6 +74,8 @@ def select(run_id,root,fetch=proof.api,bootstrap=None):
         found=[item for item in jobs if item['name'] in names]
         artifacts.require(len(found)==1 and found[0]['status']=='completed' and found[0]['conclusion']=='success',
                           'historical actual native manager package missing')
+        if platform=='macos':
+            mac_package_stage=found[0]
         if runner not in found[0].get('labels',[]):
             artifacts.require(platform=='macos' and trusted, 'historical native manager platform differs')
             prior_baseline.owned_mac_job(found[0],source,root)
@@ -128,9 +130,19 @@ def select(run_id,root,fetch=proof.api,bootstrap=None):
             found=[item for item in jobs if item['name'] in names]
             artifacts.require(len(found)==1 and found[0].get('status')=='completed' and found[0].get('conclusion')=='success',
                               'schema2 prior manager native helper qualification missing')
-            if runner not in found[0].get('labels',[]):
+            owned_helper = runner not in found[0].get('labels',[])
+            if owned_helper:
                 artifacts.require(platform=='macos' and trusted, 'historical helper platform differs')
                 prior_baseline.owned_mac_job(found[0],source,root,helper=True)
+            if platform=='macos' and (owned_mac_package or owned_helper):
+                # Audit the hosted peer too: its success conclusion is relied on,
+                # and must not mask a failed platform/helper check.
+                if not owned_mac_package:
+                    prior_baseline.owned_mac_job(mac_package_stage,source,root)
+                if not owned_helper:
+                    prior_baseline.owned_mac_job(found[0],source,root,helper=True)
+                # Either owned producer requires the SAME original helper receipt and
+                # later actual Mac bundle binding, even when its peer was hosted.
                 item=artifact('native-host-helper-macos-'+source,2*1024*1024,found[0])
                 helper_receipts[platform]=prior_baseline.mac_helper_receipt(fetch(f"actions/artifacts/{item['id']}/zip",binary=True),item,source)
             helper_jobs[platform]=found[0]['id']
