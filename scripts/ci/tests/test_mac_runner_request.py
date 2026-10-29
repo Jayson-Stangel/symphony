@@ -145,7 +145,7 @@ class Requests(unittest.TestCase):
             for ready in (True,False):
                 host='success' if route['native'] and ready else 'skipped'
                 values={'needs.changes.result':'success','needs.qualification.result':'success',
-                    'needs.host-policy.result':host,'needs.changes.outputs.native':str(route['native']).lower(),'needs.changes.outputs.ready':str(ready).lower(),
+                    'needs.host-policy.result':host,'needs.changes.outputs.ready':str(ready).lower(),'needs.changes.outputs.native':str(route['native']).lower(),
                     **{'needs.changes.outputs.'+key:str(route[key]).lower() for key in ('package_macos','fixtures')}}
                 allowed=expression(condition,values)
                 with self.subTest(path=path,ready=ready):
@@ -155,7 +155,12 @@ class Requests(unittest.TestCase):
                                MAC_RUNNER_RESULT='success' if allowed else 'skipped')
                     result=subprocess.run(['bash','-e','-c',join],env=dict(os.environ,**env),capture_output=True)
                     self.assertEqual(result.returncode==0,not route['native'] or ready,result.stderr)
-                    if allowed:self.assertTrue(expression(requested,values))
+                    if allowed and not expression(requested,values):
+                        verify=Mock();statuses=Mock();wait=Mock()
+                        choice=request.select_owned_runner('',{}, {},FLOW,'native-host-package',False,
+                            verify=verify,statuses=statuses,wait=wait)
+                        self.assertEqual(choice['runner'],'macos-14')
+                        verify.assert_not_called();statuses.assert_not_called();wait.assert_not_called()
                 for key in ('needs.changes.result','needs.qualification.result','needs.host-policy.result'):
                     for failure in ('failure','cancelled',''):
                         failed=dict(values,**{key:failure})

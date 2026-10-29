@@ -440,7 +440,7 @@ class DraftGates(unittest.TestCase):
             for value in ('', 'invalid', 'TRUE'):
                 self.assertNotEqual(self.execute(guard, **(good | {field: value})), 0)
         self.assertNotEqual(self.execute(guard, **(good | {'POLICY': 'false'})), 0)
-        self.assertEqual(self.execute(guard, **(good | {'NPM': 'false', 'PROCESS_RESULT': 'skipped', 'MAC_RUNNER_RESULT':'skipped'})), 0)
+        self.assertEqual(self.execute(guard, **(good | {'NPM': 'false', 'PROCESS_RESULT': 'skipped', 'MAC_RUNNER_RESULT': 'skipped'})), 0)
         self.assertNotEqual(self.execute(guard, **(good | {'NPM': 'false'})), 0)
 
     def test_cheap_tests_precede_expensive_deferral_and_readiness_events_share_cancellation(self):

@@ -269,7 +269,7 @@ class AppArmorWorkflowTest(unittest.TestCase):
                     self.assertIn('packaged_apparmor.py cleanup' if packaged else 'prepare-codex-apparmor.sh cleanup', clean)
                     self.assertIn('always()', clean)
                     self.assertNotIn('continue-on-error', prep + clean)
-                    if job in ('candidate', 'transfer-replay'):
+                    if job in ('candidate', 'cache-probe', 'transfer-replay'):
                         self.assertIn("if: matrix.provider == 'codex'", prep)
                     if job == 'listener-and-cleanup':
                         self.assertIn("github.event_name == 'workflow_dispatch'", prep)
