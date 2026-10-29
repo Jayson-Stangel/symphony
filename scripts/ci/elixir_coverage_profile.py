@@ -53,7 +53,10 @@ def source_exclusion():
 
 def source_identity(root, revision):
     untracked_inputs(root, GENERATED)
-    return tracked_source(root, revision, source_exclusion())
+    identity, rows = tracked_source(root, revision, source_exclusion())
+    if any(row[1] == '120000' for row in rows):
+        raise UnknownInput('source symlinks are outside this audited full-coverage profile')
+    return identity, rows
 
 
 def audited_code(rows):
@@ -171,9 +174,34 @@ def external_settings(environment):
                 processors=os.sysconf('SC_NPROCESSORS_ONLN'))
 
 
+def public_environment(environment, parent):
+    fixed = dict(HEX_OFFLINE='1', MIX_ENV='test', ERL_FLAGS='+S 2:2', LANG='C.UTF-8',
+                 LC_ALL='C.UTF-8', TZ='UTC', CI='true', GIT_CONFIG_NOSYSTEM='1',
+                 GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_COUNT='0',
+                 PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1')
+    paths = {'PATH', 'HOME', 'TMPDIR', 'HEX_HOME', 'MIX_HOME', 'MIX_ARCHIVES', 'MIX_REBAR3'}
+    if (type(environment) is not dict or set(environment) != set(fixed) | paths
+            or any(type(value) is not str for value in environment.values())
+            or any(environment.get(key) != value for key, value in fixed.items())):
+        raise UnknownInput('execution environment is outside the finite public profile')
+    if not all(environment[key].startswith('/') and '\n' not in environment[key]
+               and '\r' not in environment[key] for key in paths):
+        raise UnknownInput('execution paths are outside the public profile')
+    temporary = parent.get('RUNNER_TEMP', '')
+    if type(temporary) is not str or not Path(temporary).is_absolute():
+        raise UnknownInput('canonical job-private state is unavailable')
+    state = Path(temporary).resolve() / 'symphony-coverage-v1'
+    if any(environment[key] != str(state / leaf)
+           for key, leaf in (('HOME', 'home'), ('TMPDIR', 'tmp'), ('HEX_HOME', 'hex'))):
+        raise UnknownInput('execution private paths differ from the audited job profile')
+    return environment
+
+
 def fingerprint(root, revision, environment, parent, *, budget_seconds=30):
     """Only public byte identities; no credential stores or ambient env dump."""
     started = time.monotonic()
+    # Reject accidental dict(os.environ) before any probes or serialization.
+    public_environment(environment, parent)
     root = Path(root).resolve()
     profile = json.loads(PROFILE_PATH.read_text())
     source, rows = source_identity(root, revision)

@@ -237,10 +237,37 @@ class AuditedCoverageProfile(unittest.TestCase):
                  patch.object(self.profile, 'source_identity', return_value=({}, [['actual-input']])), \
                  patch.object(self.profile, 'linux_platform') as platform_probe, \
                  patch.object(self.profile, 'tree_identity') as tree_probe:
+                source = Path(directory) / 'source'; source.mkdir()
+                environment = inputs.controlled_environment(source, Path(directory) / 'symphony-coverage-v1',
+                    dict(HOME='/public', PATH='/usr/bin:/bin'))
+                environment.update(MIX_ARCHIVES='/public/.mix/archives',
+                    MIX_REBAR3='/public/.mix/elixir/1-19-otp-28/rebar3', ERL_FLAGS='+S 2:2')
                 with self.assertRaisesRegex(self.profile.UnknownInput, 'changed or unaudited'):
-                    self.profile.fingerprint(Path(directory), 'a' * 40, {}, {})
+                    self.profile.fingerprint(source, 'a' * 40, environment, dict(RUNNER_TEMP=directory))
                 platform_probe.assert_not_called()
                 tree_probe.assert_not_called()
+
+
+    def test_extra_environment_never_reaches_probes_serialization_or_diagnostics(self):
+        from unittest.mock import patch
+        for key in ('GH_TOKEN', 'OPENAI_API_KEY', 'UNREVIEWED_SETTING'):
+            with self.subTest(key=key), patch.object(self.profile, 'source_identity') as source_probe, \
+                 patch.object(self.profile, 'linux_platform') as platform_probe, \
+                 patch.object(self.profile, 'tree_identity') as tree_probe:
+                with self.assertRaises(self.profile.UnknownInput) as result:
+                    self.profile.fingerprint('/does-not-exist', 'a' * 40, {key: 'dummy-secret-value'}, {})
+                self.assertNotIn('dummy-secret-value', str(result.exception))
+                self.assertNotIn(key, str(result.exception))
+                source_probe.assert_not_called()
+                platform_probe.assert_not_called()
+                tree_probe.assert_not_called()
+
+    def test_profile_refuses_source_symlinks_instead_of_claiming_target_equivalence(self):
+        from unittest.mock import patch
+        with patch.object(self.profile, 'untracked_inputs'), \
+             patch.object(self.profile, 'tracked_source', return_value=({}, [['source.ex', '120000', 'a' * 64]])):
+            with self.assertRaisesRegex(self.profile.UnknownInput, 'source symlinks'):
+                self.profile.source_identity('/unused', 'a' * 40)
 
 
 if __name__ == '__main__':
