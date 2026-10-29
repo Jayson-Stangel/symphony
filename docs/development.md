@@ -904,7 +904,8 @@ qualification remain separate. No image is published or included in evidence.
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle
 contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus a separate
-pre-coverage `_build/test` checkpoint. All three validate before becoming visible;
+pre-coverage `_build/test` checkpoint. Authenticated dependencies become visible first so the audited compiler links
+resolve to their actual targets. All three validate before cached code executes;
 raw bytes, modes, ownership and allowed links remain exact. No global Mix home or
 core PLTs are restored. Fresh build, formatting, lint, npm setup, compilation and
 ordinary Dialyzer still execute. ExUnit's own API initializes the empty failures

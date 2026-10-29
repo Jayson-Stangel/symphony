@@ -215,24 +215,28 @@ def warm():
 
 
 def install_bundle(root,state,result):
-    # Every archive is inertly staged/verified before any target becomes visible
-    # to Mix. Roll back the exact three roots on any swap/validation failure.
+    # No phase container/Mix is running here. Validate and install authenticated
+    # deps first so the finite raw dev/test links resolve against their actual
+    # authenticated targets. All three validate before any cached code executes.
     targets={'deps':root/'elixir/deps','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
     staged={};backups={};installed=[]
+    def stage(name):
+        target=targets[name];path=target.with_name('.'+target.name+'-evidence-v2')
+        require(not path.exists() and not path.is_symlink(),'cache staging already exists')
+        staged[name]=path
+        cache.stage(result['sidecar_bytes'][name],result['sidecar'][name],path,root)
+    def install(name):
+        target=targets[name];backup=target.with_name('.'+target.name+'-fresh-v2')
+        require(target.is_dir() and not target.is_symlink() and not backup.exists()
+                and not backup.is_symlink(),'cache swap is not exclusively owned')
+        target.rename(backup);backups[name]=backup
+        try:staged[name].rename(target)
+        except OSError:backup.rename(target);backups.pop(name);raise
+        installed.append(name)
     try:
-        for name,target in targets.items():
-            stage=target.with_name('.'+target.name+'-evidence-v2')
-            require(not stage.exists() and not stage.is_symlink(),'cache staging already exists')
-            cache.stage(result['sidecar_bytes'][name],result['sidecar'][name],stage,root)
-            staged[name]=stage
-        for name,target in targets.items():
-            backup=target.with_name('.'+target.name+'-fresh-v2')
-            require(target.is_dir() and not target.is_symlink() and not backup.exists()
-                    and not backup.is_symlink(),'cache swap is not exclusively owned')
-            target.rename(backup);backups[name]=backup
-            try:staged[name].rename(target)
-            except OSError:backup.rename(target);backups.pop(name);raise
-            installed.append(name)
+        stage('deps');install('deps')
+        stage('dev');stage('test')
+        install('dev');install('test')
     except (Fresh,UnknownInput,OSError,ValueError,KeyError,TypeError):
         for name in reversed(installed):
             targets[name].rename(staged[name]);backups[name].rename(targets[name])

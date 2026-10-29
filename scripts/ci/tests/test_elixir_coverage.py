@@ -79,26 +79,37 @@ class ExistingJobPhases(unittest.TestCase):
             self.assertEqual(calls[0][1]['mix'],'dev')
             self.assertNotIn('--no-check',str(calls))
 
-    def test_three_checkpoints_stage_before_visibility_and_roll_back_on_failure(self):
+    def test_real_dependency_links_restore_exactly_and_failure_rolls_back_all_roots(self):
         import validation_cache
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            targets={'deps':root/'elixir/deps','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
-            raw={};meta={}
-            for name,target in targets.items():
-                target.mkdir(parents=True);(target/'compiled').write_bytes(b'authenticated')
-                raw[name],meta[name]=validation_cache.create(target,root)
-                (target/'compiled').write_bytes(b'fresh fallback')
-            original=validation_cache.stage
-            calls=[]
-            def stage(payload,metadata,target,workspace):
-                calls.append(target)
-                self.assertTrue(all((path/'compiled').read_bytes()==b'fresh fallback' for path in targets.values()))
-                if len(calls)==3: raise ValueError('invalid last checkpoint')
-                return original(payload,metadata,target,workspace)
-            with patch.object(controller.cache,'stage',side_effect=stage), self.assertRaises(ValueError):
-                controller.install_bundle(root,root,dict(sidecar_bytes=raw,sidecar=meta))
-            self.assertTrue(all((path/'compiled').read_bytes()==b'fresh fallback' for path in targets.values()))
+        from validation_inputs import UnknownInput
+        for corrupted in (False,True):
+            with self.subTest(corrupted=corrupted),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                targets={'deps':root/'elixir/deps','dev':root/'elixir/_build/dev','test':root/'elixir/_build/test'}
+                private=targets['deps']/'phoenix/priv';private.mkdir(parents=True)
+                (private/'payload').write_bytes(b'authenticated dependency bytes')
+                for name in ('dev','test'):
+                    path=targets[name]/'lib/phoenix';path.mkdir(parents=True)
+                    (path/'priv').symlink_to('../../../../deps/phoenix/priv')
+                    (path/'compiled').write_bytes(b'authenticated compiler bytes')
+                raw={};meta={}
+                for name,target in targets.items():raw[name],meta[name]=validation_cache.create(target,root)
+                expected={name:validation_cache.identity(path,root) for name,path in targets.items()}
+                for path in targets.values():
+                    import shutil
+                    shutil.rmtree(path);path.mkdir()
+                    (path/'fresh').write_bytes(b'fresh fallback')
+                fallback={name:validation_cache.identity(path,root) for name,path in targets.items()}
+                if corrupted:meta['test']['cache']['sha256']='0'*64
+                if corrupted:
+                    with self.assertRaises(UnknownInput):controller.install_bundle(root,root,dict(sidecar_bytes=raw,sidecar=meta))
+                else:controller.install_bundle(root,root,dict(sidecar_bytes=raw,sidecar=meta))
+                for name,path in targets.items():
+                    self.assertEqual(validation_cache.identity(path,root),fallback[name] if corrupted else expected[name])
+                    self.assertFalse(path.with_name('.'+path.name+'-evidence-v2').exists())
+                    self.assertFalse(path.with_name('.'+path.name+'-fresh-v2').exists())
+                if not corrupted:
+                    self.assertEqual((targets['test']/'lib/phoenix/priv/payload').read_bytes(),b'authenticated dependency bytes')
 
     def test_only_a_supported_profile_refuses_both_ordinary_executable_cache_restores(self):
         import re
