@@ -138,8 +138,9 @@ class PresentationOnly(unittest.TestCase):
                 shared=commit({'scripts/ci/classify_changes.py':'changed shared control'})
                 event=dict(before=mixed,after=shared)
                 route,triggers,*_=classifier.event_routing(classifier.changed_paths(event,'push'),event,'push')
-                for key in classifier.COMPONENTS:
-                    self.assertTrue(route[key]);self.assertEqual(triggers[key],[{'path':'scripts/ci/classify_changes.py','rule':'shared CI classifier, comparison or regression control'}])
+                self.assertEqual({key for key in classifier.COMPONENTS if route[key]}, {'portable'})
+                self.assertEqual(triggers['portable'], [{'path': 'scripts/ci/classify_changes.py',
+                    'rule': 'known CI selection policy; unconditional policy regressions and portable workflow contracts'}])
                 event=dict(before=base,after=named)
                 paths=classifier.changed_paths(event,'push')
                 with patch.object(classifier.subprocess,'run',side_effect=OSError('no parser')):

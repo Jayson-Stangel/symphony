@@ -147,6 +147,9 @@ jobs:
             'scripts/ci/elixir-coverage-profile.json': classifier.ALL,
             'scripts/ci/validation_inputs.py': classifier.ALL,
             'scripts/ci/validation_evidence.py': classifier.ALL,
+            'scripts/ci/tests/test_packaged_apparmor.py': set(),
+            'scripts/ci/packaged_apparmor.py': {'portable'},
+            'scripts/codex-apparmor.profile': {'portable', 'package_macos', 'package_linux', 'application'},
             'scripts/release/macos_signing_inputs.py': {'portable'},
             '.github/workflows/macos-signing.yml': {'portable'},
         }
@@ -164,6 +167,10 @@ jobs:
         recipe = (ROOT/'runner/Dockerfile').read_text()
         variants = (
             (source.replace("inputs.baseline_run }}", "inputs.baseline_run || '123' }}"), False),
+            (source.replace('Selected installed/package qualification requires explicit reviewed host preparation consent.',
+                            'Manual packaged qualification requires reviewed preparation consent.'), False),
+            (source.replace("if: github.event_name == 'workflow_dispatch' && !inputs.sign_macos",
+                            'if: always()', 1), True),
             (source.replace('timeout-minutes: 30', 'timeout-minutes: 29', 1), True),
             (source.replace('actions: read', 'actions: write'), True),
             (source.replace('  changes:\n', '  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n  changes:\n'), True),
@@ -171,6 +178,7 @@ jobs:
         )
         for changed, expected in variants:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as folder:
+                self.assertNotEqual(changed, source, 'workflow fixture mutation must be real')
                 history = History(folder)
                 history.put('runner/Dockerfile', recipe)
                 history.put('.github/workflows/runner-integration.yml', source)
@@ -183,8 +191,114 @@ jobs:
                     event = dict(before=base, after=head)
                     self.assertEqual(classifier.browser_required(classifier.changed_paths(event, 'push'), event, 'push'), expected)
                     route = classifier.event_routing(classifier.changed_paths(event, 'push'), event, 'push')[0]
-                    if 'unknown-job' in changed or changed.endswith('permissions: {}\n'):
+                    if ('unknown-job' in changed or changed.endswith('permissions: {}\n')
+                            or '    if: always()\n' in changed):
                         self.assertTrue(all(route[key] for key in classifier.COMPONENTS))
+                finally:
+                    os.chdir(previous)
+
+    def test_exact_pr165_ci_only_event_and_mixed_or_unknown_consumers(self):
+        import base64, hashlib, lzma
+        fixture = json.loads((ROOT / 'scripts/ci/tests/fixtures/pr165-ci-routing.json').read_text())
+        raw = lzma.decompress(base64.b64decode(fixture['payload']))
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), fixture['payload_sha256'])
+        values = json.loads(raw)
+        self.assertEqual(len(fixture['changed_paths']), 20)
+        with tempfile.TemporaryDirectory() as folder:
+            history = History(folder)
+            for path, contents in values['before'].items():
+                if contents is not None:
+                    history.put(path, contents)
+            base = history.commit()
+            for path, contents in values['after'].items():
+                if contents is not None:
+                    history.put(path, contents)
+            head = history.commit()
+            previous = os.getcwd(); os.chdir(folder)
+            try:
+                for name, event in (('pull_request', dict(pull_request=dict(base=dict(sha=base),head=dict(sha=head),draft=False))),
+                                    ('push', dict(before=base,after=head,ref='refs/heads/dev'))):
+                    paths = classifier.changed_paths(event, name)
+                    self.assertEqual(set(paths), set(fixture['changed_paths']))
+                    route = classifier.event_routing(paths, event, name)[0]
+                    self.assertEqual({key for key in classifier.COMPONENTS if route[key]}, {'portable'})
+                    self.assertFalse(route['native'])
+                    self.assertFalse(classifier.browser_required(paths, event, name))
+                    event_path, output = Path(folder)/'event.json', Path(folder)/'outputs'
+                    event_path.write_text(json.dumps(event))
+                    output.write_text('')
+                    result = subprocess.run([sys.executable, str(ROOT/'scripts/ci/classify_changes.py')],
+                        env=dict(os.environ, GITHUB_EVENT_NAME=name, GITHUB_EVENT_PATH=str(event_path),
+                                 GITHUB_OUTPUT=str(output)), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    flags = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                    self.assertEqual(flags['policy'], 'true')
+                    self.assertEqual(flags['portable'], 'true')
+                    for key in ('native', 'browser', 'application', 'claude'):
+                        self.assertEqual(flags[key], 'false', key)
+                    event_path.unlink()
+                    output.unlink()
+                for path, selected, browser in (
+                    ('elixir/lib/real_runtime.ex', {'application','portable'}, False),
+                    ('scripts/package/host.swift', {'portable','package_macos','package_linux'}, False),
+                    ('scripts/ci/unknown-controller.py', classifier.ALL, True),
+                    ('runner/browser/smoke-image.sh', {'portable'}, True)):
+                    history.put(path, 'actual changed input')
+                    mixed = history.commit()
+                    event = dict(before=base,after=mixed,ref='refs/heads/dev')
+                    paths = classifier.changed_paths(event,'push')
+                    route = classifier.event_routing(paths,event,'push')[0]
+                    self.assertEqual({key for key in classifier.COMPONENTS if route[key]},selected,path)
+                    self.assertEqual(classifier.browser_required(paths,event,'push'),browser,path)
+                    # Keep each mixed case independent rather than accumulating inputs.
+                    Path(path).unlink()
+                    history.commit()
+                for name, event in (('workflow_dispatch', {}),
+                        ('push',dict(before=base,after=head,ref='refs/tags/v1.2.3'))):
+                    route = classifier.event_routing(fixture['changed_paths'],event,name)[0]
+                    self.assertTrue(all(route[key] for key in classifier.COMPONENTS))
+                    self.assertTrue(classifier.browser_required(fixture['changed_paths'],event,name))
+            finally:
+                os.chdir(previous)
+
+    def test_portable_inventory_addition_cannot_hide_executor_or_other_inventory_logic(self):
+        source = (ROOT / 'scripts/ci/release_tests.py').read_text()
+        addition = source.replace('PORTABLE = {', "PORTABLE = {\n    'test_new_audited_portable.py',", 1)
+        variants = ((addition, {'portable'}),
+                    (addition.replace('def main(', 'def changed_main(', 1),
+                     classifier.PACKAGES | {'fixtures','contracts','codex_config'}),
+                    (source.replace('PORTABLE = {', 'PORTABLE = build_unknown_inventory({', 1),
+                     classifier.PACKAGES | {'fixtures','contracts','codex_config'}))
+        for changed, expected in variants:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as folder:
+                self.assertNotEqual(changed, source)
+                history=History(folder);history.put('scripts/ci/release_tests.py',source);base=history.commit()
+                history.put('scripts/ci/release_tests.py',changed);head=history.commit()
+                previous=os.getcwd();os.chdir(folder)
+                try:
+                    event=dict(before=base,after=head)
+                    route=classifier.event_routing(['scripts/ci/release_tests.py'],event,'push')[0]
+                    self.assertEqual({key for key in classifier.COMPONENTS if route[key]},expected)
+                finally:
+                    os.chdir(previous)
+
+    def test_manual_engine_trigger_unknown_job_and_global_controls_remain_conservative(self):
+        source=(ROOT/'.github/workflows/burrito-release.yml').read_text()
+        for changed in (source.replace('  workflow_dispatch:', '  push:', 1),
+                        source.replace('jobs:\n','jobs:\n  unknown-job:\n    runs-on: ubuntu-latest\n    steps: []\n',1),
+                        source.replace('  actions: read','  actions: write',1)):
+            with self.subTest(change=changed[:30]), tempfile.TemporaryDirectory() as folder:
+                self.assertNotEqual(changed,source)
+                history=History(folder);history.put('runner/Dockerfile',(ROOT/'runner/Dockerfile').read_text())
+                history.put('.github/workflows/burrito-release.yml',source);base=history.commit()
+                history.put('.github/workflows/burrito-release.yml',changed);head=history.commit()
+                previous=os.getcwd();os.chdir(folder)
+                try:
+                    event=dict(before=base,after=head)
+                    paths=['.github/workflows/burrito-release.yml']
+                    route=classifier.event_routing(paths,event,'push')[0]
+                    self.assertTrue(all(route[key] for key in classifier.COMPONENTS))
+                    self.assertTrue(classifier.browser_required(paths,event,'push'))
                 finally:
                     os.chdir(previous)
 

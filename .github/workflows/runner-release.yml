@@ -3,6 +3,18 @@ name: Runner release
 on:
   workflow_call:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -53,6 +65,18 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
+        type: string
+        default: ''
       previous_artifact_run:
         description: Exact qualified current-manager package run for download-only installed update tests
         type: string
@@ -110,6 +134,20 @@ on:
         description: Only run bounded native cold/warm/changed-input cache qualification
         type: boolean
         default: false
+      cache_probe_provider:
+        description: Limit a cache diagnostic to one provider (all preserves existing full matrix)
+        type: choice
+        options: [all, codex, claude]
+        default: all
+      cache_probe_architecture:
+        description: Limit a cache diagnostic to one native architecture
+        type: choice
+        options: [all, arm64, x86_64]
+        default: all
+      cache_probe_export_comparison:
+        description: Compare max/min export in separate scopes; choose one provider/architecture for two allocations
+        type: boolean
+        default: false
       cache_probe_restore:
         description: Skip cold build and import the previous completed probe run from a fresh builder
         type: boolean
@@ -137,6 +175,35 @@ concurrency:
   cancel-in-progress: ${{ !inputs.retain_diagnostic && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  packaged-host-consent:
+    name: Require reviewed manual package host preparation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
+      - name: Refuse unconsented selected native package qualification
+        if: inputs.compose_packages && inputs.resume_native_run == '' && !inputs.cache_probe && !inputs.diagnostic_artifact_run && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+
   component-plan:
     name: Validate component plan
     needs: qualification
@@ -165,9 +232,11 @@ jobs:
           MANIFEST_SCHEMA: ${{ inputs.manifest_schema }}
           SELECTED_PLAN_ARTIFACT: ${{ inputs.component_plan_artifact }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
         run: |
           test -z "$PREVIOUS_REVISION" || { echo 'Independent prior package composition is not yet integrated; refusing incomplete candidate.' >&2; exit 1; }
           if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then [[ "$PREVIOUS_ARTIFACT_RUN" =~ ^[0-9]+$ ]] || exit 1; fi
@@ -428,11 +497,40 @@ jobs:
           python3 scripts/release/manager_version.py
           mkdir -p dist
           bash scripts/release/build-manager-package.sh "$PWD/metadata/release.json" "$PWD/dist" "$PLATFORM" "$PWD" "$GITHUB_SHA" "$RUNNER_TEMP/qualified-helper/symphony-host"
+      - name: Prepare actual packaged Linux AppArmor command
+        id: packaged-apparmor
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Clean only verified package-owned native policy and persistence
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence dist/linux-apparmor-acceptance.json
+      - name: Require package preparation and cleanup evidence
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Retain native package preparation diagnostics even on failure
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ github.job }}-linux-apparmor-evidence
+          path: dist/linux-apparmor-acceptance.*
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-release-platform-${{ matrix.platform }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/linux-apparmor-acceptance.json
           if-no-files-found: error
 
   packaged-release:
@@ -472,6 +570,11 @@ jobs:
           verify_packages(Path('dist'), os.environ['GITHUB_SHA'])
           PYCODE
           (cd dist && sha256sum ./*.tar.gz ./release.json > SHA256SUMS)
+      - name: Reject missing or mismatched Linux package preparation receipt
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages dist --manifest dist/release.json --evidence dist/linux-apparmor-acceptance.json
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -480,21 +583,17 @@ jobs:
           if-no-files-found: error
 
   cache-probe:
-    name: Measure runner cache (${{ matrix.provider }}, ${{ matrix.architecture }})
+    name: Measure runner cache (${{ matrix.provider }}, ${{ matrix.architecture }}, ${{ matrix.cache_mode }})
     needs: qualification
     if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.cache_probe && inputs.resume_native_run == '' && github.event_name == 'workflow_dispatch' && !inputs.transfer_diagnostic_run && !inputs.transfer_replay_run && !inputs.transfer_timing_run }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        provider: [codex, claude]
-        architecture: [arm64, x86_64]
-        include:
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-          - architecture: x86_64
-            runner: ubuntu-24.04
+        provider: ${{ inputs.cache_probe_provider && inputs.cache_probe_provider != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_provider)) || fromJSON('["codex","claude"]') }}
+        architecture: ${{ inputs.cache_probe_architecture && inputs.cache_probe_architecture != 'all' && fromJSON(format('["{0}"]', inputs.cache_probe_architecture)) || fromJSON('["arm64","x86_64"]') }}
+        cache_mode: ${{ inputs.cache_probe_export_comparison && fromJSON('["max","min"]') || fromJSON('["max"]') }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -509,6 +608,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/runner-cache-measurements"
           id=$(docker run -d --label "com.symphony.cache-probe=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -p 127.0.0.1:5000:5000 registry:3)
           printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual cold production inputs before building
+        id: cold_snapshot
+        if: ${{ !inputs.cache_probe_restore }}
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/cold-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/cold-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual cold native image
         if: ${{ !inputs.cache_probe_restore }}
         uses: ./.github/actions/build-runner
@@ -518,6 +632,10 @@ jobs:
           revision: ${{ github.sha }}
           no-cache: 'true'
           evidence-name: cold
+          input-identity: ${{ steps.cold_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}', matrix.cache_mode) || '' }}
       - name: Qualify cold image and measure transfer
         if: ${{ !inputs.cache_probe_restore }}
         env:
@@ -531,6 +649,20 @@ jobs:
           git add docs/cache-probe-marker.txt
           git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe packaging-only revision'
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual warm production inputs before building
+        id: warm_snapshot
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/warm-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/warm-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual warm image at a new source revision
         uses: ./.github/actions/build-runner
         with:
@@ -538,6 +670,10 @@ jobs:
           tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
           revision: ${{ steps.warm-source.outputs.revision }}
           evidence-name: warm
+          input-identity: ${{ steps.warm_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}', matrix.cache_mode) || '' }}
       - name: Qualify warm image and measure transfer
         env:
           PROVIDER: ${{ matrix.provider }}
@@ -558,6 +694,20 @@ jobs:
           git add runner/Dockerfile
           git -c user.name=CacheProbe -c user.email=cache-probe@example.invalid commit -m 'Cache probe changes effective dependency build recipe'
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Snapshot actual changed production inputs before building
+        id: changed_snapshot
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          python3 scripts/release/runner_inputs.py --provider "$PROVIDER" --architecture "$ARCHITECTURE" --output "$RUNNER_TEMP/runner-cache-measurements/changed-inputs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          snapshot = json.loads((Path(os.environ['RUNNER_TEMP'])/'runner-cache-measurements/changed-inputs.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('identity='+snapshot['input_identity']+'\n')
+          PYCODE
       - name: Actual invalidated dependency build
         uses: ./.github/actions/build-runner
         with:
@@ -565,7 +715,10 @@ jobs:
           tags: localhost:5000/symphony-${{ matrix.provider }}:cache-probe
           revision: ${{ steps.changed-source.outputs.revision }}
           evidence-name: changed
-          cache-variant: changed
+          input-identity: ${{ steps.changed_snapshot.outputs.identity }}
+          cache-mode: ${{ matrix.cache_mode }}
+          trusted-cache-fallback: ${{ inputs.cache_probe_export_comparison && 'false' || 'true' }}
+          cache-variant: ${{ inputs.cache_probe_export_comparison && format('export-{0}-changed', matrix.cache_mode) || 'changed' }}
           export-cache: 'false'
       - name: Qualify changed-input image and measure transfer
         env:
@@ -576,7 +729,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: runner-cache-${{ matrix.provider }}-${{ matrix.architecture }}-${{ github.sha }}
+          name: ${{ inputs.cache_probe_export_comparison && format('runner-cache-{0}-{1}-{2}-{3}', matrix.provider, matrix.architecture, matrix.cache_mode, github.sha) || format('runner-cache-{0}-{1}-{2}', matrix.provider, matrix.architecture, github.sha) }}
           path: ${{ runner.temp }}/runner-cache-measurements/**
           if-no-files-found: error
           retention-days: 30
@@ -595,7 +748,7 @@ jobs:
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: codex-apparmor-cache-${{ matrix.architecture }}
+          name: ${{ inputs.cache_probe_export_comparison && format('codex-apparmor-cache-{0}-{1}', matrix.architecture, matrix.cache_mode) || format('codex-apparmor-cache-{0}', matrix.architecture) }}
           path: ${{ runner.temp }}/codex-apparmor-*.log
           if-no-files-found: error
           retention-days: 30
@@ -687,6 +840,33 @@ jobs:
             if [ "$selection" = previous ]; then helper="$RUNNER_TEMP/qualified-prior-helper/symphony-host"; fi
             bash scripts/release/build-manager-package.sh "$manifest" "$destination" "$PLATFORM" "$source" "$revision" ${helper:+"$helper"}
           done
+      - name: Prepare actual packaged Linux AppArmor command
+        id: packaged-apparmor
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Clean only verified package-owned native policy and persistence
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence dist/linux-apparmor-acceptance.json
+      - name: Require package preparation and cleanup evidence
+        if: matrix.platform == 'linux_x86_64'
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --assembled --packages dist --manifest metadata/release.json --evidence dist/linux-apparmor-acceptance.json
+      - name: Retain native package preparation diagnostics even on failure
+        if: ${{ always() && matrix.platform == 'linux_x86_64' && steps.packaged-apparmor.outcome != 'skipped' && steps.packaged-apparmor.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ github.job }}-linux-apparmor-evidence
+          path: dist/linux-apparmor-acceptance.*
+          if-no-files-found: warn
+          retention-days: 30
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -729,6 +909,11 @@ jobs:
             python3 scripts/release/artifacts.py validate "$directory/release.json"
             (cd "$directory" && sha256sum ./*.tar.gz release.json > SHA256SUMS)
           done
+      - name: Reject missing or mismatched Linux package preparation receipt
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence packages/linux-apparmor-acceptance.json
       - name: Retain artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -739,6 +924,8 @@ jobs:
 
   ubuntu-package-lifecycle:
     name: Installed package lifecycle
+    outputs:
+      bootstrap_qualified: ${{ steps.baseline-proof.outputs.qualified }}
     if: ${{ always() && !cancelled() && needs.packaged-candidate-metadata.result == 'success' && (inputs.previous_revision != '' || inputs.previous_artifact_run != '') }}
     needs: [component-plan, packaged-candidate-metadata]
     runs-on: ubuntu-24.04
@@ -751,8 +938,15 @@ jobs:
       - name: Record exact lifecycle request before artifact retrieval
         env:
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+          PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           mkdir -p evidence
           python3 - <<'PYCODE'
@@ -784,7 +978,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           args=()
           if [ -n "$LEGACY_ARTIFACT_RUN" ]; then args+=(--package-only); fi
@@ -795,14 +994,40 @@ jobs:
       - name: Prepare shipped Codex AppArmor on disposable host
         id: codex-apparmor
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh prepare 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-prepare.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py prepare --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Real source-independent Ubuntu 26.04 manager lifecycle
         env:
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+          PACKAGED_APPARMOR_EVIDENCE: ${{ runner.temp }}/codex-apparmor-receipt.json
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
         run: |
           args=()
           if [ "$MANAGER_ONLY_UPDATE" = true ]; then args+=(--manager-only-update); fi
           python3 scripts/release/package-lifecycle.py "${args[@]}" packages runners evidence
+      - name: Require fresh pending baseline proof after actual lifecycle cleanup
+        id: baseline-proof
+        if: inputs.bootstrap_previous != ''
+        env:
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: |
+          python3 scripts/release/prior_baseline.py verify-result evidence
+          echo 'qualified=true' >> "$GITHUB_OUTPUT"
       - name: Retain small actual lifecycle, origin and cleanup receipts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -825,13 +1050,22 @@ jobs:
       - name: Remove only CI-owned Codex AppArmor policy
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         shell: bash
-        run: bash scripts/ci/prepare-codex-apparmor.sh cleanup 2>&1 | tee "$RUNNER_TEMP/codex-apparmor-cleanup.log"
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py cleanup --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
+      - name: Require installed host cleanup receipt
+        if: ${{ always() && steps.codex-apparmor.outcome == 'success' }}
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: python3 scripts/ci/packaged_apparmor.py verify --packages packages --manifest packages/release.json --evidence "$RUNNER_TEMP/codex-apparmor-receipt.json"
       - name: Retain disposable host policy diagnostics
         if: ${{ always() && steps.codex-apparmor.outcome != 'skipped' && steps.codex-apparmor.outcome != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-apparmor-installed-lifecycle
-          path: ${{ runner.temp }}/codex-apparmor-*.log
+          path: ${{ runner.temp }}/codex-apparmor-*
           if-no-files-found: error
           retention-days: 30
 
@@ -993,16 +1227,22 @@ jobs:
           retention-days: 30
   portable:
     name: Portable preflight
+    needs: packaged-host-consent
     if: inputs.preflight_revision == '' && inputs.resume_native_run == ''
     uses: ./.github/workflows/release-preflight.yml
   qualification:
     name: Validate preflight inputs
     outputs:
       final_only: ${{ steps.validated.outputs.final_only }}
-    needs: portable
-    if: ${{ always() && inputs.resume_native_run == '' }}
+    needs: [portable, packaged-host-consent]
+    if: ${{ always() && needs.packaged-host-consent.result == 'success' && inputs.resume_native_run == '' }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out exact bootstrap validation controller
+        if: inputs.bootstrap_previous != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require exact successful local or caller-owned preflight
         id: validated
         env:
@@ -1013,15 +1253,26 @@ jobs:
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           CACHE_PROBE: ${{ inputs.cache_probe }}
           DIAGNOSTIC_ARTIFACT_RUN: ${{ inputs.diagnostic_artifact_run }}
+          CACHE_EXPORT_COMPARISON: ${{ inputs.cache_probe_export_comparison }}
+          CACHE_PROBE_RESTORE: ${{ inputs.cache_probe_restore }}
+          CACHE_PROBE_PROVIDER: ${{ inputs.cache_probe_provider }}
+          CACHE_PROBE_ARCHITECTURE: ${{ inputs.cache_probe_architecture }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
           MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
         run: |
           test "${LEGACY_PUBLISH:-false}" != true || { echo 'Unsigned publication is disabled; use production-publish with signed inputs.' >&2; exit 1; }
           if [ "${CACHE_PROBE:-}" = true ] && [ -n "${DIAGNOSTIC_ARTIFACT_RUN:-}" ]; then exit 1; fi
           test -z "${PREVIOUS_REVISION:-}" || { echo 'Raw prior-source composition is unsupported by the component producer; select a verified historical artifact run.' >&2; exit 1; }
+          if [ "${CACHE_EXPORT_COMPARISON:-false}" = true ]; then
+            test "${CACHE_PROBE:-false}" = true
+            test "${CACHE_PROBE_RESTORE:-false}" != true
+            case "$CACHE_PROBE_PROVIDER" in codex|claude) ;; *) echo 'Select one cache comparison provider' >&2; exit 1 ;; esac
+            case "$CACHE_PROBE_ARCHITECTURE" in arm64|x86_64) ;; *) echo 'Select one cache comparison architecture' >&2; exit 1 ;; esac
+          fi
           if [ -n "$CALLER_REVISION" ]; then
             test "$LOCAL_RESULT" = skipped
             test "$CALLER_REVISION" = "$GITHUB_SHA"
@@ -1036,6 +1287,9 @@ jobs:
             test "${MANAGER_ONLY_UPDATE:-false}" = true
             test -n "${PREVIOUS_ARTIFACT_RUN:-}"
             test "$LEGACY_ARTIFACT_RUN" != "$PREVIOUS_ARTIFACT_RUN"
+          fi
+          if [ -n "${BOOTSTRAP_PREVIOUS:-}" ]; then
+            python3 scripts/release/prior_baseline.py validate
           fi
           final_only=false
           if [ "${PREPARE_RELEASE:-false}" = true ]; then
@@ -1065,7 +1319,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.prepare_release }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
         run: |
           if [ -n "$PREVIOUS_ARTIFACT_RUN" ]; then
             python3 scripts/release/previous-package-subject.py --run-id "$PREVIOUS_ARTIFACT_RUN" --check-only early-subjects/previous.json
@@ -1108,8 +1367,14 @@ jobs:
           FINAL_PACKAGES: ${{ needs.packaged-release.result }}
           PREPARE_RELEASE: ${{ inputs.prepare_release }}
           LIFECYCLE: ${{ needs.ubuntu-package-lifecycle.result }}
+          BOOTSTRAP_REQUESTED: ${{ inputs.bootstrap_previous != '' }}
+          BOOTSTRAP_PROOF: ${{ needs.ubuntu-package-lifecycle.outputs.bootstrap_qualified }}
           PREVIOUS_REVISION: ${{ inputs.previous_revision }}
           PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          COMPOSE_PACKAGES: ${{ inputs.compose_packages }}
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
         run: |
           test "$PREFLIGHT" = success
           test "$PACKAGES" = success
@@ -1127,6 +1392,7 @@ jobs:
           esac
           if [ -n "$PREVIOUS_REVISION" ] || [ -n "${PREVIOUS_ARTIFACT_RUN:-}" ]; then test "$LIFECYCLE" = success
           else test "$LIFECYCLE" = skipped; fi
+          if [ "${BOOTSTRAP_REQUESTED:-false}" = true ]; then test "$BOOTSTRAP_PROOF" = true; fi
           echo 'Exact-head preflight, native fixtures, selected provider/platform components and requested final native archive cohort succeeded. Candidate archives are intentionally omitted only for production preparation without lifecycle consumers. Requested lifecycle must succeed.' >> "$GITHUB_STEP_SUMMARY"
   retained-transfer-timing:
     name: Measure retained transfer

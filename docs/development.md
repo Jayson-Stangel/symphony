@@ -748,6 +748,36 @@ and one retained artifact per run, while retaining cross-job original retrieval
 and integrity checks. No publication timing saving is claimed without a real
 separately authorized production run.
 
+### Bounded cache export comparison
+
+JAY-769's existing `runner-release.yml` cache probe accepts one selected provider
+and native architecture plus `cache_probe_export_comparison=true`. Validation
+refuses `all` dimensions and restore-only runs in comparison mode, so max/min need exactly two native
+allocations. Each runs cold, warm and changed-input phases through a fresh
+Buildx builder per invocation, retaining its original builder reference; a reused
+local builder refuses remote-cache proof. Max/min use separate branch/trust and
+architecture scopes and disable unrelated trusted cache fallback. Ordinary
+builds keep their existing max export/fallback policy until comparative evidence
+justifies a change. Changed-recipe diagnostics retain the existing no-export
+policy and disclose it in the build receipt.
+
+Every phase records exact committed Docker input identity/source/image labels,
+BuildKit cache import/export and image export/load vertex intervals, complete
+build elapsed time, actual-user runtime qualification, loopback registry push/
+pull, archive export/compression/checksum and small evidence upload. Vertex
+intervals overlap and must not be summed as cost or end-to-end saving; upload
+step elapsed time comes from the completed Actions job receipt. The probe uses
+level-one gzip consistently with delivered payload export. Large diagnostic
+archives are deleted; only owned registries/builders and small receipts remain.
+
+Historical run 39865529840 has valid warm/changed receipts, but its retained
+artifacts do not establish a cold baseline. A new exact-source comparison is
+needed before changing the default; no claimed saving is inferred from those
+old timings or the separate 178.9-second production cache-export observation.
+The bounded hosted diagnostic requires its exact source/input/job/resource plan
+to be authorized before dispatch. It performs no customer release, signing,
+production settings or provider/model requests.
+
 ### Native engine allocation
 
 Each selected Linux x86-64/macOS ARM64 engine is built and immediately qualified
@@ -801,3 +831,41 @@ candidate archives and real lifecycle consumers; final production preparation
 still cannot succeed after a failed requested lifecycle. No signing, publication
 or production settings are invoked by these routing changes. Production workflow
 execution and final-byte native acceptance remain separate from fixture tests.
+
+### Pending original baseline qualification
+
+The ordinary prior-package selector still requires successful historical installed
+lifecycle proof. A separate default-empty `bootstrap_previous` descriptor permits
+only one explicit owner-triggered, nonproduction combined candidate on `dev` to
+use original run `40588897389`, attempt 3, source `ec2be6e1c21c7dc7f7d7d8536bcac1ce06f3202b`,
+package artifact `12774063336` with service digest
+`sha256:6347428eaa08c972eb43090af41460c0d73c9d84776351f2b91c80d407bdc446`.
+The descriptor also pins the approved current candidate source and historical
+skipped lifecycle job `122501814533`. This is a pending test subject, never a
+claim that the skipped historical lifecycle passed. Production/main/tag and
+ambiguous, mismatched, failed or expired subjects refuse.
+
+Before executing its installer, the actual Ubuntu lifecycle verifies original
+service and inner archive hashes, manifest/core/source/component identity and
+helper architecture. Owned Mac provenance requires its actual source's native
+OS/CPU/version guard, successful ordered helper/package steps and a bounded
+original helper receipt whose bytes match the packaged helper. A private label
+or capacity-ready status alone proves neither native execution nor qualification.
+Owned-Mac source validation accepts only explicitly audited whole-workflow
+fingerprints and exact relied-on step configurations. Unknown workflow text
+refuses, including quoted keys, aliases, duplicate jobs and shell/error overrides.
+This intentionally requires another owner review when those workflows change;
+it is not a general YAML or shell equivalence checker. The final combined source
+fingerprint must be reviewed after integration before candidate execution.
+
+The existing `scripts/release/package-lifecycle.py` consumer must repeat-install
+that exact original baseline as an ordinary user, assert its installed source,
+pass doctor, and run both isolated projects with attributable listeners, original
+images and preserved canaries before activating the new candidate. Full update,
+rollback, refusal/retry and cleanup must then pass. The existing terminal join
+also requires fresh same-run baseline proof; missing or failed proof refuses.
+Fresh proof names both original and current identities and preserves the old
+`skipped` result. The descriptor grants no execution authority: exact candidate
+source, complete change inventory, prior subject and native effects still require
+operator approval before the single combined candidate. No version bump or
+production promotion is needed for this nonpublishing dev path.

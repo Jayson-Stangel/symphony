@@ -108,9 +108,14 @@ class BrowserRouting(unittest.TestCase):
                     'scripts/release/runner-cache-policy.sh', 'runner/node-smoke.sh',
                     '.github/workflows/runner-integration.yml',
                     '.github/workflows/change-classification.yml',
-                    'scripts/ci/classify_changes.py',
+                    'scripts/ci/unknown-browser-control.py',
                 ]
-                for path in ['elixir/lib/app.ex', 'docs/guide.md', 'scripts/ci/tests/test_browser_routing.py'] + relevant:
+                irrelevant = [
+                    'elixir/lib/app.ex', 'docs/guide.md', 'scripts/ci/tests/test_browser_routing.py',
+                    'scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb',
+                    'scripts/release/package-lifecycle.py',
+                ]
+                for path in irrelevant + relevant:
                     content = recipe.replace('RUN npm ci', 'RUN npm ci --ignore-scripts') if path == 'runner/Dockerfile' else 'fixture'
                     head = commit(path, content)
                     event = {'before': previous, 'after': head}
