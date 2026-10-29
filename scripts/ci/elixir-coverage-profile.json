@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "audited_revision": "8c5cac45e5cbaec0d3353e97688f24a9d24b245c",
+  "audited_source_sha256": "c4571f14b0803434138433b09ee2a32fc208db04c08bea24be54be6640e4ae8f",
+  "audited_source_files": 200,
+  "family": "full-exunit-coverage",
+  "tool_versions": {
+    "node": "v24.18.0",
+    "elixir": "1.19.5",
+    "otp": "28.5"
+  },
+  "coverage_command": [
+    "mix",
+    "test",
+    "--cover",
+    "--seed",
+    "0",
+    "--max-failures",
+    "1"
+  ],
+  "expected_tests": 685,
+  "expected_linux_skips": 10,
+  "measured_coverage": 100.0,
+  "cache_profile": "private-coverage-v1",
+  "limitations": [
+    "Only this reviewed source/runtime consumer profile may reuse. Changed or unknown validation source/tool/platform state runs fresh.",
+    "Build, formatting, lint, dependency resolution, compilation, Dialyzer, other test families and artifact/native qualification always remain fresh.",
+    "Local Mac feasibility is not eligible hosted evidence."
+  ]
+}
