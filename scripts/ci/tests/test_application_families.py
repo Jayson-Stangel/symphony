@@ -81,7 +81,7 @@ class ApplicationFamilies(unittest.TestCase):
         command = scripts(job(workflow('make-all'), 'make-all'))[0]
         good = dict(RESULT='success', POLICY='true', READY='true', NPM='false',
                     READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped',
-                    MAC_RUNNER_RESULT='success', GITHUB_STEP_SUMMARY=os.devnull)
+                    MAC_RUNNER_RESULT='skipped', GITHUB_STEP_SUMMARY=os.devnull)
         statuses = ('success', 'failure', 'cancelled', 'skipped', '')
         for elixir, claude, ready in itertools.product(('true', 'false'), repeat=3):
             for er, cr in itertools.product(statuses, repeat=2):
@@ -99,7 +99,7 @@ class ApplicationFamilies(unittest.TestCase):
         command = scripts(job(workflow('make-all'), 'make-all'))[0]
         base = dict(os.environ, RESULT='success', POLICY='true', READY='true', CODE='true', CLAUDE='false',
             NPM='false', READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped',
-            MAC_RUNNER_RESULT='success', ELIXIR_RESULT='success', CLAUDE_RESULT='skipped', GITHUB_STEP_SUMMARY=os.devnull)
+            MAC_RUNNER_RESULT='skipped', ELIXIR_RESULT='success', CLAUDE_RESULT='skipped', GITHUB_STEP_SUMMARY=os.devnull)
         for mode, origin, valid in (('EXECUTED', '', True), ('REUSED',
                 'https://github.com/Jayson-Stangel/symphony/actions/runs/101/attempts/2', True),
                 ('REUSED', '', False), ('REUSED', 'https://foreign/repo/101', False),

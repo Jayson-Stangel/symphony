@@ -311,7 +311,7 @@ class Selection(unittest.TestCase):
             with self.subTest(endpoint=endpoint, keys=keys), self.assertRaises(selector.Refusal):
                 self.select_using_real_live_verifier(documents)
 
-    def test_required_wrappers_reject_failed_selector_even_when_mac_work_is_omitted(self):
+    def test_required_wrappers_require_exact_skipped_selector_when_mac_work_is_omitted(self):
         app = scripts(job(workflow('make-all'), 'make-all'))[0]
         package = '\n'.join(scripts(job(workflow('package-checks'), 'package-qualification'))[:2])
         app_env = dict(RESULT='success', CODE='false', POLICY='false', READY='true', NPM='false',
@@ -323,7 +323,7 @@ class Selection(unittest.TestCase):
                 result = subprocess.run(['bash', '-e', '-c', command],
                     env=dict(os.environ, **dict(env, MAC_RUNNER_RESULT=status, GITHUB_STEP_SUMMARY=os.devnull)),
                     capture_output=True)
-                self.assertEqual(result.returncode == 0, status == 'success', status)
+                self.assertEqual(result.returncode == 0, status == 'skipped', status)
 
 
 if __name__ == '__main__':
