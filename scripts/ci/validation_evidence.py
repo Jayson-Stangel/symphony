@@ -79,6 +79,17 @@ def instant(value):
     return result
 
 
+def safe_api_path(path):
+    if type(path) is not str:
+        return False
+    if path.partition('/')[0].partition('?')[0] == 'compare':
+        # GitHub's immutable comparison delimiter is not a traversal segment.
+        # This one route accepts only two full lowercase commit identities.
+        return re.fullmatch(r'compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}', path) is not None
+    return (re.fullmatch(r'[A-Za-z0-9_./?=&-]+', path) is not None
+            and not path.startswith('/') and '..' not in path)
+
+
 class Service:
     """Finite GET-only client; no retries or service mutation capability."""
     def __init__(self, token, home, *, seconds=30, maximum_requests=80):
@@ -91,8 +102,7 @@ class Service:
         self.binary_cache = {}
 
     def read(self, path, *, binary=False, maximum=2 * 1024 * 1024):
-        require(type(path) is str and re.fullmatch(r'[A-Za-z0-9_./?=&%:-]+', path)
-                and not path.startswith('/') and '..' not in path, 'unsafe evidence API path')
+        require(safe_api_path(path), 'unsafe evidence API path')
         if binary and path in self.binary_cache:
             value=self.binary_cache[path]
             require(type(value) is bytes and len(value)<=maximum,'cached immutable payload exceeds bound')
