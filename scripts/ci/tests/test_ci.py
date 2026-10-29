@@ -264,5 +264,269 @@ class WorkflowContracts(unittest.TestCase):
         self.assertIn('check_pr_body.py --event',text)
 
 
+class NativeOCICompatibilityDiagnostic(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('GITHUB_ACTIONS') == 'true'
+                         and os.environ.get('RUNNER_OS') == 'Linux'
+                         and os.environ.get('ImageOS') == 'ubuntu24',
+                         'temporary native OCI data probe requires actual GitHub Ubuntu 24')
+    def test_native_oci_compatibility_and_reproducible_identity_data_only(self):
+        """ONE unmerged diagnostic, no suite reuse or full application execution."""
+        import hashlib
+        import platform
+        import shutil
+        import signal
+        import stat
+        import uuid
+
+        started = time.monotonic()
+        operation_deadline = started + 125
+        cleanup_deadline = started + 172
+        limits = {'whole_case_seconds': 180, 'alarm_seconds': 175,
+                  'operation_seconds': 125, 'task_disk_bytes': 10 * 1024 ** 3,
+                  'stdout_bytes': 64 * 1024, 'pulls': 2, 'fresh_builds': 2,
+                  'containers': 2}
+        profile = 'elixir-coverage-oci-preflight-v1'
+        owner = 'jay716-native-oci-' + uuid.uuid4().hex
+        bases = ['docker.io/library/node@sha256:4e9cb555d708e0829c9d93e5eeae9dfab0617b832ca436a690680e0fca735ef5',
+                 'docker.io/hexpm/elixir@sha256:df1f6fe1ffb340380b5089bdf4eed8fcef2305e5909e272b4587fb7864b7ab10']
+        result = {'label': 'JAY716_NATIVE_OCI_DIAGNOSTIC_V1', 'diagnostic_only': True,
+                  'eligible_evidence': False, 'limits': limits, 'profile': profile,
+                  'events': [], 'images': [], 'containers': [], 'cleanup': [],
+                  'public_bases_and_bounded_cache_retained': True,
+                  'shared_prune': False, 'result': 'STOP_BEFORE_EFFECTS'}
+        prefix = []
+        tags = []
+        containers = []
+        root_disk = None
+        initial_free = None
+
+        class Stop(Exception):
+            pass
+
+        def require(value, reason):
+            if not value:
+                raise Stop(reason)
+
+        def alarm(_signum, _frame):
+            raise Stop('whole-case-wall-alarm')
+
+        def disk_guard():
+            if root_disk is not None:
+                growth = initial_free - shutil.disk_usage(root_disk).free
+                result['observed_disk_growth_bytes'] = max(0, growth)
+                require(growth <= limits['task_disk_bytes'], 'task-disk-bound')
+
+        def command(phase, args, *, stdin=None, timeout=30, cleanup=False):
+            end = cleanup_deadline if cleanup else operation_deadline
+            remaining = end - time.monotonic()
+            require(remaining > 0, 'bounded-' + ('cleanup' if cleanup else 'operation') + '-deadline')
+            tick = time.monotonic()
+            output = folder / (phase + '.log')
+            # Docker output is bounded to local private logs; no raw pull/build
+            # errors, headers or credentials are emitted in the JSON receipt.
+            with output.open('wb') as stream:
+                process = subprocess.Popen(prefix + args, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
+                                           stdout=stream, stderr=subprocess.STDOUT, env=environment)
+                try:
+                    if stdin:
+                        process.stdin.write(stdin); process.stdin.close()
+                    deadline = time.monotonic() + min(timeout, remaining)
+                    while process.poll() is None:
+                        require(time.monotonic() < deadline, 'subcommand-timeout-' + phase)
+                        require(output.stat().st_size <= 2 * 1024 ** 2, 'subcommand-output-bound')
+                        if not cleanup:
+                            disk_guard()
+                        time.sleep(0.1)
+                finally:
+                    if process.poll() is None:
+                        process.kill(); process.wait(timeout=2)
+            raw = output.read_bytes()
+            require(len(raw) <= 2 * 1024 ** 2, 'subcommand-output-bound')
+            result['events'].append({'phase': phase, 'seconds': round(time.monotonic() - tick, 3),
+                                     'exit_code': process.returncode, 'bytes': len(raw),
+                                     'sha256': hashlib.sha256(raw).hexdigest()})
+            return process.returncode, raw
+
+        def successful(phase, args, **kwargs):
+            code, raw = command(phase, args, **kwargs)
+            require(code == 0, 'first-command-failure-' + phase)
+            return raw
+
+        def inspect_image(phase, tag):
+            data = json.loads(successful(phase, ['image', 'inspect', tag]))[0]
+            require(data['Architecture'] == 'amd64' and data['Os'] == 'linux', 'image-native-platform-mismatch')
+            return {key: data.get(key) for key in ('Id', 'Architecture', 'Os', 'Created', 'Config', 'RootFS', 'Size')}
+
+        def run_args(name, image, entrypoint):
+            containers.append(name)
+            args = ['run', '--pull', 'never', '--name', name, '--label', 'com.symphony.task=' + owner,
+                    '--platform', 'linux/amd64', '--user', '1001:1001', '--read-only', '--network', 'none',
+                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--cpus', '2',
+                    '--memory', '2g', '--pids-limit', '256', '--ipc', 'private', '--cgroupns', 'private',
+                    '--workdir', '/home/ci', '--env', 'HOME=/home/ci', '--env', 'TMPDIR=/tmp',
+                    '--env', 'MIX_HOME=/cache/mix', '--env', 'HEX_HOME=/cache/hex',
+                    '--env', 'PATH=/usr/local/bin:/usr/bin:/bin', '--env', 'LANG=C.UTF-8',
+                    '--env', 'LC_ALL=C.UTF-8', '--env', 'TZ=UTC']
+            for path, size, mode in [('/home/ci', '16m', '0700'), ('/tmp', '32m', '1777'), ('/cache', '32m', '0700')]:
+                args += ['--tmpfs', path + ':rw,nosuid,nodev,exec,size=' + size + ',mode=' + mode + ',uid=1001,gid=1001']
+            return args + ['--entrypoint', entrypoint, '-i', image, '-']
+
+        previous = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, alarm)
+        signal.setitimer(signal.ITIMER_REAL, 175)
+        try:
+            with tempfile.TemporaryDirectory(prefix='jay716-native-oci-') as directory:
+                folder = Path(directory).resolve();folder.chmod(0o700)
+                home = folder / 'client-home';home.mkdir(mode=0o700)
+                config = folder / 'docker-config';config.mkdir(mode=0o700)
+                (config / 'config.json').write_text('{}\n');(config / 'config.json').chmod(0o600)
+                docker = shutil.which('docker')
+                require(docker and platform.machine() == 'x86_64', 'native-host-or-docker-unavailable')
+                release = Path('/etc/os-release').read_text()
+                require(re.search(r'^ID=ubuntu$', release, re.M) and re.search(r'^VERSION_ID="24\.04"$', release, re.M),
+                        'actual-host-image-not-ubuntu24')
+                socket = Path('/var/run/docker.sock').resolve(strict=True)
+                require(stat.S_ISSOCK(socket.stat().st_mode), 'verified-local-unix-socket-unavailable')
+                prefix = [docker, '--config', str(config), '--host', 'unix://' + str(socket)]
+                environment = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(home),
+                               'DOCKER_CONFIG': str(config), 'DOCKER_HOST': 'unix://' + str(socket),
+                               'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
+                result['image_labels'] = {name: (os.environ.get(name, '') if re.fullmatch(r'[A-Za-z0-9_.-]{0,80}', os.environ.get(name, '')) else 'invalid')
+                                          for name in ('ImageOS', 'ImageVersion')}
+                info = json.loads(successful('daemon-before', ['info', '--format', '{{json .}}'], timeout=10))
+                require(info['OSType'] == 'linux' and info['Architecture'] in ('x86_64', 'amd64'), 'daemon-not-native-linux-amd64')
+                result['daemon'] = {key: info.get(key) for key in ('ID', 'ServerVersion', 'OSType', 'Architecture', 'DockerRootDir')}
+                root_disk = Path(info['DockerRootDir'])
+                initial_free = shutil.disk_usage(root_disk).free
+                require(initial_free >= 12 * 1024 ** 3, 'insufficient-task-disk-headroom')
+                builder = json.loads(successful('builder-before', ['buildx', 'inspect', 'default', '--format', '{{json .}}'], timeout=10))
+                require(builder.get('Driver') == 'docker' and builder.get('Nodes')
+                        and all(n.get('Status') == 'running' for n in builder['Nodes']), 'no-running-integrated-docker-builder')
+                result['builder'] = {'driver': builder['Driver'], 'nodes': [{k: n.get(k) for k in ('Name', 'Endpoint', 'Status', 'Buildkit')} for n in builder['Nodes']]}
+                try:
+                    for n, base in enumerate(bases):
+                        successful('pull-' + str(n), ['pull', '--platform', 'linux/amd64', base], timeout=35)
+                    context = folder / 'context';context.mkdir(mode=0o700)
+                    dockerfile = ('ARG SOURCE_DATE_EPOCH=0\nFROM ' + bases[1] + ' AS otp\nFROM ' + bases[0] + '\n'
+                                  'COPY --from=otp /usr/local/ /usr/local/\nCOPY passwd /etc/passwd\nCOPY group /etc/group\n'
+                                  'USER 1001:1001\nWORKDIR /home/ci\n'
+                                  'ENV HOME=/home/ci TMPDIR=/tmp MIX_HOME=/cache/mix HEX_HOME=/cache/hex LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC\n'
+                                  'LABEL com.symphony.ci.profile="' + profile + '"\n')
+                    inputs = {'Dockerfile': dockerfile,
+                              'passwd': 'root:x:0:0:root:/root:/usr/sbin/nologin\nci:x:1001:1001:CI:/home/ci:/usr/sbin/nologin\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n',
+                              'group': 'root:x:0:\nci:x:1001:\nnogroup:x:65534:\n'}
+                    for name, value in inputs.items():
+                        path = context / name;path.write_text(value);path.chmod(0o644);os.utime(path, (0, 0))
+                    os.utime(context, (0, 0))
+                    result['recipe'] = {'source_date_epoch': 0, 'provenance': False, 'no_cache': True,
+                                        'file_sha256': {name: hashlib.sha256(value.encode()).hexdigest() for name, value in inputs.items()},
+                                        'file_modes': '0644', 'file_mtimes': 0, 'contains_application_source': False,
+                                        'dynamic_ownership_in_image_config': False}
+                    for n in range(2):
+                        tag = owner + ':' + str(n);tags.append(tag)
+                        successful('fresh-build-' + str(n), ['buildx', 'build', '--builder', 'default', '--platform', 'linux/amd64',
+                                   '--network', 'none', '--pull=false', '--no-cache', '--provenance=false',
+                                   '--build-arg', 'SOURCE_DATE_EPOCH=0', '--load', '--progress', 'plain', '--tag', tag, str(context)], timeout=25)
+                        result['images'].append(inspect_image('image-' + str(n), tag))
+                    first, second = result['images']
+                    result['identical_actual_image_fields'] = {key: first[key] == second[key] for key in ('Id', 'Created', 'Config', 'RootFS')}
+                    require(all(result['identical_actual_image_fields'].values()), 'actual-image-config-rootfs-identity-differs-STOP')
+                    require(first['Config']['User'] == '1001:1001' and first['Config']['Labels'].get('com.symphony.ci.profile') == profile,
+                            'fixed-image-profile-differs')
+                    probe = r'''import json,os,platform,pwd,shutil,signal,socket,subprocess,sys,threading
+from pathlib import Path
+r={'scope':'native linux amd64 OCI primitives only; no application or qualification reuse','versions':{},'failed_tool':None}
+def run(tool,args):
+ r['failed_tool']=tool
+ p=subprocess.run([tool]+args,stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=15)
+ if p.returncode:raise RuntimeError(tool+' exit'+str(p.returncode)+' '+(p.stdout+p.stderr)[-2048:])
+ r['versions'][tool]=(p.stdout+p.stderr).strip()[:512];r['failed_tool']=None
+try:
+ assert os.getuid()==os.getgid()==1001 and pwd.getpwuid(1001).pw_name=='ci' and os.getcwd()=='/home/ci' and platform.machine()=='x86_64'
+ assert sys.version_info>=(3,11)
+ for tool,args in [('node',['--version']),('elixir',['--short-version']),('mix',['--version']),('python3',['--version']),('make',['--version']),('git',['--version'])]:run(tool,args)
+ assert r['versions']['node']=='v24.18.0' and r['versions']['elixir']=='1.19.5'
+ v=list(Path('/usr/local/lib/erlang/releases').glob('*/OTP_VERSION'));assert len(v)==1 and v[0].read_text().strip()=='28.5'
+ r['otp_full']='28.5';r['libraries']=[]
+ paths=list(Path('/usr/local/lib/erlang').rglob('*.so'))+list(Path('/usr/local/lib/erlang').glob('erts-*/bin/*'))
+ for p in paths:
+  if not p.is_file():continue
+  with p.open('rb') as f:elf=f.read(4)==b'\x7fELF'
+  if not elf:continue
+  v=subprocess.run(['ldd',str(p)],capture_output=True,text=True,timeout=5);out=v.stdout+v.stderr
+  r['libraries'].append({'path':str(p),'missing':'not found' in out,'status':v.returncode})
+  assert 'not found' not in out and (v.returncode==0 or 'not a dynamic executable' in out or 'statically linked' in out)
+ for d in ['/home/ci','/tmp','/cache']:
+  p=Path(d)/'private-probe';p.write_text('private');assert p.read_text()=='private';p.unlink()
+ p=Path('/tmp/private-exec');p.write_text('#!/bin/sh\nprintf private-exec\n');p.chmod(0o700);assert subprocess.check_output([str(p)])==b'private-exec';p.unlink()
+ p=subprocess.Popen(['sleep','30'],start_new_session=True);os.killpg(p.pid,signal.SIGTERM);assert p.wait(timeout=3)==-signal.SIGTERM
+ s=socket.socket();s.bind(('127.0.0.1',0));s.listen(1)
+ def serve():
+  c,_=s.accept();assert c.recv(4)==b'ping';c.sendall(b'pong');c.close()
+ t=threading.Thread(target=serve);t.start();c=socket.create_connection(s.getsockname(),timeout=3);c.sendall(b'ping');assert c.recv(4)==b'pong';c.close();t.join(3);assert not t.is_alive();s.close()
+ r['result']='PASS_NATIVE_COMPATIBILITY_PRIMITIVES_ONLY'
+except Exception as e:r['result']='STOP_FIRST_PRIMITIVE_FAILURE';r['category']=type(e).__name__;r['reason']=str(e)[:2304]
+print(json.dumps(r,sort_keys=True))
+'''
+                    code, raw = command('combined-primitives', run_args(owner + '-combined', tags[0], 'python3'), stdin=probe.encode(), timeout=30)
+                    require(code == 0 and len(raw) < 16384, 'primitive-executor-failed')
+                    result['primitives'] = json.loads(raw)
+                    if result['primitives'].get('failed_tool') == 'mix':
+                        # Explicit single baseline only after the named Mix failure;
+                        # both commands use non-TTY/devnull stdin and same isolation.
+                        baseline = b"set +e\nprintf '' | timeout 20 mix --version </dev/null 2>&1\ns=$?\nprintf '\\nSOURCE_BASE_MIX_EXIT %s\\n' \"$s\"\n"
+                        code, raw = command('source-mix-baseline', run_args(owner + '-source', bases[1], '/bin/sh')[:-1] + ['-s'], stdin=baseline, timeout=25)
+                        result['source_mix_baseline'] = {'executor_exit': code, 'output_sha256': hashlib.sha256(raw).hexdigest(),
+                                                         'exit': int(re.search(rb'SOURCE_BASE_MIX_EXIT (\d+)', raw)[1]) if re.search(rb'SOURCE_BASE_MIX_EXIT (\d+)', raw) else None,
+                                                         'tail': raw[-2304:].decode(errors='replace')}
+                    require(result['primitives'].get('result') == 'PASS_NATIVE_COMPATIBILITY_PRIMITIVES_ONLY', 'actual-native-primitive-failed-STOP')
+                    result['result'] = 'PASS_NATIVE_COMPATIBILITY_AND_TWO_FRESH_IDENTICAL_IMAGES_ONLY'
+                except Exception as error:
+                    result['result'] = 'STOP_DATA_NOT_QUALIFICATION';result['reason'] = str(error)[:200]
+                finally:
+                    # Only exact names/tags created by this case; no base/cache prune.
+                    for name in containers:
+                        try:
+                            code, raw = command('cleanup-inspect-' + name[-8:], ['inspect', name], cleanup=True, timeout=4)
+                            if code == 0:
+                                value = json.loads(raw)[0]
+                                require(value['Config']['Labels'].get('com.symphony.task') == owner, 'foreign-container-preserved')
+                                result['containers'].append({'id': value['Id'], 'name': name, 'user': value['Config']['User'],
+                                                            'read_only': value['HostConfig']['ReadonlyRootfs'], 'network': value['HostConfig']['NetworkMode'],
+                                                            'bind_mounts': value['Mounts'], 'tmpfs': value['HostConfig']['Tmpfs'],
+                                                            'cap_drop': value['HostConfig']['CapDrop'], 'security_options': value['HostConfig']['SecurityOpt']})
+                                require(not value['Mounts'] and value['Config']['User'] == '1001:1001'
+                                        and value['HostConfig']['ReadonlyRootfs']
+                                        and value['HostConfig']['NetworkMode'] == 'none'
+                                        and 'ALL' in value['HostConfig']['CapDrop']
+                                        and any(v.startswith('no-new-privileges') for v in value['HostConfig']['SecurityOpt']),
+                                        'actual-container-isolation-differs')
+                                successful('cleanup-remove-' + name[-8:], ['rm', '-f', name], cleanup=True, timeout=4)
+                                result['cleanup'].append({'container': name, 'removed': True})
+                        except Exception:result['cleanup'].append({'container': name, 'removed': False})
+                    for n, tag in enumerate(tags):
+                        try:
+                            code, raw = command('cleanup-image-inspect-' + str(n), ['image', 'inspect', tag], cleanup=True, timeout=4)
+                            if code == 0:
+                                value = json.loads(raw)[0]
+                                require(tag in value.get('RepoTags', []) and value['Config']['Labels'].get('com.symphony.ci.profile') == profile, 'foreign-image-preserved')
+                                successful('cleanup-tag-' + str(n), ['image', 'rm', tag], cleanup=True, timeout=4)
+                                result['cleanup'].append({'tag': tag, 'removed': True})
+                        except Exception:result['cleanup'].append({'tag': tag, 'removed': False})
+                    disk_guard()
+        except Exception as error:
+            result['result'] = 'STOP_DATA_NOT_QUALIFICATION';result['reason'] = str(error)[:200]
+        finally:
+            try:
+                result['elapsed_seconds'] = round(time.monotonic() - started, 3)
+                encoded = json.dumps(result, sort_keys=True, separators=(',', ':'))
+                self.assertLessEqual(len(encoded.encode()), 64 * 1024 - 128)
+                print('JAY716_NATIVE_OCI_DIAGNOSTIC_JSON=' + encoded, flush=True)
+                self.assertTrue(all(row['removed'] for row in result['cleanup']), 'owned cleanup unverified; no retry')
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+
+
 if __name__ == '__main__':
     unittest.main()
