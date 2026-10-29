@@ -185,6 +185,32 @@ class OwnedOCIProtocol(unittest.TestCase):
                 else:wrong['HostConfig']['NanoCpus']=2000000000
                 with self.assertRaises(UnknownInput):oci.admit(wrong,root,state,value,network=False)
 
+    def test_owned_hex_fetch_scratch_is_recreated_before_any_offline_compilation(self):
+        from validation_inputs import UnknownInput
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);state=root/'state';state.mkdir()
+            for name in ('hex','mix'): (state/name).mkdir()
+            (state/'hex/cache.bin').write_bytes(b'public timestamped fetch metadata')
+            (state/'mix/tool.beam').write_bytes(b'actual executable bytes')
+            steps=[]
+            def phase(source,private,name,*args,**kwargs):
+                steps.append(name)
+                if name=='test-compile':self.assertEqual(list((state/'hex').iterdir()),[])
+                return 1
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'):
+                controller.prepare()
+            self.assertEqual(steps,['prepare','test-compile','native-manifest'])
+            self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
+            self.assertEqual(controller.oci.environment()['HEX_OFFLINE'],'1')
+            self.assertNotIn('HEX_OFFLINE',controller.oci.environment(network=True))
+            (state/'hex').rmdir();(state/'hex').symlink_to(state/'mix',target_is_directory=True)
+            with self.assertRaises(UnknownInput):controller.oci.clean_hex(state)
+            self.assertEqual((state/'mix/tool.beam').read_bytes(),b'actual executable bytes')
+            steps.clear()
+            with patch.object(controller,'paths',return_value=(root,root,'a'*40,state,root/'selection')),patch.object(controller,'read',return_value=dict(source='a'*40,supported=True)),patch.object(controller,'phase_run',side_effect=phase),patch.object(controller,'summary'),self.assertRaises(UnknownInput):
+                controller.prepare()
+            self.assertEqual(steps,['prepare'])
+
     def test_cleanup_entrypoint_handles_intent_without_completed_image_record(self):
         with tempfile.TemporaryDirectory() as directory:
             state=Path(directory);(state/'oci-intent.json').write_text('{}')
