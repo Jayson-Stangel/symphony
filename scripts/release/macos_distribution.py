@@ -32,6 +32,7 @@ REQUIRED = ('MACOS_SIGNING_P12_BASE64', 'MACOS_SIGNING_P12_PASSWORD',
             'MACOS_SIGNING_IDENTITY_SHA1', 'MACOS_TEAM_ID',
             'MACOS_NOTARY_APPLE_ID', 'MACOS_NOTARY_APP_PASSWORD')
 NOTARIZATION_STAGES = ('notarization.payload-helper', 'notarization.dmg-helper')
+CLEANUP_RECORD = '.keychain-cleanup.json'
 NOTARIZATION_REASONS = package_evidence.REASONS | {'signature-invalid', 'notarization-requirement-unmet',
     'notarization-lookup-unavailable', 'verification-timeout', 'signature-policy-failed',
     'retained-binding-changed', 'acceptance-binding-missing', 'verification-interrupted'}
@@ -251,10 +252,28 @@ def credentials(env):
 
 
 @contextmanager
+def signing_directory(env):
+    """Keep the private recovery record alive if credential cleanup is uncertain."""
+    private = Path(tempfile.mkdtemp(prefix='symphony-signing-', dir=env.get('RUNNER_TEMP'))).resolve()
+    try:
+        yield private
+    finally:
+        if not os.path.lexists(private / CLEANUP_RECORD):
+            shutil.rmtree(private)
+
+
+@contextmanager
 def signing_keychain(env, directory, evidence=None):
     """Preserve the primary failure and try every owned-resource cleanup step."""
     keychain = directory / 'signing.keychain-db'
     p12 = directory / 'identity.p12'
+    recovery = directory / CLEANUP_RECORD
+    info = directory.lstat()
+    require(directory.resolve() == directory and stat.S_ISDIR(info.st_mode)
+            and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700,
+            'unsafe private signing directory')
+    require(not any(os.path.lexists(path) for path in (recovery, keychain, p12)),
+            'unreconciled signing credentials; inspect original private directory')
     password = secrets.token_urlsafe(32)
     diagnostics = KeychainDiagnostics(evidence)
     search_list = None
@@ -263,6 +282,20 @@ def signing_keychain(env, directory, evidence=None):
     try:
         search_list = shlex.split(diagnostics.command(
             'keychain.snapshot-search-list', 'security', 'list-keychains', '-d', 'user'))
+        require(len(search_list) <= 64 and len(set(search_list)) == len(search_list)
+                and str(keychain) not in search_list
+                and all(isinstance(path, str) and Path(path).is_absolute() and len(path) <= 4096
+                        and not any(c in path for c in ('\x00', '\n', '\r')) for path in search_list),
+                'unsafe signing search list')
+        # Fixed private metadata, not an artifact. The existing job hook computes
+        # deletion targets itself and may only restore paths it already observes.
+        encoded = json.dumps({'schema': 1, 'search_list': search_list}).encode()
+        require(len(encoded) <= 65536, 'signing recovery metadata exceeds bound')
+        descriptor = os.open(recovery, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(encoded)
+            target.flush(); os.fsync(target.fileno())
+        SignedCheckpoint.sync_directory(directory)  # Before even creating P12.
 
         def decode_identity():
             try:
@@ -330,8 +363,12 @@ def signing_keychain(env, directory, evidence=None):
                                                   stage='cleanup.inspect-search-list'))
 
             cleanup('cleanup.inspect-search-list', inspect_search_list)
-            # An inspection failure must not prevent restoring the saved snapshot.
-            if current.get('value') != search_list:
+            # Never overwrite a concurrent user's list mutation or restore from
+            # unobserved state. Leave the recovery record for fail-closed handling.
+            cleanup('cleanup.check-search-list', lambda: require(
+                current.get('value') in (search_list, [str(keychain), *search_list]),
+                'search list changed; private signing cleanup requires reconciliation'))
+            if current.get('value') == [str(keychain), *search_list]:
                 cleanup('cleanup.restore-search-list', lambda: run(
                     'security', 'list-keychains', '-d', 'user', '-s', *search_list,
                     stage='cleanup.restore-search-list'))
@@ -342,6 +379,9 @@ def signing_keychain(env, directory, evidence=None):
                 require(restored == search_list, 'keychain search list cleanup incomplete')
 
             cleanup('cleanup.verify-search-list-restored', verify_search_list)
+        if not cleanup_errors:
+            cleanup('cleanup.remove-recovery-record', lambda: recovery.unlink(missing_ok=True))
+            cleanup('cleanup.sync-private-directory', lambda: SignedCheckpoint.sync_directory(directory))
         if diagnostics.write_failed:
             cleanup_errors.append(ValueError('keychain diagnostics could not be retained'))
         if cleanup_errors and not primary_failure:
@@ -583,9 +623,7 @@ def build(manifest, helper, output, env, qualified_archive=None):
     evidence.mkdir()
     checkpoint = SignedCheckpoint(output, revision, manifest, original)
     # Outputs stay private until all signatures, notarization and assessment pass.
-    with tempfile.TemporaryDirectory(prefix='symphony-signing-', dir=env.get('RUNNER_TEMP')) as temporary:
-        private = Path(temporary)
-        private.chmod(0o700)
+    with signing_directory(env) as private:
         with signing_keychain(env, private, evidence) as keychain:
             package = private / 'packages'
             child_env = dict(env, SYMPHONY_MACOS_KEYCHAIN=str(keychain),

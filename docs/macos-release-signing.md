@@ -501,6 +501,24 @@ action. It adds no files to the completed public asset set. A successful build
 still requires every existing signature, ticket, assessment, provenance and
 cleanup check before writing the normal ready receipt.
 
+Credential cleanup has a separate private `.keychain-cleanup.json` record in
+the signing scratch directory. It saves only the original user keychain search
+list, before creating the P12 or changing Security state. Verified cleanup removes
+the record and scratch; uncertain cleanup preserves both. A new attempt must not
+overwrite that directory. These records contain private paths and must not be
+uploaded with release evidence or checkpoints.
+
+The maintained persistent-runner completion hook can reconcile one such directory
+under its own native runner temp root. It validates ownership, permissions, fixed
+credential paths and the observed search list before mutation. Foreign, corrupt,
+redirected or conflicting state enters its existing fail-closed service stop;
+recovery cannot add search-list paths supplied only by metadata. Unrelated
+keychains are preserved. The record does not authenticate a malicious process
+already running as the same user. Source tests and direct Mac refusal cleanup do
+not establish installed-hook activation, abrupt interruption or isolation of a
+following Actions job; those require separate native acceptance. Installing a
+changed hook is an operational action, not an effect of editing this source.
+
 ### Sign once on the operator's Apple Silicon Mac
 
 Use a clean isolated checkout at the exact approved `main` source and retain
