@@ -163,8 +163,10 @@ def capability():
         selection.update(supported=False, reason='evidence service unavailable or caller ineligible; ordinary fresh qualification')
         store(selected, selection)
         output(available=False, supported=False)
-        summary('Evidence capability unavailable; stage=' + diagnostic['stage'] + '; error=' + diagnostic['error']
-                + '; site=' + diagnostic['site'] + '. Ordinary full fresh qualification remains required; reuse is disabled.')
+        message = ('Evidence capability unavailable; stage=' + diagnostic['stage'] + '; error=' + diagnostic['error']
+                   + '; site=' + diagnostic['site'] + '. Ordinary full fresh qualification remains required; reuse is disabled.')
+        print(message, flush=True)
+        summary(message)
 
 
 def run(arguments, root, environment, *, log=None, seconds=1200):
