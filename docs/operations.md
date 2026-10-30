@@ -148,6 +148,32 @@ These update commands preserve project workflows, credentials and native login;
 they do not turn a source installation into a packaged installation. Use separate
 paths and a namespace for [isolated candidate testing](packaged-install.md#isolated-candidate-installation).
 
+## Workflow reload identity
+
+The successful `/api/v1/state` response includes a `workflow` object with
+`sha256`, `status`, `accepted_at`, and `checked_at`. The SHA-256 identifies the exact
+complete bytes read and successfully parsed and validated by the workflow store,
+including whitespace and prompt-only edits. It is not a hash of normalized
+settings or a later disk read. `accepted_at` records acceptance of changed bytes;
+`checked_at` records the latest reload check, both as UTC ISO 8601 timestamps.
+Unchanged valid bytes preserve `accepted_at`. Status is `loaded`, `rejected`, or
+`unavailable` when the workflow store is absent (with null hash and timestamps).
+
+A rejected parse, configuration validation, or read keeps the previous accepted
+workflow and hash. Recovery to valid bytes clears rejection. This object exposes
+no prompt, configuration, source path, or rejection details. Existing sessions
+retain their context; a newly started session reads the currently accepted prompt.
+
+To diagnose reloads, compare the host workflow's SHA-256 with the bytes visible
+at `/etc/symphony/WORKFLOW.md` inside the container and the API's accepted hash.
+For example, use `shasum -a 256 WORKFLOW.md` on macOS and
+`docker exec CONTAINER sha256sum /etc/symphony/WORKFLOW.md` for the container view.
+After a valid reload all three should agree. After a rejected reload, the API
+continues identifying the last accepted bytes rather than attesting rejected disk
+contents. This identity field cannot correct stale single-file bind mounts;
+directory-mount adoption and native Docker Desktop acceptance remain separate
+unfinished work under JAY-783. It does not authorize changing an installed runner.
+
 ## Credentials and project identity
 
 Use the exact credential path printed by `init` or a missing-credentials `run`
