@@ -909,9 +909,14 @@ For a supported profile in the same repository's ready PR or protected push,
 the existing capability stage authenticates the actual caller, then performs a
 real workflow-token self-comparison GET of the authenticated protected `dev`
 revision. The response must be identical with that exact merge base. Failure of
-this caller, compare or artifact-read boundary fails the required job before
-costly preparation or coverage. This proves API access, not ancestry or reuse.
-Unsupported profiles and untrusted forks retain ordinary fresh qualification.
+this caller, compare or artifact-read boundary disables evidence reuse before
+preparation and selects the existing ordinary mise/Mix cache and fresh
+`make elixir-ci` path, including quality, build, full coverage and Dialyzer.
+Bounded diagnostics identify the failed stage without provider output or secrets.
+The capability result gates controller loading and OCI preparation as well as
+reuse; unavailable evidence cannot install retained checkpoints or mint a proof.
+Successful capability proves API access, not ancestry or reuse. Unsupported
+profiles and untrusted forks retain ordinary fresh qualification.
 
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle
