@@ -119,6 +119,7 @@ AUDITED_NATIVE_STEPS = {
 # affected-owner review of a new explicit fingerprint, even for unrelated edits.
 AUDITED_NATIVE_WORKFLOWS = {
     'runner-release': {
+        '63e84dd4f34d75fb5c6828e9de8d03efac2869ba526c944a75fad122db9121d4',  # Production-preparation selector variable only; native bodies unchanged.
         '8e99083f7598b36c6c223c507c263520ec062d9f348354a35d5456f078abf0ea',  # Persistent-capacity selector only; native producer bodies unchanged.
         'd52762aa3178f5d60f09403893f533d1b446dcffecbf02afa0f7464c806f62d9',
         'da3eba8c657f54ef27741d1ad7520c3751106ba921f2544de87df787349acb24',
