@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 
 import elixir_coverage_profile as profile
 from validation_inputs import UnknownInput, command, controlled_environment, digest, file_identity
@@ -111,43 +112,59 @@ def context(service, source):
 
 def capability():
     _, temporary, source, _, selected = paths()
-    supported = read(selected).get('supported') is True
-    # Environment selects only whether failure must stop this required job.
+    selection = read(selected)
+    supported = selection.get('supported') is True
+    # Environment selects the capability probes, never reuse authorization.
     # Actual API caller metadata still supplies every eligibility decision.
     required = supported and (
         (os.environ.get('GITHUB_EVENT_NAME') == 'push'
          and os.environ.get('GITHUB_REF') in ('refs/heads/dev', 'refs/heads/main'))
         or (os.environ.get('GITHUB_EVENT_NAME') == 'pull_request'
             and os.environ.get('COVERAGE_HEAD_REPOSITORY') == REPOSITORY))
+    stage = 'client'
     try:
         service = client(temporary)
+        stage = 'caller_context'
         value = context(service, source)
         if required:
+            stage = 'caller_eligibility'
             require(value['eligible_consumer'] or value['eligible_producer'],
                     'supported caller is not actually eligible')
             revision = value['trusted_dev_revision']
             require(type(revision) is str and SHA.fullmatch(revision),
                     'authenticated protected dev revision unavailable')
+            stage = 'protected_self_compare'
             comparison = service.read('compare/' + revision + '...' + revision)
             require(type(comparison) is dict and comparison.get('status') == 'identical'
                     and type(comparison.get('merge_base_commit')) is dict
                     and comparison['merge_base_commit'].get('sha') == revision,
                     'protected dev self comparison differs')
+        stage = 'artifact_metadata'
         artifacts = service.read('actions/artifacts?per_page=1')
         require(type(artifacts) is dict and type(artifacts.get('artifacts')) is list,
                 'artifact read returned malformed metadata')
         store(temporary / 'symphony-evidence-capability.json', dict(available=True, source=source, context=value,
               protected_compare=required))
-        output(available=True)
+        output(available=True, supported=supported)
         summary('Evidence capability: actual workflow-token run/job/source and artifact metadata GETs succeeded; protected self comparison=' + str(required).lower() + '; this is not reuse authorization.')
-    except (Fresh, ValueError, KeyError, TypeError, OSError):
+    except (Fresh, ValueError, KeyError, TypeError, OSError) as error:
+        # Diagnose the exact local guard without printing provider payloads,
+        # credentials, environment values or arbitrary exception text.
+        sites = [frame for frame in traceback.extract_tb(error.__traceback__)
+                 if Path(frame.filename).name in ('elixir_coverage.py', 'validation_evidence.py')
+                 and frame.name != 'require']
+        site = sites[-1] if sites else None
+        diagnostic = dict(stage=stage, error=type(error).__name__,
+                          site=(Path(site.filename).name + ':' + site.name + ':' + str(site.lineno)) if site else 'unavailable')
         store(temporary / 'symphony-evidence-capability.json', dict(available=False, source=source,
-              reason='required_supported_profile_evidence_unavailable' if required else 'fresh_fallback'))
-        output(available=False)
-        if required:
-            summary('Required supported-profile evidence boundary failed before preparation; actual caller, protected self comparison and artifact GET capability are required.')
-            raise Fresh('required supported-profile evidence capability unavailable') from None
-        summary('Evidence service unavailable or caller ineligible; full fresh qualification remains required.')
+              reason='fresh_fallback', diagnostic=diagnostic))
+        # Select the existing ordinary setup and make elixir-ci path before any
+        # OCI preparation, controller loading or protected cache restoration.
+        selection.update(supported=False, reason='evidence service unavailable or caller ineligible; ordinary fresh qualification')
+        store(selected, selection)
+        output(available=False, supported=False)
+        summary('Evidence capability unavailable; stage=' + diagnostic['stage'] + '; error=' + diagnostic['error']
+                + '; site=' + diagnostic['site'] + '. Ordinary full fresh qualification remains required; reuse is disabled.')
 
 
 def run(arguments, root, environment, *, log=None, seconds=1200):
