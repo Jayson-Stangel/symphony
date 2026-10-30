@@ -140,7 +140,7 @@ def capability():
                     and comparison['merge_base_commit'].get('sha') == revision,
                     'protected dev self comparison differs')
         stage = 'artifact_metadata'
-        artifacts = service.read('actions/artifacts/0')  # Temporary hosted unavailable-evidence experiment
+        artifacts = service.read('actions/artifacts?per_page=1')
         require(type(artifacts) is dict and type(artifacts.get('artifacts')) is list,
                 'artifact read returned malformed metadata')
         store(temporary / 'symphony-evidence-capability.json', dict(available=True, source=source, context=value,
