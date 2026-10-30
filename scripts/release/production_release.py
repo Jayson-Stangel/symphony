@@ -197,7 +197,9 @@ def verify_signed(folder, inputs, revision):
     required_cleanup = {'cleanup.remove-p12', 'cleanup.verify-p12-absent', 'cleanup.delete-keychain',
                         'cleanup.verify-keychain-absent', 'cleanup.inspect-search-list',
                         'cleanup.verify-search-list-restored'}
-    require(required_cleanup <= set(cleanup) and set(cleanup) <= required_cleanup | {'cleanup.restore-search-list', 'cleanup.read-restored-search-list'}
+    require(required_cleanup <= set(cleanup) and set(cleanup) <= required_cleanup | {
+                'cleanup.restore-search-list', 'cleanup.read-restored-search-list',
+                'cleanup.check-search-list', 'cleanup.remove-recovery-record', 'cleanup.sync-private-directory'}
             and all(status == 'success' for status in cleanup.values()),
             'production credential cleanup incomplete')
     return manifest

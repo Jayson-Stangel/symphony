@@ -42,7 +42,8 @@ KEYCHAIN_STAGES = {'keychain.' + name for name in ('snapshot-search-list', 'deco
     'partition-list', 'find-identity', 'match-pinned-identity', 'remove-import-file')}
 KEYCHAIN_STAGES.update('cleanup.' + name for name in ('remove-p12', 'verify-p12-absent',
     'delete-keychain', 'verify-keychain-absent', 'inspect-search-list', 'restore-search-list',
-    'read-restored-search-list', 'verify-search-list-restored'))
+    'read-restored-search-list', 'verify-search-list-restored', 'check-search-list',
+    'remove-recovery-record', 'sync-private-directory'))
 
 
 def staging_api(path, binary=False):

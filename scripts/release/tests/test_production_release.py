@@ -223,6 +223,25 @@ class SignedSelectionTest(unittest.TestCase):
                 inputs,signed=self.fixture(Path(temporary));mutation(signed)
                 with self.assertRaises((ValueError,KeyError,OSError)):production.verify_signed(signed,inputs,'a'*40)
 
+    def test_recovery_cleanup_stages_remain_strict_and_old_receipts_stay_supported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            inputs,signed=self.fixture(Path(temporary))
+            path=signed/'evidence/keychain-diagnostics.json'
+            original=json.loads(path.read_text())
+            for stage in ('check-search-list','remove-recovery-record','sync-private-directory'):
+                value=copy.deepcopy(original)
+                value['operations'].append({'stage':'cleanup.'+stage,'status':'success'})
+                production.write_json(path,value)
+                production.verify_signed(signed,inputs,'a'*40)
+                value['operations'][-1]['status']='failed';production.write_json(path,value)
+                with self.assertRaisesRegex(ValueError,'credential cleanup incomplete'):
+                    production.verify_signed(signed,inputs,'a'*40)
+            value=copy.deepcopy(original)
+            value['operations'].append({'stage':'cleanup.unknown','status':'success'})
+            production.write_json(path,value)
+            with self.assertRaisesRegex(ValueError,'credential cleanup incomplete'):
+                production.verify_signed(signed,inputs,'a'*40)
+
 class PublicationPeer:
     """Private drafts deliberately have no by-tag API representation."""
     revision = 'a' * 40
