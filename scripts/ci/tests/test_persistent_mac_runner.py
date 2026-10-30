@@ -33,6 +33,8 @@ class Routing(unittest.TestCase):
     def test_actual_ordinary_targets_and_manual_reusable_targets(self):
         for flow,keys in routing.PERSISTENT_TARGETS.items():
             for key in keys:
+                if key == 'packaged-release-platform':
+                    continue  # Only the exact production-preparation caller admits this target.
                 self.assertEqual(self.select(consumer=flow,key=key)['runner'],runner.NAME)
         self.env.update(GITHUB_REF='refs/heads/main',GITHUB_WORKFLOW_REF=REPO+'/.github/workflows/make-all.yml@refs/heads/main')
         self.assertEqual(self.select()['path'],'persistent')
@@ -74,19 +76,136 @@ class Routing(unittest.TestCase):
                     self.assertEqual(routing.main(),0)
                     read.assert_not_called();old.assert_not_called()
                 self.assertIn('persistent=true' if args else 'runner='+runner.NAME,out.getvalue())
-    def test_real_workflow_selectors_keep_required_bodies_and_production_default(self):
+    def test_real_workflow_selectors_keep_required_bodies_and_final_package_wiring(self):
         from test_components import job,workflow
         for name,key in (('make-all','mac-runner'),('package-checks','mac-runner'),
                          ('native-manager-helpers','mac-runner-helper'),('current-manager-package','mac-runner-package'),
-                         ('runner-release','mac-runner-packaged-candidate'),('burrito-release','mac-runner-build')):
+                         ('runner-release','mac-runner-packaged-candidate'),('burrito-release','mac-runner-build'),
+                         ('runner-release','mac-runner-packaged-release-platform')):
             block=job(workflow(name),key)
             self.assertEqual(block.count('PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}'),2)
             self.assertIn('timeout-minutes: 8',block)
             self.assertIn('mac_runner_request.py --probe',block)
         self.assertIn('timeout-minutes: 5',job(workflow('make-all'),'platform-contracts'))
         self.assertIn('timeout-minutes: 30',job(workflow('package-checks'),'native-host-package'))
-        self.assertNotIn('PERSISTENT_MAC_RUNNER',job(workflow('runner-release'),'mac-runner-packaged-release-platform'))
         self.assertNotIn('owned_mac_single_job',workflow('burrito-release'))
+
+
+class ProductionRouting(unittest.TestCase):
+    def setUp(self):
+        self.env = dict(PERSISTENT_MAC_RUNNER=runner.NAME, GITHUB_REPOSITORY=REPO,
+            GITHUB_ACTOR='Jayson-Stangel', GITHUB_TRIGGERING_ACTOR='Jayson-Stangel',
+            GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
+            GITHUB_SHA='a'*40, GITHUB_WORKFLOW_SHA='a'*40,
+            GITHUB_WORKFLOW_REF=REPO+'/.github/workflows/burrito-release.yml@refs/heads/main',
+            GITHUB_RUN_ID='12', GITHUB_RUN_ATTEMPT='2')
+        self.event = dict(inputs=dict(production_prepare='true', packaged_host_preparation='true',
+                                     packaged_host_revision='a'*40))
+        self.verify = Mock()
+
+    def select(self, consumer='.github/workflows/burrito-release.yml', key='build'):
+        return routing.persistent_runner(self.env, self.event, consumer, key, verify=self.verify)
+
+    def test_exact_preparation_reaches_all_actual_consumers_with_original_identity(self):
+        for consumer, key in routing.PRODUCTION_PREPARE_TARGETS:
+            with self.subTest(consumer=consumer, key=key):
+                self.verify.reset_mock()
+                self.assertEqual(self.select(consumer, key)['runner'], runner.NAME)
+                identity = self.verify.call_args.args[0]
+                self.assertEqual(identity['controller_workflow'], '.github/workflows/burrito-release.yml')
+                self.assertEqual((identity['consumer_workflow'], identity['job_key']), (consumer, key))
+                self.assertEqual((identity['source_sha'], identity['workflow_sha']), ('a'*40, 'a'*40))
+                self.assertEqual((identity['run_id'], identity['run_attempt']), (12, 2))
+        self.event['inputs']['production_prepare'] = True
+        self.event['inputs']['packaged_host_preparation'] = True
+        self.assertEqual(self.select()['path'], 'persistent')
+
+    def test_other_consumers_events_refs_actors_and_publication_are_not_enabled(self):
+        for consumer, key in (('.github/workflows/native-manager-helpers.yml', 'helper'),
+                              ('.github/workflows/current-manager-package.yml', 'package'),
+                              ('.github/workflows/macos-local-signing-import.yml', 'verify'),
+                              ('.github/workflows/burrito-release.yml', 'controller-diagnostics'),
+                              ('.github/workflows/make-all.yml', 'platform-contracts')):
+            self.assertIsNone(self.select(consumer, key))
+        for key, value in [('GITHUB_EVENT_NAME', 'push'), ('GITHUB_EVENT_NAME', 'pull_request'),
+                           ('GITHUB_REF', 'refs/heads/dev'), ('GITHUB_REF', 'refs/tags/v0.0.7'),
+                           ('GITHUB_ACTOR', 'other'), ('GITHUB_TRIGGERING_ACTOR', 'other'),
+                           ('GITHUB_REPOSITORY', 'other/repo'),
+                           ('GITHUB_WORKFLOW_REF', REPO+'/.github/workflows/runner-release.yml@refs/heads/main')]:
+            with self.subTest(key=key, value=value), patch.dict(self.env, {key: value}):
+                self.assertIsNone(self.select())
+        for key in ('publish', 'prepare_release'):
+            with patch.dict(self.event['inputs'], {key: 'true'}):
+                self.assertIsNone(self.select())
+        self.verify.assert_not_called()
+
+    def test_malformed_eligible_identity_and_failed_live_checks_refuse(self):
+        for key, value in [('packaged_host_revision', 'b'*40), ('packaged_host_revision', None),
+                           ('packaged_host_preparation', 'false'), ('controller_only', 'true'),
+                           ('engine_only', 'true'), ('bootstrap_previous', 'unexpected')]:
+            with self.subTest(key=key), patch.dict(self.event['inputs'], {key: value}):
+                with self.assertRaises(routing.Refusal): self.select()
+        for key, value in [('GITHUB_RUN_ID', '0'), ('GITHUB_RUN_ATTEMPT', 'broken'),
+                           ('GITHUB_SHA', 'bad'), ('GITHUB_WORKFLOW_SHA', 'b'*40)]:
+            with self.subTest(key=key), patch.dict(self.env, {key: value}):
+                with self.assertRaises(routing.Refusal): self.select()
+        self.verify.assert_not_called()
+        self.verify.side_effect = routing.Refusal('live source differs')
+        with self.assertRaisesRegex(routing.Refusal, 'live source differs'): self.select()
+
+    def test_actual_cli_queues_without_probe_wait_and_reports_consumer(self):
+        with tempfile.TemporaryDirectory() as d:
+            event = Path(d)/'event.json'; event.write_text(json.dumps(self.event))
+            summary = Path(d)/'summary.md'
+            for consumer, key in routing.PRODUCTION_PREPARE_TARGETS:
+                env = dict(self.env, GITHUB_EVENT_PATH=str(event), GITHUB_STEP_SUMMARY=str(summary),
+                           SELECT_WORKFLOW_PATH=consumer, SELECT_JOB_KEY=key)
+                original = routing.persistent_runner
+                def local(*args, **kw): return original(*args, **kw, verify=self.verify)
+                for args in (['--probe'], []):
+                    out = io.StringIO()
+                    with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['selector', *args]), \
+                         patch.object(routing, 'persistent_runner', side_effect=local), \
+                         patch.object(routing, 'read_statuses') as statuses, \
+                         patch.object(routing, 'select_owned_runner') as fallback, \
+                         redirect_stdout(out), redirect_stderr(io.StringIO()):
+                        self.assertEqual(routing.main(), 0)
+                        statuses.assert_not_called(); fallback.assert_not_called()
+                    self.assertIn('persistent=true' if args else 'runner='+runner.NAME, out.getvalue())
+                self.assertIn('consumer='+consumer+'; job='+key, summary.read_text())
+            self.assertIn('readiness is not test qualification', summary.read_text())
+
+    def test_disabled_configuration_keeps_bounded_fallback_not_execution_retry(self):
+        self.env['PERSISTENT_MAC_RUNNER'] = ''
+        self.assertIsNone(self.select())
+        wait = Mock(return_value=dict(path='hosted', reason='offline', runner=None))
+        result = routing.select_owned_runner('', self.env, self.event,
+            '.github/workflows/runner-release.yml', 'packaged-release-platform',
+            verify=self.verify, wait=wait)
+        self.assertEqual((result['path'], result['runner']), ('hosted', 'macos-14'))
+        wait.assert_called_once()
+        wait.side_effect = routing.Refusal('owned preparation cleanup unverified; no hosted fallback')
+        with self.assertRaises(routing.Refusal):
+            routing.select_owned_runner('', self.env, self.event,
+                '.github/workflows/runner-release.yml', 'packaged-release-platform', verify=self.verify, wait=wait)
+
+    def test_real_call_graph_retains_source_guards_and_optional_candidate(self):
+        from test_components import job, workflow
+        engine = workflow('burrito-release'); packages = workflow('runner-release')
+        self.assertIn('prepare_release: ${{ inputs.production_prepare }}', job(engine, 'runners'))
+        self.assertIn('publish: false', job(engine, 'runners'))
+        self.assertIn('needs: production-source', job(engine, 'qualification'))
+        self.assertIn('test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"', job(engine, 'production-source'))
+        self.assertIn('uses: ./.github/workflows/package-checks.yml', job(packages, 'package-inputs'))
+        final = job(packages, 'mac-runner-packaged-release-platform')
+        self.assertIn('needs: publication-preflight', final)
+        self.assertIn("needs.publication-preflight.result == 'success'", final)
+        self.assertIn("needs.qualification.outputs.final_only == 'false'", job(packages, 'mac-runner-packaged-candidate'))
+        for flow, target in [('burrito-release', 'build'), ('package-checks', 'native-host-package'),
+                             ('runner-release', 'packaged-release-platform'), ('runner-release', 'packaged-candidate')]:
+            block = job(workflow(flow), target)
+            self.assertIn("matrix.platform == 'macos' && needs.mac-runner", block)
+            self.assertIn('|| matrix.runner', block)
 
 
 class NativeConfig(unittest.TestCase):
