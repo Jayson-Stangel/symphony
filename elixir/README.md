@@ -536,6 +536,13 @@ The web observability UI runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+Successful `/api/v1/state` responses include `workflow.sha256`, `status`,
+`accepted_at` and `checked_at`. The hash covers the exact bytes parsed and
+validated by the workflow store, including prompt-only edits. Rejection retains
+the prior accepted workflow/hash; the API exposes no prompt, configuration, path
+or rejection details. See [workflow reload identity](../docs/operations.md#workflow-reload-identity)
+for comparison commands and the remaining single-file mount limitation.
+
 `/api/v1/state` also exposes `agent.execution.mode`, `requested` and `effective`
 for the selected runtime's execution environment. These show workspace root,
 server host, SSH host count and categorical Codex approval/sandbox settings.
