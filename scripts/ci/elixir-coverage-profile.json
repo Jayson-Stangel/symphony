@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "audited_revision": "8c5cac45e5cbaec0d3353e97688f24a9d24b245c",
+  "audited_source_sha256": "c345898de2e63daa4b2b1446c2435ef630e39ab3e5223770877f28f17c5fcccd",
+  "audited_source_files": 199,
+  "family": "full-exunit-coverage",
+  "tool_versions": {
+    "node": "v24.18.0",
+    "elixir": "1.19.5",
+    "otp": "28.5"
+  },
+  "coverage_command": [
+    "mix",
+    "test",
+    "--cover",
+    "--seed",
+    "0",
+    "--max-failures",
+    "1"
+  ],
+  "expected_tests": 685,
+  "expected_linux_skips": 10,
+  "measured_coverage": 100.0,
+  "cache_profile": "full-exunit-oci-v2",
+  "limitations": [
+    "Only the audited 199-source family and actual read-only OCI identity may reuse.",
+    "Unknown image/runtime/source/cache state stays fresh or refuses before compilation.",
+    "Fresh quality/build/npm/compilation/Dialyzer remain required; native/artifact families remain separate.",
+    "Default hosted CPU/concurrency is retained; 2CPU/2GiB preflight proofs are not full qualification.",
+    "Hosted image equality/full685/100/provenance/cache restoration/suppression/net benefit remain open acceptance."
+  ]
+}

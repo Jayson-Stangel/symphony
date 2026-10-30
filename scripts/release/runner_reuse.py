@@ -5,11 +5,69 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
+import re
 
 import artifacts
 from component_discovery import discover
 from component_provenance import verify_origin
 from runner_inputs import identity
+
+
+def input_delta(previous, current):
+    """Compare complete Docker-derived snapshots, including removed COPY inputs."""
+    old, new = previous['inputs'], current['inputs']
+    paths = sorted(path for path in set(old.get('files', {})) | set(new.get('files', {}))
+                   if old.get('files', {}).get(path) != new.get('files', {}).get(path))
+    controls = [key for key in ('recipe', 'build_args', 'directories', 'ignore_path', 'ignore_sha256', 'platform')
+                if old.get(key) != new.get(key)]
+    return {'changed_effective_paths': paths, 'changed_input_controls': controls}
+
+
+def previous_inputs(root, record):
+    """Local read-only source reconstruction for explanation, never an admission path.
+
+    Missing history or old unsupported recipes remain an explicit diagnostic gap;
+    they never turn an input mismatch into reuse. No ref fetch or source code runs.
+    """
+    revision = record.get('source_revision', '')
+    artifacts.require(re.fullmatch(r'[a-f0-9]{40}', revision) is not None, 'invalid diagnostic source')
+    dependencies = record.get('dependencies', {})
+    artifacts.require(isinstance(dependencies, dict), 'invalid diagnostic dependencies')
+    options = dependencies.get('build_options', {})
+    artifacts.require(isinstance(options, dict) and
+                      all(isinstance(k, str) and isinstance(v, str) for k, v in options.items()),
+                      'invalid diagnostic build options')
+    # Source snapshots are data, not a checkout that may invoke developer hooks
+    # or source-selected global smudge filters. Do not inherit Git overrides.
+    environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    subprocess.run(['git', '-C', str(root), 'cat-file', '-e', revision + '^{commit}'],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+    with tempfile.TemporaryDirectory(prefix='symphony-input-diagnostic-') as folder:
+        subprocess.run(['git', '-c', 'core.hooksPath='+os.devnull, 'clone', '--quiet', '--shared', '--no-checkout', str(root), folder],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+        subprocess.run(['git', '-c', 'core.hooksPath='+os.devnull, '-C', folder, 'checkout', '--quiet', '--no-recurse-submodules', '--detach', revision],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+        options = {k: v for k, v in options.items()
+                   if k != 'TARGETARCH'}
+        return identity(folder, record['provider'], record['architecture'], options)
+
+
+def evidence_refusal(error):
+    # Never include arbitrary service stderr, token-bearing URLs or candidate
+    # strings in plans. Fixed categories expose the failing boundary safely.
+    text = str(error).lower() if isinstance(error, ValueError) else ''
+    for category, words in (
+        ('expired_or_missing_payload', ('expired', 'absent')),
+        ('untrusted_source_or_workflow', ('history', 'repository', 'controller', 'workflow', 'ancestry')),
+        ('wrong_native_platform', ('native platform',)),
+        ('failed_or_missing_qualification', ('did not pass', 'missing or ambiguous', 'cancelled')),
+        ('origin_service_unavailable', ('service unavailable',)),
+        ('immutable_integrity_mismatch', ('checksum', 'digest', 'corrupt', 'record differs', 'origin'))):
+        if any(word in text for word in words):
+            return category
+    return 'incompatible_or_unavailable_evidence'
 
 
 def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None, browser_inputs=None, same_source_bridge=False, reusable=lambda record: True):
@@ -26,6 +84,7 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
             verified[key] = verify(record)
         return verified[key]
 
+    explained = {}
     choices = {}
     builds, reuses = [], []
     browser = {}
@@ -42,9 +101,19 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
             current = inputs(root, provider, architecture)
             native = "ubuntu-24.04-arm" if architecture == "arm64" else "ubuntu-24.04"
             decision = {"action": "build", "reason": "no qualified component with matching effective source inputs",
-                        "source_revision": manager, "input_identity": current["input_identity"], "inputs": current["inputs"]}
+                        "source_revision": manager, "input_identity": current["input_identity"], "inputs": current["inputs"],
+                        "candidate_decisions": []}
             compatible = [record for record in records if record.get("provider") == provider and record.get("architecture") == architecture]
+            if not compatible:
+                decision['reason'] = 'no discovered candidate for this provider/native architecture'
             for record in compatible:
+                qualification = record.get('qualification')
+                qualification = qualification if isinstance(qualification, dict) else {}
+                audit = {'source_revision': record.get('source_revision'),
+                         'input_identity': record.get('input_identity'),
+                         'original_run_id': qualification.get('run_id'),
+                         'original_artifact_id': qualification.get('artifact_id')}
+                decision['candidate_decisions'].append(audit)
                 matches = record.get("input_identity") == current["input_identity"]
                 matches_browser = (architecture in browser and
                                    record.get("browser_input_identity") == browser[architecture]["input_identity"])
@@ -53,25 +122,54 @@ def plan(root, baseline, verify=verify_origin, inputs=identity, candidates=None,
                     from finite_transition import evaluate_component
                     try:finite=evaluate_component(root,record,provider,architecture)
                     except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):pass
+                if not matches:
+                    audit['outcome'] = 'effective_inputs_differ'
+                    key = json.dumps(record, sort_keys=True)
+                    if key not in explained:
+                        try:
+                            previous = previous_inputs(root, record)
+                            if previous['input_identity'] == record.get('input_identity'):
+                                explained[key] = input_delta(previous, current)
+                            else:
+                                explained[key] = {'input_comparison': 'original_snapshot_not_reproduced'}
+                        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+                            explained[key] = {'input_comparison': 'original_source_or_recipe_unavailable'}
+                    audit.update(explained[key])
                 if not matches and not matches_browser and finite is None:
                     continue
                 try:
                     receipt = origin(record)
-                except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+                except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+                    audit.update(outcome='original_evidence_refused', refusal=evidence_refusal(error))
                     if matches:
                         decision["reason"] = "original immutable native evidence/payload unavailable or incompatible; verified-input rebuild required"
                     continue
                 if matches_browser and provider not in browser_evidence[architecture]:
                     browser_evidence[architecture][provider] = {"record": record, "origin": receipt}
-                if (matches or finite is not None) and not same_source_bridge and decision["action"] == "build" and reusable(record):
-                    original = {key: value for key, value in record.items() if key not in ("provider", "architecture")}
-                    decision.update(action="reuse", reason="unchanged declared inputs; original qualified resolution retained",
-                                    source_revision=record["source_revision"], runner=original, record=record,
-                                    origin=receipt, verified_origin=receipt)
-                    if finite is not None:
-                        decision.update(reason='exact finite compatible-original component selection',
-                            selected_input_identity=record['input_identity'],desired_input_identity=current['input_identity'],
-                            selection_mode='finite-component-v1',input_transition=finite)
+                if not matches and finite is None:
+                    continue
+                if same_source_bridge:
+                    audit['outcome'] = 'explicit_same_source_bridge_requested'
+                    continue
+                if decision['action'] != 'build':
+                    audit['outcome'] = 'compatible_original_not_selected'
+                    continue
+                if not reusable(record):
+                    audit['outcome'] = 'production_public_reference_unavailable'
+                    decision['reason'] = 'matching qualified original lacks required anonymous canonical production availability'
+                    continue
+                audit['outcome'] = 'selected_original'
+                original = {key: value for key, value in record.items() if key not in ("provider", "architecture")}
+                decision.update(action="reuse", reason="unchanged declared inputs; original qualified resolution retained",
+                                source_revision=record["source_revision"], runner=original, record=record,
+                                origin=receipt, verified_origin=receipt)
+                if finite is not None:
+                    decision.update(reason='exact finite compatible-original component selection',
+                        selected_input_identity=record['input_identity'],desired_input_identity=current['input_identity'],
+                        selection_mode='finite-component-v1',input_transition=finite)
+            if decision['action'] == 'build' and compatible and all(
+                    item['outcome'] == 'effective_inputs_differ' for item in decision['candidate_decisions']):
+                decision['reason'] = 'all discovered provider/platform candidates have different effective Docker inputs'
             # A genuinely distinct prior qualified image enables real image-changing updater tests.
             for prior in compatible:
                 if decision["action"] != "reuse" or prior.get("image") == decision["record"]["image"]:

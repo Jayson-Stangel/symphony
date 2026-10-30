@@ -376,9 +376,11 @@ Its dependency closure follows the actual consumers:
 - `.github/workflows/runner-integration.yml` owns ordinary browser/global controls.
   Strict YAML comparison can exclude changes confined to its audited manual-only
   jobs and dispatch inputs. New jobs or uncertain YAML stay conservative.
-- `.github/workflows/change-classification.yml` and shared `scripts/ci/` controls
-  own routing and required wrappers. Explicitly inventoried policy regression files
-  under `scripts/ci/tests/` run cheaply without image builds; unknown tests stay broad.
+- `.github/workflows/change-classification.yml` and unknown shared `scripts/ci/`
+  controls retain broad qualification. The known classifier and YAML comparator
+  run the unconditional policy regressions and portable workflow contracts without
+  browser builds. Explicitly inventoried policy regression files under
+  `scripts/ci/tests/` also run cheaply; unknown tests stay broad.
 
 Keep this set aligned with new COPY sources, build stages and invoked tools.
 Application source changes alone do not change the browser-stage source closure;
@@ -395,7 +397,7 @@ without consulting the ordinary browser decision.
 The tables below cover every workflow job, reusable workflow and local action.
 Paths and IDs identify implementation; display names follow the convention below. The
 routing owner is `scripts/ci/classify_changes.py`; its explicit consumers are
-`application`, `portable`, `package_macos`, `package_linux`, `fixtures`,
+`application` (full Elixir family), `claude`, `portable`, `package_macos`, `package_linux`, `fixtures`,
 `npm`, `readiness`, `codex_config`, `contracts`, plus the
 existing Docker-stage-aware `browser` decision. `native` and `native_platform`
 are derived from helper/fixture requirements and validated again in the aggregate.
@@ -409,7 +411,9 @@ or failed native matrices fail the required aggregate.
 | --- | --- |
 | `change-classification / classify`; each caller's `changes` | Always: full PR merge-base/head or exact push before/after paths, both sides of renames and deletions; dependency-free Python and Git. |
 | `pr-description-lint / validate-pr-description` | Every applicable PR metadata event; PR template, body and validator. Explicit cheap exception. |
-| `make-all / make-all` | Routing/metadata regressions and pinned actionlint for behavioral or verified presentation edits. Selected npm configuration, readiness and Codex file/mount-policy tests run cheaply before draft deferral. Elixir setup and `make all` require application inputs and a ready event. |
+| `make-all / make-all` | Always-present required aggregate, routing/metadata regressions and pinned actionlint. Selected fast tests precede draft deferral; every selected ready family must succeed, omitted families must be skipped. |
+| `make-all / elixir-checks` | Full Elixir quality/build/coverage/Dialyzer via `make elixir-ci`, on ready events with `application=true`. Starts directly after classification, independently of Mac process contracts. |
+| `make-all / claude-checks` | Node-only toolchain, locked npm dependencies, syntax and complete Node suite via `make claude-ci`, on ready events with `claude=true`; no Erlang/Elixir setup. |
 | `make-all / platform-contracts` | Selected npm process lifecycle and launcher credential/readiness/lock contracts on Ubuntu 24.04 and macOS 14, including drafts. No helper compilation, engine or updater suite. The required Application checks join rejects failed, missing, cancelled or wrongly skipped selected work. |
 | `package-checks / portable` | Selected portable policy/controller tests, shell/package input checks and release version/schema validation; ordinary events execute this once, before native allocation. A caller may supply only successful exact-source preflight evidence. |
 | `package-checks / qualification` | Always verifies local/caller preflight source or explicit omission; prior-source verification when explicitly requested. Cheap status/source gate. |
@@ -418,8 +422,8 @@ or failed native matrices fail the required aggregate.
 | `package-checks / package-qualification` | Always-present strict status/decision/source join. Relevant draft deferral fails explicitly. Full exact-source receipt only for complete explicit qualification, never ordinary, omitted or partial work. |
 | `runner-integration / chromium` | Always-present guard; only builds/tests for changed browser-consumed stages/COPY sources, context controls, shared build action/cache controller or CI routing/validation controls. Both final provider images retain actual default-user Chromium and CLI smoke; shared builder layers avoid rebuilding common dependencies. |
 
-Application closure: `elixir/` source/tests/dependency locks/config/build tools,
-Claude transport/runtime/tests, runner entrypoints, launchers and packaged
+Elixir closure: `elixir/` source/tests/dependency locks/config/build tools,
+production Claude modules consumed by ExUnit integration, runner entrypoints, launchers and packaged
 behavioral skill/WORKFLOW inputs. `elixir/mix.exs` also affects portable release
 version checks. Helper/package closure: native Swift source and platform locks,
 build/package controllers, installed shell/environment scripts, packaged skills
@@ -439,11 +443,72 @@ consumers until their dependencies are reviewed. Tests imported by native helper
 fixtures (including component provenance and original manager metadata) fan out
 to both helper consumers even when their own unit suite is portable.
 
+The JAY-764 follow-up audits signed-output ingress and frozen registry recovery:
+`local_distribution.py`, the staging modules, `ghcr_transport_recovery.py`,
+`recover_ec2_registry.py`, its exact-file manifest, and their manual-only ingress
+and recovery workflows select portable controller tests. These tests use local
+archives and mocked service responses; ordinary CI never performs Apple operations,
+private staging writes or registry publication. The registry recovery suite is
+portable and runs in the ordinary release-policy executor. Changing that suite
+must not leave its sole executor omitted.
+
+Mac admission/preflight/watchdog controllers select their dependency-free policy
+tests and portable workflow contracts. Changing their unit tests runs the policy
+suite without native helper or browser builds. The known classifier and YAML
+comparator likewise select policy regressions and portable workflow contracts.
+Unknown CI controls and tests retain broad fail-closed qualification.
+
+The release suite inventory normally selects portable, both package hosts, native
+process fixtures, launcher contracts and Codex configuration tests because it
+controls those executors; it does not change Elixir, Claude or browser execution.
+A narrow exception selects portable only when the sole Python AST change adds
+unique valid test filenames to the single top-level literal `PORTABLE` set.
+Removals, executor changes and native inventory changes retain their affected
+families. Browser qualification follows actual Docker stages/COPY inputs and
+shared build/trust controls; an inventory edit alone is not a browser runtime input.
+
+On ordinary PR and push events, changes confined to the audited
+`burrito-release.yml` manual controller select portable workflow contracts when
+both workflow versions remain `workflow_dispatch`-only, use only the eight audited
+job IDs, and preserve all other global controls. Unknown jobs, trigger changes or
+global changes select full qualification. Manual and tag events retain complete
+qualification regardless of these ordinary-event comparisons.
+
+### Stable application family contract (JAY-765)
+
+The legacy `application` output now selects the complete Elixir family; `claude`
+selects independent Node syntax/tests. Ordinary Elixir source edits select only
+the former. Claude-only test files and auth/entrypoint/credential/smoke commands
+select only the latter. Production Claude modules, lockfiles and JS fixture peers
+select both: full ExUnit tests execute `port-probe.mjs` → production `helper.mjs`
+and cleanup → temporary/runtime modules. A regression derives that relative-import
+closure from the actual ExUnit source rather than assuming all Node code is independent.
+Changes to the shared Makefile or toolchain also select both families.
+
+Full Elixir coverage therefore retains the locked npm dependency installation
+needed by these integration tests, while omitting the unrelated Node test suite.
+This is necessary integration setup, not a claim that Elixir has no Claude dependency.
+`make all` remains comprehensive and installs npm dependencies once; it retains
+build, formatting, specs/Credo, full coverage, Dialyzer, Node syntax and Node tests.
+No partial ExUnit selection is credited as full coverage.
+
+Launcher credential/readiness/locking and Codex file/mount-policy contracts remain
+their independently selected Python/native families. Installation/update/runner
+lifecycle tests that read or execute shared shell launchers remain in full ExUnit;
+the shell inputs continue selecting Elixir as well as their release/launcher consumers.
+No launcher test was moved or dropped to obtain the family split.
+
+Each expensive family starts after classification without depending on unrelated
+Mac process execution. The required `Application checks` join accepts selected
+ready work only with `success`, and omitted/deferred work only with `skipped`;
+draft deferral remains non-passing. Malformed family decisions, failed/cancelled/
+missing/unexpectedly skipped jobs and failed Mac admission still fail the join.
+Manual release/artifact qualification retains its independent source/native gates.
+
 | Explicit manual/reusable/release workflow / jobs | Dependency/event reason (no ordinary diff shortcut) |
 | --- | --- |
 | `release-preflight / portable` | Full portable policy/version/schema gate for caller-selected candidates; full Git history for retained-source fixtures. |
 | `host-policy / select` | Cheap validation of exactly native Linux x86-64 and macOS ARM64; platform filter preserves this policy. Container architectures remain separate. |
-| `release-native / host-policy`, `native` | Full native fixtures for explicit engine-only qualification; package-checks now runs its native fixtures inside its helper allocation instead of calling a second matrix. |
 | `native-manager-helpers / host-policy`, `helper`, `qualification` | Explicit integration needs actual exact-source native helpers; verifies source/platform/contracts and emits a receipt only after the complete matrix succeeds. |
 | `current-manager-package / host-policy`, `package`, `metadata` | Assemble selected manager packages from exact-source qualified helpers; verify original checksums before executable permission, selected metadata and both native archives before joining. |
 | `component-plan / plan` | Explicit composition: source-bound original evidence discovery; selected component build/reuse decisions, never manager-change-implies-image-rebuild. |
@@ -451,8 +516,8 @@ to both helper consumers even when their own unit suite is portable.
 | `runner-integration / reference-node-smoke` | Only explicit `reference_node_smoke`: build and test both reference harness Docker contexts and their Node/CLI controls. No ordinary allocation. |
 | `runner-integration / runners`, `manager-inputs`, `manager-package` | Build only component plan's affected provider/architecture entries, bind original immutable records and assemble matching current manager packages. |
 | `runner-integration / listener-and-cleanup` | Strict selected-component/package join and actual installed lifecycle, original-payload verification, owned-resource cleanup and retained evidence. Distribution alias probe only when explicitly requested. |
-| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. Tag pushes perform no expensive or mutating work. |
-| `burrito-release / engine-fixtures`, `build`, `smoke`, `controller-diagnostics` | Selected explicit engine/controller diagnostic or full candidate: both supported native engines and actual standalone acceptance; controller-only runs only native controller fixtures. |
+| `burrito-release / production-source`, `qualification`, `host-policy` | Manual candidate preflight and supported host policy; production preparation requires main and full mode before fanout. There is no tag trigger. |
+| `burrito-release / build`, `controller-diagnostics` | Each supported engine build immediately qualifies exact standalone bytes; engine-only fixtures share that allocation. Controller-only runs only its selected native fixtures after source validation. |
 | `burrito-release / runners` | Manual full candidates request runner/package composition; production preparation retains stable-reference native packages without publication. Legacy unsigned publication is disabled. |
 | `macos-production-signing / sign` | Explicit main-only protected signing of successful exact-source production Q; retains final assessed artifacts, no registry or GitHub release writes. |
 | `production-publish / inputs`, `registry`, `release` | Explicit exact-tag import of completed Q/S attempts; source/artifact/refusal validation before protected registry transfer and separately protected final GitHub completion. |
@@ -460,7 +525,7 @@ to both helper consumers even when their own unit suite is portable.
 | `runner-release / candidate`, `candidate-metadata` | Plan-selected native provider/container architecture builds and actual-image qualification; join exact records without turning skipped/reused builds into new evidence. Both Linux container architectures and providers remain supported. |
 | `runner-release / package-inputs`, `packaged-candidate`, `packaged-candidate-metadata`, `ubuntu-package-lifecycle`, `candidate-qualification` | Explicit package composition requires full package qualification, exact helper artifacts, native archives, requested prior package lifecycle and strict terminal joins. `compose_packages=false` intentionally omits this cohort. |
 | `runner-release / publication-preflight`, `publish`, `packaged-release-platform`, `packaged-release` | Tag-only, production-gated publication and source-bound native package assembly; full selected artifact qualification retained. |
-| `runner-release / cache-probe`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
+| `runner-release / cache-controller-comparison`, `lifecycle-diagnostic`, `recover-native-records`, `recovered-record-qualification` | Only explicit corresponding mode/run inputs; retained originals, native producer/source/failed-step provenance and cleanup gates remain intact. No automatic diagnostic runs. |
 | `runner-release / retained-transfer-timing`, `transfer-benchmark`, `transfer-replay`; `transfer-timing / retained-payload-timing` | Only selected immutable run/provider/architecture diagnostics; download/measure/verify original payloads, with explicit replay and native producer guards. |
 | Local action `build-runner` | Browser/candidate/probe consumer only: target, Docker recipe/COPY/ignore closure, scoped cache policy, native buildx and load, then caller-owned actual runtime qualification. |
 | Local actions `configure-runner-cache`, `runner-cache-runtime` | Explicit candidate cache setup and scoped Actions cache environment; composite transitive actions and `runtime.js` route portable tests. These candidate-only cache controls and probe controllers do not allocate an ordinary browser build; `build-runner` and its actual cache policy still do. |
@@ -556,7 +621,7 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 
 | Workflow file (without `.yml`) | Internal job ID → display name |
 | --- | --- |
-| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `engine-fixtures` → Qualify native engine fixtures; `runners` → Qualify runner components; `build` → Build engine (target); `smoke` → Verify engine (target); `controller-diagnostics` → Diagnose release controller; `release` → Publish approved engine release |
+| `burrito-release` | `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `runners` → Qualify runner components; `build` → Verify engine (target), including build, selected native fixtures and standalone smoke; `controller-diagnostics` → Diagnose release controller |
 | `change-classification` | `classify` → Classify event inputs |
 | `component-plan` | `plan` → Plan selected components |
 | `current-manager-package` | `host-policy` → Select native hosts; `package` → Build manager package (platform); `metadata` → Assemble manager package metadata |
@@ -565,10 +630,9 @@ rewritten. Release step names used as evidence anchors remain explicit and stabl
 | `native-manager-helpers` | `host-policy` → Select native hosts; `helper` → Build manager helper (platform); `qualification` → Bind qualified manager helpers |
 | `package-checks` | `changes` → Classify changes; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `host-policy` → Select native hosts; `native-host-package` → Native helpers and fixtures (platform); `package-qualification` → Package qualification |
 | `pr-description-lint` | `validate-pr-description` → PR description |
-| `release-native` | `host-policy` → Select native hosts; `native` → Native process fixtures (platform) |
 | `release-preflight` | `portable` → Portable preflight |
 | `runner-integration` | `changes` → Classify changes; `chromium` → Browser qualification; `portable` → Portable preflight; `helpers` → Qualify manager helpers; `reference-node-smoke` → Reference Node images; `plan` → Plan components; `runners` → Qualify runner components; `manager-inputs` → Bind selected component inputs; `manager-package` → Build current manager packages; `listener-and-cleanup` → Installed manager integration |
-| `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-probe` → Measure runner cache (provider, architecture); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
+| `runner-release` | `component-plan` → Validate component plan; `candidate` → Build runner (provider, architecture); `publication-preflight` → Validate publication inputs; `publish` → Publish qualified runners; `candidate-metadata` → Assemble candidate metadata; `packaged-release-platform` → Build release package (platform); `packaged-release` → Assemble release packages; `cache-controller-comparison` → Measure real controller (strategy, Claude ARM64); `packaged-candidate` → Build candidate package (platform); `packaged-candidate-metadata` → Assemble candidate packages; `ubuntu-package-lifecycle` → Installed package lifecycle; `lifecycle-diagnostic` → Diagnose installed package lifecycle; `recover-native-records` → Recover native records (provider, architecture); `recovered-record-qualification` → Validate recovered native records; `portable` → Portable preflight; `qualification` → Validate preflight inputs; `package-inputs` → Qualify package inputs; `candidate-qualification` → Candidate qualification; `retained-transfer-timing` → Measure retained transfer; `transfer-benchmark` → Measure runner transfer (provider, architecture); `transfer-replay` → Replay runner transfer (provider, architecture) |
 | `transfer-timing` | `retained-payload-timing` → Measure retained payload transfer |
 
 The graph audit removed the duplicate ordinary package result job and the
@@ -648,3 +712,271 @@ component records and immutable image digests, manifests/checksums, native helpe
 qualifications and cleanup. The default full candidate omits prior-package
 update/rollback and legacy migration when no prior artifact is selected; report
 those omissions rather than inferring their success from archive assembly.
+
+### Component rebuild explanations
+
+The retained component plan records each provider/platform candidate's original
+source/input identity and run/artifact IDs, plus its actual selection outcome.
+Input mismatch is separate from matching evidence refused for payload expiry,
+source/workflow trust, native platform, qualification, integrity or service
+availability. Production-only anonymous canonical availability has its own
+outcome; a valid private artifact alone cannot satisfy it. Missing candidates
+are distinguished from discovered incompatible ones.
+
+When an old source commit is already available locally, the controller checks it
+out into a disposable clone, parses the actual Docker closure without executing
+old code, and compares file bytes/modes and recipe/argument/ignore/directory
+controls. It records changed effective paths, including removed inputs. Missing
+local history, unsupported old recipes or snapshots that cannot reproduce the
+recorded identity are explicit comparison gaps. Diagnostics never fetch more
+history, expand discovery limits or authorize reuse; original evidence and all
+existing refusal rules remain decisive. Plans with matching verified originals
+retain original records and schedule no image build/export/upload. Actual hosted
+execution and payload savings must be credited from the corresponding consumer
+run, not inferred from a fixture or from an unavailable original.
+
+### Production runner content
+
+The production `common` Docker stage compiles `elixir/lib`, `elixir/config` and
+`elixir/priv` against `mix.exs`/`mix.lock`. Static dashboard files and Codex
+readiness Python resources are compile-time consumers of `priv` and stay in the
+image. `elixir/WORKFLOW.md`, `elixir/AGENTS.md` and canonical `.codex/skills` remain
+behavioral inputs. The installed entrypoints execute `bin/symphony`; they do not
+invoke repository tests, documentation or the local Makefile. Those files enter
+only the explicit `claude-test` qualification stage through its full-source copy.
+`runner_inputs.py` derives each production identity from this actual stage/COPY
+closure and the Docker ignore rules, so harness edits do not invalidate either
+provider while runtime, config, assets, dependencies and skills do.
+
+### Production publication handoffs
+
+The initial production publisher input job is an admission gate. It does not
+upload a repacked `retained-production-inputs` artifact: neither protected
+consumer used it. Registry and release jobs independently retrieve authenticated
+original signing/helper/engine artifacts by service ID and digest after their
+separate environment approvals. Within each job the verified local material is
+used for graph transfer/comparison or release assembly without another `signed`
+retrieval. Source/tag state is checked freshly at each protected boundary;
+release mutation also checks it before each mutation. This removes one upload
+and one retained artifact per run, while retaining cross-job original retrieval
+and integrity checks. No publication timing saving is claimed without a real
+separately authorized production run.
+
+### Bounded cache export comparison
+
+The optional `runner-release.yml` controller comparison replaces the obsolete
+composite-action probe and its five dispatch inputs. Set
+`cache_controller_revision` to the exact approved current dev source, disable
+package composition and retain diagnostics. The scope is fixed to Claude ARM64;
+the two native jobs compare serial and overlapping max cache export through the
+actual candidate controller. Ordinary builds keep serial export by default;
+`cache_export_overlap` remains an explicit experimental opt-in.
+
+Each job measures cold, warm and changed-input paths with bounded phase time,
+disk headroom, archive size and small receipt retention. BuildKit vertex intervals
+overlap and must not be summed as cost or end-to-end saving. Export-only solves
+must show cached build operations. Diagnostic archives are hashed and removed;
+only small receipts are retained. The shared timing parser remains in use, and
+Browser still consumes the `build-runner` action.
+
+Historical run 39865529840 retains its original warm/changed evidence, but does
+not establish a cold controller baseline. The new comparison still needs an
+explicit exact-source/input/job/resource plan before any dispatch; code and
+fixture checks do not establish an allocation or timing improvement. It performs
+no customer release, signing, production settings or provider/model requests.
+
+### Native engine allocation
+
+Each selected Linux x86-64/macOS ARM64 engine is built and immediately qualified
+in one native job, before its executable is uploaded. The existing `Verify
+engine (target)` evidence names now describe the combined producer, so original
+production readers still require a successful complete native job. There is no
+whole-build-matrix barrier or second smoke allocation/selector/download. A
+failed standalone check prevents the engine artifact upload; its evidence is
+retained even on failure.
+
+The controller copies exact checked bytes into a fresh temporary directory,
+uses isolated home/config/cache/extraction/workspace paths, and launches from
+outside the source tree with an explicit environment and system-only PATH. It
+refuses a PATH exposing Erlang/Elixir/Mix/Zig so the preceding build cannot mask
+a missing standalone runtime tool. Python/lsof remain controller dependencies;
+startup, attributable health, missing-provider readiness, graceful stop and
+owned-descendant cleanup remain actual executable checks. Engine-only controller
+fixtures run in the same native build allocation, retaining full Git history and
+the identical suite. The controller-only
+mode selects only its own Mac route. Unselected build/controller routes allocate
+no selector job; the obsolete tag-only no-op trigger is removed. Saved queue
+intervals overlap other work and are not additive deployment-time savings.
+
+The former `release-native.yml` reusable workflow has no remaining consumer and
+is removed together with its `native` route; the separate `smoke` route is also
+retired. New source-bound permits target the combined `build` job. Historical
+runs, source revisions, permits and receipts retain their original meaning and
+are not reinterpreted through the new allowlist. Native compatibility fixtures
+still require full Git history and the same retained source ancestry authorities.
+
+### One final package cohort for production preparation
+
+Validated inputs select `final_only=true` only for production preparation with
+package composition enabled and no prior-package, legacy migration or manager-only
+lifecycle request. That path skips the candidate platform archives, their metadata
+join and the unused candidate Mac selector. Qualified component records and the
+original native helpers still feed one immutable production distribution plan,
+then exactly one final manager archive per native host. The existing finalizer
+binds actual archive hashes; `production_release.verify_packages` then checks the
+exact final bytes, prepared manifest, source and stable references before upload.
+
+`Candidate qualification` is a terminal join: in final-only mode it requires the
+candidate cohort to be intentionally skipped and the final package join to have
+succeeded. Failed, cancelled, missing or incomplete final producers cannot pass.
+The preparation metadata gate independently requires successful component/helper
+inputs and the exact build-versus-reuse result, avoiding a dependency cycle.
+Raw prior-source revision composition remains refused before fanout; select a
+verified historical package artifact for supported update/rollback acceptance.
+Requested candidate/prior-package/legacy/manager-only lifecycle modes retain their
+candidate archives and real lifecycle consumers; final production preparation
+still cannot succeed after a failed requested lifecycle. No signing, publication
+or production settings are invoked by these routing changes. Production workflow
+execution and final-byte native acceptance remain separate from fixture tests.
+
+### Pending original baseline qualification
+
+The ordinary prior-package selector still requires successful historical installed
+lifecycle proof. A separate default-empty `bootstrap_previous` descriptor permits
+only one explicit owner-triggered, nonproduction combined candidate on `dev` to
+use original run `40588897389`, attempt 3, source `ec2be6e1c21c7dc7f7d7d8536bcac1ce06f3202b`,
+package artifact `12774063336` with service digest
+`sha256:6347428eaa08c972eb43090af41460c0d73c9d84776351f2b91c80d407bdc446`.
+The descriptor also pins the approved current candidate source and historical
+skipped lifecycle job `122501814533`. This is a pending test subject, never a
+claim that the skipped historical lifecycle passed. Production/main/tag and
+ambiguous, mismatched, failed or expired subjects refuse.
+
+Before executing its installer, the actual Ubuntu lifecycle verifies original
+service and inner archive hashes, manifest/core/source/component identity and
+helper architecture. Owned Mac provenance requires its actual source's native
+OS/CPU/version guard, successful ordered helper/package steps and a bounded
+original helper receipt whose bytes match the packaged helper. A private label
+or capacity-ready status alone proves neither native execution nor qualification.
+Owned-Mac source validation accepts only explicitly audited whole-workflow
+fingerprints and exact relied-on step configurations. Unknown workflow text
+refuses, including quoted keys, aliases, duplicate jobs and shell/error overrides.
+This intentionally requires another owner review when those workflows change;
+it is not a general YAML or shell equivalence checker. The final combined source
+fingerprint must be reviewed after integration before candidate execution.
+
+The existing `scripts/release/package-lifecycle.py` consumer must repeat-install
+that exact original baseline as an ordinary user, assert its installed source,
+pass doctor, and run both isolated projects with attributable listeners, original
+images and preserved canaries before activating the new candidate. Full update,
+rollback, refusal/retry and cleanup must then pass. The existing terminal join
+also requires fresh same-run baseline proof; missing or failed proof refuses.
+Fresh proof names both original and current identities and preserves the old
+`skipped` result. The descriptor grants no execution authority: exact candidate
+source, complete change inventory, prior subject and native effects still require
+operator approval before the single combined candidate. No version bump or
+production promotion is needed for this nonpublishing dev path.
+
+Unrequested owned-Mac selectors do not allocate a controller runner. Application
+selection follows the existing npm/contracts predicate, including fast draft
+contracts. Package selection additionally requires ready native Mac/fixture inputs;
+Linux-only qualification accepts exactly an omitted Mac selector. Required joins
+expect success only for requested selectors and exact `skipped` otherwise. A
+selected failure, cancellation or missing result cannot become an omission.
+
+### Full ExUnit evidence boundary (JAY-716)
+
+The full-coverage controller accepts an original same-repository PR proof only
+once that exact PR head and tested merge are authenticated against its actual
+protected `dev` merge. A `dev` → `main` PR can retain that original proof through
+verified successful `dev` history. Forks, unmerged PRs, newer failed attempts,
+missing provenance, changed audited sources, or different execution inputs run
+fresh. The required Application wrapper distinguishes `EXECUTED`, `REUSED` and
+`OMITTED` and preserves the original run, attempt, job and artifact identities.
+
+Only the finite reviewed 199-source profile may produce reusable evidence. Its
+actual pinned-vendor OCI image/config/rootfs, recipe, generated public identity
+files, kernel/Docker/CPU/isolation settings and public inputs must match. Each
+phase has a read-only root/source, a non-root identity, and explicit private
+writable binds; coverage starts without external networking. Offline phases bind
+the exact public `elixir-coverage.resolv.conf` read-only; preflight checks its
+bytes, mount, write refusal and localhost behavior. Online preparation retains
+Docker-generated DNS. Resolver file identity, actual runtime bytes and mount
+semantics remain fingerprinted, and CPU capability differences still require
+fresh qualification. Native and artifact qualification remain separate. No image is published or included in evidence.
+
+For a supported profile in the same repository's ready PR or protected push,
+the existing capability stage authenticates the actual caller, then performs a
+real workflow-token self-comparison GET of the authenticated protected `dev`
+revision. The response must be identical with that exact merge base. Failure of
+this caller, compare or artifact-read boundary fails the required job before
+costly preparation or coverage. This proves API access, not ancestry or reuse.
+Unsupported profiles and untrusted forks retain ordinary fresh qualification.
+
+Protected code authenticates an original merged PR or protected-dev producer
+before installing any dependency or compiler cache. The bounded public bundle
+contains post-Dialyzer `deps` and `_build/dev` (project PLT/hash), plus separate
+pre-coverage `_build/test` and exact private Hex checkpoints. Authenticated
+dependencies become visible first so audited compiler links resolve to their
+actual targets. All four validate before cached code executes; raw bytes, modes,
+ownership and allowed links remain exact. Original regular-file group-write bits
+(such as locked public Hex source mode `0664`) are preserved; world-write, special
+bits, group-writable directories and unaudited links refuse. The same finite
+member policy audits all four roots before coverage, then audits final archives
+again after Dialyzer. No Mix home or core PLTs are restored.
+Fresh DEV setup/build, formatting, lint, npm setup, offline dependency validation
+and ordinary Dialyzer still execute. Authenticated restored TEST inputs remain
+untouched before full proof comparison. Only a verified hit retains those compiled
+TEST inputs; fresh/missing/incompatible proof performs ordinary online TEST
+compilation, fetch-scratch cleanup, offline compile and manifest initialization,
+then replaces the exact owned provisional PRE checkpoints before execution. Hex restores only raw `cache.bin` and lock-bound public tarballs under
+`packages/hexpm`; configuration, private repos, unknown files, temporary files and
+symlinks refuse. A 24-hour version-check throttle can preserve the original check
+timestamp; ordinary registry requests may still refresh data. Changed raw fetch
+metadata causes fresh qualification, never timestamp editing or an equality claim.
+The same aggregate 64 MiB compressed, 256 MiB expanded and 10,000-entry limits cover
+all four checkpoints; actual hosted size remains unmeasured. The
+protected pre-test archive remains unchanged through sealing. Following online setup, early offline `mix deps.get`
+proves the resolution required again by Dialyzer. All test dependencies then
+compile online on a fresh path or miss, including the pinned test-only native
+dependency. Its documented
+`ELIXIR_MAKE_CACHE_DIR` points to the exact private `/cache/native-fetch` bind.
+After that container exits, only the known public fetch scratch is discarded;
+installed NIF/dependency/BEAM bytes remain untouched in the four checkpoints. An
+offline compile guard then proves those installed outputs suffice before the
+manifest, complete input measurement or full suite. The actual empty fetch
+directory is fingerprinted; no fifth archive or home-directory transfer is used.
+The application keeps its default logger: exact `elixir/log` is a generated
+writable bind, required empty and included in the pre-coverage input identity.
+Post-test log output is allowed but is not transferred as a cache checkpoint.
+ExUnit's own API initializes the empty failures manifest before the
+checkpoint. Immediately before executing coverage, the controller recomputes the
+complete input fingerprint and verifies protected pre-test/Hex archives outside
+container binds. Its strict schema4 execution record binds those actual starting
+inputs and checkpoint hashes before the container starts. The actual-proven
+ordinary `mix test --cover --seed 0 --max-failures 1` remains unchanged, including
+its implicit compiler, application startup, all test modules and coverage output.
+No no-compile/prune override, source timestamp adjustment or POST-byte equality
+claim is used. Test outputs may change
+live cache files; sealing checks the protected starting world rather than requiring
+outputs to equal inputs. Original API provenance, full successful stages, coverage,
+source/runtime equality and final archive bounds remain required; schema3 cannot
+qualify. If qualification fails or no proof is created, a separate unqualified
+diagnostic artifact retains only eight known public JSON records plus its index,
+bounded to1MiB and3days. It contains no caches, home trees or ambient environment
+dump and is never accepted as qualification. Healthy `REUSED` consumers create
+neither a new original receipt nor a diagnostic artifact. A protected `main` push
+can consume the same original proof after
+authenticating actual dev-to-main promotion; this code does not authorize promotion.
+Unsupported sources retain the ordinary mise/Mix cache and fresh command. API work
+is bounded to 30 seconds and 80 GETs, with at most three dev history rows and one
+original PR link. Unavailable evidence stays fresh; an unobservable supported
+execution profile refuses before the full suite.
+
+This operates within the existing reviewed root-workflow trust boundary; it does
+not enforce a required workflow against a root workflow that removes validation.
+Local profile/archive fixtures do not establish hosted equivalence or savings.
+The first ordinary PR and merged `dev` run must establish clean setup, original
+provenance, actual cache restoration and net benefit including cold toolchain,
+dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
+requires diagnosis before further experiments.

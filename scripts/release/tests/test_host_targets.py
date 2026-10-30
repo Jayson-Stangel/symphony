@@ -17,7 +17,11 @@ class HostTargets(unittest.TestCase):
         self.assertEqual({(h['target'], h['runner']) for h in hosts},
                          {('linux_x86_64', 'ubuntu-24.04'), ('macos_arm64', 'macos-14')})
         workflow = (ROOT / '.github/workflows/burrito-release.yml').read_text()
-        self.assertEqual(workflow.count('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}'), 2)
+        self.assertEqual(workflow.count('matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}'), 1)
+        self.assertNotIn('  smoke:', workflow)
+        self.assertNotIn('  mac-runner-smoke:', workflow)
+        self.assertNotIn('  push:', workflow)
+        self.assertLess(workflow.index('name: Qualify actual standalone engine'), workflow.index('name: Upload release assets'))
         self.assertNotIn('macos-15-intel', workflow)
         self.assertIn('engine_only:', workflow)
         self.assertIn('!inputs.controller_only && !inputs.engine_only', workflow)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Conservative event-wide code and browser classification; no API or dependencies."""
+import ast
 import importlib.util
 import json
 import os
@@ -74,9 +75,8 @@ def browser_selection(paths, event=None, name=None):
         '.dockerignore', 'runner/Dockerfile.dockerignore', 'runner/node-smoke.sh',
         '.github/workflows/browser-smoke.yml',
         '.github/workflows/change-classification.yml', 'runner/browser/smoke-image.sh',
-        'scripts/ci/classify_changes.py', 'scripts/release/runner_inputs.py',
+        'scripts/release/runner_inputs.py',
         'scripts/release/runner-cache-policy.sh', 'scripts/release/runner-smoke.sh',
-        'scripts/release/package-lifecycle.py',
     }
     prefixes = ('.github/actions/build-runner/',)
     nonbrowser_actions = ('.github/actions/configure-runner-cache/',
@@ -89,7 +89,17 @@ def browser_selection(paths, event=None, name=None):
             triggers.append({'path': path, 'rule': 'unknown consumer: conservative browser qualification'})
         if (path in exact or (path.startswith(prefixes) and path != 'scripts/ci/check_pr_body.py') or
                 (path.startswith('scripts/ci/') and not path.startswith('scripts/ci/tests/')
-                 and path != 'scripts/ci/check_pr_body.py') or
+                 and path not in ('scripts/ci/check_pr_body.py', 'scripts/ci/release_tests.py',
+                                  'scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb',
+                                  'scripts/ci/validation_inputs.py', 'scripts/ci/validation_evidence.py',
+                                  'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
+                                  'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
+                                  'scripts/ci/validation_cache.py', 'scripts/ci/validation_oci.py',
+                                  'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group', 'scripts/ci/elixir-coverage.resolv.conf',
+                                  'scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                                  'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                                  'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py',
+                                  'scripts/ci/packaged_apparmor.py')) or
                 (path.startswith('.github/actions/') and not path.startswith(nonbrowser_actions))):
             triggers.append({'path': path, 'rule': 'browser build, runtime smoke or shared CI validation control'})
     try:
@@ -127,19 +137,25 @@ def browser_required(paths, event=None, name=None):
 
 
 # Ordinary consumers. Full manual/tag/candidate calls never use a diff omission.
-COMPONENTS = ('application', 'portable', 'package_macos', 'package_linux', 'fixtures',
+COMPONENTS = ('application', 'claude', 'portable', 'package_macos', 'package_linux', 'fixtures',
               'npm', 'readiness', 'codex_config', 'contracts')
 ALL = set(COMPONENTS)
 PACKAGES = {'portable', 'package_macos', 'package_linux'}
 CI_POLICY_TESTS = {
+    'test_application_families.py', 'test_elixir_coverage.py',
+    'test_validation_inputs.py', 'test_validation_evidence.py', 'test_validation_cache.py',
+    'test_application_families.py', 'test_packaged_apparmor.py',
     'test_apparmor_ci.py', 'test_apparmor_host.py', 'test_browser_image.py',
     'test_browser_routing.py', 'test_ci.py', 'test_components.py',
     'test_macos_signing_entrypoint.py', 'test_manager_routing.py',
     'test_presentation.py', 'test_pr_policy.py', 'test_release_tests.py', 'test_workflow_names.py',
+    'test_mac_runner_handoff.py', 'test_mac_runner_request.py', 'test_mac_runner_capacity.py',
+    'test_mac_runner_preflight.py', 'test_mac_runner_selection.py', 'test_mac_runner_watchdog.py',
 }
 # These controllers/tests have no native-helper or native process consumer.
 # Unknown release inputs retain every native consumer until audited.
 PORTABLE_RELEASE = {
+    'README.md',  # Exact release-controller reference; no application/runtime reader.
     'benchmark-transfer.py',
     'build-candidate-runners.sh',
     'build-manager-package.sh',
@@ -150,10 +166,15 @@ PORTABLE_RELEASE = {
     'export-image.py',
     'finalize-manager-packages.py',
     'graph_publication.py',
+    'local_distribution.py',
+    'ghcr_transport_recovery.py',
+    'recover_ec2_registry.py',
+    'ec2-registry-recovery-files.json',
     'package-lifecycle.py',
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
     'previous-package-subject.py',
+    'prior_baseline.py',
     'probe-registry-closure.py',
     'record.py',
     'recover_native_record.py',
@@ -166,6 +187,9 @@ PORTABLE_RELEASE = {
     'test_registry.py',
     'staging_archive.py',
     'staging_ingress.py',
+    'transport_compatibility.py',
+    'transport_fixture.py',
+    'fixtures/transport-fixture-v1.json',
     'verify-prior-source.py',
 }
 
@@ -179,14 +203,33 @@ def consumer_selection(path):
     if path in ('.github/pull_request_template.md', '.github/workflows/pr-description-lint.yml',
                 'scripts/ci/check_pr_body.py'):
         return set(), 'always-on PR metadata validation'
+    if path in ('scripts/ci/tests/fixtures/pr165-ci-routing.json',
+                'scripts/ci/tests/fixtures/coverage-job-before.json'):
+        return set(), 'exact historical CI routing policy fixture; no runtime consumer'
     if path.startswith('scripts/ci/tests/'):
         if p.name in CI_POLICY_TESTS and len(p.parts) == 4:
             return set(), 'cheap CI policy regression; executed by the always-on policy suite'
         return ALL, 'unknown CI regression input: conservative full qualification'
+    if path in ('scripts/ci/validation_inputs.py', 'scripts/ci/validation_evidence.py',
+                'scripts/ci/elixir_coverage_profile.py', 'scripts/ci/elixir-coverage-profile.json',
+                'scripts/ci/elixir_coverage.py', 'scripts/ci/elixir_coverage_bootstrap.py',
+                'scripts/ci/validation_cache.py', 'scripts/ci/validation_oci.py',
+                'scripts/ci/elixir-coverage.Dockerfile', 'scripts/ci/elixir-coverage.passwd', 'scripts/ci/elixir-coverage.group', 'scripts/ci/elixir-coverage.resolv.conf'):
+        return {'application', 'portable'}, 'audited full-coverage input/provenance control; Elixir and policy contracts only'
+    if path in ('scripts/ci/classify_changes.py', 'scripts/ci/presentation_only.rb'):
+        return {'portable'}, 'known CI selection policy; unconditional policy regressions and portable workflow contracts'
+    if path == 'scripts/ci/release_tests.py':
+        return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
+    if path == 'scripts/ci/packaged_apparmor.py':
+        return {'portable'}, 'manual packaged host preparation controller; portable refusal and policy contracts'
+    if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
+                'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
+                'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py'):
+        return {'portable'}, 'Mac admission policy covered by always-on policy tests and portable workflow contracts'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
     if path == '.github/workflows/make-all.yml':
-        return {'application', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
+        return {'application', 'claude', 'npm', 'readiness', 'codex_config', 'contracts'}, 'application and fast-family workflow control'
     if path.startswith('.github/workflows/'):
         # Native package/release controls can affect portable and native evidence;
         # manual-only image controllers are validated by portable contract tests.
@@ -198,13 +241,20 @@ def consumer_selection(path):
             return PACKAGES | {'fixtures'}, 'portable/native package qualification workflow control'
         if p.stem == 'browser-smoke':
             return {'portable'}, 'browser workflow migration control'
-        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish'):
+        if p.stem in ('macos-signing', 'macos-production-signing', 'production-publish',
+                       'macos-local-signing-import', 'ec2-registry-transport-repair'):
             return {'portable'}, 'explicit signing workflow policy; no ordinary Apple operation'
         return ALL, 'unknown workflow: conservative full qualification'
     if path.startswith(('.codex/', '.agents/')) or p.name.upper() == 'WORKFLOW.MD':
         return PACKAGES | {'application'}, 'packaged behavioral skills or runtime workflow'
     if path == 'elixir/mix.exs':
         return {'application', 'portable'}, 'application and release-version input'
+    if path in ('elixir/Makefile', 'elixir/mise.toml'):
+        return {'application', 'claude'}, 'shared application command grouping or Node/Elixir toolchain'
+    if path.startswith('elixir/lib/symphony_elixir/claude/') or path in (
+            'elixir/test/symphony_elixir/claude_adapter_test.exs',
+            'elixir/test/symphony_elixir/claude_environment_test.exs'):
+        return {'application', 'claude'}, 'shared Elixir/Claude transport, protocol or integration fixtures'
     if path == 'elixir/priv/codex_readiness.py':
         return {'application', 'readiness', 'codex_config'}, 'packaged Codex readiness implementation and its fast contracts'
     if path in ('elixir/priv/codex_config_boundary.py', 'elixir/priv/codex_config_snapshot.py',
@@ -218,6 +268,8 @@ def consumer_selection(path):
         return PACKAGES | {'application', 'fixtures', 'contracts', 'codex_config'}, 'installed manager launch/update and native process input'
     if path in ('scripts/symphony-environment.sh', 'scripts/symphony-apparmor.sh', 'scripts/symphony-runner-import.sh', 'scripts/symphony-runner-provision.sh'):
         return PACKAGES | {'application', 'contracts'}, 'installed environment input'
+    if path == 'scripts/codex-apparmor.profile':
+        return PACKAGES | {'application'}, 'packaged policy bytes and actual ExUnit sandbox-policy consumer'
     if path.startswith('scripts/package/linux/') or path == 'scripts/release/build-linux-host-helper.sh':
         return {'portable', 'package_linux'}, 'Linux helper source, SDK or build input'
     if path.startswith('scripts/package/'):
@@ -264,8 +316,14 @@ def consumer_selection(path):
         return PACKAGES | {'application'}, 'packaged team environment template'
     if path.startswith('runner/claude/qualification/'):
         return {'portable'}, 'explicit reference harness input'
-    if path.startswith('runner/claude/') or path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
-        return {'application'}, 'Claude runtime or runner entrypoint input'
+    if path.startswith('runner/claude/'):
+        if path in ('runner/claude/auth.mjs', 'runner/claude/entrypoint.sh',
+                    'runner/claude/git-credential.sh', 'runner/claude/smoke.sh') or (
+                path.startswith('runner/claude/test/') and not path.startswith('runner/claude/test/fixtures/')):
+            return {'claude'}, 'independent Claude commands or Node-only test suite'
+        return {'application', 'claude'}, 'production Claude modules/dependencies and peers consumed by full ExUnit integration'
+    if path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
+        return {'application'}, 'runner entrypoint consumed by Elixir launcher integration'
     if path in ('runner/test_npm_cache.py', 'runner/test_npm_cache_lifecycle.py'):
         return {'npm'}, 'npm configuration semantics and cross-platform native process ownership tests'
     if path == 'runner/npm-cache.npmrc':
@@ -336,8 +394,13 @@ def workflow_comparison(path, base, head):
             path.startswith('.github/actions/') and PurePosixPath(path).name in ('action.yml', 'action.yaml')):
         return {}
     try:
-        payload = {'path': path, 'before': git('show', base + ':' + path).decode(),
-                   'after': git('show', head + ':' + path).decode()}
+        def contents(revision):
+            # An added/deleted audited workflow is behavioral, but absence is
+            # not malformed YAML. Parse every existing side; the consumer map
+            # still selects all executors controlled by that workflow.
+            names = git('ls-tree', '--name-only', revision, '--', path).decode().splitlines()
+            return git('show', revision + ':' + path).decode() if path in names else None
+        payload = {'path': path, 'before': contents(base), 'after': contents(head)}
         process = subprocess.run(['ruby', str(Path(__file__).with_name('presentation_only.rb'))],
                                  input=json.dumps(payload), text=True, capture_output=True, timeout=10)
         if process.returncode:
@@ -359,13 +422,42 @@ def presentation_only(path, base, head):
         'YAML comparison unavailable or refused; ordinary conservative path policy applies')
 
 
+def portable_inventory_only(base, head):
+    """Only added names in the explicit portable inventory, never executor edits."""
+    try:
+        parsed = []
+        inventories = []
+        for revision in (base, head):
+            source = git('show', revision + ':scripts/ci/release_tests.py').decode()
+            tree = ast.parse(source)
+            assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                           and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                           and node.targets[0].id == 'PORTABLE']
+            if len(assignments) != 1 or not isinstance(assignments[0].value, ast.Set):
+                return False
+            values = assignments[0].value.elts
+            if not all(isinstance(item, ast.Constant) and type(item.value) is str
+                       and re.fullmatch(r'test_[A-Za-z0-9_]+\.py', item.value) for item in values):
+                return False
+            names = {item.value for item in values}
+            if len(names) != len(values):
+                return False
+            inventories.append(names)
+            tree.body.remove(assignments[0])
+            parsed.append(ast.dump(tree, include_attributes=False))
+        return parsed[0] == parsed[1] and inventories[0] < inventories[1]
+    except (ValueError, SyntaxError, UnicodeError, OSError, subprocess.SubprocessError):
+        return False
+
+
 def event_routing(paths, event, name):
     triggers = {key: [] for key in COMPONENTS}
     presentation = []
     fallbacks = []
     active = []
     selected_consumers = set()
-    if not paths:
+    if not paths or name not in ('pull_request', 'push') or (
+            name == 'push' and str(event.get('ref', '')).startswith('refs/tags/')):
         fallbacks.append('Full-event policy or unavailable/empty event diff requires all consumers')
         return decisions([]), {key: [] for key in COMPONENTS}, [], [], fallbacks
     try:
@@ -383,8 +475,21 @@ def event_routing(paths, event, name):
         selected, rule = consumer_selection(path)
         if fallback:
             selected, rule = ALL, 'unsupported or unavailable workflow comparison: conservative full qualification'
+        if path == 'scripts/ci/release_tests.py' and base and portable_inventory_only(base, head):
+            selected, rule = {'portable'}, 'only audited PORTABLE inventory additions; executor and native inventories unchanged'
+        if path == '.github/workflows/burrito-release.yml' and base:
+            if workflow_comparison(path, base, head).get('manual_controller_only') is True:
+                selected, rule = {'portable'}, 'known manual-only controller changed; ordinary policy/portable contracts, no payload inputs'
+            else:
+                selected, rule = ALL, 'unknown manual workflow controls or trigger changes: conservative full qualification'
+        if path in ('.github/workflows/make-all.yml', '.github/workflows/package-checks.yml') and base:
+            if workflow_comparison(path, base, head).get('mac_selector_policy_only') is True:
+                selected, rule = {'portable'}, 'exact audited Mac selector/required-join policy; payload commands unchanged'
         if path == '.github/workflows/make-all.yml' and base:
-            families = workflow_comparison(path, base, head).get('fast_workflow_families')
+            comparison = workflow_comparison(path, base, head)
+            if comparison.get('elixir_profile_only') is True:
+                selected, rule = {'application', 'portable'}, 'exact audited full-coverage workflow seam; other family controllers unchanged'
+            families = comparison.get('fast_workflow_families')
             if families and set(families) <= {'npm', 'readiness', 'codex_config'}:
                 selected, rule = set(families), 'only audited cheap test commands changed; other workflow controls identical'
         selected_consumers.update(selected)

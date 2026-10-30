@@ -4,12 +4,28 @@ on:
   # Manual feature-ref runs build and qualify candidates without production publication.
   workflow_dispatch:
     inputs:
+      packaged_host_revision:
+        description: Exact operator-approved 40-hex source revision; required only when host preparation is enabled
+        type: string
+        default: ''
+      packaged_host_preparation:
+        description: Explicit reviewed native host preparation on an isolated owner manual run
+        type: boolean
+        default: false
       production_prepare:
         description: Prepare exact main production-reference packages without publication
         type: boolean
         default: false
       baseline_run:
         description: Exact explicitly authorized original native-record run for nonpublishing manual composition
+        type: string
+        default: ''
+      cache_export_overlap:
+        description: Experimental same-builder max export overlap; serial remains the default
+        type: boolean
+        default: false
+      bootstrap_previous:
+        description: Explicit pinned pending prior subject for fresh manual dev baseline proof; empty keeps strict admission
         type: string
         default: ''
       previous_artifact_run:
@@ -40,13 +56,11 @@ on:
         description: Run only isolated controller fixtures on native macOS ARM64 (no artifacts or publication)
         type: boolean
         default: false
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 concurrency:
   group: engine-candidate-${{ github.event_name }}-${{ github.ref }}-${{ (inputs.controller_only || inputs.retain_diagnostic) && github.run_id || 'latest' }}
@@ -58,20 +72,66 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
+      - name: Require approved packaged host preparation revision
+        if: inputs.packaged_host_preparation
+        env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
+        run: |
+          test "$PACKAGED_HOST_PREPARATION" = true
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+          test "$GITHUB_ACTOR" = Jayson-Stangel
+          test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          [[ "$PACKAGED_HOST_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$PACKAGED_HOST_REVISION" = "$GITHUB_SHA"
       - name: Require manual main preparation
         env:
+          PACKAGED_HOST_PREPARATION: ${{ inputs.packaged_host_preparation }}
+          PACKAGED_HOST_REVISION: ${{ inputs.packaged_host_revision }}
           PREPARE: ${{ inputs.production_prepare }}
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           ENGINE_ONLY: ${{ inputs.engine_only }}
           CONTROLLER_ONLY: ${{ inputs.controller_only }}
         run: |
           test "$EVENT" = workflow_dispatch
+          if [ "$ENGINE_ONLY" != true ] && [ "$CONTROLLER_ONLY" != true ]; then
+            test "$PACKAGED_HOST_PREPARATION" = true || { echo 'Selected installed/package qualification requires explicit reviewed host preparation consent.' >&2; exit 1; }
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_REPOSITORY" = Jayson-Stangel/symphony
+            test "$GITHUB_ACTOR" = Jayson-Stangel
+            test "$GITHUB_TRIGGERING_ACTOR" = Jayson-Stangel
+          fi
+          if [ -n "${BOOTSTRAP_PREVIOUS:-}" ]; then
+            test "$PREPARE" = false
+            test "$REF" = refs/heads/dev
+            test "$ENGINE_ONLY" = false
+            test "$CONTROLLER_ONLY" = false
+          fi
           if [ "$PREPARE" = true ]; then
             test "$REF" = refs/heads/main
             test "$ENGINE_ONLY" != true
             test "$CONTROLLER_ONLY" != true
           fi
+
+      - name: Check out exact pending-baseline controller before native fanout
+        if: inputs.bootstrap_previous != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate pinned pending baseline before any native fanout
+        if: inputs.bootstrap_previous != ''
+        env:
+          BOOTSTRAP_PREVIOUS: ${{ inputs.bootstrap_previous }}
+          PREVIOUS_ARTIFACT_RUN: ${{ inputs.previous_artifact_run }}
+          PREPARE_RELEASE: ${{ inputs.production_prepare }}
+          COMPOSE_PACKAGES: 'true'
+          MANAGER_ONLY_UPDATE: ${{ inputs.manager_only_update }}
+          PREVIOUS_REVISION: ${{ inputs.previous_revision }}
+          LEGACY_ARTIFACT_RUN: ${{ inputs.legacy_artifact_run }}
+        run: python3 scripts/release/prior_baseline.py validate
 
   qualification:
     name: Validate preflight inputs
@@ -81,14 +141,8 @@ jobs:
   host-policy:
     name: Select native hosts
     needs: production-source
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/host-policy.yml
-
-  engine-fixtures:
-    name: Qualify native engine fixtures
-    needs: qualification
-    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && inputs.engine_only && !inputs.controller_only }}
-    uses: ./.github/workflows/release-native.yml
 
   runners:
     name: Qualify runner components
@@ -96,10 +150,14 @@ jobs:
     if: ${{ !inputs.controller_only && !inputs.engine_only && github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/runner-release.yml
     with:
+      packaged_host_preparation: ${{ inputs.packaged_host_preparation }}
+      packaged_host_revision: ${{ inputs.packaged_host_revision }}
       baseline_run: ${{ inputs.baseline_run }}
+      cache_export_overlap: ${{ inputs.cache_export_overlap }}
       retain_diagnostic: ${{ inputs.controller_only || inputs.retain_diagnostic }}
       previous_revision: ${{ inputs.previous_revision }}
       previous_artifact_run: ${{ inputs.previous_artifact_run }}
+      bootstrap_previous: ${{ inputs.bootstrap_previous }}
       legacy_artifact_run: ${{ inputs.legacy_artifact_run }}
       manager_only_update: ${{ inputs.manager_only_update }}
       preflight_revision: ${{ needs.qualification.outputs.qualified_revision }}
@@ -109,9 +167,10 @@ jobs:
     permissions:
       contents: read
       actions: read
+      statuses: read
 
   build:
-    name: Build engine (${{ matrix.target }})
+    name: Verify engine (${{ matrix.target }})
     needs: [qualification, host-policy, mac-runner-build]
     if: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' && needs.mac-runner-build.result == 'success' }}
     runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-build.outputs.runner || matrix.runner }}
@@ -136,6 +195,8 @@ jobs:
           fi
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Set up mise tools
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
@@ -147,12 +208,17 @@ jobs:
       - name: Install Zig
         run: mise install zig@0.15.2
 
-      - name: Install Linux archive utility
+      - name: Install Linux archive and controller utilities
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xz-utils
+        run: sudo apt-get update && sudo apt-get install -y xz-utils lsof
       - name: Verify macOS archive utility
         if: runner.os == 'macOS'
         run: command -v xz || brew install xz
+
+      - name: Retain engine-only native controller coverage in this allocation
+        if: inputs.engine_only
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/ci/release_tests.py native
 
       - name: Install Mix dependencies
         run: |
@@ -192,47 +258,8 @@ jobs:
           artifact.with_name(artifact.name + ".source.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
           PYTHON
 
-      - name: Upload release assets
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ matrix.target }}
-          path: elixir/dist/*
-          if-no-files-found: error
-
-  smoke:
-    name: Verify engine (${{ matrix.target }})
-    needs: [build, host-policy, mac-runner-smoke]
-    runs-on: ${{ matrix.platform == 'macos' && needs.mac-runner-smoke.outputs.runner || matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.host-policy.outputs.matrix) }}
-
-    steps:
-      - name: Require actual native Mac prerequisites
-        working-directory: ${{ runner.temp }}
-        if: matrix.platform == 'macos'
-        env:
-          BACKUP_MAC_SELECTED: ${{ needs.mac-runner-smoke.outputs.runner != 'macos-14' }}
-        run: |
-          test "$(uname -s)/$(uname -m)" = Darwin/arm64
-          python3 -c 'import sys; assert sys.version_info >= (3, 11), "native Mac checks require Python 3.11+"'
-          if [ "$BACKUP_MAC_SELECTED" = true ]; then
-            case "$(sw_vers -productVersion)" in 14.*) ;; *) echo 'Backup guest must be macOS 14' >&2; exit 1 ;; esac
-          fi
-      - name: Checkout the exact candidate controller
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download release assets
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ${{ matrix.target }}
-          path: dist
-
-      - name: Install Linux test controller utility
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y lsof
-
       - name: Qualify actual standalone engine
+        working-directory: ${{ github.workspace }}
         env:
           PRODUCTION_PREPARE: ${{ inputs.production_prepare }}
         run: |
@@ -241,7 +268,7 @@ jobs:
           else
             version="${GITHUB_SHA::7}"
           fi
-          python3 scripts/release/engine-smoke.py "dist/symphony-$version-${{ matrix.target }}" \
+          python3 scripts/release/engine-smoke.py "elixir/dist/symphony-$version-${{ matrix.target }}" \
             --source-revision "$GITHUB_SHA" --target "${{ matrix.target }}" \
             --evidence-dir "$RUNNER_TEMP/engine-evidence-${{ matrix.target }}"
 
@@ -252,6 +279,13 @@ jobs:
           name: engine-evidence-${{ matrix.target }}
           path: ${{ runner.temp }}/engine-evidence-${{ matrix.target }}/
           if-no-files-found: warn
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: elixir/dist/*
+          if-no-files-found: error
 
   controller-diagnostics:
     name: Diagnose release controller
@@ -279,79 +313,67 @@ jobs:
           python3 -m unittest discover -s scripts/release/tests -p test_engine_smoke.py -v
 
   mac-runner-build:
-    name: Select backup Mac for build
+    name: Select owned Mac first for build
+    needs: [qualification, host-policy]
+    if: ${{ always() && !cancelled() && needs.qualification.result == 'success' && needs.host-policy.result == 'success' && !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
+          SELECT_JOB_KEY: build
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ !inputs.controller_only && github.event_name == 'workflow_dispatch' }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
           SELECT_JOB_KEY: build
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
-
-  mac-runner-smoke:
-    name: Select backup Mac for smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
-    steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
-          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
-          SELECT_JOB_KEY: smoke
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"
 
   mac-runner-controller-diagnostics:
-    name: Select backup Mac for controller diagnostics
+    name: Select owned Mac first for controller diagnostics
+    needs: production-source
+    if: ${{ always() && !cancelled() && needs.production-source.result == 'success' && inputs.controller_only && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
-      runner: ${{ steps.hosted.outputs.runner || steps.selected.outputs.runner }}
+      runner: ${{ steps.selected.outputs.runner }}
     steps:
-      - name: Retain hosted execution by default
-        id: hosted
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT == ''
-        run: echo 'runner=macos-14' >> "$GITHUB_OUTPUT"
-      - name: Check out source for an explicit routing permit
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Check out source for owned-first capacity selection
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate the exact credential free Mac routing permit
-        id: selected
-        if: vars.SYMPHONY_BACKUP_MAC_PERMIT != ''
+      - name: Prove actual workflow-token capacity read before host preparation
+        id: capacity-probe
         env:
+          SELECT_TARGET_REQUESTED: ${{ inputs.controller_only }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
+          GH_TOKEN: ${{ github.token }}
+          SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
+          SELECT_JOB_KEY: controller-diagnostics
+        run: python3 scripts/ci/mac_runner_request.py --probe >> "$GITHUB_OUTPUT"
+      - name: Prefer prepared owned capacity; report pre-execution fallback
+        id: selected
+        env:
+          SELECT_TARGET_REQUESTED: ${{ inputs.controller_only }}
+          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}
           GH_TOKEN: ${{ github.token }}
           BACKUP_MAC_PERMIT: ${{ vars.SYMPHONY_BACKUP_MAC_PERMIT }}
           SELECT_WORKFLOW_PATH: .github/workflows/burrito-release.yml
           SELECT_JOB_KEY: controller-diagnostics
-        run: python3 scripts/ci/select_mac_runner.py >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/mac_runner_request.py >> "$GITHUB_OUTPUT"

@@ -14,6 +14,7 @@ import os
 import re
 from pathlib import Path
 import subprocess
+import time
 import zipfile
 
 import artifacts
@@ -30,15 +31,59 @@ def api_command(path, binary=False):
     if binary and _BINARY_FLAGS is None:
         help_text = subprocess.check_output(["gh", "api", "--help"], stderr=subprocess.PIPE, text=True, timeout=10)
         _BINARY_FLAGS = ["--allow-escape-sequences"] if "--allow-escape-sequences" in help_text else []
-    return ["gh", "api", *(_BINARY_FLAGS or [] if binary else []), f"repos/{REPOSITORY}/{path}"]
+    return ["gh", "api", "--method", "GET", *(_BINARY_FLAGS or [] if binary else []), f"repos/{REPOSITORY}/{path}"]
+
+
+# Metadata GETs only: no mutation or archive-transfer retry capability.
+READ_ATTEMPTS = 3
+READ_SECONDS = 120
+READ_BACKOFF = (1, 2)
 
 
 def api(path, binary=False):
-    try:
-        data = subprocess.check_output(api_command(path, binary), stderr=subprocess.PIPE, timeout=60)
-    except subprocess.SubprocessError:
-        raise ValueError("native origin service unavailable; reuse refused") from None
-    return data if binary else json.loads(data)
+    deadline = time.monotonic() + READ_SECONDS
+    attempts = 1 if binary else READ_ATTEMPTS
+    reason = 'deadline'
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            data = subprocess.check_output(api_command(path, binary), stderr=subprocess.PIPE,
+                                           timeout=min(60, remaining))
+        except subprocess.TimeoutExpired:
+            reason = 'timeout'
+        except subprocess.CalledProcessError as error:
+            # Only gh's terminal HTTP diagnostic selects a retry. Never expose
+            # provider stderr, response bodies, URLs, or credentials.
+            stderr = error.stderr if isinstance(error.stderr, bytes) else b''
+            statuses = (re.findall(rb'^gh: [^\r\n]* \(HTTP ([1-5][0-9]{2})\)\r?$', stderr, re.MULTILINE)
+                        if len(stderr) <= 65536 else [])
+            status = int(statuses[0]) if len(statuses) == 1 else None
+            reason = 'http-' + str(status) if status is not None else 'client-error'
+            if status not in (502, 503, 504):
+                break
+        except (OSError, subprocess.SubprocessError):
+            reason = 'client-error'
+            break
+        else:
+            if time.monotonic() > deadline:
+                reason = 'deadline'
+                break
+            if binary:
+                return data
+            try:
+                return json.loads(data)
+            except (ValueError, UnicodeError):
+                raise ValueError('native origin malformed JSON; reuse refused') from None
+        if attempt + 1 == attempts:
+            break
+        delay = READ_BACKOFF[attempt]
+        if time.monotonic() + delay >= deadline:
+            reason = 'deadline'
+            break
+        time.sleep(delay)
+    raise ValueError('native origin service unavailable (' + reason + '); reuse refused') from None
 
 
 def require(condition, message):

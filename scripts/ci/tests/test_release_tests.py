@@ -80,7 +80,7 @@ class CodexConfigContractsTest(unittest.TestCase):
 
 
 class WorkflowGuardTest(unittest.TestCase):
-    def guard(self, filename, name, values):
+    def guard(self, filename, name, values, outputs=False):
         root = Path(__file__).resolve().parents[3]
         text = (root / '.github/workflows' / filename).read_text()
         section = text.split('      - name: ' + name + '\n', 1)[1]
@@ -93,9 +93,15 @@ class WorkflowGuardTest(unittest.TestCase):
             lines.append(line[10:])
         script = '\n'.join(lines)
         with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ, GITHUB_SHA='a' * 40, GITHUB_STEP_SUMMARY=str(Path(directory) / 'summary'), **values)
-            return subprocess.run(['bash', '-e', '-c', script], cwd=directory, env=env,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+            env = dict(os.environ, GITHUB_SHA='a' * 40, GITHUB_STEP_SUMMARY=str(Path(directory) / 'summary'),
+                       GITHUB_OUTPUT=str(Path(directory) / 'outputs'), **values)
+            result = subprocess.run(['bash', '-e', '-c', script], cwd=directory, env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if outputs:
+                path = Path(env['GITHUB_OUTPUT'])
+                values = dict(line.split('=', 1) for line in path.read_text().splitlines()) if path.exists() else {}
+                return result.returncode, values
+            return result.returncode
 
     def test_source_output_never_accepts_failed_missing_or_wrong_head(self):
         name = 'Require exact successful local or caller-owned preflight'
@@ -109,9 +115,131 @@ class WorkflowGuardTest(unittest.TestCase):
         self.assertEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='a'*40)), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', PREVIOUS_REVISION='invalid')), 0)
-        self.assertNotEqual(self.guard('runner-release.yml', name, dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='', CACHE_PROBE='true', DIAGNOSTIC_ARTIFACT_RUN='123')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name,
             dict(LOCAL_RESULT='skipped', LOCAL_REVISION='', CALLER_REVISION='b'*40)), 0)
+
+    def test_invalid_production_controller_mode_refuses_before_selector_fanout(self):
+        mode = dict(PREPARE='true', EVENT='workflow_dispatch', REF='refs/heads/main',
+                    ENGINE_ONLY='false', CONTROLLER_ONLY='true')
+        self.assertNotEqual(self.guard('burrito-release.yml', 'Require manual main preparation', mode), 0)
+        self.assertEqual(self.guard('burrito-release.yml', 'Require manual main preparation',
+                                   dict(mode, PREPARE='false')), 0)
+
+    def test_final_only_mode_omits_only_unconsumed_candidate_archives(self):
+        good = dict(LOCAL_RESULT='success', LOCAL_REVISION='a'*40, CALLER_REVISION='',
+                    PREPARE_RELEASE='true', COMPOSE_PACKAGES='true', PREVIOUS_ARTIFACT_RUN='',
+                    LEGACY_ARTIFACT_RUN='', MANAGER_ONLY_UPDATE='false')
+        name = 'Require exact successful local or caller-owned preflight'
+        self.assertEqual(self.guard('runner-release.yml', name, good, outputs=True),
+                         (0, {'final_only': 'true'}))
+        for changed in ({'PREPARE_RELEASE': 'false'}, {'PREVIOUS_ARTIFACT_RUN': '123'},
+                        {'LEGACY_ARTIFACT_RUN': '123', 'PREVIOUS_ARTIFACT_RUN': '124', 'MANAGER_ONLY_UPDATE': 'true'},
+                        {'MANAGER_ONLY_UPDATE': 'true', 'PREVIOUS_ARTIFACT_RUN': '123'}):
+            self.assertEqual(self.guard('runner-release.yml', name, dict(good, **changed), outputs=True),
+                             (0, {'final_only': 'false'}))
+        for changed in ({'COMPOSE_PACKAGES': 'false'}, {'LOCAL_RESULT': 'failure'}, {'PREVIOUS_REVISION': 'b'*40},
+                        {'MANAGER_ONLY_UPDATE': 'true'}, {'LEGACY_ARTIFACT_RUN': '123'},
+                        {'MANAGER_ONLY_UPDATE': 'true', 'LEGACY_ARTIFACT_RUN': '123', 'PREVIOUS_ARTIFACT_RUN': '123'}):
+            code, output = self.guard('runner-release.yml', name, dict(good, **changed), outputs=True)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(output, {})
+
+    def test_final_package_failure_cannot_be_hidden_by_intentionally_skipped_candidates(self):
+        good = dict(PREFLIGHT='success', PACKAGES='success', HAS_BUILDS='false', RUNNERS='skipped',
+                    METADATA='success', BUNDLES='skipped', LIFECYCLE='skipped', PREVIOUS_REVISION='',
+                    PREVIOUS_ARTIFACT_RUN='', FINAL_ONLY='true', FINAL_PACKAGES='success', PREPARE_RELEASE='true')
+        name = 'Require all requested candidate work without accepting omitted failures'
+        self.assertEqual(self.guard('runner-release.yml', name, good), 0)
+        for changed in ({'FINAL_PACKAGES': 'failure'}, {'FINAL_PACKAGES': 'cancelled'},
+                        {'FINAL_PACKAGES': 'skipped'}, {'BUNDLES': 'success'}, {'FINAL_ONLY': ''},
+                        {'LIFECYCLE': 'success'}, {'METADATA': 'failure'}, {'PACKAGES': 'skipped'}):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **changed)), 0)
+        lifecycle = dict(good, FINAL_ONLY='false', BUNDLES='success', PREVIOUS_ARTIFACT_RUN='123',
+                         LIFECYCLE='success')
+        self.assertEqual(self.guard('runner-release.yml', name, lifecycle), 0)
+        for state in ('skipped', 'failure', 'cancelled', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(lifecycle, LIFECYCLE=state)), 0)
+        for state in ('skipped', 'failure', 'cancelled', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(lifecycle, FINAL_PACKAGES=state)), 0)
+        before = 'Require qualified component inputs before preparing final metadata'
+        self.assertEqual(self.guard('runner-release.yml', before, dict(HAS_BUILDS='false', RUNNERS='skipped')), 0)
+        for result in ('failure', 'cancelled', 'skipped', ''):
+            self.assertNotEqual(self.guard('runner-release.yml', before, dict(HAS_BUILDS='true', RUNNERS=result)), 0)
+
+    def test_controller_cache_diagnostic_confines_source_provider_and_all_other_modes(self):
+        good=dict(LOCAL_RESULT='success',LOCAL_REVISION='a'*40,CALLER_REVISION='',CONTROLLER_COMPARISON='true',
+                  CONTROLLER_REVISION='a'*40,GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_REF='refs/heads/dev',
+                  GITHUB_REPOSITORY='Jayson-Stangel/symphony',GITHUB_ACTOR='Jayson-Stangel',GITHUB_TRIGGERING_ACTOR='Jayson-Stangel',
+                  GITHUB_RUN_ATTEMPT='1',PREPARE_RELEASE='false',
+                  COMPOSE_PACKAGES='false',MANAGER_ONLY_UPDATE='false',PACKAGED_PREPARATION='false',RETAIN_DIAGNOSTIC='true')
+        name='Require exact successful local or caller-owned preflight'
+        self.assertEqual(self.guard('runner-release.yml',name,good),0)
+        for field,value in [('CONTROLLER_REVISION','b'*40),('GITHUB_REF','refs/heads/main'),('GITHUB_EVENT_NAME','push'),
+                            ('GITHUB_ACTOR','foreign'),('GITHUB_TRIGGERING_ACTOR','foreign'),('GITHUB_RUN_ATTEMPT','2'),
+                            ('CACHE_OVERLAP','true'),('REQUIRE_REUSE','true'),('COMPOSE_PACKAGES','true'),
+                            ('PREPARE_RELEASE','true'),('PREVIOUS_ARTIFACT_RUN','123'),('LEGACY_ARTIFACT_RUN','123'),('BOOTSTRAP_PREVIOUS','proof.json'),
+                            ('RESUME_NATIVE','123'),('BASELINE_RUN','123'),('COMPONENT_PLAN','artifact'),
+                            ('DIAGNOSTIC_ARTIFACT_RUN','123'),('TRANSFER_REPLAY','123'),('TRANSFER_TIMING','123'),
+                            ('TRANSFER_DIAGNOSTIC','123'),('PACKAGED_PREPARATION','true'),('RETAIN_DIAGNOSTIC','false')]:
+            with self.subTest(field=field):self.assertNotEqual(self.guard('runner-release.yml',name,dict(good,**{field:value})),0)
+        root=Path(__file__).resolve().parents[3]
+        workflow=(root/'.github/workflows/runner-release.yml').read_text()
+        diagnostic=workflow.split('  cache-controller-comparison:\n')[1].split('  packaged-candidate:',1)[0]
+        self.assertIn('runs-on: ubuntu-24.04-arm',diagnostic)
+        self.assertIn('strategy: [serial, overlap]',diagnostic)
+        self.assertIn("'claude','arm64'",diagnostic)
+        self.assertIn('Linux/aarch64',diagnostic)
+        self.assertNotIn('include:',diagnostic)
+        self.assertIn('timeout-minutes: 60',diagnostic)
+        self.assertIn('scripts/release/build-candidate-runners.sh',diagnostic)
+        self.assertIn('cache-only solve performed uncached build operations',diagnostic)
+        for key in ('component-plan','candidate','candidate-metadata','package-inputs','candidate-qualification'):
+            block=workflow.split('  '+key+':\n',1)[1].split('    steps:',1)[0]
+            self.assertIn("inputs.cache_controller_revision == ''",block)
+
+    def test_controller_cache_receipt_budget_and_uncached_work_fail_closed(self):
+        import json
+        root=Path(__file__).resolve().parents[3]
+        workflow=(root/'.github/workflows/runner-release.yml').read_text()
+        budget=workflow.split("          PYBUDGET\n",1)[0].rsplit("          python3 - <<'PYBUDGET'\n",1)[1]
+        budget='\n'.join(line[10:] for line in budget.splitlines())
+        with tempfile.TemporaryDirectory() as folder:
+            directory=Path(folder);receipts=directory/'controller-cache-overlap';receipts.mkdir()
+            report=receipts/'measurement.json';report.write_text('{}')
+            env=dict(os.environ,RUNNER_TEMP=folder,STRATEGY='overlap',GITHUB_OUTPUT=str(directory/'output'))
+            result=subprocess.run(['python3','-c',budget],env=env,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual((directory/'output').read_text(),'ready=true\n')
+            (directory/'output').unlink()
+            with report.open('wb') as output:output.truncate(32*1024**2+1)
+            result=subprocess.run(['python3','-c',budget],env=env,capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse((directory/'output').exists())
+            report.unlink();report.symlink_to(directory/'output')
+            (directory/'output').write_text('{}')
+            result=subprocess.run(['python3','-c',budget],env=env,capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0)
+            # Exercise the actual workflow's local-hit assertion, not a mirror.
+            assertion=workflow.split('                  operations=',1)[1].split('          archives=',1)[0]
+            assertion='operations='+assertion.replace('\n                  ','\n').rstrip()
+            import re
+            for cached,passes in ((True,True),(False,False)):
+                raw=directory/'raw.jsonl';raw.write_text(json.dumps({'vertexes':[{'digest':'run','name':'[claude 2/3] RUN npm install'}]}))
+                scope=dict(re=re,json=json,raw=raw,kind='export',timings={'export':{'intervals':[{'vertex_id':'run','cached':cached}]}})
+                if passes:exec(assertion,scope)
+                else:
+                    with self.assertRaisesRegex(AssertionError,'uncached build operations'):exec(assertion,scope)
+    def test_pending_bootstrap_requires_fresh_ubuntu_terminal_proof(self):
+        values = dict(PREFLIGHT='success', PACKAGES='success', HAS_BUILDS='false', RUNNERS='skipped',
+                      METADATA='success', BUNDLES='success', FINAL_ONLY='false', FINAL_PACKAGES='skipped',
+                      PREPARE_RELEASE='false', LIFECYCLE='success', PREVIOUS_REVISION='', PREVIOUS_ARTIFACT_RUN='40588897389',
+                      BOOTSTRAP_REQUESTED='true', BOOTSTRAP_PROOF='true')
+        name = 'Require all requested candidate work without accepting omitted failures'
+        self.assertEqual(self.guard('runner-release.yml', name, values), 0)
+        for result in ('', 'false', 'failure', 'skipped'):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(values, BOOTSTRAP_PROOF=result)), 0)
+        for result in ('failure', 'cancelled', 'skipped'):
+            self.assertNotEqual(self.guard('runner-release.yml', name, dict(values, LIFECYCLE=result)), 0)
 
     def test_documentation_aggregate_requires_intentional_skips(self):
         name = 'Require every requested native and package-input qualification'
@@ -127,14 +255,14 @@ class WorkflowGuardTest(unittest.TestCase):
 
     def test_terminal_requires_every_requested_native_package_and_image_result(self):
         name = 'Require all requested candidate work without accepting omitted failures'
-        good = dict(HAS_BUILDS='true', PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40)
+        good = dict(HAS_BUILDS='true', PREFLIGHT='success', PACKAGES='success', RUNNERS='success', METADATA='success', BUNDLES='success', LIFECYCLE='success', PREVIOUS_REVISION='b'*40, FINAL_ONLY='false', FINAL_PACKAGES='skipped', PREPARE_RELEASE='false')
         self.assertEqual(self.guard('runner-release.yml', name, good), 0)
         self.assertEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false', RUNNERS='skipped')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, HAS_BUILDS='false')), 0)
         self.assertEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='skipped')), 0)
         self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, PREVIOUS_REVISION='', LIFECYCLE='success')), 0)
         for key in good:
-            if key == 'PREVIOUS_REVISION':
+            if key in ('PREVIOUS_REVISION', 'FINAL_ONLY', 'FINAL_PACKAGES', 'PREPARE_RELEASE'):
                 continue
             for result in ('failure', 'cancelled', 'skipped', ''):
                 self.assertNotEqual(self.guard('runner-release.yml', name, dict(good, **{key: result})), 0)
@@ -175,13 +303,13 @@ class ReusedPreflightSchedulingTest(unittest.TestCase):
         expected = {
             'runner-release.yml': {
                 'package-inputs': ['qualification'], 'component-plan': ['qualification'], 'candidate': ['qualification','component-plan'],
-                'publication-preflight':['component-plan','candidate-metadata','candidate-qualification'],
+                'publication-preflight':['component-plan','candidate-metadata','package-inputs','qualification'],
                 'candidate-metadata': ['candidate'], 'packaged-release-platform': ['publication-preflight'],
                 'packaged-release': ['packaged-release-platform'],
                 'packaged-candidate': ['candidate-metadata', 'package-inputs'],
                 'packaged-candidate-metadata': ['packaged-candidate'],
                 'ubuntu-package-lifecycle': ['packaged-candidate-metadata'],
-                'lifecycle-diagnostic': ['qualification'], 'cache-probe': ['qualification']},
+                'lifecycle-diagnostic': ['qualification'], 'cache-controller-comparison': ['qualification']},
             'runner-integration.yml': {'manager-package': ['manager-inputs','helpers']},
             'current-manager-package.yml': {'package':['host-policy'],'metadata':['package']},
             'native-manager-helpers.yml': {'helper':['host-policy'],'qualification':['helper']},
@@ -203,14 +331,16 @@ class EngineOnlyCoverageTest(unittest.TestCase):
     def test_engine_only_retains_native_controller_regressions_after_preflight(self):
         root = Path(__file__).resolve().parents[3]
         text = (root / '.github/workflows/burrito-release.yml').read_text()
-        block = text.split('  engine-fixtures:\n', 1)[1].split('\n  runners:', 1)[0]
-        self.assertIn('needs: qualification', block)
-        self.assertIn("needs.qualification.result == 'success'", block)
-        self.assertIn('inputs.engine_only && !inputs.controller_only', block)
-        self.assertIn('uses: ./.github/workflows/release-native.yml', block)
-        native = (root / '.github/workflows/release-native.yml').read_text()
-        self.assertIn('fromJSON(needs.host-policy.outputs.matrix)', native)
-        self.assertIn('python3 scripts/ci/release_tests.py native', native)
+        block = text.split('  build:\n', 1)[1].split('\n  controller-diagnostics:', 1)[0]
+        self.assertIn('needs: [qualification, host-policy, mac-runner-build]', block)
+        self.assertIn('if: inputs.engine_only', block)
+        self.assertIn('python3 scripts/ci/release_tests.py native', block)
+        self.assertNotIn('  engine-fixtures:', text)
+        selector = text.split('  mac-runner-controller-diagnostics:\n', 1)[1]
+        self.assertIn('needs: production-source', selector)
+        self.assertIn("needs.production-source.result == 'success'", selector)
+        self.assertIn('fetch-depth: 0', block)
+        self.assertFalse((root / '.github/workflows/release-native.yml').exists())
         self.assertNotIn('test_engine_smoke.py', RELEASE.PORTABLE)
         self.assertIn('test_engine_smoke.py', [path.name for path in (root / 'scripts/release/tests').glob('test_*.py')])
 
@@ -267,3 +397,33 @@ class ComponentsOnlyManualTest(unittest.TestCase):
         for name in ('package-inputs','packaged-candidate','candidate-qualification'):
             block=re.search(r'^  '+name+r':\n(?:(?!^  [a-z]).*\n)*',text,re.M).group()
             self.assertIn('inputs.compose_packages',re.search(r'^    if: (.*)$',block,re.M).group(1))
+
+
+class FinalPackageGraphTest(unittest.TestCase):
+    def test_final_cohort_join_is_acyclic_and_route_jobs_follow_real_consumers(self):
+        import re
+        text = (RELEASE.ROOT/'.github/workflows/runner-release.yml').read_text().split('jobs:\n', 1)[1]
+        graph = {}
+        blocks = dict((m.group(1), m.group(2)) for m in re.finditer(
+            r'^  ([a-z][a-z0-9-]*):\n((?:(?!^  [a-z]).*\n)*)', text, re.M))
+        for name, block in blocks.items():
+            match = re.search(r'^    needs: (.+)$', block, re.M)
+            graph[name] = [] if not match else [v.strip() for v in match[1].strip('[]').split(',')]
+        checked, active = set(), set()
+        def visit(name):
+            self.assertIn(name, graph)
+            self.assertNotIn(name, active, 'workflow dependency cycle')
+            if name in checked:
+                return
+            active.add(name)
+            for dependency in graph[name]:
+                visit(dependency)
+            active.remove(name); checked.add(name)
+        for name in graph:
+            visit(name)
+        self.assertIn('packaged-release', graph['candidate-qualification'])
+        self.assertNotIn('candidate-qualification', graph['publication-preflight'])
+        self.assertIn("needs.qualification.outputs.final_only == 'false'", blocks['mac-runner-packaged-candidate'])
+        self.assertEqual(graph['mac-runner-packaged-release-platform'], ['publication-preflight'])
+        self.assertIn("needs.publication-preflight.result == 'success'", blocks['mac-runner-packaged-release-platform'])
+        self.assertIn("verify_packages(Path('dist'), os.environ['GITHUB_SHA'])", blocks['packaged-release'])

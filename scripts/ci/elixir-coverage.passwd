@@ -1,0 +1,3 @@
+root:x:0:0:root:/root:/usr/sbin/nologin
+ci:x:1001:1001:CI:/home/ci:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin

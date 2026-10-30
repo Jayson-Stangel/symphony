@@ -20,6 +20,7 @@ import tarfile
 import time
 import urllib.request
 import uuid
+import prior_baseline
 
 
 # Only exact native account entrypoints are replaced. This fixture grants no
@@ -292,6 +293,8 @@ def main():
     storages = set()
     owned_volumes = set()
     log = (evidence / "commands.log").open("w")
+    bootstrap = prior_baseline.descriptor(os.environ.get('BOOTSTRAP_PREVIOUS',''))
+    bootstrap_subject = json.loads((evidence/'previous-package-subject.json').read_text()) if bootstrap else None
     result = {"source_revision": os.environ.get("GITHUB_SHA"), "os_arch": os.uname().sysname + "/" + os.uname().machine,
               "nativeAuth": "STUB login entrypoints and native account status ONLY; no account/model requests",
               "package_source_revision": os.environ.get("PACKAGE_SOURCE_REVISION", os.environ.get("GITHUB_SHA")),
@@ -376,6 +379,15 @@ def main():
     try:
         selections = package_selections(packages, current_only, result["source_revision"], manager_update_only)
         current = selections[-1][1]
+        if not result["diagnostic_artifact_run"]:
+            # Verify actual current-package preparation before any installed acceptance.
+            # Authentication remains a credential-free peer; protected execution below is real.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
+            import packaged_apparmor
+            proof = packaged_apparmor.verify(packages, packages / "release.json",
+                Path(os.environ["PACKAGED_APPARMOR_EVIDENCE"]), cleanup_required=False)
+            result["packaged_host_preparation"] = {key: proof[key] for key in
+                ("source_revision", "package_sha256", "profile", "policy_sha256", "host", "daemon_id")}
         initial = selections[0][1]
         previous = selections[-2][1] if len(selections) > 1 else initial
         legacy_chain = len(selections) == 3
@@ -470,8 +482,11 @@ def main():
         client_run(["tar", "-xzf", str(first_archive), "-C", str(download)])
         client_run([str(download / "install.sh")]); client_run([str(download / "install.sh")])
         command = root / "bin/symphony"
-        client_run([str(command), "--version"])
-        assert json.loads(client_run([str(command), "doctor", "--json"]).stdout)["ready"] is True
+        initial_version = json.loads(client_run([str(command), "--version"]).stdout)
+        initial_doctor = json.loads(client_run([str(command), "doctor", "--json"]).stdout)
+        assert initial_doctor["ready"] is True
+        if bootstrap:
+            assert initial_version["source_revision"] == initial["source_revision"], "bootstrap initial installed source differs"
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
         repositories = [root / "one/service", root / "two/service"]
         identifiers, names, ports = [], [], []
@@ -506,6 +521,9 @@ def main():
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
+            if current_only and not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             selected_agent = project_agents[number]
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
             state(port)
@@ -516,6 +534,16 @@ def main():
                 dashboard = response.read().decode()
             assert "Symphony" in dashboard and "<html" in dashboard.lower(), dashboard[:200]
             (evidence / f"dashboard-{number}.html").write_text(dashboard)
+        if bootstrap:
+            # Reached only after BOTH real B listeners, immutable-image and dashboard checks.
+            projects = []
+            for repo in repositories:
+                assert (repo/'tracked-project-canary').read_text().endswith('dirty project change\n')
+                assert (repo/'untracked-project-canary').read_text() == 'untracked project evidence\n'
+                projects.append(dict(listener=True,image_bound=True,canaries=True))
+            result['bootstrap_initial'] = prior_baseline.initial_proof(bootstrap_subject,current['source_revision'],
+                initial_version['source_revision'],initial_doctor,projects)
+            record('fresh exact-original baseline repeat install, source, doctor, two listeners/images and project canaries before candidate activation')
         assert identifiers[0] != identifiers[1]
         assert inspect(names[0], '{{index .Config.Labels "com.symphony.storage"}}') != inspect(names[1], '{{index .Config.Labels "com.symphony.storage"}}')
         name, repo, port = names[0], repositories[0], ports[0]
@@ -614,6 +642,9 @@ def main():
                 metadata[0].write_bytes(original_metadata)
         if current_only:
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
             for selected_repo, selected_name in zip(repositories, names):
                 client_run([str(command), "runner", "stop"], cwd=selected_repo)
@@ -637,6 +668,9 @@ def main():
                 unchanged()
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             retained()
             client_run([str(command), "update", "--rollback-release"], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == previous['source_revision']
@@ -650,6 +684,9 @@ def main():
             retained()
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
+            if not result["diagnostic_artifact_run"]:
+                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                result["current_packaged_protected_execution"] = True
             retained()
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
                 client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
@@ -671,6 +708,9 @@ def main():
         client_run([str(command), "update", *update_args], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+        if not result["diagnostic_artifact_run"]:
+            client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+            result["current_packaged_protected_execution"] = True
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         client_run([str(command), "update", "--rollback-release"], cwd=repo)
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
@@ -734,6 +774,8 @@ def main():
         calls = (root / "docker-calls.log").read_text()
         assert " build " not in " " + calls
         assert "unexpected host dependency" not in (evidence / "commands.log").read_text()
+        if bootstrap:
+            result["bootstrap_transition_complete"] = True
         result["passed"] = True
         record("credential-free candidate acceptance complete; authenticated login/inference intentionally unperformed")
     finally:
@@ -778,6 +820,12 @@ def main():
         result["cleanup"] = {"verified_absent": removed, "errors": cleanup_errors}
         if cleanup_errors:
             result["passed"] = False
+        if bootstrap and result.get('passed') and not cleanup_errors:
+            try:
+                result['fresh_baseline_qualification'] = prior_baseline.completed_proof(result,bootstrap_subject,current['source_revision'])
+            except Exception as error:
+                result['passed'] = False
+                cleanup_errors.append('baseline proof: '+str(error))
         (evidence / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         log.close()
         if cleanup_errors:

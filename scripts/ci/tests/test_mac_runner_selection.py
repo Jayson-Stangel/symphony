@@ -51,6 +51,17 @@ class Selection(unittest.TestCase):
         return selector.select_runner(json.dumps(self.permit) if raw is None else raw,
                                       self.context, self.event, self.workflow, selector.TARGETS[self.workflow].copy().pop(), NOW, self.inspect)
 
+    def test_retired_engine_smoke_and_unused_native_workflow_cannot_acquire_a_runner(self):
+        for workflow, key in (('.github/workflows/burrito-release.yml', 'smoke'),
+                              ('.github/workflows/release-native.yml', 'native')):
+            with self.subTest(workflow=workflow, key=key):
+                with self.assertRaises(selector.Refusal):
+                    selector.select_runner('', self.context, self.event, workflow, key, NOW, self.inspect)
+                self.permit['targets'] = [{'consumer_workflow': workflow, 'job_key': key, 'runner_label': LABEL}]
+                with self.assertRaises(selector.Refusal):
+                    self.select()
+        self.inspect.assert_not_called()
+
     def test_hosted_default_other_run_and_reusable_callers_do_not_read_live_metadata(self):
         self.assertEqual(self.select(''), 'macos-14')
         self.permit['run_id'] = 13
@@ -304,14 +315,15 @@ class Selection(unittest.TestCase):
         app = scripts(job(workflow('make-all'), 'make-all'))[0]
         package = '\n'.join(scripts(job(workflow('package-checks'), 'package-qualification'))[:2])
         app_env = dict(RESULT='success', CODE='false', POLICY='false', READY='true', NPM='false',
-                       READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped')
+                       READINESS='false', CONFIG='false', CONTRACTS='false', PROCESS_RESULT='skipped',
+                       CLAUDE='false', ELIXIR_RESULT='skipped', CLAUDE_RESULT='skipped')
         package_env = env_for(('false',) * 4)
         for command, env in ((app, app_env), (package, package_env)):
             for status in ('success', 'failure', 'cancelled', 'skipped', ''):
                 result = subprocess.run(['bash', '-e', '-c', command],
                     env=dict(os.environ, **dict(env, MAC_RUNNER_RESULT=status, GITHUB_STEP_SUMMARY=os.devnull)),
                     capture_output=True)
-                self.assertEqual(result.returncode == 0, status == 'success', status)
+                self.assertEqual(result.returncode == 0, status == 'skipped', status)
 
 
 if __name__ == '__main__':
