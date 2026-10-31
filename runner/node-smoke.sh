@@ -12,6 +12,7 @@ test "$(command -v node)" = /usr/local/bin/node
 test "$(command -v npm)" = /usr/local/bin/npm
 test "$(command -v npx)" = /usr/local/bin/npx
 node -e 'const assert = require("node:assert/strict"); assert.equal(process.versions.node.split(".")[0], "24"); assert.equal(process.version, "v24.22.1"); console.log(process.version, process.arch, process.execPath)'
+node -e 'const assert = require("node:assert/strict"); const fs = require("node:fs"); assert.equal(process.config.variables.use_prefix_to_find_headers, true); assert.equal(process.config.variables.node_prefix, "/usr/local"); const h = fs.readFileSync("/usr/local/include/node/node_version.h", "utf8"); const v = ["MAJOR", "MINOR", "PATCH"].map(k => h.match(new RegExp("#define NODE_" + k + "_VERSION (\\d+)"))[1]).join("."); assert.equal(v, process.versions.node); console.log("Matching image-owned headers:", v)'
 test "$(npm --version)" = 11.19.1
 test "$(npx --version)" = 11.19.1
 test "$(npm prefix --global)" = /usr/local

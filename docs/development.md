@@ -985,3 +985,60 @@ The first ordinary PR and merged `dev` run must establish clean setup, original
 provenance, actual cache restoration and net benefit including cold toolchain,
 dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
 requires diagnosis before further experiments.
+
+## Native Node headers in worker images
+
+The common image builds the checksum-pinned Node 24.22.1 source with upstream
+`--prefix=/usr/local --use-prefix-to-find-headers` and copies its executable and
+matching `/usr/local/include/node` headers. npm stays from the pinned official
+Node image. This adds a bounded two-job native compilation to the shared image
+build; provider builds can reuse eligible cached layers of that stage. Parallel
+cold jobs may each compile it. Qualification must measure cold build
+cost on each native architecture. Manager-host support is a separate matrix.
+
+The official binary disables prefix discovery. Merely copying headers therefore
+leaves node-gyp trying to download/extract into protected HOME. A global npm
+`nodedir` default uses npm 11's deprecated arbitrary-config channel; a modern
+package-config environment default outranks explicit legacy configuration. Neither
+is an appropriate image default. Building with Node's supported discovery option
+works for independently installed node-gyp copies without shell wrappers,
+preloads, a node-gyp fork or npm configuration-precedence emulation.
+
+node-gyp resolves explicit `nodedir` before prefix discovery. Use its supported
+`npm_package_config_node_gyp_nodedir` environment variable, package.json
+`config.node_gyp_nodedir`, or direct `node-gyp --nodedir=/path` to select another
+header tree. Legacy `npm_config_nodedir` and npmrc settings retain the pinned
+npm/node-gyp's own behavior and deprecation warnings; new configuration should use
+the supported package-config channel. node-gyp's package-config environment form
+outranks its legacy environment form. An unusable explicit header tree fails with
+the selected path; the image does not redirect it to its own headers.
+
+`devdir` selects node-gyp's download cache; it does not force downloaded headers
+when matching prefix headers exist. Same-version `tarball`/`dist-url` settings
+also do not bypass upstream prefix discovery. For another header source, use an
+explicit `nodedir`; a different Node `target` takes the upstream download path
+and still needs its ordinary network/cache permissions. This image grants none.
+HOME, auth/config, npm cache precedence, protected paths and project ownership of
+lifecycle-script permission remain unchanged. The native fixture permits only
+its synthetic `cold-fixture` dependency's scripts in its own package.json.
+
+`runner/node-smoke.sh IMAGE` verifies the actual executable/header version and
+prefix discovery in each finished provider image. `runner/codex-sandbox-smoke.sh
+IMAGE` additionally runs `runner/test_native_node.py --protected` through native
+Codex `command/exec`: cold dependency compilation/load, binary deletion and
+rebuild/load, login/noninteractive/nested/lifecycle execution, explicit header
+configuration and protected HOME/config/header/symlink denial checks. No model,
+account, credentials, cached headers or prebuilt addon are used. Host-only runs
+and Docker-exec compilation do not establish protected worker proof. Claude's
+model-free image/startup checks remain distinct from its authenticated tool
+execution; report unavailable native protected-provider/architecture evidence
+as open rather than substituting those checks or emulation.
+
+For rollout, first complete the reviewed PR's acceptance and authorized merge to
+`dev`, then build and qualify the final combined source for Codex/Claude on native
+Linux amd64/arm64. Record immutable IDs/digests and application/image/manifest
+version identities from those final images; earlier candidate receipts do not
+cover this toolchain change. Exact-scope promotion, publication and stable rollout
+need their separate operator approvals. Only the installed `symphony update`
+command may adopt a published stable candidate for explicitly approved targets.
+Never copy this development executable or headers into an installed runtime.

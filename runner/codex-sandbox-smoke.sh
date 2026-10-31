@@ -65,3 +65,10 @@ runner_codex_run docker --rm \
   --volume /workspaces --volume /var/lib/symphony \
   --volume "$root/runner:/qualification:ro" \
   --entrypoint /usr/bin/timeout "$image_id" 180 python3 /qualification/test_npm_cache.py --protected
+
+# Compile/load a genuinely native dependency through the same protected API.
+# The project fixture permits only its own cold-fixture lifecycle scripts.
+runner_codex_run docker --rm \
+  --volume /workspaces --volume /var/lib/symphony \
+  --volume "$root/runner:/qualification:ro" \
+  --entrypoint /usr/bin/timeout "$image_id" 180 python3 /qualification/test_native_node.py --protected

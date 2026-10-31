@@ -1,6 +1,23 @@
 # Keep this multi-platform Node pin aligned with the live E2E and qualification images.
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS node-runtime
 
+# Node's release binaries disable prefix header discovery. Build the same
+# pinned release with Node's supported discovery option, so every node-gyp copy
+# can use matching image-owned headers after resolving explicit configuration.
+# This avoids deprecated npm config keys and runtime preload/launcher hooks.
+FROM node-runtime AS node-development
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl g++ make python3 xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/node-build
+RUN curl -fsSLO https://nodejs.org/dist/v24.22.1/node-v24.22.1.tar.xz \
+  && echo '4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231  node-v24.22.1.tar.xz' | sha256sum -c - \
+  && tar -xf node-v24.22.1.tar.xz --strip-components=1 \
+  && ./configure --prefix=/usr/local --use-prefix-to-find-headers \
+  && make -j2 \
+  && make install \
+  && node -e 'if (!process.config.variables.use_prefix_to_find_headers || process.config.variables.node_prefix !== "/usr/local") process.exit(1)'
+
 FROM node-runtime AS claude-deps
 WORKDIR /opt/symphony/claude
 COPY runner/claude/package.json runner/claude/package-lock.json ./
@@ -22,7 +39,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Node and its matching npm together, without distro Node/npm or Yarn.
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-development /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-development /usr/local/include/node /usr/local/include/node
 COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
