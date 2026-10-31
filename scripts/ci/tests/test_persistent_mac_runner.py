@@ -326,6 +326,155 @@ class NativeConfig(unittest.TestCase):
             runner.clean_job(self.env,self.root)
         self.assertFalse(self.workspace.exists())
 
+    def test_uncertain_signing_metadata_enters_existing_fail_closed_hook(self):
+        private = self.work / '_temp/symphony-signing-interrupted'
+        private.mkdir(mode=0o700)
+        (private / 'identity.p12').write_bytes(b'INERT P12')
+        with patch.object(runner, 'service', return_value=self.service()), \
+                patch.object(runner, 'command') as native, patch.object(runner, 'stop_service') as stop, \
+                redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'lack recovery'):
+            runner.clean_job(self.env, self.root)
+        stop.assert_called_once_with(self.root)
+        native.assert_not_called()
+        self.assertTrue(self.workspace.exists())
+
+    def test_signing_readiness_checks_installed_cleanup_without_activating_it(self):
+        env = dict(self.env, RUNNER_TEMP=str(self.work / '_temp'),
+                   ACTIONS_RUNNER_HOOK_JOB_COMPLETED=str(self.root.parent / 'persistent-mac-job-completed.sh'))
+        for name in ('persistent_mac_runner.py', 'persistent-mac-job-completed.sh'):
+            (self.root.parent / name).write_bytes(Path(runner.__file__).with_name(name).read_bytes())
+            (self.root.parent / name).chmod(0o700)
+        with patch.object(runner, 'service', return_value=self.service()), \
+                patch.object(runner, 'stop_service') as stop, patch.object(runner, 'guest_start') as start:
+            runner.signing_ready(env, self.root)
+            (self.root.parent / 'persistent_mac_runner.py').write_text('OLD INSTALLED SOURCE')
+            with self.assertRaisesRegex(RuntimeError, 'separately approved activation'):
+                runner.signing_ready(env, self.root)
+            stop.assert_not_called(); start.assert_not_called()
+
+
+class SigningRecovery(unittest.TestCase):
+    """Real private files, inert native Security model; no guest activation."""
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.temporary = Path(self.scratch.name).resolve()
+        self.directory = self.temporary / 'symphony-signing-fixture'
+        self.directory.mkdir(mode=0o700)
+        self.record = self.directory / '.keychain-cleanup.json'
+        self.keychain = self.directory / 'signing.keychain-db'
+        self.p12 = self.directory / 'identity.p12'
+        self.baseline = ['/original/login.keychain-db', '/original/with spaces.keychain-db']
+        self.write_record()
+        self.keychain.write_bytes(b'INERT KEYCHAIN')
+        self.p12.write_bytes(b'INERT P12')
+        self.observed = [str(self.keychain), *self.baseline]
+        self.calls = []
+
+    def write_record(self, value=None):
+        self.record.write_text(json.dumps(value or {'schema': 1, 'search_list': self.baseline}))
+        self.record.chmod(0o600)
+
+    def security(self, args, **kwargs):
+        self.calls.append(args)
+        self.assertEqual(args[0], '/usr/bin/security')
+        if args[1] == 'delete-keychain':
+            self.assertEqual(args[2], self.keychain)
+            self.keychain.unlink()
+        elif '-s' in args:
+            self.observed = args[args.index('-s') + 1:]
+        else:
+            return ('\n'.join(json.dumps(p) for p in self.observed)).encode()
+        return b''
+
+    def clean(self):
+        with patch.object(runner, 'command', side_effect=self.security):
+            runner.clean_signing_credentials(self.temporary)
+
+    def test_interrupted_import_reconciles_only_owned_objects_and_is_idempotent(self):
+        foreign = self.temporary / 'unrelated.keychain-db'
+        foreign.write_bytes(b'PRESERVE')
+        self.clean()
+        self.assertEqual(self.observed, self.baseline)
+        self.assertFalse(any(p.exists() for p in (self.record, self.keychain, self.p12)))
+        self.assertEqual(foreign.read_bytes(), b'PRESERVE')
+        self.calls.clear(); self.clean()
+        self.assertEqual(self.calls, [])
+
+    def test_before_create_and_after_native_delete_states_both_reconcile(self):
+        self.keychain.unlink(); self.p12.unlink(); self.observed = list(self.baseline)
+        self.clean()
+        self.assertFalse(self.record.exists())
+        self.write_record(); self.observed = [str(self.keychain), *self.baseline]
+        self.clean()
+        self.assertEqual(self.observed, self.baseline)
+
+    def test_native_delete_may_remove_its_own_search_list_entry(self):
+        original = self.security
+        def removes_entry(args, **kwargs):
+            result = original(args, **kwargs)
+            if args[1] == 'delete-keychain':
+                self.observed = list(self.baseline)
+            return result
+        with patch.object(runner, 'command', side_effect=removes_entry):
+            runner.clean_signing_credentials(self.temporary)
+        self.assertFalse(any('-s' in c for c in self.calls))
+
+    def test_foreign_or_corrupt_metadata_refuses_before_any_native_mutation(self):
+        for value in ({'schema': 2, 'search_list': self.baseline},
+                      {'schema': 1, 'search_list': self.baseline, 'delete': '/foreign'},
+                      {'schema': 1, 'search_list': [str(self.keychain)]},
+                      {'schema': 1, 'search_list': ['/duplicate', '/duplicate']},
+                      {'schema': 1, 'search_list': ['relative']},
+                      {'schema': 1, 'search_list': [None]}):
+            with self.subTest(value=value):
+                self.write_record(value)
+                with self.assertRaises(RuntimeError): self.clean()
+                self.assertEqual(self.calls, [])
+                self.assertTrue(self.p12.exists())
+        self.record.write_text('{broken')
+        with self.assertRaises(ValueError): self.clean()
+        self.assertEqual(self.calls, [])
+
+    def test_missing_record_symlinks_hardlinks_and_permissions_refuse(self):
+        self.record.unlink()
+        with self.assertRaisesRegex(RuntimeError, 'lack recovery'): self.clean()
+        self.write_record(); self.record.chmod(0o644)
+        with self.assertRaisesRegex(RuntimeError, 'unsafe signing recovery record'): self.clean()
+        self.record.unlink(); self.record.symlink_to(self.p12)
+        with self.assertRaises(RuntimeError): self.clean()
+        self.record.unlink(); self.write_record()
+        self.keychain.unlink(); self.keychain.symlink_to(self.p12)
+        with self.assertRaises(RuntimeError): self.clean()
+        self.keychain.unlink(); os.link(self.p12, self.keychain)
+        with self.assertRaises(RuntimeError): self.clean()
+        self.assertEqual(self.calls, [])
+
+    def test_metadata_cannot_add_unobserved_search_list_entries(self):
+        self.write_record({'schema': 1, 'search_list': ['/foreign/added.keychain-db']})
+        with self.assertRaisesRegex(RuntimeError, 'search list changed'): self.clean()
+        self.assertEqual(len(self.calls), 1)  # Read only; no delete/restore.
+        self.assertTrue(self.keychain.exists()); self.assertTrue(self.p12.exists())
+
+    def test_multiple_markers_are_all_validated_before_mutation(self):
+        other = self.temporary / 'symphony-signing-other'; other.mkdir(mode=0o700)
+        record = other / self.record.name
+        record.write_text(self.record.read_text()); record.chmod(0o600)
+        with self.assertRaisesRegex(RuntimeError, 'multiple unresolved'): self.clean()
+        self.assertEqual(self.calls, [])
+
+    def test_failed_restore_preserves_record_for_idempotent_reconciliation(self):
+        original = self.security
+        def fail_restore(args, **kwargs):
+            if '-s' in args: raise RuntimeError('inert restore failure')
+            return original(args, **kwargs)
+        with patch.object(runner, 'command', side_effect=fail_restore):
+            with self.assertRaisesRegex(RuntimeError, 'inert restore failure'):
+                runner.clean_signing_credentials(self.temporary)
+        self.assertTrue(self.record.exists()); self.assertFalse(self.keychain.exists())
+        self.clean()
+        self.assertFalse(self.record.exists()); self.assertEqual(self.observed, self.baseline)
+
 
 class VMStartup(unittest.TestCase):
     def test_off_starts_once_up_reuses_and_transport_boot_wait_does_not_repeat_guest_start(self):

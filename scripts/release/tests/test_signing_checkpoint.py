@@ -1,5 +1,12 @@
 """Failure-lifecycle peers: no Apple tools, credentials, or signing operations."""
 import json
+import io
+import hashlib
+import tarfile
+import zipfile
+from contextlib import contextmanager, ExitStack
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import os
 from pathlib import Path
 import stat
@@ -50,6 +57,7 @@ class SigningCheckpointTests(unittest.TestCase):
         self.accept()
 
     def accept(self, label='payload'):
+        self.checkpoint.value['submissions'].pop(label, None)  # Reset intentionally corrupted fixture state.
         self.checkpoint.submission(label, {'id': SUBMISSION, 'status': 'Accepted',
             'submitted_sha256': self.checkpoint.value['artifacts']['payload.zip']['sha256']})
 
@@ -231,9 +239,7 @@ class SigningCheckpointTests(unittest.TestCase):
         calls = []
         def command(*args, **kwargs):
             calls.append(args)
-            if args[2] == 'submit':
-                return json.dumps({'id': SUBMISSION})
-            if args[2] == 'wait':
+            if args[2] == 'info':
                 return json.dumps({'id': SUBMISSION, 'status': 'Accepted'})
             if args[2] == 'log':
                 raise dist.CommandFailure('notarytool', 'failed', 44)
@@ -245,10 +251,265 @@ class SigningCheckpointTests(unittest.TestCase):
                 dist.submit(self.checkpoint.path / 'payload.zip', self.root / 'fake-keychain', env,
                             evidence, label='payload', checkpoint=self.checkpoint)
         self.assertEqual(self.persisted()['submissions']['payload']['status'], 'Accepted')
-        self.assertEqual([call[2] for call in calls], ['store-credentials', 'submit', 'wait', 'log'])
+        self.assertEqual([call[2] for call in calls], ['store-credentials', 'info', 'log'])
         self.assertFalse((evidence / 'payload-log.json').exists())
         self.assertFalse(self.output.exists())
         self.assertEqual(self.persisted()['status'], 'not-ready')
+
+
+class ContinuationTests(unittest.TestCase):
+    """Real retained tar/ZIP/state; fake native/Apple peers, never live proof."""
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory(); self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name).resolve()
+        self.env = {name: 'INERT' for name in dist.REQUIRED}
+        self.env.update(MACOS_SIGNING_IDENTITY_SHA1='A' * 40, MACOS_TEAM_ID='FAKETEAM00', RUNNER_TEMP=str(self.root))
+        self.manifest = self.root / 'manifest.json'; self.manifest.write_text(json.dumps({'source_revision': REVISION}))
+        self.helper = self.root / 'original-helper'; self.helper.write_bytes(b'ORIGINAL QUALIFIED CODE')
+        self.signature = {'sha256': hashlib.sha256(b'SIGNED QUALIFIED CODE').hexdigest(),
+                          'cdhash': 'b' * 40, 'certificate_sha1': 'A' * 40, 'team_id': 'FAKETEAM00',
+                          'hardened_runtime': True, 'secure_timestamp': True}
+        original = {'libexec/symphony-host': (self.helper.read_bytes(), 0o755),
+                    'source.txt': (b'EXACT SOURCE', 0o644),
+                    'distribution-status.txt': (b'unsigned', 0o644), 'files.sha256': (b'old inventory', 0o644)}
+        receipt = {'status': 'developer-id-signed-not-yet-notarized', 'source_revision': REVISION,
+                   'original_qualified_helper_sha256': dist.checksum(self.helper),
+                   'payloads': {'libexec/symphony-host': self.signature}}
+        self.files = {k: v for k, v in original.items() if k not in ('distribution-status.txt', 'files.sha256')}
+        self.files['libexec/symphony-host'] = (b'SIGNED QUALIFIED CODE', 0o755)
+        self.files['signing.json'] = (json.dumps(receipt).encode(), 0o644)
+        self.files['files.sha256'] = (''.join(hashlib.sha256(raw).hexdigest() + '  ./' + name + '\n'
+            for name, (raw, _) in sorted(self.files.items())).encode(), 0o644)
+        self.qualified = self.root / 'symphony-fixture-macos.tar.gz'; self.tar(self.qualified, original)
+        archive = self.root / 'signed.tar.gz'; self.tar(archive, self.files)
+        payload = self.root / 'payload.zip'
+        with zipfile.ZipFile(payload, 'w') as target:
+            for name in ('.', 'libexec'):
+                info = zipfile.ZipInfo('bundle/' if name == '.' else 'bundle/' + name + '/')
+                info.external_attr = (stat.S_IFDIR | 0o755) << 16; target.writestr(info, b'')
+            for name, (raw, mode) in self.files.items():
+                info = zipfile.ZipInfo('bundle/' + name); info.external_attr = (stat.S_IFREG | mode) << 16
+                target.writestr(info, raw)
+        signed_helper = self.root / 'signed-helper'; signed_helper.write_bytes(self.files['libexec/symphony-host'][0])
+        self.checkpoint = dist.SignedCheckpoint(self.root / 'initial', REVISION, self.manifest, dist.checksum(self.helper))
+        self.checkpoint.value.update(context=dist.signing_context(self.qualified, self.env), archive_name=self.qualified.name)
+        self.checkpoint.retain(archive, payload, signed_helper)
+        source = self.root / 'package-source.txt'; source.write_text('manager_source_revision=' + REVISION + '\n')
+        diagnostics = self.root / 'package-diagnostics.json'
+        dist.write_json(diagnostics, {'schema': 1, 'operations': [
+            {'stage': name, 'status': 'success'} for name in dist.package_evidence.STAGES]})
+        self.checkpoint.retain_file('package-source.txt', source)
+        self.checkpoint.retain_file('package-diagnostics.json', diagnostics)
+        self.checkpoint.submission('payload', {'id': SUBMISSION, 'status': 'Accepted',
+            'submitted_sha256': dist.checksum(payload)})
+        self.calls = []; self.signs = []; self.imports = 0; self.submitted = {}
+        self.wait_failure = False; self.unknown_response = False; self.gate_failure = None; self.create_failure = False
+
+    def tar(self, path, files):
+        with tarfile.open(path, 'w:gz', format=tarfile.USTAR_FORMAT) as archive:
+            for name in ('.', 'libexec'):
+                info = tarfile.TarInfo(name); info.type = tarfile.DIRTYPE; info.mode = 0o755; archive.addfile(info)
+            for name, (raw, mode) in files.items():
+                info = tarfile.TarInfo('./' + name); info.mode = mode; info.size = len(raw)
+                archive.addfile(info, io.BytesIO(raw))
+
+    def command(self, *args, **kwargs):
+        self.calls.append(args)
+        if args[0] == 'git': return '' if 'status' in args else REVISION
+        if args[:2] == ('xcrun', 'stapler'):
+            if args[2] == 'staple':
+                with Path(args[3]).open('ab') as target: target.write(b'STAPLE')
+            return ''
+        if args[:2] != ('xcrun', 'notarytool'): return ''
+        operation = args[2]
+        if operation == 'store-credentials': return ''
+        identifier = '22222222-2222-4222-8222-222222222222'
+        if operation == 'submit':
+            self.submitted[identifier] = dist.checksum(Path(args[3]))
+            if self.unknown_response: raise dist.CommandFailure('notarytool', 'timed out')
+            return json.dumps({'id': identifier})
+        identifier = args[3]
+        if operation == 'wait' and self.wait_failure: raise dist.CommandFailure('notarytool', 'timed out')
+        if operation in ('wait', 'info'): return json.dumps({'id': identifier, 'status': 'Accepted'})
+        digest = (self.checkpoint.value['artifacts']['payload.zip']['sha256'] if identifier == SUBMISSION
+                  else self.submitted[identifier])
+        return json.dumps({'jobId': identifier, 'sha256': digest, 'status': 'Accepted', 'statusCode': 0, 'issues': []})
+
+    def signature_for(self, path, env, parent, runtime=True):
+        return dict(self.signature) if runtime else dict(self.signature, sha256=dist.checksum(path), hardened_runtime=False)
+
+    def sign(self, path, keychain, env, runtime=True):
+        self.assertFalse(runtime); self.signs.append(path)
+        with path.open('ab') as target: target.write(b'SIGNATURE')
+        return self.signature_for(path, env, path.parent, False)
+
+    def gate(self, helper, env, checkpoint, stage):
+        if stage == self.gate_failure: raise dist.CommandFailure(stage, 'failed', reason='notarization-requirement-unmet')
+
+    def continue_from(self, source, output):
+        @contextmanager
+        def keychain(*args):
+            self.imports += 1
+            yield self.root / 'inert-keychain'
+        def create(bundle, destination):
+            destination.write_bytes(b'EXACT OUTER DMG')
+            if self.create_failure: raise dist.CommandFailure('assembly.dmg', 'failed')
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(dist.sys, 'platform', 'darwin'))
+            uname = stack.enter_context(patch.object(dist.os, 'uname')); uname.return_value.machine = 'arm64'
+            stack.enter_context(patch.object(dist, 'run', side_effect=self.command))
+            stack.enter_context(patch.object(dist, 'signing_keychain', side_effect=keychain))
+            stack.enter_context(patch.object(dist, 'inspect_signature', side_effect=self.signature_for))
+            stack.enter_context(patch.object(dist, 'sign', side_effect=self.sign))
+            stack.enter_context(patch.object(dist, 'create_dmg', side_effect=create))
+            stack.enter_context(patch.object(dist, 'verify_notarized_helper', side_effect=self.gate))
+            stack.enter_context(patch('signing_payload.executable_identity', return_value='SAME QUALIFIED CODE'))
+            stack.enter_context(patch.object(dist, 'verify_mounted_payload'))
+            dist.resume(self.manifest, self.helper, output, self.env, self.qualified, source,
+                        dist.checksum(source / 'checkpoint.json'))
+
+    def test_interrupted_dmg_wait_reuses_original_payload_and_dmg_without_new_post(self):
+        before = {p.name: dist.checksum(p) for p in self.checkpoint.path.iterdir()}
+        first = self.root / 'first'; self.wait_failure = True
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint')
+        self.assertFalse((first / 'macos-distribution.json').exists())
+        state = json.loads((child / 'checkpoint.json').read_text())
+        self.assertEqual(state['submissions']['payload']['id'], SUBMISSION)
+        self.assertEqual(state['dmg_state'], 'signed')
+        self.wait_failure = False
+        second = self.root / 'second'; self.continue_from(child, second)
+        self.assertEqual(len(self.signs), 1)
+        self.assertEqual(len([c for c in self.calls if c[:3] == ('xcrun', 'notarytool', 'submit')]), 1)
+        self.assertEqual((second / self.qualified.name).read_bytes(), (self.checkpoint.path / 'signed-updater.tar.gz').read_bytes())
+        self.assertEqual(before, {p.name: dist.checksum(p) for p in self.checkpoint.path.iterdir() if p.is_file()})
+        self.assertEqual(json.loads((self.checkpoint.path / '.continuation-claimed/successor.json').read_text())[
+            'successor_checkpoint'], str(child))
+
+    def test_delayed_payload_ticket_and_completed_staple_are_resumable_read_only(self):
+        self.gate_failure = STAGES[0]; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        self.assertEqual(self.signs, [])
+        self.gate_failure = STAGES[1]; second = self.root / 'second'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(first.with_name('first.checkpoint'), second)
+        self.gate_failure = None; third = self.root / 'third'
+        self.continue_from(second.with_name('second.checkpoint'), third)
+        self.assertEqual(len(self.signs), 1)
+        self.assertEqual(len([c for c in self.calls if c[:3] == ('xcrun', 'notarytool', 'submit')]), 1)
+        self.assertEqual(len([c for c in self.calls if c[:3] == ('xcrun', 'stapler', 'staple')]), 1)
+
+    def test_lost_post_response_preserves_intent_and_refuses_before_credential_import(self):
+        self.unknown_response = True; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint'); state = json.loads((child / 'checkpoint.json').read_text())
+        self.assertIn('notary', state['intents']); self.assertNotIn('notary', state['submissions'])
+        before = self.imports
+        with self.assertRaisesRegex(ValueError, 'outcome uncertain'): self.continue_from(child, self.root / 'second')
+        self.assertEqual(self.imports, before)
+        self.assertEqual(len([c for c in self.calls if c[:3] == ('xcrun', 'notarytool', 'submit')]), 1)
+
+    def test_stale_local_parent_cannot_fork_a_second_accepted_outer_submission(self):
+        self.continue_from(self.checkpoint.path, self.root / 'first')
+        with self.assertRaisesRegex(ValueError, 'already continued'):
+            self.continue_from(self.checkpoint.path, self.root / 'fork')
+        self.assertEqual(len(self.signs), 1)
+        self.assertEqual(len([c for c in self.calls if c[:3] == ('xcrun', 'notarytool', 'submit')]), 1)
+        self.assertFalse((self.root / 'fork').exists())
+
+    def test_racing_local_parent_claim_allows_only_one_successor(self):
+        barrier = Barrier(2); load = dist.SignedCheckpoint.load
+        def synchronized(*args):
+            original = load(*args); barrier.wait(timeout=5); return original
+        def reopen(index):
+            try:
+                return dist.SignedCheckpoint.reopen(self.checkpoint.path, self.root / ('race-' + str(index)),
+                    REVISION, self.manifest, dist.checksum(self.helper),
+                    dist.checksum(self.checkpoint.path / 'checkpoint.json'), self.checkpoint.value['context'])
+            except FileExistsError:
+                return None
+        with patch.object(dist.SignedCheckpoint, 'load', side_effect=synchronized), ThreadPoolExecutor(max_workers=2) as pool:
+            result = list(pool.map(reopen, (1, 2)))
+        self.assertEqual(sum(item is not None for item in result), 1)
+        self.assertEqual(self.signs, []); self.assertEqual(self.calls, [])
+
+    def test_failed_successor_copy_keeps_claim_and_refuses_all_external_effects(self):
+        copyfile = dist.shutil.copyfile
+        def fail(source, target, **kwargs):
+            if Path(target).parent.name == 'failed.checkpoint': raise OSError('INERT COPY FAILURE')
+            return copyfile(source, target, **kwargs)
+        with patch.object(dist.shutil, 'copyfile', side_effect=fail):
+            with self.assertRaises(OSError): self.continue_from(self.checkpoint.path, self.root / 'failed')
+        claim = json.loads((self.checkpoint.path / '.continuation-claimed/successor.json').read_text())
+        self.assertEqual(claim['successor_checkpoint'], str(self.root / 'failed.checkpoint'))
+        with self.assertRaisesRegex(ValueError, 'already continued'):
+            self.continue_from(self.checkpoint.path, self.root / 'another')
+        self.assertEqual(self.imports, 0); self.assertEqual(self.signs, [])
+        self.assertFalse(any(c[:3] == ('xcrun', 'notarytool', 'submit') for c in self.calls))
+
+    def test_invalid_native_signature_is_rejected_before_credential_import_or_claim(self):
+        inspect = self.signature_for
+        self.signature_for = lambda *args, **kwargs: dict(inspect(*args, **kwargs), sha256='0' * 64)
+        with self.assertRaisesRegex(ValueError, 'retained native signature differs'):
+            self.continue_from(self.checkpoint.path, self.root / 'invalid')
+        self.assertEqual(self.imports, 0)
+        self.assertFalse((self.checkpoint.path / '.continuation-claimed').exists())
+
+    def test_malformed_apple_identifier_is_sanitized_and_keeps_uncertain_intent(self):
+        command = self.command
+        def malformed(*args, **kwargs):
+            if args[:3] == ('xcrun', 'notarytool', 'submit'):
+                return json.dumps({'id': 'SENTINEL-ACCOUNT-DETAIL-MUST-NOT-LEAK'})
+            return command(*args, **kwargs)
+        self.command = malformed; first = self.root / 'first'
+        with self.assertRaisesRegex(ValueError, 'invalid Apple submission identifier') as caught:
+            self.continue_from(self.checkpoint.path, first)
+        self.assertNotIn('SENTINEL', str(caught.exception))
+        state = json.loads((first.with_name('first.checkpoint') / 'checkpoint.json').read_text())
+        self.assertIn('notary', state['intents']); self.assertNotIn('notary', state['submissions'])
+
+    def test_failed_create_preserves_partial_dmg_after_credential_scratch_cleanup(self):
+        self.create_failure = True; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint')
+        self.assertEqual((child / 'preparing.dmg').read_bytes(), b'EXACT OUTER DMG')
+        self.assertEqual(stat.S_IMODE((child / 'preparing.dmg').stat().st_mode), 0o600)
+        self.assertEqual(json.loads((child / 'checkpoint.json').read_text())['dmg_state'], 'preparing')
+        before = self.imports
+        with self.assertRaisesRegex(ValueError, 'incomplete or unexpected checkpoint'):
+            self.continue_from(child, self.root / 'second')
+        self.assertEqual(self.imports, before); self.assertEqual(self.signs, [])
+        self.assertFalse(any(c[:3] == ('xcrun', 'notarytool', 'submit') for c in self.calls))
+        self.assertFalse(list(self.root.glob('symphony-signing-*')))
+
+    def test_failed_sign_preserves_changed_dmg_before_any_outer_submission(self):
+        sign = self.sign
+        def interrupted(*args, **kwargs):
+            sign(*args, **kwargs)
+            raise dist.CommandFailure('signature.sign', 'interrupted')
+        self.sign = interrupted; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint')
+        self.assertEqual((child / 'preparing.dmg').read_bytes(), b'EXACT OUTER DMGSIGNATURE')
+        self.assertEqual(stat.S_IMODE((child / 'preparing.dmg').stat().st_mode), 0o600)
+        self.assertFalse((child / 'outer.dmg').exists())
+        self.assertFalse((first / 'macos-distribution.json').exists())
+        self.assertFalse(any(c[:3] == ('xcrun', 'notarytool', 'submit') for c in self.calls))
+        self.assertFalse(list(self.root.glob('symphony-signing-*')))
+
+    def test_wrong_context_corrupt_bytes_and_incomplete_state_refuse_before_credentials(self):
+        for mutation in ('identity', 'qualification', 'bytes', 'intent', 'mutation'):
+            with self.subTest(mutation=mutation):
+                original = (self.checkpoint.path / 'checkpoint.json').read_bytes()
+                state = json.loads(original)
+                if mutation == 'identity': state['context']['identity']['team_id'] = 'WRONGTEAM0'
+                if mutation == 'qualification': state['context']['qualification'] = {'run_id': 99}
+                if mutation == 'bytes': state['artifacts']['payload.zip']['sha256'] = '0' * 64
+                if mutation == 'intent': state['intents'] = {'notary': '0' * 64}
+                if mutation == 'mutation': state['dmg_state'] = 'stapling'
+                dist.write_json(self.checkpoint.path / 'checkpoint.json', state)
+                with self.assertRaises(ValueError): self.continue_from(self.checkpoint.path, self.root / mutation)
+                self.assertEqual(self.imports, 0)
+                (self.checkpoint.path / 'checkpoint.json').write_bytes(original)
 
 
 if __name__ == '__main__':

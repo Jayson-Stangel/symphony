@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -104,6 +106,92 @@ def stop_service(root=RUNNER):
     # inspect normal launchctl/runner state, never a custom cleanup receipt.
 
 
+def clean_signing_credentials(temporary):
+    """Reconcile one interrupted signer; never accept metadata deletion targets.
+
+    Private ownership scopes this record; it does not authenticate a hostile
+    process already running as the runner user. All checks precede mutation.
+    """
+    info = temporary.lstat()
+    require(temporary.resolve() == temporary and stat.S_ISDIR(info.st_mode)
+            and info.st_uid == os.geteuid(), 'unsafe runner temporary directory')
+    candidates = []
+    for directory in sorted(temporary.glob('symphony-signing-*')):
+        info = directory.lstat()
+        require(directory.resolve() == directory and stat.S_ISDIR(info.st_mode)
+                and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                'unsafe signing recovery directory')
+        record = directory / '.keychain-cleanup.json'
+        keychain, p12 = directory / 'signing.keychain-db', directory / 'identity.p12'
+        for path in (keychain, p12):
+            if os.path.lexists(path):
+                info = path.lstat()
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                        and info.st_nlink == 1, 'unsafe signing credential object')
+        if not os.path.lexists(record):
+            require(not any(os.path.lexists(p) for p in (keychain, p12)),
+                    'signing credentials lack recovery metadata')
+            continue
+        info = record.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+                and info.st_size <= 65536, 'unsafe signing recovery record')
+        with record.open() as source:
+            value = json.load(source)
+        require(isinstance(value, dict) and set(value) == {'schema', 'search_list'}
+                and type(value['schema']) is int and value['schema'] == 1,
+                'unknown signing recovery schema')
+        baseline = value['search_list']
+        require(isinstance(baseline, list) and len(baseline) <= 64
+                and all(isinstance(p, str) and Path(p).is_absolute() and len(p) <= 4096
+                        and not any(c in p for c in ('\x00', '\n', '\r')) for p in baseline)
+                and len(set(baseline)) == len(baseline) and str(keychain) not in baseline,
+                'unsafe signing recovery search list')
+        candidates.append((record, keychain, p12, baseline))
+    # Serialized runner jobs need no dependency graph for conflicting baselines.
+    require(len(candidates) <= 1, 'multiple unresolved signing attempts')
+    for record, keychain, p12, baseline in candidates:
+        def search_list():
+            return shlex.split(command(['/usr/bin/security', 'list-keychains', '-d', 'user']).decode())
+        observed = search_list()
+        require(observed in (baseline, [str(keychain), *baseline]),
+                'signing search list changed; reconcile before accepting jobs')
+        # The baseline must already be observed: metadata cannot add a path.
+        p12.unlink(missing_ok=True)
+        if keychain.exists():
+            command(['/usr/bin/security', 'delete-keychain', keychain])
+        current = search_list()  # Native deletion can remove its list entry.
+        require(current in (baseline, [str(keychain), *baseline]),
+                'search list changed during signing cleanup')
+        if current != baseline:
+            command(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *baseline])
+        require(not any(os.path.lexists(p) for p in (keychain, p12)) and search_list() == baseline,
+                'signing credential cleanup unverified')
+        record.unlink()
+        descriptor = os.open(record.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+
+
+def signing_ready(env=os.environ, root=RUNNER):
+    """Read-only eligibility check. Never install/repair/start a runner here."""
+    require_guest(); service(root)
+    require(env.get('RUNNER_TEMP') == str(root / '_work/_temp')
+            and env.get('TMPDIR') == str(root / '_work/_temp')
+            and env.get('GITHUB_REPOSITORY') == 'Jayson-Stangel/symphony'
+            and env.get('ACTIONS_RUNNER_HOOK_JOB_COMPLETED') == str(root.parent / 'persistent-mac-job-completed.sh'),
+            'production signing requires the configured owned cleanup boundary')
+    for name in ('persistent_mac_runner.py', 'persistent-mac-job-completed.sh'):
+        installed = root.parent / name; info = installed.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o022
+                and installed.read_bytes() == Path(__file__).with_name(name).read_bytes(),
+                'installed signing cleanup differs; separately approved activation required')
+    require(not any((p / '.keychain-cleanup.json').exists() or (p / 'identity.p12').exists()
+                    or (p / 'signing.keychain-db').exists()
+                    for p in (root / '_work/_temp').glob('symphony-signing-*')),
+            'unreconciled signing state; do not expose credentials')
+
+
 def clean_job(env=os.environ, root=RUNNER):
     require_guest()
     try:
@@ -115,6 +203,7 @@ def clean_job(env=os.environ, root=RUNNER):
         require(work.resolve() == work and workspace.resolve() == workspace
                 and workspace.parent.parent == work and workspace.name == 'symphony',
                 'workspace is outside the dedicated runner job directory')
+        clean_signing_credentials(work / '_temp')
         # Real DMG fixture images live in workspace or native RUNNER_TEMP/TMPDIR.
         # Do not touch other disks. Detach before removing their backing files.
         images = plistlib.loads(command(['hdiutil', 'info', '-plist'])).get('images', [])
@@ -175,10 +264,12 @@ def main():
     start = sub.add_parser('start'); start.add_argument('--tart', type=Path, required=True)
     start.add_argument('--mac-address', required=True)
     sub.add_parser('guest-start'); sub.add_parser('guest-clean')
+    sub.add_parser('signing-ready')
     args = parser.parse_args()
     try:
         if args.mode == 'start': start_vm(args.tart, args.mac_address)
         elif args.mode == 'guest-start': guest_start()
+        elif args.mode == 'signing-ready': signing_ready()
         else: clean_job()
         return 0
     except RuntimeError as error:

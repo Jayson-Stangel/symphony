@@ -475,8 +475,10 @@ caller's private umask still governs outer archives/checkpoints/credentials.
 Before the first Apple upload, signing retains the already signed updater tar
 and the exact payload ZIP in a new sibling `OUTPUT.checkpoint` directory. The
 directory is exclusive, owned and mode0700; the fixed receipt binds actual source,
-input-manifest SHA256, original qualified helper and retained-file hashes. It
-does not invent a qualification run identity. No P12, keychain, passwords or
+input-manifest SHA256, original qualified helper, qualified package, public
+certificate/team pins and retained-file hashes. Production starts also bind the
+complete original qualification run/attempt/artifact receipt and actual Actions
+producer run/attempt. Local starts retain truthful local origin. No P12, keychain, passwords or
 arbitrary temporary files are copied. Copies and metadata are synchronized before
 upload; retention failure stops progression. Apple submission IDs/status are
 recorded as soon as the matching response arrives, before later log or ticket
@@ -493,13 +495,90 @@ submit again. The second helper check additionally requires the DMG's Accepted
 submission. Temporary credential cleanup and keychain-search-list restoration
 remain mandatory even when verification or retention fails.
 
-Failure/cancellation leaves this checkpoint available for operator assessment;
-the hosted production signer attempts to retain only its three fixed files as
-a distinct private `production-signing-checkpoint-...` artifact. This is not a
-ready distribution or an automatic resume path, and authorizes no further Apple
-action. It adds no files to the completed public asset set. A successful build
-still requires every existing signature, ticket, assessment, provenance and
-cleanup check before writing the normal ready receipt.
+Failure/cancellation leaves this checkpoint available for continuation. The
+production signer retains the fixed receipt, exact tar/ZIP, package evidence,
+signed pre-submission `outer.dmg`, failed-phase `preparing.dmg` and separate
+`stapled.dmg` when present, in a
+private `production-signing-checkpoint-SOURCE-RUN-ATTEMPT` artifact. No signing
+scratch, cleanup baseline or arbitrary log is uploaded. Submission intent is
+synced before POST, and the returned Apple ID is synced before waiting. A missing
+ID after intent, a conflicting attempt or incomplete DMG mutation refuses with
+reconciliation instructions; never guess the outcome or submit again.
+Creation/signing writes `preparing.dmg` inside the private checkpoint, so verified
+credential cleanup cannot erase a failed phase's bytes. The staging file is
+removed only after the immutable outer copy and signed-stage transition are
+durable. Partial bytes are retained for inspection, never admitted for automatic
+retry or readiness.
+
+Continuation creates a new exclusive output/checkpoint and preserves the original
+receipt and accepted artifact bytes. It checks retained tar/ZIP bytes and modes against original qualification,
+the native code identity and certificate/runtime/timestamp, then uses only
+`notarytool info`, bounded `wait` and sanitized `log` for known IDs. An Accepted
+payload is never rebuilt, re-signed or resubmitted. A retained signed outer DMG
+is not re-signed or resubmitted; stapling mutates a separate copy. Final native
+signature, staple, Gatekeeper, helper ticket and mounted-payload byte/mode checks
+all remain required, followed by successful credential cleanup before readiness.
+Checkpoint files add nothing to the completed public asset set.
+
+Credential cleanup has a separate private `.keychain-cleanup.json` record in
+the signing scratch directory. It saves only the original user keychain search
+list, before creating the P12 or changing Security state. Verified cleanup removes
+the record and scratch; uncertain cleanup preserves both. A new attempt must not
+overwrite that directory. These records contain private paths and must not be
+uploaded with release evidence or checkpoints.
+
+The maintained persistent-runner completion hook can reconcile one such directory
+under its own native runner temp root. It validates ownership, permissions, fixed
+credential paths and the observed search list before mutation. Foreign, corrupt,
+redirected or conflicting state enters its existing fail-closed service stop;
+recovery cannot add search-list paths supplied only by metadata. Unrelated
+keychains are preserved. The record does not authenticate a malicious process
+already running as the same user. Source tests and direct Mac refusal cleanup do
+not establish installed-hook activation, abrupt interruption or isolation of a
+following Actions job; those require separate native acceptance. Installing a
+changed hook is an operational action, not an effect of editing this source.
+
+### Start or resume protected production signing
+
+The workflow targets only the existing `symphony-macos14` Actions runner and
+keeps the protected `macos-production-signing` environment and native Actions
+concurrency. Before exposing credentials, `signing-ready` reads the dedicated
+guest/service identity, configured hook and installed cleanup source. Old or
+ineligible cleanup refuses; this check never installs, enables or repairs it.
+Unavailable capacity remains queued under Actions; do not route to a different
+host or bypass eligibility. Installing the reviewed hook and proving interruption
+cleanup plus a following inert job require separately authorized operations.
+
+After exact-source/Q approval and those operational prerequisites, the first run is:
+
+```sh
+gh workflow run macos-production-signing.yml --ref main \
+  -f approved_revision=SOURCE -f qualified_run=Q -f qualified_attempt=Q_ATTEMPT
+```
+
+If bounded verification expires or the run stops, retain its exact checkpoint
+artifact. Start a **new** workflow run, identifying the stopped producer:
+
+```sh
+gh workflow run macos-production-signing.yml --ref main \
+  -f approved_revision=SOURCE -f qualified_run=Q -f qualified_attempt=Q_ATTEMPT \
+  -f resume_run=STOPPED_RUN -f resume_attempt=STOPPED_ATTEMPT
+```
+
+The credential-free importer authenticates the original failed/cancelled run,
+exact attempt/job, source and immutable artifact digest against GitHub, and checks
+the embedded producer and Q bindings. Public-only native signature, pinned
+certificate/runtime/timestamp, executable-code and retained-DMG payload checks
+also run before the workflow exposes any signing secrets. Parent origin/artifact receipts and hashes
+remain in the continuation record. Ordinary Actions reruns refuse before effects;
+a new start with eligible same-source history also refuses. An active, successful,
+newer or uncertain signing attempt requires reconciliation. A failed run without
+a complete usable checkpoint cannot silently become a fresh submission. Do not
+edit checkpoint JSON, delete submission intent or switch output paths to evade
+these refusals. An interrupted DMG creation/signing/stapling operation preserves
+retained state but requires reconciliation; read-only continuation is supported
+after durable submission IDs or a completed staple checkpoint. No Apple
+acceptance is inferred from fixtures, queued capacity or these source changes.
 
 ### Sign once on the operator's Apple Silicon Mac
 
@@ -531,7 +610,34 @@ existing identity, temporarily changes and restores its search list, signs,
 submits the payload and DMG to Apple, staples/assesses, and removes its temporary
 credential material. No new certificate, login-keychain identity installation or
 global configuration change is needed. Retain sanitized failure/cleanup evidence
-and stop after a failure; a fresh attempt needs renewed exact approval.
+and use the supported continuation command after assessing its refusal:
+
+```sh
+python3 scripts/release/local_distribution.py resume Q Q_ATTEMPT /absolute/private/new-continuation \
+  --checkpoint /absolute/private/original-attempt/signed.checkpoint \
+  --checkpoint-sha256 ORIGINAL_CHECKPOINT_JSON_SHA256 --authorize-apple-upload
+```
+
+Use the exact digest reported at the stopped attempt and the same approved source,
+Q and certificate/team. Public pins and retained input admission precede secret
+prompts, including native signature/code validation. The original receipt and
+accepted files are never overwritten. A local parent receives one exclusive
+private `.continuation-claimed` directory before successor allocation or effects;
+its mode0600 `successor.json` identifies the exact child checkpoint and parent
+digest for private inspection. A stale or racing selection of that parent refuses
+a second branch. Failed claims/copies leave the claim in place: inspect the
+recorded child, keep all original state and reconcile an absent/incomplete child.
+Never clear a claim automatically or choose another output to repeat the attempt.
+This private handoff record contains a path and is excluded from all transport
+and release artifacts. Actions continuation instead uses authenticated history
+and existing concurrency; it adds no shared continuation service.
+
+The digest selects and
+checks local bytes; it does not authenticate Actions provenance. Existing
+manual/import native admission and publisher guards remain unchanged. Older
+checkpoints without complete Q/context/package evidence refuse supported resume;
+retain their historical evidence for separately reviewed reconciliation rather
+than inventing missing bindings or repeating signing.
 
 ### Upload and independently admit the final bytes
 
