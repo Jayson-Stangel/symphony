@@ -14,6 +14,14 @@ on:
         description: Exact successful preparation attempt
         required: true
         type: string
+      resume_run:
+        description: Failed original signing run to continue; empty starts the first attempt
+        required: false
+        type: string
+      resume_attempt:
+        description: Exact original signing attempt; ordinary reruns never submit again
+        required: false
+        type: string
 permissions:
   contents: read
   actions: read
@@ -27,7 +35,7 @@ jobs:
     name: Sign exact production preparation
     if: github.repository == 'Jayson-Stangel/symphony' && github.ref == 'refs/heads/main' && inputs.approved_revision == github.sha
     environment: macos-production-signing
-    runs-on: macos-14
+    runs-on: symphony-macos14
     timeout-minutes: 90
     steps:
       - name: Check out exact approved source
@@ -40,9 +48,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           QUALIFIED_RUN: ${{ inputs.qualified_run }}
           QUALIFIED_ATTEMPT: ${{ inputs.qualified_attempt }}
+          RESUME_RUN: ${{ inputs.resume_run }}
+          RESUME_ATTEMPT: ${{ inputs.resume_attempt }}
+          MACOS_SIGNING_IDENTITY_SHA1: ${{ vars.MACOS_SIGNING_IDENTITY_SHA1 }}
+          MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
         run: |
+          python3 scripts/ci/persistent_mac_runner.py signing-ready
           python3 scripts/release/production_release.py source
           python3 scripts/release/production_release.py qualify "$QUALIFIED_RUN" "$QUALIFIED_ATTEMPT" "$RUNNER_TEMP/production-inputs"
+          python3 scripts/release/production_release.py checkpoint-inputs "$RUNNER_TEMP/production-inputs" "$RUNNER_TEMP/resume-checkpoint" "$RESUME_RUN" "$RESUME_ATTEMPT"
       - name: Reuse established signing and Apple acceptance controller
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,9 +66,15 @@ jobs:
           MACOS_NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
           MACOS_SIGNING_IDENTITY_SHA1: ${{ vars.MACOS_SIGNING_IDENTITY_SHA1 }}
           MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
+          RESUME_RUN: ${{ inputs.resume_run }}
         run: |
           python3 scripts/release/production_release.py source
-          python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --authorize-apple-upload
+          if [ -n "$RESUME_RUN" ]; then
+            checkpoint_digest=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/resume-checkpoint-admission.json"))["checkpoint_sha256"])')
+            python3 scripts/release/macos_distribution.py resume "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --qualification "$RUNNER_TEMP/production-inputs/qualification.json" --checkpoint "$RUNNER_TEMP/resume-checkpoint" --checkpoint-sha256 "$checkpoint_digest" --checkpoint-admission "$RUNNER_TEMP/resume-checkpoint-admission.json" --authorize-apple-upload
+          else
+            python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --qualification "$RUNNER_TEMP/production-inputs/qualification.json" --authorize-apple-upload
+          fi
       - name: Preserve Linux and seal final distribution and updater hashes
         run: python3 scripts/release/production_release.py seal "$RUNNER_TEMP/production-inputs" "$RUNNER_TEMP/production-signed"
       - name: Retain final assessed bytes for independent native acceptance
@@ -79,4 +99,8 @@ jobs:
             ${{ runner.temp }}/production-signed.checkpoint/checkpoint.json
             ${{ runner.temp }}/production-signed.checkpoint/signed-updater.tar.gz
             ${{ runner.temp }}/production-signed.checkpoint/payload.zip
+            ${{ runner.temp }}/production-signed.checkpoint/outer.dmg
+            ${{ runner.temp }}/production-signed.checkpoint/stapled.dmg
+            ${{ runner.temp }}/production-signed.checkpoint/package-source.txt
+            ${{ runner.temp }}/production-signed.checkpoint/package-diagnostics.json
           if-no-files-found: ignore

@@ -63,8 +63,12 @@ def exact_source(revision, invoke=subprocess.run):
 
 
 def no_parallel_signing(revision, fetch=api):
-    listing = fetch('actions/workflows/macos-production-signing.yml/runs?event=workflow_dispatch&per_page=100')
-    require(listing['total_count'] <= 100, 'signing history requires reconciliation')
+    require(re.fullmatch(r'[a-f0-9]{40}', revision), 'invalid signing source')
+    listing = fetch('actions/workflows/macos-production-signing.yml/runs?event=workflow_dispatch&head_sha=' + revision + '&per_page=100')
+    require(type(listing.get('total_count')) is int and isinstance(listing.get('workflow_runs'), list)
+            and listing['total_count'] == len(listing['workflow_runs']) <= 100
+            and all(isinstance(r, dict) and r.get('head_sha') == revision for r in listing['workflow_runs']),
+            'exact-source signing history requires reconciliation')
     for run in listing['workflow_runs']:
         if run['head_sha'] == revision:
             require(run['status'] == 'completed' and run['conclusion'] != 'success',
@@ -235,6 +239,44 @@ def verify_payload(folder, qualified):
     return current
 
 
+def verify_mounted_payload(dmg, archive, run):
+    """Compare a read-only DMG mount against every retained tar byte and mode."""
+    payload = bundle_files(archive)
+    with tempfile.TemporaryDirectory(prefix='local-dmg-check-') as temporary:
+        mount = Path(temporary) / 'mounted'
+        mount.mkdir()
+        attached = False
+        try:
+            run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, dmg)
+            attached = True
+            require({p.name for p in mount.iterdir()} == {'Symphony', 'Read Me.txt'}, 'unexpected DMG root contents')
+            instructions = mount / 'Read Me.txt'
+            info = instructions.lstat()
+            require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o644 and
+                    info.st_size == len(INSTALL_INSTRUCTIONS.encode()) and
+                    instructions.read_text() == INSTALL_INSTRUCTIONS, 'DMG instructions differ from source')
+            root = mount / 'Symphony'
+            require(root.is_dir() and not root.is_symlink(), 'invalid DMG payload directory')
+            _, expected_directories = bundle_files(archive, with_directories=True)
+            actual = {}; directories = {'.': stat.S_IMODE(root.lstat().st_mode)}
+            for path in root.rglob('*'):
+                mode = path.lstat().st_mode
+                require((stat.S_ISREG(mode) or stat.S_ISDIR(mode)) and mode & 0o7000 == 0,
+                        'DMG payload special type/mode refused')
+                name = path.relative_to(root).as_posix()
+                if stat.S_ISREG(mode):
+                    require(name in payload and path.stat().st_size == len(payload[name][0]), 'unexpected DMG payload file')
+                    actual[name] = (path.read_bytes(), stat.S_IMODE(mode))
+                else:
+                    require(name in expected_directories, 'unexpected DMG payload directory')
+                    directories[name] = stat.S_IMODE(mode)
+            require(actual == payload and directories == expected_directories,
+                    'DMG payload differs from exact signed updater archive')
+        finally:
+            if attached:
+                run('hdiutil', 'detach', mount)
+
+
 def verify_native(folder, identity, team, qualified, invoke=subprocess.run):
     """Inspect ARM64 code on either Mac architecture; never execute uploaded code."""
     require(sys.platform == 'darwin', 'native distribution verification requires macOS')
@@ -276,38 +318,7 @@ def verify_native(folder, identity, team, qualified, invoke=subprocess.run):
         require(normalized[0] == normalized[1], 'signed executable code differs from original qualification')
         run('xcrun', 'stapler', 'validate', folder / dmg)
         run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', folder / dmg)
-        mount = Path(temporary) / 'mounted'
-        mount.mkdir()
-        attached = False
-        try:
-            run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, folder / dmg)
-            attached = True
-            require({p.name for p in mount.iterdir()} == {'Symphony', 'Read Me.txt'}, 'unexpected DMG root contents')
-            instructions = mount / 'Read Me.txt'
-            info = instructions.lstat()
-            require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o644 and
-                    info.st_size == len(INSTALL_INSTRUCTIONS.encode()) and
-                    instructions.read_text() == INSTALL_INSTRUCTIONS, 'DMG instructions differ from source')
-            root = mount / 'Symphony'
-            require(root.is_dir() and not root.is_symlink(), 'invalid DMG payload directory')
-            _, expected_directories = bundle_files(folder / mac, with_directories=True)
-            actual = {}; directories = {'.': stat.S_IMODE(root.lstat().st_mode)}
-            for path in root.rglob('*'):
-                mode = path.lstat().st_mode
-                require((stat.S_ISREG(mode) or stat.S_ISDIR(mode)) and mode & 0o7000 == 0,
-                        'DMG payload special type/mode refused')
-                name = path.relative_to(root).as_posix()
-                if stat.S_ISREG(mode):
-                    require(name in payload and path.stat().st_size == len(payload[name][0]), 'unexpected DMG payload file')
-                    actual[name] = (path.read_bytes(), stat.S_IMODE(mode))
-                else:
-                    require(name in expected_directories, 'unexpected DMG payload directory')
-                    directories[name] = stat.S_IMODE(mode)
-            require(actual == payload and directories == expected_directories,
-                    'DMG payload differs from exact signed updater archive')
-        finally:
-            if attached:
-                run('hdiutil', 'detach', mount)
+        verify_mounted_payload(folder / dmg, folder / mac, run)
     return {'schema': 1, 'scope': 'native-signature-ticket-payload-assessment; ARM execution and installed acceptance separate; local cleanup is operator attestation',
             'source_revision': receipt['source_revision'], 'certificate_sha1': identity, 'team_id': team,
             'normalized_helper_sha256': normalized[0],
@@ -416,6 +427,11 @@ def main():
     local = modes.add_parser('sign')
     local.add_argument('qualified_run'); local.add_argument('qualified_attempt'); local.add_argument('output', type=Path)
     local.add_argument('--authorize-apple-upload', action='store_true', required=True)
+    continued = modes.add_parser('resume')
+    continued.add_argument('qualified_run'); continued.add_argument('qualified_attempt'); continued.add_argument('output', type=Path)
+    continued.add_argument('--checkpoint', type=Path, required=True)
+    continued.add_argument('--checkpoint-sha256', required=True)
+    continued.add_argument('--authorize-apple-upload', action='store_true', required=True)
     stage = modes.add_parser('upload')
     stage.add_argument('signed', type=Path); stage.add_argument('archive', type=Path)
     stage.add_argument('--authorize-staging-upload', action='store_true', required=True)
@@ -466,24 +482,41 @@ def main():
         args.output.mkdir(parents=True)
         inputs = args.output / 'qualified'
         production.qualification(args.qualified_run, args.qualified_attempt, revision, inputs)
+        if args.mode == 'resume':
+            # Public pins and all retained inputs are checked before secret prompts.
+            identity = input('Pinned Developer ID certificate SHA1 (public): ').strip().upper()
+            team = input('Apple Team ID (public): ').strip()
+            from macos_distribution import SignedCheckpoint, signing_context, validate_retained_native
+            pins = {'MACOS_SIGNING_IDENTITY_SHA1': identity, 'MACOS_TEAM_ID': team,
+                    'RUNNER_TEMP': str(args.output.resolve())}
+            package = inputs / 'packages' / json.loads((inputs / 'internal/release.json').read_text())['bundles']['macos']['filename']
+            checkpoint = SignedCheckpoint.load(args.checkpoint.absolute(), revision, inputs / 'internal/release.json',
+                checksum(inputs / 'helper/symphony-host'), args.checkpoint_sha256,
+                signing_context(package, pins, inputs / 'qualification.json'))
+            validate_retained_native(checkpoint, package, inputs / 'helper/symphony-host', pins)
         p12 = Path(input('Existing successful .p12 file path: ').strip()).expanduser()
         require(p12.is_file() and not p12.is_symlink() and p12.stat().st_size > 0, 'invalid existing P12')
         password = getpass.getpass('P12 EXPORT PASSWORD (hidden): ')
         apple_id = getpass.getpass('APPLE DEVELOPER EMAIL (hidden): ')
         notary = getpass.getpass('APPLE APP-SPECIFIC PASSWORD (hidden): ')
-        identity = input('Pinned Developer ID certificate SHA1 (public): ').strip().upper()
-        team = input('Apple Team ID (public): ').strip()
+        if args.mode == 'sign':
+            identity = input('Pinned Developer ID certificate SHA1 (public): ').strip().upper()
+            team = input('Apple Team ID (public): ').strip()
         exact_source(revision); no_parallel_signing(revision)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', RUNNER_TEMP=str(args.output.resolve()),
                    MACOS_SIGNING_P12_BASE64=base64.b64encode(p12.read_bytes()).decode('ascii'),
                    MACOS_SIGNING_P12_PASSWORD=password, MACOS_NOTARY_APPLE_ID=apple_id,
                    MACOS_NOTARY_APP_PASSWORD=notary, MACOS_SIGNING_IDENTITY_SHA1=identity, MACOS_TEAM_ID=team)
         signed = args.output.resolve() / 'signed'
-        subprocess.run([sys.executable, str(ROOT / 'scripts/release/macos_distribution.py'), 'build',
+        command = [sys.executable, str(ROOT / 'scripts/release/macos_distribution.py'),
+                        'resume' if args.mode == 'resume' else 'build',
                         str(inputs.resolve() / 'internal/release.json'), str(inputs.resolve() / 'helper/symphony-host'),
                         str(signed), '--qualified-package',
                         str(inputs.resolve() / 'packages' / json.loads((inputs / 'internal/release.json').read_text())['bundles']['macos']['filename']),
-                        '--authorize-apple-upload'], env=env, check=True)
+                        '--qualification', str(inputs.resolve() / 'qualification.json'), '--authorize-apple-upload']
+        if args.mode == 'resume':
+            command.extend(['--checkpoint', str(args.checkpoint.absolute()), '--checkpoint-sha256', args.checkpoint_sha256])
+        subprocess.run(command, env=env, check=True)
         production.seal_signed(inputs, signed, revision)
         verify_native(signed, identity, team, inputs)
         print('Local signed bytes verified. Explicit staging-upload authorization is a separate command.')
@@ -492,6 +525,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, KeyError, OSError, getpass.GetPassWarning, subprocess.SubprocessError,
+    except (ValueError, KeyError, OSError, TypeError, AttributeError, getpass.GetPassWarning, subprocess.SubprocessError,
             zipfile.BadZipFile, tarfile.TarError):
         sys.exit('Local distribution refused; retain sanitized evidence and reconcile before any retry.')

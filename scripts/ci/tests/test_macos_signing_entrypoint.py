@@ -35,6 +35,28 @@ def evaluate(expression, *, event='workflow_dispatch', ref='refs/heads/dev', sou
 
 
 class SigningEntrypointTest(unittest.TestCase):
+    def test_production_resume_admission_precedes_credentials_and_retains_only_fixed_state(self):
+        text = (ROOT / '.github/workflows/macos-production-signing.yml').read_text()
+        worker = jobs('macos-production-signing.yml')['sign']
+        expression = guard(worker)
+        self.assertTrue(evaluate(expression, ref='refs/heads/main'))
+        for changed in ({'ref': 'refs/heads/dev'}, {'approved': 'b' * 40}, {'repository': 'fork/symphony'}):
+            self.assertFalse(evaluate(expression, **dict({'ref': 'refs/heads/main'}, **changed)))
+        self.assertIn('runs-on: symphony-macos14', worker)
+        self.assertIn('environment: macos-production-signing', worker)
+        self.assertIn('cancel-in-progress: false', text)
+        imported = worker.split('      - name: Import immutable', 1)[1].split('      - name: Reuse established', 1)[0]
+        self.assertNotIn('secrets.', imported)
+        self.assertLess(imported.index('signing-ready'), imported.index('production_release.py qualify'))
+        self.assertLess(imported.index('production_release.py qualify'), imported.index('production_release.py checkpoint-inputs'))
+        self.assertIn('macos_distribution.py resume', worker)
+        retained = worker.split('      - name: Retain exact private signing checkpoint', 1)[1]
+        for name in ('checkpoint.json', 'signed-updater.tar.gz', 'payload.zip', 'outer.dmg', 'stapled.dmg',
+                     'package-source.txt', 'package-diagnostics.json'):
+            self.assertIn('production-signed.checkpoint/' + name, retained)
+        for private in ('identity.p12', 'signing.keychain', '.keychain-cleanup', 'checkpoint/*'):
+            self.assertNotIn(private, retained)
+
     def test_actual_caller_and_worker_guards_refuse_unapproved_events_refs_and_heads(self):
         caller = guard(jobs('runner-integration.yml')['sign-macos'])
         worker = guard(jobs('macos-signing.yml')['sign'])

@@ -509,7 +509,7 @@ class DistributionTest(unittest.TestCase):
         original = dist.checksum(helper)
         manifest = self.root / 'release.json'
         manifest.write_text('{}')
-        qualified = self.root / 'qualified-package.tar.gz'
+        qualified = self.root / 'symphony-fixture-macos.tar.gz'
         original_bundle = self.root / 'original-bundle'
         (original_bundle / 'libexec').mkdir(parents=True)
         (original_bundle / 'libexec/symphony-host').write_bytes(helper.read_bytes())
@@ -563,12 +563,14 @@ class DistributionTest(unittest.TestCase):
             return real_run(*args, **kwargs)
 
         retained = set()
-        for failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
+        for failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'mounted payload', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
             retention_failure = (patch.object(dist.SignedCheckpoint, 'retain', side_effect=OSError('FAKE SECRET /PRIVATE/PATH'))
                                  if failure == 'checkpoint retention' else nullcontext())
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
-                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask():
+                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask(), \
+                    patch('local_distribution.verify_mounted_payload',
+                          side_effect=ValueError('mounted payload mismatch') if failure == 'mounted payload' else None):
                 uname.return_value.machine = 'arm64'
                 if failure:
                     with self.assertRaises(OSError if failure == 'checkpoint retention' else ValueError):

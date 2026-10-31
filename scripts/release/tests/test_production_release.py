@@ -242,6 +242,145 @@ class SignedSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'credential cleanup incomplete'):
                 production.verify_signed(signed,inputs,'a'*40)
 
+class ProductionCheckpointTest(unittest.TestCase):
+    def setUp(self):
+        from test_signing_checkpoint import ContinuationTests
+        self.peer = ContinuationTests(); self.peer.setUp(); self.addCleanup(self.peer.doCleanups)
+        self.root = self.peer.root
+        self.inputs = self.root / 'qualified'
+        for name in ('internal', 'helper', 'packages'): (self.inputs / name).mkdir(parents=True)
+        manifest = self.inputs / 'internal/release.json'
+        manifest.write_text(json.dumps({'source_revision': 'a' * 40,
+                                       'bundles': {'macos': {'filename': self.peer.qualified.name}}}))
+        shutil.copyfile(self.peer.helper, self.inputs / 'helper/symphony-host')
+        shutil.copyfile(self.peer.qualified, self.inputs / 'packages' / self.peer.qualified.name)
+        qualified = {'repository': production.REPOSITORY, 'source_revision': 'a' * 40,
+                     'run_id': 123, 'run_attempt': 2, 'original_artifacts': [{'id': 10, 'digest': 'sha256:' + 'b' * 64}],
+                     'original_qualified_helper_sha256': production.checksum(self.peer.helper)}
+        production.write_json(self.inputs / 'qualification.json', qualified)
+        self.env = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': production.REPOSITORY,
+                    'GITHUB_RUN_ID': '999', 'GITHUB_RUN_ATTEMPT': '1',
+                    'GITHUB_WORKFLOW_REF': production.REPOSITORY + '/.github/workflows/macos-production-signing.yml@refs/heads/main',
+                    'MACOS_SIGNING_IDENTITY_SHA1': 'A' * 40, 'MACOS_TEAM_ID': 'FAKETEAM00'}
+        from macos_distribution import signing_context
+        self.origin = dict(self.env, GITHUB_RUN_ID='998')
+        self.peer.checkpoint.value.update(
+            context=signing_context(self.peer.qualified, self.origin, self.inputs / 'qualification.json'),
+            input_manifest_sha256=production.checksum(manifest))
+        self.peer.checkpoint.save()
+        self.original = {'id': 998, 'head_sha': 'a' * 40, 'head_branch': 'main', 'run_attempt': 1,
+                         'path': '.github/workflows/macos-production-signing.yml', 'event': 'workflow_dispatch',
+                         'status': 'completed', 'conclusion': 'failure',
+                         'head_repository': {'full_name': production.REPOSITORY},
+                         'run_started_at': '2026-01-01T00:00:00Z', 'updated_at': '2026-01-01T01:00:00Z'}
+        self.current = dict(self.original, id=999, status='in_progress', conclusion=None)
+        self.history = {'total_count': 2, 'workflow_runs': [self.current, self.original]}
+        self.jobs = {'jobs': [{'name': 'Sign exact production preparation', 'conclusion': 'failure'}]}
+        self.pack()
+
+    def pack(self):
+        target = io.BytesIO()
+        with zipfile.ZipFile(target, 'w') as archive:
+            for path in self.peer.checkpoint.path.iterdir(): archive.writestr(path.name, path.read_bytes())
+        self.raw = target.getvalue()
+        self.artifact = {'id': 55, 'name': 'production-signing-checkpoint-' + 'a' * 40 + '-998-1',
+                         'digest': 'sha256:' + digest(self.raw), 'size_in_bytes': len(self.raw), 'expired': False,
+                         'expires_at': '2099-01-01T00:00:00Z', 'created_at': '2026-01-01T00:01:00Z',
+                         'workflow_run': {'id': 998, 'head_sha': 'a' * 40}}
+
+    def fetch(self, path, binary=False):
+        if path.startswith('actions/workflows/'): return self.history
+        if path.endswith('/jobs?per_page=100'): return self.jobs
+        if path.endswith('/artifacts?per_page=100'): return {'artifacts': [self.artifact]}
+        if path == 'actions/artifacts/55/zip': return self.raw
+        if path in ('actions/runs/998', 'actions/runs/998/attempts/1'): return self.original
+        raise AssertionError(path)
+
+    def admit(self, **changes):
+        def native(checkpoint, package, helper, env):
+            from macos_distribution import validate_retained_payload
+            validate_retained_payload(checkpoint, package, env)
+            self.assertFalse(any(name in env for name in ('MACOS_SIGNING_P12_BASE64', 'MACOS_NOTARY_APP_PASSWORD')))
+            if changes.get('invalid_native'): raise ValueError('retained native signature differs')
+        with patch('macos_distribution.validate_retained_native', side_effect=native):
+            return production.checkpoint_inputs(self.inputs, self.root / 'imported', 'a' * 40,
+                changes.get('current_run', '999'), changes.get('current_attempt', '1'),
+                changes.get('resume_run', '998'), changes.get('resume_attempt', '1'), env=self.env, fetch=self.fetch)
+
+    def test_exact_failed_attempt_artifact_origin_qualification_and_bytes_are_admitted(self):
+        before = {p.name: production.checksum(p) for p in self.peer.checkpoint.path.iterdir()}
+        admission = self.admit()
+        self.assertEqual(admission['origin']['run_id'], 998)
+        self.assertEqual(admission['artifact']['id'], 55)
+        self.assertEqual(admission['artifact']['digest'], 'sha256:' + digest(self.raw))
+        self.assertEqual((self.root / 'imported').stat().st_mode & 0o777, 0o700)
+        self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in (self.root / 'imported').iterdir()))
+        self.assertEqual(before, {p.name: production.checksum(p) for p in self.peer.checkpoint.path.iterdir()})
+        from macos_distribution import SignedCheckpoint, signing_context
+        package = self.inputs / 'packages' / self.peer.qualified.name
+        continued = SignedCheckpoint.reopen(self.root / 'imported', self.root / 'continued', 'a' * 40,
+            self.inputs / 'internal/release.json', production.checksum(self.peer.helper), admission['checkpoint_sha256'],
+            signing_context(package, self.env, self.inputs / 'qualification.json'), admission)
+        self.assertEqual(continued.value['context']['origin']['run_id'], 999)
+        self.assertEqual(continued.value['continuations'][-1]['origin']['run_id'], 998)
+        self.assertEqual(continued.value['continuations'][-1]['admission']['artifact'], admission['artifact'])
+
+    def test_start_and_ordinary_rerun_cannot_repeat_original_submission(self):
+        with self.assertRaisesRegex(ValueError, 'original signing attempt exists'):
+            self.admit(resume_run='', resume_attempt='')
+        with self.assertRaisesRegex(ValueError, 'ordinary signing rerun refused'):
+            self.admit(current_attempt='2')
+        self.history['workflow_runs'] = [self.current]; self.history['total_count'] = 1
+        self.assertIsNone(self.admit(resume_run='', resume_attempt=''))
+        self.history['workflow_runs'].append(dict(self.original, head_branch='dev', conclusion='success'))
+        self.history['total_count'] = 2
+        self.assertIsNone(self.admit(resume_run='', resume_attempt=''))  # Guarded-out non-main dispatch is ineligible.
+
+    def test_conflicting_active_successful_foreign_attempt_and_missing_history_refuse(self):
+        for changes in ({'status': 'in_progress'}, {'conclusion': 'success'}, {'head_branch': 'dev'},
+                        {'run_attempt': 2}, {'path': '.github/workflows/foreign.yml'},
+                        {'head_repository': {'full_name': 'foreign/repo'}}):
+            with self.subTest(changes=changes):
+                old = dict(self.original); self.original.update(changes)
+                with self.assertRaises(ValueError): self.admit()
+                self.original.clear(); self.original.update(old)
+        self.history['workflow_runs'].append(dict(self.original, id=1000))
+        self.history['total_count'] = 3
+        with self.assertRaisesRegex(ValueError, 'latest original attempt'): self.admit()
+        self.history['workflow_runs'] = [self.original]
+        self.history['total_count'] = 1
+        with self.assertRaisesRegex(ValueError, 'current protected signing run missing'): self.admit()
+
+    def test_embedded_origin_corruption_and_unknown_payload_are_refused(self):
+        state = self.peer.checkpoint.value
+        state['context']['origin']['run_id'] = 997; self.peer.checkpoint.save(); self.pack()
+        with self.assertRaisesRegex(ValueError, 'embedded producer origin'): self.admit()
+
+    def test_wrong_artifact_attempt_and_digest_refuse_before_checkpoint_use(self):
+        for change in ({'created_at': '2025-01-01T00:00:00Z'}, {'workflow_run': {'id': 997, 'head_sha': 'a' * 40}},
+                       {'digest': 'sha256:' + '0' * 64}, {'expired': True}):
+            with self.subTest(change=change):
+                old = dict(self.artifact); self.artifact.update(change)
+                with self.assertRaises(ValueError): self.admit()
+                self.artifact.clear(); self.artifact.update(old)
+
+    def test_native_refusal_prevents_public_admission_before_secret_step(self):
+        with self.assertRaisesRegex(ValueError, 'retained native signature differs'):
+            self.admit(invalid_native=True)
+        self.assertFalse((self.root / 'imported-admission.json').exists())
+
+    def test_history_filters_unrelated_releases_and_refuses_incomplete_relevant_inventory(self):
+        def thousands_of_unrelated_runs(path, binary=False):
+            if path.startswith('actions/workflows/'):
+                return self.history if '&head_sha=' + 'a' * 40 in path else {'total_count': 10002, 'workflow_runs': []}
+            return self.fetch(path, binary)
+        origin = production.signing_attempt('a' * 40, '999', '1', '998', '1', thousands_of_unrelated_runs)
+        self.assertEqual(origin['run_id'], 998)
+        self.history['total_count'] = 3
+        with self.assertRaisesRegex(ValueError, 'exact-source signing history incomplete'):
+            production.signing_attempt('a' * 40, '999', '1', '998', '1', self.fetch)
+
+
 class PublicationPeer:
     """Private drafts deliberately have no by-tag API representation."""
     revision = 'a' * 40

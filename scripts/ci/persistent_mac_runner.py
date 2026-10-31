@@ -173,6 +173,25 @@ def clean_signing_credentials(temporary):
         finally: os.close(descriptor)
 
 
+def signing_ready(env=os.environ, root=RUNNER):
+    """Read-only eligibility check. Never install/repair/start a runner here."""
+    require_guest(); service(root)
+    require(env.get('RUNNER_TEMP') == str(root / '_work/_temp')
+            and env.get('TMPDIR') == str(root / '_work/_temp')
+            and env.get('GITHUB_REPOSITORY') == 'Jayson-Stangel/symphony'
+            and env.get('ACTIONS_RUNNER_HOOK_JOB_COMPLETED') == str(root.parent / 'persistent-mac-job-completed.sh'),
+            'production signing requires the configured owned cleanup boundary')
+    for name in ('persistent_mac_runner.py', 'persistent-mac-job-completed.sh'):
+        installed = root.parent / name; info = installed.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o022
+                and installed.read_bytes() == Path(__file__).with_name(name).read_bytes(),
+                'installed signing cleanup differs; separately approved activation required')
+    require(not any((p / '.keychain-cleanup.json').exists() or (p / 'identity.p12').exists()
+                    or (p / 'signing.keychain-db').exists()
+                    for p in (root / '_work/_temp').glob('symphony-signing-*')),
+            'unreconciled signing state; do not expose credentials')
+
+
 def clean_job(env=os.environ, root=RUNNER):
     require_guest()
     try:
@@ -245,10 +264,12 @@ def main():
     start = sub.add_parser('start'); start.add_argument('--tart', type=Path, required=True)
     start.add_argument('--mac-address', required=True)
     sub.add_parser('guest-start'); sub.add_parser('guest-clean')
+    sub.add_parser('signing-ready')
     args = parser.parse_args()
     try:
         if args.mode == 'start': start_vm(args.tart, args.mac_address)
         elif args.mode == 'guest-start': guest_start()
+        elif args.mode == 'signing-ready': signing_ready()
         else: clean_job()
         return 0
     except RuntimeError as error:

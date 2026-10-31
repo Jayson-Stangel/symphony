@@ -338,6 +338,20 @@ class NativeConfig(unittest.TestCase):
         native.assert_not_called()
         self.assertTrue(self.workspace.exists())
 
+    def test_signing_readiness_checks_installed_cleanup_without_activating_it(self):
+        env = dict(self.env, RUNNER_TEMP=str(self.work / '_temp'),
+                   ACTIONS_RUNNER_HOOK_JOB_COMPLETED=str(self.root.parent / 'persistent-mac-job-completed.sh'))
+        for name in ('persistent_mac_runner.py', 'persistent-mac-job-completed.sh'):
+            (self.root.parent / name).write_bytes(Path(runner.__file__).with_name(name).read_bytes())
+            (self.root.parent / name).chmod(0o700)
+        with patch.object(runner, 'service', return_value=self.service()), \
+                patch.object(runner, 'stop_service') as stop, patch.object(runner, 'guest_start') as start:
+            runner.signing_ready(env, self.root)
+            (self.root.parent / 'persistent_mac_runner.py').write_text('OLD INSTALLED SOURCE')
+            with self.assertRaisesRegex(RuntimeError, 'separately approved activation'):
+                runner.signing_ready(env, self.root)
+            stop.assert_not_called(); start.assert_not_called()
+
 
 class SigningRecovery(unittest.TestCase):
     """Real private files, inert native Security model; no guest activation."""

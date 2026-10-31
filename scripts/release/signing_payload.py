@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 import re
 import stat
 import tarfile
+import zipfile
 
 MAX_BYTES = 512 * 1024 * 1024
 
@@ -71,3 +72,40 @@ def helper_hash(archive):
         require(len(entries) == 1 and entries[0].isfile() and entries[0].size <= MAX_BYTES,
                 'production archive helper missing')
         return hashlib.sha256(bundle.extractfile(entries[0]).read()).hexdigest()
+
+
+def compare_payload_zip(path, files, directories):
+    """Retained Apple ZIP must contain the exact tar payload, including modes."""
+    observed = {}; dirs = {}; names = set(); total = 0
+    with zipfile.ZipFile(path) as archive:
+        require(len(archive.infolist()) <= 10000, 'oversized ZIP inventory')
+        for entry in archive.infolist():
+            name = entry.filename.rstrip('/'); part = PurePosixPath(name)
+            require(name == str(part) and not part.is_absolute() and '..' not in part.parts
+                    and '\\' not in name and name not in names and part.parts and part.parts[0] == 'bundle',
+                    'unsafe ZIP member')
+            names.add(name); mode = entry.external_attr >> 16
+            require((stat.S_ISDIR(mode) if entry.is_dir() else stat.S_ISREG(mode)) and not mode & 0o7000,
+                    'special ZIP entry refused')
+            relative = '/'.join(part.parts[1:]) or '.'
+            if entry.is_dir():
+                dirs[relative] = stat.S_IMODE(mode)
+            else:
+                total += entry.file_size
+                require(total <= MAX_BYTES, 'oversized ZIP payload')
+                observed[relative] = (archive.read(entry), stat.S_IMODE(mode))
+    require(observed == files and dirs == directories, 'accepted ZIP and retained tar bytes/modes differ')
+
+
+def extract_payload(files, directories, destination):
+    """Build a private working tree from the already bounded regular inventory."""
+    require(not destination.exists(), 'fresh payload directory required')
+    destination.mkdir(mode=0o700)
+    for name in sorted(directories, key=lambda n: len(PurePosixPath(n).parts)):
+        if name != '.': (destination / name).mkdir()
+    for name, (raw, mode) in files.items():
+        path = destination / name
+        with path.open('xb') as target: target.write(raw)
+        path.chmod(mode)
+    for name in sorted(directories, key=lambda n: -len(PurePosixPath(n).parts)):
+        (destination / name).chmod(directories[name])
