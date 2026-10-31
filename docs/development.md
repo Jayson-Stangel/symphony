@@ -147,6 +147,14 @@ or workspace-only read isolation. No parent, home or credential directory is
 added. The image's unused `/etc/symphony/claude` directory is hidden by the bind;
 provider code and plugins live under `/opt/symphony` and are unaffected.
 
+Claude's container UID/GID `11001:11001` must be able to traverse the project root
+and read `WORKFLOW.md`. A readable file inside a private `0700`/`0750` host directory
+may have worked through the prior single-file bind while failing through a
+directory bind on native Linux. Credential-free preflight checks the selected
+image and actual container identity before adoption drains existing work. If it
+refuses, provide access through your approved host permissions/ACL policy and
+retry; the manager does not change host permissions automatically.
+
 Existing single-file containers are adopted only through `symphony update --agent
 codex` or `symphony update --agent claude` (with the appropriate development wrapper
 for disposable tests). Even an unchanged selected image needs replacement: update

@@ -1003,6 +1003,19 @@ claude_image_ready() {
   [ "$agent" = claude ] && [ "$uid" = 11001:11001 ] || die 'Claude image does not meet the non-root runner contract'
 }
 
+# Match the listener's actual container identity and mount before disrupting a
+# working single-file listener. A readable file alone does not grant traversal
+# through a private project directory on a native Linux bind.
+runner_claude_workflow_ready() {
+  local root=$1 runtime=$2 image=$3
+  if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --user 11001:11001 --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
+    --entrypoint sh "$image" -ceu 'test -f /etc/symphony/WORKFLOW.md && test -r /etc/symphony/WORKFLOW.md'; then
+    printf '%s\n' 'Claude cannot read the project-root WORKFLOW.md through its directory bind. Provide project-root traversal and workflow read access to container UID/GID 11001:11001, then retry. Host permissions were not changed.' >&2
+    return 1
+  fi
+}
+
 ensure_claude_auth_volume() {
   local root=$1 runtime=$2 volume=$3 storage owner
   storage=$(runner_storage_id "$root")
@@ -1486,7 +1499,10 @@ runner_start() {
       [ "${SYMPHONY_RUNNER_PROFILE:-none}" = "$profile" ] || die 'native profile change requires symphony update --agent'
     ) || return 1
   fi
-  if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
+  if [ "$agent" = claude ]; then
+    claude_image_ready "$runtime" "$image"
+    runner_claude_workflow_ready "$root" "$runtime" "$image_id" || return
+  fi
   if [ "$agent" = codex ]; then
     if [ "$authority" != update ]; then
       if [ "$state" = missing ]; then codex_config_select "$root" "$runtime" "$image_id" || return
@@ -2062,6 +2078,8 @@ runner_transition() (
     if [ "$agent" = codex ]; then
       codex_config_journal_load "$root" "$candidate" "$journal"
       runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
+    else
+      runner_claude_workflow_ready "$root" "$runtime" "$candidate" || return
     fi
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
@@ -2296,6 +2314,7 @@ runner_doctor() {
     printf 'Protected project launch checks passed. Native authentication, Git preflight, tracker access and model tasks remain untested. No listener or model request was started.\n'
     return
   fi
+  if [ "$agent" = claude ]; then runner_claude_workflow_ready "$root" "$runtime" "$image" || return; fi
   if [ "$agent" = claude ]; then claude_auth check || { printf 'Native authentication/policy failed; run symphony auth claude login and retry.\n' >&2; return 1; }
   else auth_codex_check || { printf 'Native authentication/policy failed; run symphony auth codex login and retry.\n' >&2; return 1; }; fi
   if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \

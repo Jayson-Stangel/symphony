@@ -102,6 +102,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
+          *'test -f /etc/symphony/WORKFLOW.md'*) [ "${FIXTURE_WORKFLOW_UNREADABLE:-false}" != true ] || exit 1 ;;
           *--codex-config-snapshot*)
             [ "${FIXTURE_CONFIG_FAIL:-false}" != true ] || { echo '{"error":"sandbox_unqualified_config"}'; exit 1; }
             if [ -n "${FIXTURE_CONFIG_JSON:-}" ]; then printf '%s\\n' "$FIXTURE_CONFIG_JSON"
@@ -501,6 +502,24 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert adopted["Mounts"] == observed["Mounts"]
       assert File.read!(ctx.state <> ".image") == if(agent == "claude", do: "fixture-claude-image", else: "sha256:" <> String.duplicate("a", 64))
     end
+  end
+
+  test "Claude directory access refuses fresh launch and adoption before drain", ctx do
+    env = [{"FIXTURE_WORKFLOW_UNREADABLE", "true"}]
+    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"], env)
+    assert message =~ "project-root traversal and workflow read access"
+    refute File.read!(ctx.log) =~ "--detach"
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    legacy_workflow_mount!(ctx)
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Host permissions were not changed"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rename|rm)\t/
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    calls = File.read!(ctx.log)
+    assert calls =~ "--user\t11001:11001"
+    assert calls =~ "source=#{ctx.repo},target=/etc/symphony,readonly"
   end
 
   for agent <- ["codex", "claude"] do
