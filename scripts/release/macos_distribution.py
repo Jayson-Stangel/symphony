@@ -814,12 +814,50 @@ def validate_retained_payload(checkpoint, qualified_archive, env):
     return files, directories, signature
 
 
+def verify_mounted_payload(dmg, archive, run):
+    """Compare a read-only DMG mount against every retained tar byte and mode."""
+    from signing_payload import bundle_files
+    payload = bundle_files(archive)
+    with tempfile.TemporaryDirectory(prefix='local-dmg-check-') as temporary:
+        mount = Path(temporary) / 'mounted'
+        mount.mkdir()
+        attached = False
+        try:
+            run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, dmg)
+            attached = True
+            require({p.name for p in mount.iterdir()} == {'Symphony', 'Read Me.txt'}, 'unexpected DMG root contents')
+            instructions = mount / 'Read Me.txt'
+            info = instructions.lstat()
+            require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o644 and
+                    info.st_size == len(INSTALL_INSTRUCTIONS.encode()) and
+                    instructions.read_text() == INSTALL_INSTRUCTIONS, 'DMG instructions differ from source')
+            root = mount / 'Symphony'
+            require(root.is_dir() and not root.is_symlink(), 'invalid DMG payload directory')
+            _, expected_directories = bundle_files(archive, with_directories=True)
+            actual = {}; directories = {'.': stat.S_IMODE(root.lstat().st_mode)}
+            for path in root.rglob('*'):
+                mode = path.lstat().st_mode
+                require((stat.S_ISREG(mode) or stat.S_ISDIR(mode)) and mode & 0o7000 == 0,
+                        'DMG payload special type/mode refused')
+                name = path.relative_to(root).as_posix()
+                if stat.S_ISREG(mode):
+                    require(name in payload and path.stat().st_size == len(payload[name][0]), 'unexpected DMG payload file')
+                    actual[name] = (path.read_bytes(), stat.S_IMODE(mode))
+                else:
+                    require(name in expected_directories, 'unexpected DMG payload directory')
+                    directories[name] = stat.S_IMODE(mode)
+            require(actual == payload and directories == expected_directories,
+                    'DMG payload differs from exact signed updater archive')
+        finally:
+            if attached:
+                run('hdiutil', 'detach', mount)
+
+
 def validate_retained_native(checkpoint, qualified_archive, helper, env):
     """Public-only native input admission; no keychain/P12/account credentials."""
     require(sys.platform == 'darwin' and os.uname().machine == 'arm64',
             'retained native admission requires Apple Silicon macOS')
-    from signing_payload import extract_payload
-    from local_distribution import executable_identity, verify_mounted_payload
+    from signing_payload import extract_payload, executable_identity
     files, directories, signature = validate_retained_payload(checkpoint, qualified_archive, env)
     with tempfile.TemporaryDirectory(prefix='symphony-retained-check-', dir=env.get('RUNNER_TEMP')) as temporary:
         private = Path(temporary); bundle = private / 'bundle'
@@ -851,11 +889,17 @@ def finish_distribution(checkpoint, bundle, manifest, helper, output, env, keych
     verify_notarized_helper(signed_helper, env, checkpoint, 'notarization.payload-helper')
     if 'outer.dmg' not in checkpoint.value['artifacts']:
         checkpoint.value['dmg_state'] = 'preparing'; checkpoint.save()
-        dmg = bundle.parent / 'outer.dmg'
-        create_dmg(bundle, dmg)
+        # Keep even partially created/signed bytes outside credential scratch:
+        # successful credential cleanup must not erase the failed phase.
+        dmg = checkpoint.path / 'preparing.dmg'
+        try:
+            create_dmg(bundle, dmg)
+        finally:
+            if dmg.is_file() and not dmg.is_symlink(): dmg.chmod(0o600)
         signed_dmg = sign(dmg, keychain, env, runtime=False)
         checkpoint.retain_file('outer.dmg', dmg)
         checkpoint.value.update(dmg_signature=signed_dmg, dmg_state='signed'); checkpoint.save()
+        dmg.unlink(); checkpoint.sync_directory(checkpoint.path)
     else:
         signed_dmg = inspect_signature(checkpoint.path / 'outer.dmg', env, bundle.parent, runtime=False)
         require(signed_dmg == checkpoint.value['dmg_signature'], 'retained DMG signature differs')
@@ -873,7 +917,6 @@ def finish_distribution(checkpoint, bundle, manifest, helper, output, env, keych
     inspect_signature(final, env, bundle.parent, runtime=False)
     run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=4', final)
     verify_notarized_helper(signed_helper, env, checkpoint, 'notarization.dmg-helper')
-    from local_distribution import verify_mounted_payload
     verify_mounted_payload(final, checkpoint.path / 'signed-updater.tar.gz', run)
     checkpoint.verify_bytes()
     require(checksum(helper) == checkpoint.value['original_qualified_helper_sha256'],
@@ -987,7 +1030,7 @@ def resume(manifest, helper, output, env, qualified_archive, checkpoint_path, di
         bundle = private / 'bundle'; extract_payload(files, directories, bundle)
         native = bundle / 'libexec/symphony-host'
         require(inspect_signature(native, env, private) == signature, 'retained native signature differs')
-        from local_distribution import executable_identity
+        from signing_payload import executable_identity
         require(executable_identity(helper.read_bytes()) == executable_identity(native.read_bytes()),
                 'retained signed helper differs from original qualified code')
         with signing_keychain(env, private, evidence) as keychain:

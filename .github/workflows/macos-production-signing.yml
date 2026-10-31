@@ -100,6 +100,7 @@ jobs:
             ${{ runner.temp }}/production-signed.checkpoint/signed-updater.tar.gz
             ${{ runner.temp }}/production-signed.checkpoint/payload.zip
             ${{ runner.temp }}/production-signed.checkpoint/outer.dmg
+            ${{ runner.temp }}/production-signed.checkpoint/preparing.dmg
             ${{ runner.temp }}/production-signed.checkpoint/stapled.dmg
             ${{ runner.temp }}/production-signed.checkpoint/package-source.txt
             ${{ runner.temp }}/production-signed.checkpoint/package-diagnostics.json

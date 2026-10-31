@@ -497,12 +497,18 @@ remain mandatory even when verification or retention fails.
 
 Failure/cancellation leaves this checkpoint available for continuation. The
 production signer retains the fixed receipt, exact tar/ZIP, package evidence,
-signed pre-submission `outer.dmg` and separate `stapled.dmg` when present, in a
+signed pre-submission `outer.dmg`, failed-phase `preparing.dmg` and separate
+`stapled.dmg` when present, in a
 private `production-signing-checkpoint-SOURCE-RUN-ATTEMPT` artifact. No signing
 scratch, cleanup baseline or arbitrary log is uploaded. Submission intent is
 synced before POST, and the returned Apple ID is synced before waiting. A missing
 ID after intent, a conflicting attempt or incomplete DMG mutation refuses with
 reconciliation instructions; never guess the outcome or submit again.
+Creation/signing writes `preparing.dmg` inside the private checkpoint, so verified
+credential cleanup cannot erase a failed phase's bytes. The staging file is
+removed only after the immutable outer copy and signed-stage transition are
+durable. Partial bytes are retained for inspection, never admitted for automatic
+retry or readiness.
 
 Continuation creates a new exclusive output/checkpoint and preserves the original
 receipt and accepted artifact bytes. It checks retained tar/ZIP bytes and modes against original qualification,

@@ -303,7 +303,7 @@ class ContinuationTests(unittest.TestCase):
         self.checkpoint.submission('payload', {'id': SUBMISSION, 'status': 'Accepted',
             'submitted_sha256': dist.checksum(payload)})
         self.calls = []; self.signs = []; self.imports = 0; self.submitted = {}
-        self.wait_failure = False; self.unknown_response = False; self.gate_failure = None
+        self.wait_failure = False; self.unknown_response = False; self.gate_failure = None; self.create_failure = False
 
     def tar(self, path, files):
         with tarfile.open(path, 'w:gz', format=tarfile.USTAR_FORMAT) as archive:
@@ -351,7 +351,9 @@ class ContinuationTests(unittest.TestCase):
         def keychain(*args):
             self.imports += 1
             yield self.root / 'inert-keychain'
-        def create(bundle, destination): destination.write_bytes(b'EXACT OUTER DMG')
+        def create(bundle, destination):
+            destination.write_bytes(b'EXACT OUTER DMG')
+            if self.create_failure: raise dist.CommandFailure('assembly.dmg', 'failed')
         with ExitStack() as stack:
             stack.enter_context(patch.object(dist.sys, 'platform', 'darwin'))
             uname = stack.enter_context(patch.object(dist.os, 'uname')); uname.return_value.machine = 'arm64'
@@ -361,8 +363,8 @@ class ContinuationTests(unittest.TestCase):
             stack.enter_context(patch.object(dist, 'sign', side_effect=self.sign))
             stack.enter_context(patch.object(dist, 'create_dmg', side_effect=create))
             stack.enter_context(patch.object(dist, 'verify_notarized_helper', side_effect=self.gate))
-            stack.enter_context(patch('local_distribution.executable_identity', return_value='SAME QUALIFIED CODE'))
-            stack.enter_context(patch('local_distribution.verify_mounted_payload'))
+            stack.enter_context(patch('signing_payload.executable_identity', return_value='SAME QUALIFIED CODE'))
+            stack.enter_context(patch.object(dist, 'verify_mounted_payload'))
             dist.resume(self.manifest, self.helper, output, self.env, self.qualified, source,
                         dist.checksum(source / 'checkpoint.json'))
 
@@ -464,6 +466,35 @@ class ContinuationTests(unittest.TestCase):
         self.assertNotIn('SENTINEL', str(caught.exception))
         state = json.loads((first.with_name('first.checkpoint') / 'checkpoint.json').read_text())
         self.assertIn('notary', state['intents']); self.assertNotIn('notary', state['submissions'])
+
+    def test_failed_create_preserves_partial_dmg_after_credential_scratch_cleanup(self):
+        self.create_failure = True; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint')
+        self.assertEqual((child / 'preparing.dmg').read_bytes(), b'EXACT OUTER DMG')
+        self.assertEqual(stat.S_IMODE((child / 'preparing.dmg').stat().st_mode), 0o600)
+        self.assertEqual(json.loads((child / 'checkpoint.json').read_text())['dmg_state'], 'preparing')
+        before = self.imports
+        with self.assertRaisesRegex(ValueError, 'incomplete or unexpected checkpoint'):
+            self.continue_from(child, self.root / 'second')
+        self.assertEqual(self.imports, before); self.assertEqual(self.signs, [])
+        self.assertFalse(any(c[:3] == ('xcrun', 'notarytool', 'submit') for c in self.calls))
+        self.assertFalse(list(self.root.glob('symphony-signing-*')))
+
+    def test_failed_sign_preserves_changed_dmg_before_any_outer_submission(self):
+        sign = self.sign
+        def interrupted(*args, **kwargs):
+            sign(*args, **kwargs)
+            raise dist.CommandFailure('signature.sign', 'interrupted')
+        self.sign = interrupted; first = self.root / 'first'
+        with self.assertRaises(dist.CommandFailure): self.continue_from(self.checkpoint.path, first)
+        child = first.with_name('first.checkpoint')
+        self.assertEqual((child / 'preparing.dmg').read_bytes(), b'EXACT OUTER DMGSIGNATURE')
+        self.assertEqual(stat.S_IMODE((child / 'preparing.dmg').stat().st_mode), 0o600)
+        self.assertFalse((child / 'outer.dmg').exists())
+        self.assertFalse((first / 'macos-distribution.json').exists())
+        self.assertFalse(any(c[:3] == ('xcrun', 'notarytool', 'submit') for c in self.calls))
+        self.assertFalse(list(self.root.glob('symphony-signing-*')))
 
     def test_wrong_context_corrupt_bytes_and_incomplete_state_refuse_before_credentials(self):
         for mutation in ('identity', 'qualification', 'bytes', 'intent', 'mutation'):

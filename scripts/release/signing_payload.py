@@ -7,6 +7,7 @@ import hashlib
 from pathlib import PurePosixPath
 import re
 import stat
+import struct
 import tarfile
 import zipfile
 
@@ -109,3 +110,58 @@ def extract_payload(files, directories, destination):
         path.chmod(mode)
     for name in sorted(directories, key=lambda n: -len(PurePosixPath(n).parts)):
         (destination / name).chmod(directories[name])
+
+
+def executable_identity(raw):
+    """Bind every ARM64 Mach-O byte except the signature and its exact size fields.
+
+    codesign --remove-signature can leave different LINKEDIT padding. Instead,
+    validate the original layout and normalize only fields necessarily resized
+    by signing. All offsets, instructions, data and other load commands remain.
+    Native codesign validation independently checks the complete signed object.
+    """
+    require(32 <= len(raw) <= MAX_BYTES, 'invalid executable size')
+    header = struct.unpack_from('<8I', raw)
+    require(header[0] == 0xFEEDFACF and header[1] == 0x0100000C and header[3] == 2
+            and 0 < header[4] <= 512 and 0 < header[5] <= 65536,
+            'requires bounded thin ARM64 executable')
+    end = 32 + header[5]
+    require(end < len(raw), 'invalid executable commands')
+    offset = 32; signatures = []; segments = []; other_intervals = []
+    for _ in range(header[4]):
+        require(offset + 8 <= end, 'truncated executable command')
+        command, size = struct.unpack_from('<2I', raw, offset)
+        require(size >= 8 and size % 8 == 0 and offset + size <= end, 'invalid executable command size')
+        if command == 0x1D:
+            require(size == 16, 'invalid signature command')
+            signatures.append((offset, *struct.unpack_from('<2I', raw, offset + 8)))
+        if command == 0x19:
+            require(size >= 72, 'invalid segment command')
+            sections = struct.unpack_from('<I', raw, offset + 64)[0]
+            require(sections <= 128 and size == 72 + 80 * sections, 'invalid segment section inventory')
+            if raw[offset + 8:offset + 24].rstrip(b'\0') == b'__LINKEDIT':
+                require(sections == 0, 'unexpected LINKEDIT sections')
+                segments.append((offset, *struct.unpack_from('<4Q', raw, offset + 24)))
+            else:
+                file_offset, file_size = struct.unpack_from('<2Q', raw, offset + 40)
+                if file_size:
+                    other_intervals.append((file_offset, file_offset + file_size))
+        offset += size
+    require(offset == end and len(signatures) == len(segments) == 1, 'ambiguous executable layout')
+    command, start, size = signatures[0]
+    segment, _, virtual_size, file_offset, file_size = segments[0]
+    intervals = sorted(other_intervals)
+    require(all(a < b <= file_offset for a, b in intervals) and
+            all(intervals[i - 1][1] <= intervals[i][0] for i in range(1, len(intervals))),
+            'overlapping segments or executable signature overlaps payload')
+    require(command + 16 == end and end <= file_offset <= start and start % 16 == 0
+            and size > 0 and start + size == len(raw)
+            and file_offset + file_size == len(raw)
+            and virtual_size == ((file_size + 16383) // 16384) * 16384,
+            'executable signature/LINKEDIT layout differs from supported native producer')
+    normalized = bytearray(raw[:start])
+    struct.pack_into('<I', normalized, command + 12, 0)
+    unsigned_size = start - file_offset
+    struct.pack_into('<Q', normalized, segment + 32, ((unsigned_size + 16383) // 16384) * 16384)
+    struct.pack_into('<Q', normalized, segment + 48, unsigned_size)
+    return hashlib.sha256(normalized).hexdigest()

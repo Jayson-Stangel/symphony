@@ -569,7 +569,7 @@ class DistributionTest(unittest.TestCase):
                                  if failure == 'checkpoint retention' else nullcontext())
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
                     patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask(), \
-                    patch('local_distribution.verify_mounted_payload',
+                    patch.object(dist, 'verify_mounted_payload',
                           side_effect=ValueError('mounted payload mismatch') if failure == 'mounted payload' else None):
                 uname.return_value.machine = 'arm64'
                 if failure:

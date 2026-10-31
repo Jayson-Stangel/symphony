@@ -51,7 +51,7 @@ class SigningEntrypointTest(unittest.TestCase):
         self.assertLess(imported.index('production_release.py qualify'), imported.index('production_release.py checkpoint-inputs'))
         self.assertIn('macos_distribution.py resume', worker)
         retained = worker.split('      - name: Retain exact private signing checkpoint', 1)[1]
-        for name in ('checkpoint.json', 'signed-updater.tar.gz', 'payload.zip', 'outer.dmg', 'stapled.dmg',
+        for name in ('checkpoint.json', 'signed-updater.tar.gz', 'payload.zip', 'outer.dmg', 'preparing.dmg', 'stapled.dmg',
                      'package-source.txt', 'package-diagnostics.json'):
             self.assertIn('production-signed.checkpoint/' + name, retained)
         for private in ('identity.p12', 'signing.keychain', '.keychain-cleanup', 'checkpoint/*'):

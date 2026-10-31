@@ -304,7 +304,7 @@ class Consumers(unittest.TestCase):
             names.update(item.name for item in node.names) if isinstance(node, ast.Import) else None
             if isinstance(node, ast.ImportFrom):
                 names.add(node.module)
-        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'tarfile'})
+        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'struct', 'tarfile', 'zipfile'})
         distribution = ast.parse((ROOT / 'scripts/release/macos_distribution.py').read_text())
         imports = {node.module for node in ast.walk(distribution) if isinstance(node, ast.ImportFrom)}
         self.assertIn('signing_payload', imports)
