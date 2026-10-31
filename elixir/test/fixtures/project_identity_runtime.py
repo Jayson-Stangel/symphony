@@ -20,9 +20,9 @@ def option(flag):
 def mounts(data):
     result = [dict(item) for item in data.get('mounts', [])]
     for item in result:
-        if item['Destination'] == '/etc/symphony/WORKFLOW.md':
+        if item['Destination'] in ('/etc/symphony', '/etc/symphony/WORKFLOW.md'):
             item.update(Type=data.get('workflow_type', 'bind'), Source=data['workflow'],
-                        Destination=data.get('workflow_destination', '/etc/symphony/WORKFLOW.md'),
+                        Destination=data.get('workflow_destination', item['Destination']),
                         RW=data.get('workflow_rw', False))
     return result
 
@@ -83,7 +83,7 @@ elif cmd == 'run':
                 mount = {'Type': fields['type'], 'Source': fields['source'],
                          'Destination': fields['target'], 'RW': 'readonly' not in fields}
                 data['mounts'].append(mount)
-                if mount['Destination'] == '/etc/symphony/WORKFLOW.md': data['workflow'] = mount['Source']
+                if mount['Destination'] in ('/etc/symphony', '/etc/symphony/WORKFLOW.md'): data['workflow'] = mount['Source']
             elif item == '--volume':
                 parts = args[index + 1].split(':')
                 if len(parts) < 2: continue
@@ -91,7 +91,7 @@ elif cmd == 'run':
                          'Destination': parts[1], 'RW': parts[2:] != ['ro']}
                 if mount['Type'] == 'volume': mount['Name'] = parts[0]
                 data['mounts'].append(mount)
-                if mount['Destination'] == '/etc/symphony/WORKFLOW.md': data['workflow'] = mount['Source']
+                if mount['Destination'] in ('/etc/symphony', '/etc/symphony/WORKFLOW.md'): data['workflow'] = mount['Source']
         save(name, data)
     elif args[-1:] == ['--codex-config-snapshot'] and option('--entrypoint') == '/opt/symphony/elixir/bin/symphony':
         print(json.dumps({'schema': 1, 'mode': 'codex-config-snapshot', 'profile': 'trust-ro-v2',

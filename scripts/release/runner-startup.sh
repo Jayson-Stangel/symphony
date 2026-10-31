@@ -41,7 +41,7 @@ fi
   --tmpfs "/workspaces:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
   -e SYMPHONY_CONTAINERIZED=1 \
   -e SYMPHONY_GIT_TOKEN=credential-free-smoke-placeholder \
-  --mount "type=bind,src=$fixture/WORKFLOW.md,dst=/etc/symphony/WORKFLOW.md,readonly" \
+  --mount "type=bind,src=$fixture,dst=/etc/symphony,readonly" \
   "$image" >/dev/null
 docker exec -i "$name" python3 - "$provider" <<'PY'
 import json
