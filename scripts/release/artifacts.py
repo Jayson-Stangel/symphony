@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+import engine_version
+
 ARCHITECTURES = {"arm64": "linux/arm64", "x86_64": "linux/amd64"}
 PROVIDERS = ("codex", "claude")
 # The global architecture union stays compatible with strict schema1 validators.
@@ -67,6 +69,8 @@ def validate(value, require_bundle=True):
         for architecture, platform in ARCHITECTURES.items():
             runner = runners[provider][architecture]
             require(isinstance(runner, dict), "runner must be an object")
+            if "engine_version" in runner:
+                engine_version.validate(runner["engine_version"])
             require(runner.get("platform") == platform, "runner platform differs")
             if schema == 1:
                 require(runner.get("source_revision") == value["source_revision"], "runner revision differs")
@@ -139,6 +143,8 @@ def validate(value, require_bundle=True):
 
 
 def validate_component(runner, provider, architecture):
+    if "engine_version" in runner:
+        engine_version.validate(runner["engine_version"])
     require(provider in PROVIDERS and architecture in ARCHITECTURES, "unknown native component target")
     require(runner.get("platform") == ARCHITECTURES[architecture], "native component platform differs")
     require(REVISION.fullmatch(runner.get("source_revision", "")), "invalid original runner revision")

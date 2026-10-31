@@ -347,7 +347,7 @@ class CacheOverlapProcessTest(unittest.TestCase):
     def fixture(self, root, mode='success'):
         import json,sys
         source=root/'source';(source/'scripts/release').mkdir(parents=True);(source/'runner').mkdir();(source/'elixir').mkdir()
-        for name in ('build-candidate-runners.sh','build-runner-cached.sh','runner-cache-policy.sh'):
+        for name in ('build-candidate-runners.sh','build-runner-cached.sh','runner-cache-policy.sh','engine_version.py'):
             shutil.copyfile(ROOT/'scripts/release'/name,source/'scripts/release'/name)
             (source/'scripts/release'/name).chmod(0o755)
         (source/'runner/Dockerfile').write_text('FROM explicit-process-peer\n')
@@ -414,7 +414,7 @@ else:raise SystemExit('unexpected Docker peer command: '+repr(args))
 import os,sys,json
 from pathlib import Path
 args=sys.argv[1:]
-if args[0] in ('-','-c'):os.execv(sys.executable,[sys.executable,*args])
+if args[0] in ('-','-c') or Path(args[0]).name=='engine_version.py':os.execv(sys.executable,[sys.executable,*args])
 name=Path(args[0]).name;args=args[1:]
 def event(name,**extra):
  with open(os.environ['EVENTS'],'a') as f:f.write(json.dumps(dict(event=name,**extra))+'\\n')

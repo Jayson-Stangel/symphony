@@ -9,6 +9,51 @@ architecture, provider or mutable tag. `tool_versions` records versions observed
 inside the built image (Codex, or Claude CLI and `claude_sdk`, plus Git, Node and Playwright). The
 Dockerfile pins agent/browser packages; startup never installs agent packages.
 
+## Package, engine and source versions
+
+- **Package version**: `scripts/release/manager-version` identifies the manager
+  bundle and helper. A manager-only release may retain compatible original runners.
+- **Engine version**: the single literal `version` in `elixir/mix.exs` identifies
+  the engine application. `python3 scripts/release/engine_version.py [SOURCE_ROOT]`
+  reads and validates that declaration. New builds pass it as `SYMPHONY_VERSION`;
+  `record.py` requires the source declaration, compiled OTP application version and
+  `org.opencontainers.image.version` label to agree before emitting `engine_version`.
+- **Source revision**: the full Git commit identifies the exact source. Each runner
+  retains its own `source_revision`, image revision label and immutable image digest;
+  the manifest's top-level revision identifies the manager source.
+
+Increment the engine version before preparing a release that newly builds changed
+engine/application behavior, runtime configuration, bundled agent/browser/toolchain
+or behavioral workflow/skill inputs. Use a patch increment for compatible fixes,
+a minor increment for compatible features, and a major increment for incompatible
+engine changes. During unreleased development, multiple changes can share the next
+unpublished engine version. Before qualification, compare the selected engine
+inputs and version with the last shipped originals: changed engine inputs must not
+ship under the prior released engine version. Documentation, tests, build harness
+and manager-only changes that leave engine inputs unchanged do not require a bump.
+Source revisions still distinguish builds within one unreleased version.
+
+The correction after package 0.0.7 declares engine 0.0.5. Unequal package/engine
+versions are valid: a later manager package can reuse an engine with its original
+version, source and digest. Never renumber retained records, rebuild solely to
+match package numbers, rewrite 0.0.7 or relabel published images. Historical records
+without an engine-version field remain historical; new producers require it.
+
+For the **very next release after 0.0.7**, the release owner must verify the actual
+candidate for all four variants: Codex ARM64, Codex x86-64, Claude ARM64 and Claude
+x86-64. Record the exact candidate revision, application-reported engine version,
+image version/source labels, manifest engine/source fields and immutable manifest
+and config digests. Compare new builds with their own source declaration; compare
+reused engines with their verified originals, never the manager's current version.
+Check both packaged and external manifests. A dev merge, fixtures or a one-image
+local demonstration do not satisfy this four-variant release prerequisite.
+
+For an installed runner, inspect `release.json` (the package's version/source and
+`runners.PROVIDER.ARCHITECTURE` fields), then inspect that exact immutable image's
+`org.opencontainers.image.version` and `org.opencontainers.image.revision` labels.
+Use the record's digest to identify the shipped bytes; a version number alone
+cannot distinguish all source revisions or dependency resolutions.
+
 `artifacts.py` is a build-time Python utility, not a host installation dependency:
 
 ```sh
