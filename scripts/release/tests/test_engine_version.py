@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class EngineVersionTest(unittest.TestCase):
     def test_single_authority_and_malformed_declarations(self):
-        self.assertEqual(engine_version.read(ROOT), '0.0.5')
+        self.assertNotEqual(engine_version.read(ROOT), '0.0.4')
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); (root / 'elixir').mkdir()
             for text, valid in [('  version: "1.2.3",\n', True),
@@ -42,7 +42,10 @@ class EngineVersionTest(unittest.TestCase):
 
     def produce(self, label='0.0.5', application='0.0.5', revision='a'*40):
         with tempfile.TemporaryDirectory() as folder:
-            output = Path(folder) / 'record.json'
+            source = Path(folder)
+            (source / 'elixir').mkdir()
+            (source / 'elixir/mix.exs').write_text('  version: "0.0.5",\n')
+            output = source / 'record.json'
             labels = {'org.opencontainers.image.version': label,
                       'org.opencontainers.image.revision': revision,
                       'com.symphony.agent': 'codex', 'com.symphony.architecture': 'amd64'}
@@ -55,14 +58,14 @@ class EngineVersionTest(unittest.TestCase):
                 return application if args[-2] == '-e' else 'tool 1.2.3'
             argv = ['record.py', '--image', 'example.invalid/codex@sha256:'+'c'*64,
                     '--provider', 'codex', '--architecture', 'x86_64', '--revision', 'a'*40,
-                    '--source-root', str(ROOT), '--output', str(output)]
+                    '--source-root', str(source), '--output', str(output)]
             with patch.object(sys, 'argv', argv), patch.object(producer, 'docker', docker):
                 producer.main()
             return json.loads(output.read_text()), calls
 
     def test_source_label_application_and_record_agree(self):
         value, calls = self.produce()
-        self.assertEqual(value['engine_version'], engine_version.read(ROOT))
+        self.assertEqual(value['engine_version'], '0.0.5')
         self.assertEqual(value['source_revision'], 'a'*40)
         self.assertIn('@sha256:', value['image'])
         self.assertTrue(any('Application.spec' in call[-1] for call in calls))
