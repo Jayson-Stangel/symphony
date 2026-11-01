@@ -1515,10 +1515,18 @@ do {
             else { print("unhealthy") }
         case "idle": guard isBool(agent["draining"], true), integer(object(state["counts"])["running"]) == 0 else { exit(1) }
         case "workflow-mount":
-            guard args.count >= 3 else { fail("workflow mount check requires a path") }
+            guard args.count >= 5 else { fail("workflow mount check requires root, platform and layout") }
             guard let mounts = try json(data) as? [[String: Any]] else { exit(1) }
-            let found = mounts.filter { $0["Destination"] as? String == "/etc/symphony/WORKFLOW.md" }
-            guard found.count == 1, found[0]["Type"] as? String == "bind", isBool(found[0]["RW"], false), let source = found[0]["Source"] as? String, [args[2], "/host_mnt" + args[2]].contains(source) else { exit(1) }
+            let found = mounts.filter {
+                guard let destination = $0["Destination"] as? String else { return false }
+                return ["/", "/etc", "/etc/symphony"].contains(destination) || destination.hasPrefix("/etc/symphony/")
+            }
+            guard found.count == 1, let destination = found[0]["Destination"] as? String else { exit(1) }
+            let destinations = args[4] == "directory" ? ["/etc/symphony"] : ["/etc/symphony", "/etc/symphony/WORKFLOW.md"]
+            let expected = destination == "/etc/symphony" ? args[2] : args[2] + "/WORKFLOW.md"
+            let sources = args[3] == "Darwin" ? [expected, "/host_mnt" + expected] : [expected]
+            guard destinations.contains(destination), found[0]["Type"] as? String == "bind", isBool(found[0]["RW"], false),
+                  let source = found[0]["Source"] as? String, sources.contains(source) else { exit(1) }
         default: fail("unknown JSON predicate")
         }
     default: fail("unknown host helper operation: \(command)")

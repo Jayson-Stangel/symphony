@@ -135,6 +135,43 @@ Stop retains the qualified container, workspaces, state, logs and native login.
 Use the same development command for status/logs/recovery. Never stop or remove
 containers by a broad name filter.
 
+## Root workflow mounts and adoption
+
+Both providers mount the project root read-only at `/etc/symphony`; entrypoints
+continue to read `/etc/symphony/WORKFLOW.md`. The committed root file remains
+authoritative, including across editor atomic replacements. Codex also retains
+its read-only `/opt/symphony/project` launch-root mount. This exposes readable
+project contents, including `.git` and ignored/untracked files, to Claude as well
+as Codex. Read-only prevents writes through the bind; it does not provide secrecy
+or workspace-only read isolation. No parent, home or credential directory is
+added. The image's unused `/etc/symphony/claude` directory is hidden by the bind;
+provider code and plugins live under `/opt/symphony` and are unaffected.
+
+Claude's container UID/GID `11001:11001` must be able to traverse the project root
+and read `WORKFLOW.md`. A readable file inside a private `0700`/`0750` host directory
+may have worked through the prior single-file bind while failing through a
+directory bind on native Linux. Credential-free preflight checks the selected
+image and actual container identity before adoption drains existing work. If it
+refuses, provide access through your approved host permissions/ACL policy and
+retry; the manager does not change host permissions automatically.
+
+Existing single-file containers are adopted only through `symphony update --agent
+codex` or `symphony update --agent claude` (with the appropriate development wrapper
+for disposable tests). Even an unchanged selected image needs replacement: update
+drains active sessions before retaining the old container and starting the new
+layout. Ordinary `run` refuses an old layout. Ownership and rollback accept the
+exact prior read-only single-file layout; completed-candidate recovery requires
+the directory layout. An interrupted old-layout candidate with a retained backup
+must use `symphony update --rollback-runner` before retrying adoption.
+
+Codex preflight receives both project aliases. Its effective-policy qualification
+continues to require full read access and exercise allowed workspace writes and
+denied outside writes; restricted custom read policies fail with
+`sandbox_unsupported_policy`, rather than silently gaining a read alias. Custom
+write grants cannot override the read-only host binds. Fixture checks establish
+launcher/lifecycle behavior, not native Docker Desktop reload or authenticated
+session behavior.
+
 ## Refresh the development build
 
 Preserve local edits. Inspect status and divergence before integrating upstream:
