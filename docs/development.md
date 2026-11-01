@@ -1027,48 +1027,47 @@ provenance, actual cache restoration and net benefit including cold toolchain,
 dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
 requires diagnosis before further experiments.
 
-## Native Node headers in worker images
+## Native Node development toolchain in worker images
 
-The common image copies Node and matching `/usr/local/include/node` headers from
-the same pinned official Node stage. The supplied npm-bundled node-gyp launcher
-uses its upstream option parser before supplying `--nodedir=/usr/local` as a
-fallback for host-version builds. No npm configuration default, environment
-preload, shell initialization or global dependency-script permission is added.
-The original upstream entrypoint remains beside the launcher.
+The common image supplies pinned Node/npm, matching `/usr/local/include/node`
+headers, Python, make and the C/C++ build tools needed by ordinary native
+packages. Node-gyp itself is unmodified, including normal project-local copies.
+No project downloader, header override or preload is needed for the shipped
+Node version.
 
-Explicit `nodedir`, `devdir`, `target`, `tarball`, `dist-url`/`disturl`, engine
-settings and `NODEJS_ORG_MIRROR` bypass this fallback. Positional target versions
-are interpreted with upstream node-gyp's release parser. An alternate Node
-executable or mismatched header version also bypasses it. Explicit configuration
-keeps the pinned npm/node-gyp's own precedence and failure behavior; unusable
-sources or destinations are not silently redirected to the image headers.
+The image provides a read-only versioned header view under
+`/usr/local/share/symphony/node-gyp`: `installVersion` metadata and `include/node`
+pointing to the matching image-owned headers. Stock node-gyp discovers it through
+its usual native-HOME `.cache/node-gyp/VERSION` location. Trusted startup prepares
+only missing links before workers start; it never replaces existing caches,
+follows custom cache-parent symlinks, changes HOME or touches auth/config data.
+This also handles existing Claude full-HOME volumes that mask image directories.
+Explicit `XDG_CACHE_HOME` remains selected by stock node-gyp.
 
-For a new explicit header-tree selection, use the supported
-`npm_package_config_node_gyp_nodedir` environment variable or package.json
-`config.node_gyp_nodedir`. A direct `node-gyp --nodedir=/path` also remains
-supported. Legacy npm configuration forms retain their existing deprecation
-warnings; the image does not depend on that channel for its default. npm user,
-project, custom global, environment and CLI cache configuration is unchanged.
+Stock cache semantics apply. Explicit `nodedir` bypasses the cache; `devdir` and
+`target` select their normal locations. A valid current-version cache may satisfy
+`dist-url`, mirror or same-version target settings without fetching again.
+Explicit `tarball` forces upstream reinstall behavior, which can fail against the
+protected read-only default view; an owned writable devdir is the ordinary choice
+for intentional header acquisition. Invalid explicit destinations are not
+redirected to image headers. Npm user/project/custom-global/environment/CLI cache
+precedence is unchanged. Team images own unusual runtime versions and layouts.
 
-The fallback applies to the supplied tool. It does not rewrite project-installed
-node-gyp copies. Such tools retain their own header discovery/configuration;
-selecting the supplied headers for them is project-owned configuration. A
-provided-tool test does not establish ordinary defaults for those independent
-copies. Keep that coverage separate when assessing generic dependency support.
+Cold qualification uses a fresh project with no addon binary or warm user header
+cache. The immutable image header distribution is part of the supplied toolchain,
+not a warmed project artifact. The synthetic HOME gets the same trusted cache-view
+preparation before native app-server startup; actual protected commands must read
+it while native HOME/auth/config/header/view writes remain denied.
 
-`runner/node-smoke.sh IMAGE` verifies the executable/header versions and supplied
-node-gyp entrypoint in each finished provider image. The maintained
-`runner/codex-sandbox-smoke.sh IMAGE` runs `test_native_node.py --protected`
-through native Codex `command/exec`: cold dependency compilation/load, binary
-removal and rebuild/load, login/noninteractive/nested/lifecycle execution,
-explicit configuration and protected HOME/auth/config/header/symlink denials.
-The fixture project allows only its resolved synthetic dependency tarball and
-enforces strict script permission locally. No model, account, credentials,
-warm header cache, prebuilt addon or project toolchain override is used for the
-default-build test. Host effects and Docker-exec compilation do not establish
-protected worker proof. Claude's model-free image/startup checks remain distinct
-from authenticated tool execution; unavailable native provider/architecture
-proof remains open rather than being substituted with those checks or emulation.
+`runner/node-smoke.sh IMAGE` checks the toolchain/header view in a finished image.
+`python3 runner/test_node_headers.py` checks missing-only initialization, existing
+cache preservation and native-auth symlink escape rejection. The maintained
+`runner/codex-sandbox-smoke.sh IMAGE` runs `test_native_node.py --protected` through
+native Codex `command/exec`: cold compile/load, delete/rebuild/load, ordinary private
+node-gyp, login/nested/lifecycle, stock overrides/cache behavior and protected
+HOME/auth/config/image/header/symlink denials. Only the fixture dependency has
+lifecycle permission. Host effects, Docker-exec, emulation and Claude startup
+smoke remain distinct from actual protected provider/architecture acceptance.
 
 For rollout, first complete the reviewed PR's acceptance and authorized merge to
 `dev`, then qualify the final combined source for Codex/Claude on native Linux

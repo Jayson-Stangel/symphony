@@ -4,6 +4,7 @@ set -eu
 workflow=/etc/symphony/WORKFLOW.md
 [ -r "$workflow" ] || { echo "missing workflow at $workflow" >&2; exit 1; }
 install -d -m 700 /root/.codex /workspaces /var/lib/symphony
+python3 /usr/local/lib/symphony/node-headers.py --prepare-home /root
 install -d -m 700 /root/.codex/skills
 for skill in commit push pull linear land; do
   rm -rf "/root/.codex/skills/symphony-$skill"

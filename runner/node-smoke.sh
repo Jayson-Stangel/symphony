@@ -14,7 +14,34 @@ test "$(command -v npx)" = /usr/local/bin/npx
 node -e 'const assert = require("node:assert/strict"); assert.equal(process.versions.node.split(".")[0], "24"); assert.equal(process.version, "v24.22.1"); console.log(process.version, process.arch, process.execPath)'
 node -e 'const assert = require("node:assert/strict"); const fs = require("node:fs"); const h = fs.readFileSync("/usr/local/include/node/node_version.h", "utf8"); const v = ["MAJOR", "MINOR", "PATCH"].map(k => h.match(new RegExp("#define NODE_" + k + "_VERSION (\\d+)"))[1]).join("."); assert.equal(v, process.versions.node); console.log("Matching image-owned headers:", v)'
 node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js --version
-test -r /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp-upstream.js
+test ! -e /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp-upstream.js
+command -v cc
+command -v c++
+command -v make
+command -v python3
+python3 /usr/local/lib/symphony/node-headers.py --prepare-home "$HOME"
+python3 - <<'PY'
+import json, os, runpy, tempfile
+from pathlib import Path
+store = Path('/usr/local/share/symphony/node-gyp')
+manifest = json.loads((store / 'manifest.json').read_text())
+view = Path.home() / '.cache/node-gyp' / manifest['version']
+assert (view / 'include/node').resolve() == Path('/usr/local/include/node')
+assert int((view / 'installVersion').read_text()) == manifest['installVersion']
+assert not (store.stat().st_mode & 0o222)
+assert view.parent.stat().st_uid == os.getuid()
+prepare = runpy.run_path('/usr/local/lib/symphony/node-headers.py')['prepare_home']
+with tempfile.TemporaryDirectory() as temporary:
+    home = Path(temporary)
+    cache = home / '.cache/node-gyp'
+    cache.mkdir(parents=True)
+    previous = cache / '24.21.0'
+    previous.symlink_to('/operator-owned/previous-view')
+    assert prepare(home) == 'prepared'
+    assert previous.readlink() == Path('/operator-owned/previous-view')
+    assert (cache / manifest['version']).resolve() == store / manifest['version']
+print('Image-owned stock node-gyp header cache:', view)
+PY
 test "$(npm --version)" = 11.19.1
 test "$(npx --version)" = 11.19.1
 test "$(npm prefix --global)" = /usr/local

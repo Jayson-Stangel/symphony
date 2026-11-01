@@ -7,6 +7,9 @@ Host execution establishes semantics only; native image proof needs --protected.
 import io
 import json
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
 import tarfile
 import unittest
 
@@ -14,17 +17,25 @@ import test_npm_cache as cache
 
 
 class NativeNodeTests(cache.NpmCacheTests):
+    def prepare_home(self):
+        if cache.PROTECTED:
+            subprocess.run(['python3', '/usr/local/lib/symphony/node-headers.py',
+                            '--prepare-home', str(self.home)], check=True)
+
     def setUp(self):
         super().setUp()
         # A dependency tarball forces npm's actual dependency lifecycle, not a
         # project-only script or a prebuilt/JS substitute. Only this fixture is
         # allowed to run scripts by the fixture project's own package contract.
+        self.native_tarball()
+
+    def native_tarball(self, command='node-gyp'):
         with tarfile.open(self.tarball, 'w:gz') as archive:
             files = {
                 'package.json': json.dumps({'name': 'cold-fixture', 'version': '1.0.0',
                                            'main': 'build/Release/addon.node',
-                                           'scripts': {'install': 'node-gyp rebuild --verbose',
-                                                       'configure': 'node-gyp configure --verbose'}}),
+                                           'scripts': {'install': command + ' rebuild --verbose',
+                                                       'configure': command + ' configure --verbose'}}),
                 'binding.gyp': json.dumps({'targets': [{'target_name': 'addon', 'sources': ['addon.c']}]}),
                 'addon.c': '#include <node_api.h>\n'
                            'static napi_value init(napi_env env, napi_value exports) {\n'
@@ -42,7 +53,18 @@ class NativeNodeTests(cache.NpmCacheTests):
         path = directory / 'package.json'
         value = json.loads(path.read_text())
         value['allowScripts'] = {'file:' + str(self.tarball): True}
+        value['scripts']['build'] = (
+            'node -e "const v=require(\'cold-fixture\');if(v!==741)process.exit(1);'
+            'require(\'fs\').writeSync(1,\'Native addon loaded: \'+v+\'\\n\')"')
         path.write_text(json.dumps(value))
+
+    def header_view(self):
+        manifest = json.loads(Path('/usr/local/share/symphony/node-gyp/manifest.json').read_text())
+        view = self.home / '.cache/node-gyp' / manifest['version']
+        self.assertTrue(view.is_symlink())
+        self.assertEqual((view / 'include/node').resolve(), Path('/usr/local/include/node'))
+        self.assertEqual(int((view / 'installVersion').read_text()), manifest['installVersion'])
+        return view
 
     def run_command(self, script, cwd=None, env=None, login=False, success=True):
         return super().run_command(script, cwd=cwd,
@@ -55,7 +77,9 @@ class NativeNodeTests(cache.NpmCacheTests):
                          'prefix:process.config.variables.node_prefix,'
                          'discovery:process.config.variables.use_prefix_to_find_headers})"; npm --version')
         self.assertFalse((self.project / 'node_modules').exists())
-        self.assertFalse((self.home / '.cache').exists())
+        view = self.header_view() if cache.PROTECTED else None
+        if view:
+            self.run_command('test -r ' + shlex.quote(str(view / 'installVersion')))
         # Existing inherited cache checks also cover login/noninteractive/nested
         # clone/install/lifecycle; now they consume this genuine native addon.
         self.test_cold_install_lifecycle_login_nested_clone_and_pruned_recovery()
@@ -67,10 +91,22 @@ class NativeNodeTests(cache.NpmCacheTests):
         self.run_command('node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js '
                          'rebuild --verbose; node -e \"if(require(\'./build/Release/addon.node\')!==741)process.exit(1)\"',
                          cwd=binary.parents[2])
-        self.assertFalse((self.home / '.cache').exists())
-        self.run_command('test ! -e "$HOME/.npm"; test ! -e "$HOME/.cache/node-gyp"')
+        self.run_command('test ! -e "$HOME/.npm"')
         makefile = (binary.parents[1] / 'addon.target.mk').read_text()
-        self.assertIn('/usr/local/include/node', makefile)
+        if view:
+            self.assertIn(str(view / 'include/node'), makefile)
+            self.header_view()
+
+    def test_private_node_gyp_uses_supplied_headers(self):
+        # This ordinary private consumer is a complete stock copy with sibling
+        # dependencies. No private source or header configuration is patched.
+        private = self.root / 'private/node_modules'
+        shutil.copytree('/usr/local/lib/node_modules/npm/node_modules', private)
+        gyp = private / 'node-gyp/bin/node-gyp.js'
+        self.assertEqual(gyp.read_bytes(), Path(
+            '/usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js').read_bytes())
+        self.native_tarball('node ' + shlex.quote(str(gyp)))
+        self.test_native_cold_rebuild_and_nested_lifecycle()
 
     def test_node_gyp_explicit_nodedir_is_consumed(self):
         # Observe the real compiler error/path: npm config output alone cannot
@@ -123,20 +159,29 @@ class NativeNodeTests(cache.NpmCacheTests):
         # The image default remains available after removing explicit settings.
         self.run_command('npm rebuild cold-fixture --offline --foreground-scripts; npm run build')
 
-    def test_explicit_header_source_is_not_bypassed(self):
+    def test_stock_cache_hits_and_forced_source_behavior(self):
         self.run_command('npm install --offline --no-audit --no-fund')
         for key, value in (
-                ('npm_package_config_node_gyp_tarball', str(self.root / 'missing-headers.tar.gz')),
                 ('npm_package_config_node_gyp_dist_url', 'https://invalid.example'),
                 ('NODEJS_ORG_MIRROR', 'https://invalid.example'),
                 ('npm_package_config_node_gyp_target', '24.22.1')):
             with self.subTest(configuration=key):
-                code, stdout, stderr = self.run_command(
-                    'npm rebuild cold-fixture --offline --foreground-scripts',
-                    env={key: value}, success=False)
-                self.assertNotEqual(code, 0,
-                                    'explicit header source was bypassed: ' + key + '\n' + stdout + stderr)
-                self.assertIn(str(self.home / '.cache'), stdout + stderr)
+                # Upstream ensure accepts the valid image-owned cache. A URL
+                # choice is not a promise to refetch already installed headers.
+                self.run_command('npm rebuild cold-fixture --offline --foreground-scripts; npm run build',
+                                 env={key: value})
+        missing = str(self.root / 'missing-headers.tar.gz')
+        scratch = self.root / 'header-temp'
+        scratch.mkdir()
+        view = self.header_view()
+        marker = (view / 'installVersion').read_bytes()
+        code, _, _ = self.run_command(
+            'npm rebuild cold-fixture --offline --foreground-scripts',
+            env={'npm_package_config_node_gyp_tarball': missing, 'TMPDIR': str(scratch)},
+            success=False)
+        self.assertNotEqual(code, 0)  # tarball forces stock reinstall, denied here
+        self.assertEqual((view / 'installVersion').read_bytes(), marker)
+        self.header_view()
         # Independently exercise the cache-destination guard, without a source
         # selector that could mask removal of the devdir guard.
         bad = self.root / 'file-devdir'
@@ -148,9 +193,6 @@ class NativeNodeTests(cache.NpmCacheTests):
         self.assertIn(str(bad), stdout + stderr)
         self.assertEqual(bad.read_text(), 'unrelated data')
         # With a usable explicit devdir, the actual missing source is diagnosed.
-        missing = str(self.root / 'missing-headers.tar.gz')
-        scratch = self.root / 'header-temp'
-        scratch.mkdir()
         code, stdout, stderr = self.run_command(
             'npm rebuild cold-fixture --offline --foreground-scripts',
             env={'npm_package_config_node_gyp_devdir': str(self.root / 'explicit-header-cache'),
@@ -167,13 +209,19 @@ class NativeNodeTests(cache.NpmCacheTests):
         self.assertIn(b'NODE_H_', original_header)
         config = self.home / '.npmrc'
         config.write_text('# synthetic configuration canary\n')
+        view = self.header_view()
+        marker = (view / 'installVersion').read_bytes()
         for script in ('printf forbidden > "$HOME/.npmrc"',
                        'mkdir "$HOME/forbidden"',
-                       'printf forbidden > /usr/local/include/node/node.h'):
+                       'printf forbidden > /usr/local/include/node/node.h',
+                       'printf forbidden > ' + shlex.quote(str(view / 'installVersion')),
+                       'rm ' + shlex.quote(str(view))):
             code, _, _ = self.run_command(script, success=False)
             self.assertNotEqual(code, 0)
         self.assertEqual(config.read_text(), '# synthetic configuration canary\n')
         self.assertEqual(header.read_bytes(), original_header)
+        self.assertEqual((view / 'installVersion').read_bytes(), marker)
+        self.header_view()
 
 
 if __name__ == '__main__':
