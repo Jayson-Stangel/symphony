@@ -345,6 +345,22 @@ def main():
     def mount_snapshot(name):
         return sorted(json.loads(inspect(name, "{{json .Mounts}}")), key=lambda m: json.dumps(m, sort_keys=True))
 
+    def workflow_mounts(mounts, project, allow_legacy=True):
+        # Compare preserved resources across adoption while checking the intentional
+        # workflow-layout change independently. Old package baselines retain their
+        # original single-file bind until an explicit runner update.
+        workflow = [m for m in mounts if m["Destination"] in ("/", "/etc", "/etc/symphony")
+                    or m["Destination"].startswith("/etc/symphony/")]
+        assert len(workflow) == 1
+        mount = workflow[0]
+        directory = mount["Destination"] == "/etc/symphony"
+        assert directory or (allow_legacy and mount["Destination"] == "/etc/symphony/WORKFLOW.md")
+        expected = str(project) if directory else str(project / "WORKFLOW.md")
+        assert mount["Type"] == "bind" and mount["RW"] is False
+        assert mount["Source"] in (expected, "/host_mnt" + expected)
+        canonical = dict(Type="bind", Destination="/etc/symphony", Source=str(project), RW=False)
+        return sorted([canonical if m is mount else m for m in mounts], key=lambda m: json.dumps(m, sort_keys=True))
+
     def preserved(name):
         # Read actual retained volumes without starting a stopped listener or
         # changing its state. The throwaway utility process uses the real image.
@@ -562,8 +578,9 @@ def main():
         second_before = preserved(names[1]); second_mount_before = mount_snapshot(names[1])
         second_id = inspect(names[1], "{{.Id}}")
         mount_before = mount_snapshot(name)
-        assert {m["Destination"] for m in mount_before} >= {"/workspaces", "/var/lib/symphony", "/etc/symphony/WORKFLOW.md", "/home/claude" if primary_agent == "claude" else "/root/.codex"}
+        assert {m["Destination"] for m in mount_before} >= {"/workspaces", "/var/lib/symphony", "/home/claude" if primary_agent == "claude" else "/root/.codex"}
         assert all(m["Type"] == "volume" for m in mount_before if m["Destination"] in ("/workspaces", "/var/lib/symphony"))
+        workflow_before = workflow_mounts(mount_before, repo, allow_legacy=not current_only)
         canaries = [root / "config/projects" / (i + ".env") for i in identifiers]
         canaries += [r / "WORKFLOW.md" for r in repositories]
         canaries += [r / filename for r in repositories for filename in ("tracked-project-canary", "untracked-project-canary")]
@@ -571,7 +588,7 @@ def main():
         hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries}
         def unchanged():
             assert preserved(name) == before
-            assert mount_snapshot(name) == mount_before
+            assert workflow_mounts(mount_snapshot(name), repo) == workflow_before
             assert inspect(names[1], "{{.Id}}") == second_id
             assert preserved(names[1]) == second_before and mount_snapshot(names[1]) == second_mount_before
             assert auth_canaries() == auth_before
@@ -691,8 +708,15 @@ def main():
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
                 client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
-                client_run([str(command), 'run', '--agent', selected_agent, '--port', str(selected_port)], cwd=selected_repo)
-                state(selected_port); unchanged()
+                legacy_layout = any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in mount_snapshot(selected_name))
+                restarted = client_run([str(command), 'run', '--agent', selected_agent, '--port', str(selected_port)],
+                                       cwd=selected_repo, expected=1 if legacy_layout else 0)
+                if legacy_layout:
+                    assert 'adopt through symphony update' in restarted.stdout
+                    assert inspect(selected_name, '{{.State.Running}}') == 'false'
+                else:
+                    state(selected_port)
+                unchanged()
                 assert inspect(selected_name, '{{.Image}}') == runner_snapshot[selected_name][1]
                 assert [path.read_bytes() for path in metadata] == metadata_snapshot
             for selected_repo, selected_name in zip(repositories, names):
@@ -700,7 +724,7 @@ def main():
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
             unchanged()
             result['passed'] = True
-            record('actual old90 to strict schema1 bridge to schema2 manager, rollback to bridge, checksum refusal, retry and restart preserve both unlabeled legacy projects and all canaries' if legacy_chain else 'two actual manager sources with exact unchanged runners: activation, rollback, checksum refusal, retry and restart preserve both projects and all canaries; legacy three-source chain not requested')
+            record('actual old90 to strict schema1 bridge to schema2 manager, rollback to bridge, checksum refusal, retry and layout-appropriate restart/refusal preserve both unlabeled legacy projects and all canaries' if legacy_chain else 'two actual manager sources with exact unchanged runners: activation, rollback, checksum refusal, retry and layout-appropriate restart/refusal preserve both projects and all canaries; legacy three-source chain not requested')
             return
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
@@ -741,6 +765,7 @@ def main():
         state(port); unchanged()
         assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
+        workflow_mounts(mount_snapshot(name), repo, allow_legacy=False)
         record("real selected-runner update after post-create failure, pinned retry and unchanged second-project selected image")
         # Explicit --agent transitions preserve the updater's existing policy:
         # a stopped source may become a running selected candidate; rollback
@@ -754,6 +779,7 @@ def main():
         state(port); unchanged()
         assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
         assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
+        workflow_mounts(mount_snapshot(name), repo, allow_legacy=False)
         record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
         corrupt = json.loads(second_manifest.read_text()); corrupt["bundles"]["linux_x86_64"]["sha256"] = "0" * 64

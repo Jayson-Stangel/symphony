@@ -192,16 +192,20 @@ try:
             docker("exec", name, "node", "-e", "const {chromium}=require('/opt/symphony/browser/node_modules/playwright'); (async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1280,height:900}});await page.goto('http://127.0.0.1:4010/',{waitUntil:'networkidle'});await page.screenshot({path:'/tmp/package-dashboard.png',fullPage:true});console.log(await page.title());await browser.close();})().catch(error=>{console.error(error);process.exit(1)});")
             docker("cp", name + ":/tmp/package-dashboard.png", str(proof / "dashboard.png"))
         mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", name))
-        assert len(mounts) == 4
         expected_volumes = {"/root/.codex": auth_volume, "/workspaces": name + "-workspaces", "/var/lib/symphony": name + "-state"}
-        assert {value["Destination"] for value in mounts} == set(expected_volumes) | {"/etc/symphony/WORKFLOW.md"}
+        workflow_mounts = [value for value in mounts if value["Destination"].startswith("/etc/symphony")]
+        assert len(workflow_mounts) == 1
         for value in mounts:
-            if value["Destination"] == "/etc/symphony/WORKFLOW.md":
-                expected = str(project / "WORKFLOW.md")
+            destination = value["Destination"]
+            if destination in ("/etc/symphony", "/etc/symphony/WORKFLOW.md", "/opt/symphony/project"):
+                expected = str(project / "WORKFLOW.md") if destination.endswith("/WORKFLOW.md") else str(project)
                 assert value["Type"] == "bind" and value["RW"] is False
                 assert value["Source"] in (expected, "/host_mnt" + expected)
+            elif destination == "/root/.codex/config.toml":
+                assert value["Type"] == "bind" and value["RW"] is False
             else:
-                assert value["Type"] == "volume" and value["Name"] == expected_volumes[value["Destination"]]
+                assert value["Type"] == "volume" and value["Name"] == expected_volumes[destination]
+        assert set(expected_volumes) <= {value["Destination"] for value in mounts}
         (proof / f"mounts-{index}.json").write_text(json.dumps(mounts, indent=2))
     assert identities[0] != identities[1]
     names = [prefix + "-" + identity for identity in identities]
@@ -229,9 +233,18 @@ try:
     launch("runner", "stop")
     launch("update", "--agent", "codex")
     assert current_version() == manifests[1]["version"]
+    adopted = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[0]))
+    assert {m["Destination"] for m in adopted} >= {"/etc/symphony", "/opt/symphony/project", "/root/.codex/config.toml"}
+    assert not any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in adopted)
     assert state(ports[0]) and preservation() == canary
     launch("runner", "stop", project=1)
-    launch("run", "--port", str(ports[1]), project=1); state(ports[1])
+    second_mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[1]))
+    if any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in second_mounts):
+        refusal = launch("run", "--port", str(ports[1]), project=1, expected=1)
+        assert "adopt through symphony update" in refusal
+        assert docker("inspect", "--format", "{{.State.Running}}", names[1]) == "false"
+    else:
+        launch("run", "--port", str(ports[1]), project=1); state(ports[1])
     assert docker("inspect", "--format", "{{.Image}}", names[1]) != docker("inspect", "--format", "{{.Image}}", names[0])
     launch("update", "--rollback-release", "--agent", "codex")
     assert current_version() == manifests[0]["version"]

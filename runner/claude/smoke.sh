@@ -34,7 +34,7 @@ runner_claude_run docker -d --name "$name" --network none \
   --tmpfs /var/lib/symphony:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   --tmpfs /workspaces:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   -e SYMPHONY_GIT_TOKEN=credential-free-smoke-placeholder \
-  --mount "type=bind,src=$fixture/WORKFLOW.md,dst=/etc/symphony/WORKFLOW.md,readonly" \
+  --mount "type=bind,src=$fixture,dst=/etc/symphony,readonly" \
   --mount "type=bind,src=$root/runner/claude/test,dst=/opt/symphony/claude/test,readonly" \
   "$image" >/dev/null
 [ "$(docker exec "$name" id -u)" = 11001 ]

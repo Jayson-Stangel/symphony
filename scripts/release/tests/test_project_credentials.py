@@ -202,7 +202,15 @@ fixture_runtime() {
   case "$1" in
     image) printf fixture-image ;;
     info) printf '%s\\n' 'name=seccomp,profile=builtin' ;;
-    run) case " $* " in *' --entrypoint /usr/bin/stat '*) id -u ;; *) return 94 ;; esac ;;
+    run) case " $* " in
+      *' --entrypoint /usr/bin/stat '*) id -u ;;
+      *'test -f /etc/symphony/WORKFLOW.md && test -r /etc/symphony/WORKFLOW.md'*)
+        case " $* " in *' --env '*|*' --env-file '*|*canary*) return 97 ;; esac
+        case " $* " in *' --user 11001:11001 '*) : ;; *) return 98 ;; esac
+        case " $* " in *" --mount type=bind,source=$root,target=/etc/symphony,readonly "*) : ;; *) return 99 ;; esac
+        printf checked > "$root/access-checked" ;;
+      *) return 94 ;;
+    esac ;;
   esac
 }
 ensure_claude_auth_volume() { :; }
@@ -229,6 +237,7 @@ runner_codex_run() {
 runner_claude_run() { fixture_launch "$@"; }
 runner_start "$root" 4010 "$FIXTURE_PROVIDER"
 [ "$(cat "$root/launch-checked")" = checked ]
+if [ "$FIXTURE_PROVIDER" = claude ]; then [ "$(cat "$root/access-checked")" = checked ]; fi
 ''', 'LINEAR_API_KEY=linear-canary\nGITHUB_TOKEN=git-canary\n',
                         {'FIXTURE_PROVIDER': provider, **({} if file else {'LINEAR_API_KEY': 'linear-canary', 'GITHUB_TOKEN': 'git-canary'})}, file=file)
                     self.assertEqual(result.returncode, 0, result.stderr)
