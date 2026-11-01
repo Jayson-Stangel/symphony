@@ -41,12 +41,13 @@ class NativeNodeTests(cache.NpmCacheTests):
         super().package(directory)
         path = directory / 'package.json'
         value = json.loads(path.read_text())
-        value['allowScripts'] = {'cold-fixture': True}
+        value['allowScripts'] = {'file:' + str(self.tarball): True}
         path.write_text(json.dumps(value))
 
     def run_command(self, script, cwd=None, env=None, login=False, success=True):
         return super().run_command(script, cwd=cwd,
-                                   env={'npm_config_foreground_scripts': 'true', **(env or {})},
+                                   env={'npm_config_foreground_scripts': 'true',
+                                        'npm_config_strict_allow_scripts': 'true', **(env or {})},
                                    login=login, success=success)
 
     def test_native_cold_rebuild_and_nested_lifecycle(self):
@@ -61,7 +62,7 @@ class NativeNodeTests(cache.NpmCacheTests):
         binary = self.project / 'node_modules/cold-fixture/build/Release/addon.node'
         self.assertTrue(binary.is_file())
         binary.unlink()
-        self.run_command('npm rebuild --offline --foreground-scripts; npm run build', login=True)
+        self.run_command('npm rebuild cold-fixture --offline --foreground-scripts; npm run build', login=True)
         self.assertTrue(binary.is_file())
         self.run_command('node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js '
                          'rebuild --verbose; node -e \"if(require(\'./build/Release/addon.node\')!==741)process.exit(1)\"',
@@ -79,13 +80,13 @@ class NativeNodeTests(cache.NpmCacheTests):
                     'npm_package_config_node_gyp_nodedir'):
             bad = str(self.root / key)
             code, stdout, stderr = self.run_command(
-                'npm rebuild --offline --foreground-scripts',
+                'npm rebuild cold-fixture --offline --foreground-scripts',
                 env={key: bad}, success=False)
             self.assertNotEqual(code, 0)
             self.assertIn(bad, stdout + stderr)
         newer = str(self.root / 'newer-setting')
         code, stdout, stderr = self.run_command(
-            'npm rebuild --offline --foreground-scripts',
+            'npm rebuild cold-fixture --offline --foreground-scripts',
             env={'npm_config_nodedir': '/usr/local',
                  'npm_package_config_node_gyp_nodedir': newer}, success=False)
         self.assertNotEqual(code, 0)
@@ -101,7 +102,7 @@ class NativeNodeTests(cache.NpmCacheTests):
             location.write_text('nodedir=' + chosen + '\n')
             env = {'NPM_CONFIG_GLOBALCONFIG': str(location)} if location.name == 'global.npmrc' else {}
             code, stdout, stderr = self.run_command(
-                'npm rebuild --offline --foreground-scripts', env=env, success=False)
+                'npm rebuild cold-fixture --offline --foreground-scripts', env=env, success=False)
             self.assertNotEqual(code, 0)
             self.assertIn(chosen, stdout + stderr)
             location.unlink()
@@ -115,12 +116,26 @@ class NativeNodeTests(cache.NpmCacheTests):
         del package['config']
         package_path.write_text(json.dumps(package))
         code, stdout, stderr = self.run_command(
-            'npm rebuild --offline --foreground-scripts',
+            'npm rebuild cold-fixture --offline --foreground-scripts',
             env={'npm_package_config_node_gyp_target': '0.0.1'}, success=False)
         self.assertNotEqual(code, 0)
         self.assertIn('0.0.1', stdout + stderr)
         # The image default remains available after removing explicit settings.
-        self.run_command('npm rebuild --offline --foreground-scripts; npm run build')
+        self.run_command('npm rebuild cold-fixture --offline --foreground-scripts; npm run build')
+
+    def test_explicit_header_source_is_not_bypassed(self):
+        self.run_command('npm install --offline --no-audit --no-fund')
+        for key, value in (
+                ('npm_package_config_node_gyp_tarball', str(self.root / 'missing-headers.tar.gz')),
+                ('npm_package_config_node_gyp_dist_url', 'https://invalid.example'),
+                ('NODEJS_ORG_MIRROR', 'https://invalid.example')):
+            with self.subTest(configuration=key):
+                code, stdout, stderr = self.run_command(
+                    'npm rebuild cold-fixture --offline --foreground-scripts',
+                    env={key: value, 'npm_package_config_node_gyp_devdir':
+                         str(self.root / 'explicit-header-cache')}, success=False)
+                self.assertNotEqual(code, 0,
+                                    'explicit header source was bypassed: ' + key + '\n' + stdout + stderr)
 
     @unittest.skipUnless(cache.PROTECTED, 'requires actual protected command boundary')
     def test_home_config_and_image_headers_remain_denied(self):

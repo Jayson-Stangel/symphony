@@ -988,57 +988,52 @@ requires diagnosis before further experiments.
 
 ## Native Node headers in worker images
 
-The common image builds the checksum-pinned Node 24.22.1 source with upstream
-`--prefix=/usr/local --use-prefix-to-find-headers` and copies its executable and
-matching `/usr/local/include/node` headers. npm stays from the pinned official
-Node image. This adds a bounded two-job native compilation to the shared image
-build; provider builds can reuse eligible cached layers of that stage. Parallel
-cold jobs may each compile it. Qualification must measure cold build
-cost on each native architecture. Manager-host support is a separate matrix.
+The common image copies Node and matching `/usr/local/include/node` headers from
+the same pinned official Node stage. The supplied npm-bundled node-gyp launcher
+uses its upstream option parser before supplying `--nodedir=/usr/local` as a
+fallback for host-version builds. No npm configuration default, environment
+preload, shell initialization or global dependency-script permission is added.
+The original upstream entrypoint remains beside the launcher.
 
-The official binary disables prefix discovery. Merely copying headers therefore
-leaves node-gyp trying to download/extract into protected HOME. A global npm
-`nodedir` default uses npm 11's deprecated arbitrary-config channel; a modern
-package-config environment default outranks explicit legacy configuration. Neither
-is an appropriate image default. Building with Node's supported discovery option
-works for independently installed node-gyp copies without shell wrappers,
-preloads, a node-gyp fork or npm configuration-precedence emulation.
+Explicit `nodedir`, `devdir`, `target`, `tarball`, `dist-url`/`disturl`, engine
+settings and `NODEJS_ORG_MIRROR` bypass this fallback. Positional target versions
+are interpreted with upstream node-gyp's release parser. An alternate Node
+executable or mismatched header version also bypasses it. Explicit configuration
+keeps the pinned npm/node-gyp's own precedence and failure behavior; unusable
+sources or destinations are not silently redirected to the image headers.
 
-node-gyp resolves explicit `nodedir` before prefix discovery. Use its supported
-`npm_package_config_node_gyp_nodedir` environment variable, package.json
-`config.node_gyp_nodedir`, or direct `node-gyp --nodedir=/path` to select another
-header tree. Legacy `npm_config_nodedir` and npmrc settings retain the pinned
-npm/node-gyp's own behavior and deprecation warnings; new configuration should use
-the supported package-config channel. node-gyp's package-config environment form
-outranks its legacy environment form. An unusable explicit header tree fails with
-the selected path; the image does not redirect it to its own headers.
+For a new explicit header-tree selection, use the supported
+`npm_package_config_node_gyp_nodedir` environment variable or package.json
+`config.node_gyp_nodedir`. A direct `node-gyp --nodedir=/path` also remains
+supported. Legacy npm configuration forms retain their existing deprecation
+warnings; the image does not depend on that channel for its default. npm user,
+project, custom global, environment and CLI cache configuration is unchanged.
 
-`devdir` selects node-gyp's download cache; it does not force downloaded headers
-when matching prefix headers exist. Same-version `tarball`/`dist-url` settings
-also do not bypass upstream prefix discovery. For another header source, use an
-explicit `nodedir`; a different Node `target` takes the upstream download path
-and still needs its ordinary network/cache permissions. This image grants none.
-HOME, auth/config, npm cache precedence, protected paths and project ownership of
-lifecycle-script permission remain unchanged. The native fixture permits only
-its synthetic `cold-fixture` dependency's scripts in its own package.json.
+The fallback applies to the supplied tool. It does not rewrite project-installed
+node-gyp copies. Such tools retain their own header discovery/configuration;
+selecting the supplied headers for them is project-owned configuration. A
+provided-tool test does not establish ordinary defaults for those independent
+copies. Keep that coverage separate when assessing generic dependency support.
 
-`runner/node-smoke.sh IMAGE` verifies the actual executable/header version and
-prefix discovery in each finished provider image. `runner/codex-sandbox-smoke.sh
-IMAGE` additionally runs `runner/test_native_node.py --protected` through native
-Codex `command/exec`: cold dependency compilation/load, binary deletion and
-rebuild/load, login/noninteractive/nested/lifecycle execution, explicit header
-configuration and protected HOME/config/header/symlink denial checks. No model,
-account, credentials, cached headers or prebuilt addon are used. Host-only runs
-and Docker-exec compilation do not establish protected worker proof. Claude's
-model-free image/startup checks remain distinct from its authenticated tool
-execution; report unavailable native protected-provider/architecture evidence
-as open rather than substituting those checks or emulation.
+`runner/node-smoke.sh IMAGE` verifies the executable/header versions and supplied
+node-gyp entrypoint in each finished provider image. The maintained
+`runner/codex-sandbox-smoke.sh IMAGE` runs `test_native_node.py --protected`
+through native Codex `command/exec`: cold dependency compilation/load, binary
+removal and rebuild/load, login/noninteractive/nested/lifecycle execution,
+explicit configuration and protected HOME/auth/config/header/symlink denials.
+The fixture project allows only its resolved synthetic dependency tarball and
+enforces strict script permission locally. No model, account, credentials,
+warm header cache, prebuilt addon or project toolchain override is used for the
+default-build test. Host effects and Docker-exec compilation do not establish
+protected worker proof. Claude's model-free image/startup checks remain distinct
+from authenticated tool execution; unavailable native provider/architecture
+proof remains open rather than being substituted with those checks or emulation.
 
 For rollout, first complete the reviewed PR's acceptance and authorized merge to
-`dev`, then build and qualify the final combined source for Codex/Claude on native
-Linux amd64/arm64. Record immutable IDs/digests and application/image/manifest
-version identities from those final images; earlier candidate receipts do not
-cover this toolchain change. Exact-scope promotion, publication and stable rollout
-need their separate operator approvals. Only the installed `symphony update`
-command may adopt a published stable candidate for explicitly approved targets.
-Never copy this development executable or headers into an installed runtime.
+`dev`, then qualify the final combined source for Codex/Claude on native Linux
+amd64/arm64. Record immutable IDs/digests and application/image/manifest version
+identities from those final images. Earlier receipts do not cover changed image
+inputs. Keep Linux x86-64/macOS ARM64 manager-host support separate. Exact-scope
+promotion, publication and stable rollout need their separate operator approvals;
+only the installed `symphony update` may adopt the published stable candidate for
+explicitly approved targets. Never copy development assets into a stable runtime.
