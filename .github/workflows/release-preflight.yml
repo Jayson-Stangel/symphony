@@ -41,7 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' elixir/mix.exs | head -n1)
+          version=$(python3 scripts/release/engine_version.py)
           test -n "$version"
           python3 scripts/release/manager_version.py
           python3 scripts/release/manager_version.py --schema

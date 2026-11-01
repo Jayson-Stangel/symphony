@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # New suites conservatively run on each native qualification host.
 PORTABLE = {
     'test_artifacts.py',
+    'test_engine_version.py',
     'test_candidate_build.py',
     'test_candidate_cache.py',
     'test_component_discovery.py',

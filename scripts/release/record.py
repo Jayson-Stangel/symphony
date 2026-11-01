@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import engine_version
+
 
 def docker(*args):
     return subprocess.check_output(["docker", *args], text=True, timeout=120).strip()
@@ -41,6 +43,17 @@ def main():
     if (config["Architecture"] != expected or labels.get("org.opencontainers.image.revision") != args.revision
             or labels.get("com.symphony.architecture") != expected or labels.get("com.symphony.agent") != args.provider):
         parser.error("image provider/architecture/revision differs")
+    # New records bind source, finished image label and compiled OTP application.
+    # Reused records bypass this producer and keep their original identity.
+    declared = engine_version.read(args.source_root)
+    observed = engine_version.validate(labels.get("org.opencontainers.image.version"))
+    if observed != declared:
+        parser.error("image engine version differs from source declaration")
+    application = docker("run", "--rm", "--network", "none", "--entrypoint", "elixir", args.image,
+                         "-pa", "/opt/symphony/elixir/_build/prod/lib/symphony_elixir/ebin",
+                         "-e", "Application.load(:symphony_elixir); IO.write(Application.spec(:symphony_elixir, :vsn))")
+    if application != declared:
+        parser.error("compiled application engine version differs from source declaration")
     tools = {}
     for tool in ("git", "node", "playwright"):
         tools[tool] = docker("run", "--rm", "--network", "none", "--entrypoint", tool, args.image, "--version")
