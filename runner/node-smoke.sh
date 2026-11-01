@@ -7,12 +7,18 @@ if [ "$#" -eq 0 ]; then
 fi
 for image in "$@"; do
   echo "Checking Node/npm in $image"
-  docker run --rm -i --network none --entrypoint sh "$image" -eu <<'SH'
+  # Reference harness images share the runtime pin, but do not ship the worker
+  # development toolchain. Require the full toolchain for actual provider images.
+  provider=$(docker image inspect --format '{{index .Config.Labels "com.symphony.agent"}}' "$image")
+  toolchain=false
+  case "$provider" in codex|claude) toolchain=true ;; esac
+  docker run --rm -i --network none -e "SYMPHONY_CHECK_TOOLCHAIN=$toolchain" --entrypoint sh "$image" -eu <<'SH'
 test "$(command -v node)" = /usr/local/bin/node
 test "$(command -v npm)" = /usr/local/bin/npm
 test "$(command -v npx)" = /usr/local/bin/npx
 node -e 'const assert = require("node:assert/strict"); assert.equal(process.versions.node.split(".")[0], "24"); assert.equal(process.version, "v24.22.1"); console.log(process.version, process.arch, process.execPath)'
 node -e 'const assert = require("node:assert/strict"); const fs = require("node:fs"); const h = fs.readFileSync("/usr/local/include/node/node_version.h", "utf8"); const v = ["MAJOR", "MINOR", "PATCH"].map(k => h.match(new RegExp("#define NODE_" + k + "_VERSION (\\d+)"))[1]).join("."); assert.equal(v, process.versions.node); console.log("Matching image-owned headers:", v)'
+if [ "$SYMPHONY_CHECK_TOOLCHAIN" = true ]; then
 node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js --version
 test ! -e /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp-upstream.js
 command -v cc
@@ -42,6 +48,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert (cache / manifest['version']).resolve() == store / manifest['version']
 print('Image-owned stock node-gyp header cache:', view)
 PY
+fi
 test "$(npm --version)" = 11.19.1
 test "$(npx --version)" = 11.19.1
 test "$(npm prefix --global)" = /usr/local
