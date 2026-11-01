@@ -149,10 +149,13 @@ class NativeNodeTests(cache.NpmCacheTests):
         self.assertEqual(bad.read_text(), 'unrelated data')
         # With a usable explicit devdir, the actual missing source is diagnosed.
         missing = str(self.root / 'missing-headers.tar.gz')
+        scratch = self.root / 'header-temp'
+        scratch.mkdir()
         code, stdout, stderr = self.run_command(
             'npm rebuild cold-fixture --offline --foreground-scripts',
             env={'npm_package_config_node_gyp_devdir': str(self.root / 'explicit-header-cache'),
-                 'npm_package_config_node_gyp_tarball': missing}, success=False)
+                 'npm_package_config_node_gyp_tarball': missing,
+                 'TMPDIR': str(scratch)}, success=False)
         self.assertNotEqual(code, 0)
         self.assertIn(missing, stdout + stderr)
 
