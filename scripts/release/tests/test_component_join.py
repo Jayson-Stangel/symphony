@@ -27,6 +27,7 @@ class ComponentJoinTest(unittest.TestCase):
             self.plan['components'][provider] = {}
             for architecture in ('arm64', 'x86_64'):
                 original = record(provider, architecture)
+                original['engine_version'] = '0.0.4'
                 self.plan['components'][provider][architecture] = {
                     'action': 'reuse', 'record': original, 'origin':{'exact':'origin'}, 'input_identity': original['input_identity']}
         self.calls = []
@@ -40,6 +41,9 @@ class ComponentJoinTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 4)
         self.assertTrue(all(value['source_revision'] == 'b'*40 for value in selected))
         self.assertEqual(list(self.root.iterdir()), [])
+        self.assertTrue(all(value['engine_version'] == '0.0.4' for value in selected))
+        for value in selected:
+            self.assertEqual(value, self.plan['components'][value['provider']][value['architecture']]['record'])
 
     def test_build_must_supply_successful_exact_current_source_input_record(self):
         choice = self.plan['components']['codex']['arm64']

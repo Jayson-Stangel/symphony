@@ -112,13 +112,16 @@ def verify_config(raw, record):
     require(record['provider'] in ('codex', 'claude') and type(record.get('source_revision')) is str and re.fullmatch('[a-f0-9]{40}', record['source_revision']), 'invalid original provider/source')
     expected = {'com.symphony.agent': record['provider'], 'com.symphony.architecture': architecture,
                 'org.opencontainers.image.revision': record['source_revision']}
+    if 'engine_version' in record:
+        from engine_version import validate
+        expected['org.opencontainers.image.version'] = validate(record['engine_version'])
     if 'input_identity' in record:
         require(type(record['input_identity']) is str and re.fullmatch('[a-f0-9]{64}', record['input_identity']), 'invalid original inputs')
         expected['com.symphony.inputs.sha256'] = record['input_identity']
     if 'protocol' in record:
         require(type(record['protocol']) is int and record['protocol'] == 1, 'unsupported original protocol')
         expected['com.symphony.protocol'] = '1'
-    require(all(labels.get(key) == expected_value for key, expected_value in expected.items()), 'original source/provider/input/protocol differs')
+    require(all(labels.get(key) == expected_value for key, expected_value in expected.items()), 'original source/provider/input/protocol/engine version differs')
     return value
 
 

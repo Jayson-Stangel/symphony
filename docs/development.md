@@ -699,8 +699,12 @@ Pure documentation changes run lightweight classification and PR metadata valida
 The normal `burrito-release.yml` caller reads `scripts/release/release-schema`
 through portable preflight and forwards it to component planning. Policy 2 builds
 changed component inputs and preserves verified original identities for unchanged
-inputs. `scripts/release/manager-version` selects the fresh manager release
-(currently 0.0.5); `elixir/mix.exs` remains the independent engine version.
+inputs. `scripts/release/manager-version` selects the fresh manager release;
+`elixir/mix.exs` remains the independent engine version. Follow the
+[engine increment and candidate verification rule](../scripts/release/README.md#package-engine-and-source-versions).
+New records compare source, compiled application and image version; reused runners
+retain their original version/source/digest. The next release after 0.0.7 still
+requires actual candidate verification across both providers and architectures.
 Tag mismatch and completed release targets refuse before expensive fanout;
 publication also checks again and retains the production environment gate.
 Explicit schema1 diagnostics retain their pinned finite-transition restrictions.
