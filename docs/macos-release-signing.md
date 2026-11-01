@@ -285,7 +285,9 @@ completed production signing and separately approved protected publication.
 None of these steps is authorized by implementing or merging this tooling.
 
 The committed manager version is 0.0.7 with schema2. The standalone engine still
-has its independent 0.0.4 version. Its release filenames identify the manager
+uses the independent version declared in `elixir/mix.exs` (corrected to 0.0.5
+for the next release). Follow the [version maintenance and four-variant candidate
+verification rule](../scripts/release/README.md#package-engine-and-source-versions). Its release filenames identify the manager
 release and its source receipts identify the actual build source; those filenames
 do not change the engine version. Standalone Burrito binaries are independently
 smoke-tested, but **are not covered by manager-helper notarization**. The stapled

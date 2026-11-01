@@ -302,7 +302,7 @@ def consumer_selection(path):
         if relative in {
             'artifacts.py', 'build-host-helper.sh', 'package.sh', 'component_provenance.py',
             'finite_transition.py', 'host-targets.json', 'manager-transition-policy.json',
-            'manager_contract.py', 'manager_envelope.py', 'manager_inputs.py', 'manager_version.py',
+            'manager_contract.py', 'manager_envelope.py', 'manager_inputs.py', 'manager_version.py', 'engine_version.py',
             'manager-version', 'release-schema', 'runner_inputs.py', 'select-hosts.py',
             'component_join.py', 'component_selection.py', 'qualified_graph.py', 'reuse_payload.py',
         }:
