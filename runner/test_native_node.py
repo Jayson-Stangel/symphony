@@ -128,14 +128,34 @@ class NativeNodeTests(cache.NpmCacheTests):
         for key, value in (
                 ('npm_package_config_node_gyp_tarball', str(self.root / 'missing-headers.tar.gz')),
                 ('npm_package_config_node_gyp_dist_url', 'https://invalid.example'),
-                ('NODEJS_ORG_MIRROR', 'https://invalid.example')):
+                ('NODEJS_ORG_MIRROR', 'https://invalid.example'),
+                ('npm_package_config_node_gyp_target', '24.22.1')):
             with self.subTest(configuration=key):
                 code, stdout, stderr = self.run_command(
                     'npm rebuild cold-fixture --offline --foreground-scripts',
-                    env={key: value, 'npm_package_config_node_gyp_devdir':
-                         str(self.root / 'explicit-header-cache')}, success=False)
+                    env={key: value}, success=False)
                 self.assertNotEqual(code, 0,
                                     'explicit header source was bypassed: ' + key + '\n' + stdout + stderr)
+                self.assertIn(str(self.home / '.cache'), stdout + stderr)
+        # Independently exercise the cache-destination guard, without a source
+        # selector that could mask removal of the devdir guard.
+        bad = self.root / 'file-devdir'
+        bad.write_text('unrelated data')
+        code, stdout, stderr = self.run_command(
+            'npm rebuild cold-fixture --offline --foreground-scripts',
+            env={'npm_package_config_node_gyp_devdir': str(bad)}, success=False)
+        self.assertNotEqual(code, 0)
+        self.assertIn(str(bad), stdout + stderr)
+        self.assertEqual(bad.read_text(), 'unrelated data')
+        # With a usable explicit devdir, the actual missing source is diagnosed.
+        missing = str(self.root / 'missing-headers.tar.gz')
+        code, stdout, stderr = self.run_command(
+            'npm rebuild cold-fixture --offline --foreground-scripts',
+            env={'npm_package_config_node_gyp_devdir': str(self.root / 'explicit-header-cache'),
+                 'npm_package_config_node_gyp_tarball': missing}, success=False)
+        self.assertNotEqual(code, 0)
+        self.assertIn(missing, stdout + stderr)
+
 
     @unittest.skipUnless(cache.PROTECTED, 'requires actual protected command boundary')
     def test_home_config_and_image_headers_remain_denied(self):
