@@ -1026,3 +1026,54 @@ The first ordinary PR and merged `dev` run must establish clean setup, original
 provenance, actual cache restoration and net benefit including cold toolchain,
 dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
 requires diagnosis before further experiments.
+
+## Native Node development toolchain in worker images
+
+The common image supplies pinned Node/npm, matching `/usr/local/include/node`
+headers, Python, make and the C/C++ build tools needed by ordinary native
+packages. Node-gyp itself is unmodified, including normal project-local copies.
+No project downloader, header override or preload is needed for the shipped
+Node version.
+
+The image provides a read-only versioned header view under
+`/usr/local/share/symphony/node-gyp`: `installVersion` metadata and `include/node`
+pointing to the matching image-owned headers. Stock node-gyp discovers it through
+its usual native-HOME `.cache/node-gyp/VERSION` location. Trusted startup prepares
+only missing links before workers start; it never replaces existing caches,
+follows custom cache-parent symlinks, changes HOME or touches auth/config data.
+This also handles existing Claude full-HOME volumes that mask image directories.
+Explicit `XDG_CACHE_HOME` remains selected by stock node-gyp.
+
+Stock cache semantics apply. Explicit `nodedir` bypasses the cache; `devdir` and
+`target` select their normal locations. A valid current-version cache may satisfy
+`dist-url`, mirror or same-version target settings without fetching again.
+Explicit `tarball` forces upstream reinstall behavior, which can fail against the
+protected read-only default view; an owned writable devdir is the ordinary choice
+for intentional header acquisition. Invalid explicit destinations are not
+redirected to image headers. Npm user/project/custom-global/environment/CLI cache
+precedence is unchanged. Team images own unusual runtime versions and layouts.
+
+Cold qualification uses a fresh project with no addon binary or warm user header
+cache. The immutable image header distribution is part of the supplied toolchain,
+not a warmed project artifact. The synthetic HOME gets the same trusted cache-view
+preparation before native app-server startup; actual protected commands must read
+it while native HOME/auth/config/header/view writes remain denied.
+
+`runner/node-smoke.sh IMAGE` checks the toolchain/header view in a finished image.
+`python3 runner/test_node_headers.py` checks missing-only initialization, existing
+cache preservation and native-auth symlink escape rejection. The maintained
+`runner/codex-sandbox-smoke.sh IMAGE` runs `test_native_node.py --protected` through
+native Codex `command/exec`: cold compile/load, delete/rebuild/load, ordinary private
+node-gyp, login/nested/lifecycle, stock overrides/cache behavior and protected
+HOME/auth/config/image/header/symlink denials. Only the fixture dependency has
+lifecycle permission. Host effects, Docker-exec, emulation and Claude startup
+smoke remain distinct from actual protected provider/architecture acceptance.
+
+For rollout, first complete the reviewed PR's acceptance and authorized merge to
+`dev`, then qualify the final combined source for Codex/Claude on native Linux
+amd64/arm64. Record immutable IDs/digests and application/image/manifest version
+identities from those final images. Earlier receipts do not cover changed image
+inputs. Keep Linux x86-64/macOS ARM64 manager-host support separate. Exact-scope
+promotion, publication and stable rollout need their separate operator approvals;
+only the installed `symphony update` may adopt the published stable candidate for
+explicitly approved targets. Never copy development assets into a stable runtime.

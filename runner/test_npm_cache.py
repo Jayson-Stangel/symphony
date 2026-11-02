@@ -140,6 +140,7 @@ class NpmCacheTests(unittest.TestCase):
         (self.home / '.codex/auth.json').write_text('synthetic-auth-canary')
         self.env = {k: v for k, v in os.environ.items() if not k.lower().startswith('npm_config_')}
         self.env.update(HOME=str(self.home), CODEX_HOME=str(self.home / '.codex'))
+        self.prepare_home()
         if not PROTECTED:
             self.env['NPM_CONFIG_GLOBALCONFIG'] = str(CONFIG)
         else:
@@ -154,6 +155,9 @@ class NpmCacheTests(unittest.TestCase):
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
         self.package(self.project)
+
+    def prepare_home(self):
+        """Optional trusted fixture preparation before native frontend startup."""
 
     def cleanup_resources(self):
         # One ordered cleanup: unittest runs remaining callbacks after failures.
