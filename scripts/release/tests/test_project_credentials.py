@@ -244,5 +244,95 @@ if [ "$FIXTURE_PROVIDER" = claude ]; then [ "$(cat "$root/access-checked")" = ch
                     self.assertNotIn('canary', result.stdout + result.stderr)
 
 
+class RunnerGitCredentials(unittest.TestCase):
+    """Real Git protocol/configuration; inert credentials and no network."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='symphony-git-helper-')
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.helper = self.home / 'symphony-git-credential'
+        self.helper.write_bytes((ROOT / 'runner/claude/git-credential.sh').read_bytes())
+        self.helper.chmod(0o755)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(('GIT_', 'GH_', 'GITHUB_', 'SYMPHONY_'))}
+        self.env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home),
+                        GIT_CONFIG_GLOBAL=str(self.home / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1',
+                        GIT_TERMINAL_PROMPT='0', GIT_ASKPASS='false')
+
+    def helper_call(self, args, request, **tokens):
+        return subprocess.run(['sh', str(self.helper), *args], input=request,
+                              env=dict(self.env, **tokens), cwd=self.home, capture_output=True, text=True, timeout=5)
+
+    def configure(self, provider):
+        path = ROOT / ('runner/entrypoint.sh' if provider == 'codex' else 'runner/claude/entrypoint.sh')
+        # Execute the entrypoint's actual Git commands, mapping only its installed
+        # helper location into this disposable source fixture. No listener starts.
+        commands = '\n'.join(line for line in path.read_text().splitlines()
+                             if line.startswith('git config --global'))
+        commands = commands.replace('/usr/local/bin/symphony-git-credential', str(self.helper))
+        subprocess.run(['sh', '-ec', commands], env=self.env, cwd=self.home, capture_output=True, check=True)
+
+    def test_provider_selection_and_claude_baseline(self):
+        request = 'protocol=https\nhost=github.com\n\n'
+        cases = [
+            (['--codex', 'get'], {'GH_TOKEN': 'selected', 'GITHUB_TOKEN': 'other', 'SYMPHONY_GIT_TOKEN': 'claude'}, 'selected'),
+            (['--codex', 'get'], {'GH_TOKEN': '', 'GITHUB_TOKEN': 'alias', 'SYMPHONY_GIT_TOKEN': 'claude'}, 'alias'),
+            (['--codex', 'get'], {'SYMPHONY_GIT_TOKEN': 'claude'}, None),
+            (['get'], {'GH_TOKEN': 'fallback', 'SYMPHONY_GIT_TOKEN': 'claude'}, 'claude'),
+            (['get'], {'GH_TOKEN': 'fallback', 'GITHUB_TOKEN': 'ignored'}, 'fallback'),
+            (['get'], {'GITHUB_TOKEN': 'ignored'}, None),
+        ]
+        for args, tokens, expected in cases:
+            with self.subTest(args=args, expected=expected):
+                result = self.helper_call(args, request, **tokens)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(result.stdout, '' if expected is None else
+                                 'username=x-access-token\npassword=' + expected + '\n')
+
+    def test_helper_refuses_foreign_requests_and_non_get_operations(self):
+        for args in [[], ['store'], ['erase'], ['--unknown', 'get'], ['--codex'],
+                     ['--codex', 'store'], ['--codex', 'erase']]:
+            result = self.helper_call(args, 'protocol=https\nhost=github.com\n\n', GH_TOKEN='synthetic')
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        for protocol, host in [('http', 'github.com'), ('ssh', 'github.com'),
+                               ('https', 'elsewhere.invalid'), ('https', 'github.com.evil.invalid'),
+                               ('https', 'github.com:443'), ('https', '')]:
+            for mode in [[], ['--codex']]:
+                result = self.helper_call(mode + ['get'], f'protocol={protocol}\nhost={host}\n\n', GH_TOKEN='synthetic')
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+
+    def test_actual_git_fill_clean_url_routing_and_repeat_start(self):
+        urls = ['https://github.com/example/private.git', 'git@github.com:example/private.git',
+                'ssh://git@github.com/example/private.git']
+        for provider in ['codex', 'claude']:
+            with self.subTest(provider=provider):
+                self.configure(provider)
+                before = (self.home / '.gitconfig').read_bytes()
+                self.configure(provider)
+                self.assertEqual((self.home / '.gitconfig').read_bytes(), before)
+                self.assertNotIn(b'synthetic', before)
+                self.assertNotIn(b'x-access-token:', before)
+                for url in urls:
+                    routed = subprocess.run(['git', 'ls-remote', '--get-url', url], env=self.env,
+                                            cwd=self.home, capture_output=True, text=True, check=True).stdout.strip()
+                    self.assertEqual(routed, urls[0])
+                    result = subprocess.run(['git', 'credential', 'fill'], input='url=' + routed + '\n\n',
+                                            env=dict(self.env, GH_TOKEN='synthetic-selected',
+                                                     GITHUB_TOKEN='synthetic-other', SYMPHONY_GIT_TOKEN='synthetic-claude'),
+                                            cwd=self.home, capture_output=True, text=True, check=True)
+                    expected = 'synthetic-selected' if provider == 'codex' else 'synthetic-claude'
+                    self.assertIn('password=' + expected + '\n', result.stdout)
+                    self.assertEqual(result.stderr, '')
+                missing = subprocess.run(['git', 'credential', 'fill'], input='url=' + urls[0] + '\n\n',
+                                         env=self.env, cwd=self.home, capture_output=True, text=True)
+                self.assertNotEqual(missing.returncode, 0)
+                foreign = subprocess.run(['git', 'credential', 'fill'], input='url=https://elsewhere.invalid/repo\n\n',
+                                         env=dict(self.env, GH_TOKEN='synthetic-selected'), cwd=self.home, capture_output=True, text=True)
+                self.assertNotEqual(foreign.returncode, 0)
+                self.assertNotIn('synthetic', foreign.stdout + foreign.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

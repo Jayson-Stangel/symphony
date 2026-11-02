@@ -13,10 +13,9 @@ done
 git config --global user.name "${SYMPHONY_GIT_AUTHOR_NAME:-Symphony}"
 git config --global user.email "${SYMPHONY_GIT_AUTHOR_EMAIL:-symphony@localhost}"
 
-if [ -n "${GH_TOKEN:-}" ]; then
-  git config --global --replace-all url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf git@github.com:
-  git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf ssh://git@github.com/
-fi
+git config --global credential.helper '/usr/local/bin/symphony-git-credential --codex'
+git config --global --replace-all url.https://github.com/.insteadOf git@github.com:
+git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
 
 exec /opt/symphony/elixir/bin/symphony \
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \

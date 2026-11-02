@@ -165,6 +165,89 @@ defmodule SymphonyElixir.WorkspaceCloneTest do
     assert File.read!(marker) == "interrupted arbitrary hook"
   end
 
+  for hook <- [false, true] do
+    @hook hook
+    test "manager bootstrap inherits entrypoint Git credentials, hook=#{@hook}" do
+      {root, source} = clone_fixture!()
+      home = Path.join(root, "git-home")
+      bin = Path.join(root, "bin")
+      File.mkdir_p!(home)
+      File.mkdir_p!(bin)
+      helper = Path.join(bin, "symphony-git-credential")
+      File.cp!(Path.expand("../../../runner/claude/git-credential.sh", __DIR__), helper)
+      File.chmod!(helper, 0o755)
+      git = System.find_executable("git")
+
+      selected_env = %{
+        "HOME" => home,
+        "GIT_CONFIG_GLOBAL" => Path.join(home, ".gitconfig"),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_TERMINAL_PROMPT" => "0",
+        "GIT_ASKPASS" => "false",
+        "GH_TOKEN" => "synthetic-bootstrap",
+        "GITHUB_TOKEN" => "synthetic-other",
+        "SYMPHONY_GIT_TOKEN" => "synthetic-claude",
+        "PATH" => bin <> ":" <> System.fetch_env!("PATH")
+      }
+
+      for {key, value} <- selected_env do
+        previous = System.get_env(key)
+        System.put_env(key, value)
+        on_exit(fn -> restore_env(key, previous) end)
+      end
+
+      entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
+
+      configuration =
+        entrypoint
+        |> String.split("\n")
+        |> Enum.filter(&String.starts_with?(&1, "git config --global"))
+        |> Enum.join("\n")
+        |> String.replace("/usr/local/bin/symphony-git-credential", helper)
+
+      assert {_, 0} = System.cmd("sh", ["-ec", configuration])
+      marker = Path.join(root, "credential-consumed")
+      wrapper = Path.join(bin, "git")
+
+      # The local transport peer verifies actual Git helper lookup before using
+      # a real local repository. No GitHub request or coding agent is involved.
+      File.write!(wrapper, """
+      #!/bin/sh
+      set -eu
+      if [ "$1" = clone ]; then
+        printf 'protocol=https\\nhost=github.com\\n\\n' | "#{git}" credential fill | grep -qx 'password=synthetic-bootstrap' || exit 71
+        printf consumed > "#{marker}"
+        for destination do :; done
+        exec "#{git}" clone --no-hardlinks "#{source}" "$destination"
+      fi
+      exec "#{git}" "$@"
+      """)
+
+      File.chmod!(wrapper, 0o755)
+      url = "https://github.com/example/private.git"
+      options = [workspace_root: Path.join(root, "workspaces")]
+
+      options =
+        if @hook,
+          do: options ++ [hook_after_create: ~s("#{wrapper}" clone "#{url}" .)],
+          else: options ++ [workspace_clone_url: url]
+
+      write_workflow_file!(Workflow.workflow_file_path(), options)
+      assert {:ok, workspace} = Workspace.create_for_issue("GIT-BOOTSTRAP")
+      assert File.read!(marker) == "consumed"
+      assert File.read!(Path.join(workspace, "README.md")) == "source\n"
+      refute File.read!(Path.join(home, ".gitconfig")) =~ "synthetic-"
+
+      # A missing selected Codex credential cannot use the Claude-specific alias.
+      System.delete_env("GH_TOKEN")
+      System.delete_env("GITHUB_TOKEN")
+      File.rm!(marker)
+      assert {:error, _} = Workspace.create_for_issue("GIT-MISSING")
+      refute File.exists?(marker)
+      refute File.exists?(Path.join([root, "workspaces", "GIT-MISSING"]))
+    end
+  end
+
   defp clone_fixture! do
     root = Path.join(Path.dirname(Workflow.workflow_file_path()), "clone-fixture")
     source = Path.join(root, "source")

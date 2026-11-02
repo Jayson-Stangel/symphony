@@ -246,14 +246,17 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "Codex startup Git rewrites remain idempotent for a retained container", ctx do
     entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
-    [_, rewrite] = Regex.run(~r/if \[ -n "\$\{GH_TOKEN:-\}" \]; then\n(.*?)\nfi/s, entrypoint)
+    rewrite = entrypoint |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "git config --global")) |> Enum.join("\n")
     home = Path.join(ctx.root, "git-home")
     File.mkdir_p!(home)
     env = [{"HOME", home}, {"GIT_CONFIG_GLOBAL", Path.join(home, ".gitconfig")}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"GH_TOKEN", "inert-restart-fixture"}]
     assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
     assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
-    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://x-access-token:inert-restart-fixture@github.com/.insteadOf"], env: env)
+    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://github.com/.insteadOf"], env: env)
     assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
+    refute File.read!(Path.join(home, ".gitconfig")) =~ "inert-restart-fixture"
+    assert {helper, 0} = System.cmd("git", ["config", "--global", "--get-all", "credential.helper"], env: env)
+    assert String.trim(helper) == "/usr/local/bin/symphony-git-credential --codex"
   end
 
   test "cross-provider completion restores target ownership in both directions", ctx do

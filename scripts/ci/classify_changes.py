@@ -316,13 +316,18 @@ def consumer_selection(path):
         return PACKAGES | {'application'}, 'packaged team environment template'
     if path.startswith('runner/claude/qualification/'):
         return {'portable'}, 'explicit reference harness input'
+    if path == 'runner/claude/git-credential.sh':
+        return {'application', 'claude', 'contracts'}, 'Git credential helper shared by both runner entrypoints'
+    if path == 'runner/claude/entrypoint.sh':
+        return {'claude', 'contracts'}, 'Claude entrypoint and Git credential contracts'
     if path.startswith('runner/claude/'):
-        if path in ('runner/claude/auth.mjs', 'runner/claude/entrypoint.sh',
-                    'runner/claude/git-credential.sh', 'runner/claude/smoke.sh') or (
+        if path in ('runner/claude/auth.mjs', 'runner/claude/smoke.sh') or (
                 path.startswith('runner/claude/test/') and not path.startswith('runner/claude/test/fixtures/')):
             return {'claude'}, 'independent Claude commands or Node-only test suite'
         return {'application', 'claude'}, 'production Claude modules/dependencies and peers consumed by full ExUnit integration'
-    if path in ('runner/entrypoint.sh', 'runner/updater-smoke.py'):
+    if path == 'runner/entrypoint.sh':
+        return {'application', 'contracts'}, 'Codex entrypoint and Git credential contracts'
+    if path == 'runner/updater-smoke.py':
         return {'application'}, 'runner entrypoint consumed by Elixir launcher integration'
     if path in ('runner/test_npm_cache.py', 'runner/test_npm_cache_lifecycle.py'):
         return {'npm'}, 'npm configuration semantics and cross-platform native process ownership tests'

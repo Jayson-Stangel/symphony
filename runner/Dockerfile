@@ -64,7 +64,8 @@ RUN MIX_ENV=prod mix escript.build
 COPY .codex/skills /opt/symphony/skills
 RUN install -d -m 700 /root/.codex /workspaces /var/lib/symphony
 COPY runner/entrypoint.sh /usr/local/bin/symphony-runner
-RUN chmod 755 /usr/local/bin/symphony-runner
+COPY runner/claude/git-credential.sh /usr/local/bin/symphony-git-credential
+RUN chmod 755 /usr/local/bin/symphony-runner /usr/local/bin/symphony-git-credential
 
 EXPOSE 4010
 
@@ -87,7 +88,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini \
      done \
   && chmod -R a-w /opt/symphony/claude /opt/symphony/skills
 COPY runner/claude/entrypoint.sh /usr/local/bin/symphony-claude-runner
-COPY runner/claude/git-credential.sh /usr/local/bin/symphony-git-credential
 RUN chmod 755 /usr/local/bin/symphony-claude-runner /usr/local/bin/symphony-git-credential
 ENV HOME=/home/claude CLAUDE_CONFIG_DIR=/home/claude/.claude \
     CLAUDE_CODE_DISABLE_FAST_MODE=1 DISABLE_AUTOUPDATER=1 SYMPHONY_CONTAINERIZED=1
