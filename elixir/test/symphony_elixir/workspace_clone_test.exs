@@ -201,11 +201,12 @@ defmodule SymphonyElixir.WorkspaceCloneTest do
       configuration =
         entrypoint
         |> String.split("\n")
-        |> Enum.filter(&String.starts_with?(&1, "git config --global"))
+        |> Enum.filter(&(String.starts_with?(&1, "git config --global") or String.starts_with?(&1, "export SYMPHONY_GIT_TOKEN=")))
         |> Enum.join("\n")
         |> String.replace("/usr/local/bin/symphony-git-credential", helper)
 
-      assert {_, 0} = System.cmd("sh", ["-ec", configuration])
+      assert {selected_route, 0} = System.cmd("sh", ["-ec", configuration <> ~s(\nprintf '%s' "${SYMPHONY_GIT_TOKEN:-}")])
+      System.put_env("SYMPHONY_GIT_TOKEN", selected_route)
       marker = Path.join(root, "credential-consumed")
       wrapper = Path.join(bin, "git")
 
@@ -238,9 +239,12 @@ defmodule SymphonyElixir.WorkspaceCloneTest do
       assert File.read!(Path.join(workspace, "README.md")) == "source\n"
       refute File.read!(Path.join(home, ".gitconfig")) =~ "synthetic-"
 
-      # A missing selected Codex credential cannot use the Claude-specific alias.
+      # A fresh entrypoint cannot substitute an ambient alias for missing project credentials.
       System.delete_env("GH_TOKEN")
       System.delete_env("GITHUB_TOKEN")
+      System.put_env("SYMPHONY_GIT_TOKEN", "synthetic-unselected-ambient")
+      assert {"", 0} = System.cmd("sh", ["-ec", configuration <> ~s(\nprintf '%s' "${SYMPHONY_GIT_TOKEN:-}")])
+      System.delete_env("SYMPHONY_GIT_TOKEN")
       File.rm!(marker)
       assert {:error, _} = Workspace.create_for_issue("GIT-MISSING")
       refute File.exists?(marker)

@@ -256,7 +256,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
     refute File.read!(Path.join(home, ".gitconfig")) =~ "inert-restart-fixture"
     assert {helper, 0} = System.cmd("git", ["config", "--global", "--get-all", "credential.helper"], env: env)
-    assert String.trim(helper) == "/usr/local/bin/symphony-git-credential --codex"
+    assert String.trim(helper) == "/usr/local/bin/symphony-git-credential"
   end
 
   test "cross-provider completion restores target ownership in both directions", ctx do

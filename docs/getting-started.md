@@ -139,9 +139,14 @@ check `symphony auth codex check` or `symphony auth claude check`, then
 Both stock runners configure GitHub HTTPS Git authentication before workspace
 setup, using the selected project credential through Git's credential-helper
 protocol. Existing GitHub SSH-form remotes route to clean HTTPS URLs; no SSH key
-or agent forwarding is needed. Codex uses the normalized `GH_TOKEN`/`GITHUB_TOKEN`
-selection above; Claude retains its selected `SYMPHONY_GIT_TOKEN` route. Tokens
-are not written into Git remote/rewrite URLs or persistent Git configuration.
+or agent forwarding is needed. Both runners use the reserved `SYMPHONY_GIT_TOKEN`
+route for the selected repository credential. Codex binds it from the normalized
+`GH_TOKEN`/`GITHUB_TOKEN` selection above before listener startup, overwriting even
+an empty selection so an ambient provider-specific value cannot replace it.
+This preserves agent Git access when tracker aliases are removed from the child;
+tracker-secret filtering and native provider protections remain unchanged. Reserve
+this Git variable for repository access and use separate tracker-specific bindings.
+Tokens are not written into Git remote/rewrite URLs or persistent Git configuration.
 The isolated Git doctor probe checks local Git operations, not private repository
 access; successful workspace cloning still depends on the token's repository scope.
 
