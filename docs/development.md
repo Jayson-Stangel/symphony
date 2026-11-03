@@ -151,17 +151,20 @@ Claude's container UID/GID `11001:11001` must be able to traverse the project ro
 and read `WORKFLOW.md`. A readable file inside a private `0700`/`0750` host directory
 may have worked through the prior single-file bind while failing through a
 directory bind on native Linux. Credential-free preflight checks the selected
-image and actual container identity before adoption drains existing work. If it
-refuses, provide access through your approved host permissions/ACL policy and
+image and actual container identity before adoption replaces the stopped runner.
+If it refuses, provide access through your approved host permissions/ACL policy and
 retry; the manager does not change host permissions automatically.
 
 Existing single-file containers are adopted only through `symphony update --agent
 codex` or `symphony update --agent claude` (with the appropriate development wrapper
-for disposable tests). Even an unchanged selected image needs replacement: update
-drains active sessions before retaining the old container and starting the new
-layout. Ordinary `run` refuses an old layout. Ownership and rollback accept the
-exact prior read-only single-file layout; completed-candidate recovery requires
-the directory layout. An interrupted old-layout candidate with a retained backup
+for disposable tests). Follow the [idle update procedure](operations.md#idle-update-procedure):
+pause admission, finish active work and normally stop all runners in the affected
+installation before invoking the updater. Even an unchanged selected image needs
+replacement: the updater retains the stopped old container, starts the new layout,
+checks readiness and resumes admission before returning. No separate target
+restart is needed. Ordinary `run` refuses an old layout. Ownership and rollback
+accept the exact prior read-only single-file layout; completed-candidate recovery
+requires the directory layout. An interrupted old-layout candidate with a retained backup
 must use `symphony update --rollback-runner` before retrying adoption.
 
 Codex preflight receives both project aliases. Its effective-policy qualification
@@ -180,17 +183,18 @@ Preserve local edits. Inspect status and divergence before integrating upstream:
 git -C "$HOME/Repos/symphony-dev-workspace/source" status --short
 git -C "$HOME/Repos/symphony-dev-workspace/source" fetch origin dev
 git -C "$HOME/Repos/symphony-dev-workspace/source" merge --ff-only origin/dev
-# From the disposable target clone, with an existing development runner:
+# From the disposable target clone, after the idle update procedure:
 "$dev" update --agent claude
 ```
 
 The wrapper supplies `--development-runner`. This requires a nonempty namespace
 and uses the current development source without fetching `main`, changing global
 links or running host setup. It builds a revision-tagged namespaced candidate,
-preflights it, drains active work, retains the prior container, and resumes only
-after readiness succeeds. On a retry, development mode rebuilds and preflights
-from the current checkout. If its image differs from the pending candidate, the
-updater verifies ownership, drains/stops that candidate, and replaces it while
+preflights it, retains the stopped prior container, starts the replacement, and
+resumes only after readiness succeeds. Keep other projects stopped until their
+normal restart/readiness under the intake hold. On a retry, development mode
+rebuilds and preflights from the current checkout. If its image differs from the
+pending candidate, the updater verifies ownership and replaces that stopped candidate while
 retaining the original rollback source and volumes. It commits the new image
 identity atomically before starting it, so an interrupted refresh can be retried.
 A failed build or preflight leaves the pending candidate unchanged; a failed new

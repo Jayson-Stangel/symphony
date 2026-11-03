@@ -69,6 +69,30 @@ review or testing in `dev` does not authorize either action. Follow the
 After approval, use the installed global command. The installation type selects
 the updater; existing source installations remain source-backed.
 
+### Idle update procedure
+
+Before invoking the updater, pause admission on every runner in the affected
+installation, let active work finish, and normally stop all those runners with
+`symphony runner stop` from their respective project contexts. Keep new work on
+hold until the update and readiness checks are complete. This is an operator
+procedure; the updater does not enforce an installation-wide stopped check.
+
+Use the installed updater with the same project, provider, configuration and
+selected environment. `update --agent` performs candidate preflight, including
+temporary containers and native authentication-status checks. It then replaces
+the stopped target, starts it, checks readiness and resumes admission before
+returning. Do not separately restart that target. A retained quota cooldown is
+reported as intentionally paused. Other projects stay stopped until their normal
+restart and readiness checks under the intake hold; preserve their provider and
+port, and explicitly resume any retained drain only when ready.
+
+A manager-only update leaves runners stopped and does not adopt a new workflow
+mount. Packaged same-provider image pins and explicit environment selections
+remain in effect; a new manager default does not silently replace them. Busy updates and
+live-session continuity are deferred to
+[JAY-817](https://linear.app/jayson-stangel/issue/JAY-817) and
+[JAY-818](https://linear.app/jayson-stangel/issue/JAY-818), respectively.
+
 ### Packaged releases
 
 A packaged update selects a completed stable GitHub release and verifies its
@@ -93,7 +117,9 @@ symphony update --rollback-release --agent claude  # restore a completed prior r
 ```
 
 A pending transition must be completed or rolled back before selecting another
-release. `--rollback-release` without `--agent` restores only the shared manager;
+release. Retry its `--agent` update without new `--release`, `--candidate-manifest`
+or `--candidate-bundle` flags; the journal retains the exact selected release.
+`--rollback-release` without `--agent` restores only the shared manager;
 project image pins stay unchanged. See [packaged update and recovery](packaged-install.md#updating-a-packaged-installation)
 for selection, ownership and retained-state rules. Do not repoint `current`,
 remove journals, or replace retained containers manually.
@@ -119,11 +145,12 @@ symphony update --agent codex
 # symphony update --agent claude
 ```
 
-The updater preflights the candidate, drains the qualified listener, waits for zero
-workers, retains the previous container for rollback, and verifies volume ownership
-and native readiness before completing. It reports a retained quota cooldown as
-paused, rather than ready to dispatch. Source and runner changes use the exact
-fetched revision through the installed launcher's update handoff.
+Follow the [idle update procedure](#idle-update-procedure) before invoking this
+command. The updater preflights the candidate, retains the stopped previous
+container for rollback, verifies volume ownership, and starts the replacement
+through native readiness and admission checks before completing. Source and
+runner changes use the exact fetched revision through the installed launcher's
+update handoff.
 
 If a transition fails, retain its evidence and use the installed updater to retry
 or roll back:
@@ -161,8 +188,10 @@ Unchanged valid bytes preserve `accepted_at`. Status is `loaded`, `rejected`, or
 
 A rejected parse, configuration validation, or read keeps the previous accepted
 workflow and hash. Recovery to valid bytes clears rejection. This object exposes
-no prompt, configuration, source path, or rejection details. Existing sessions
-retain their context; a newly started session reads the currently accepted prompt.
+no prompt, configuration, source path, or rejection details. A newly started
+session reads the currently accepted prompt. Live-session continuity across an
+update is outside the current release acceptance, as described in the
+[idle update procedure](#idle-update-procedure).
 
 To diagnose reloads, compare the host workflow's SHA-256 with the bytes visible
 at `/etc/symphony/WORKFLOW.md` inside the container and the API's accepted hash.
