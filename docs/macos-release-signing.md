@@ -567,6 +567,28 @@ gh workflow run macos-production-signing.yml --ref main \
   -f resume_run=STOPPED_RUN -f resume_attempt=STOPPED_ATTEMPT
 ```
 
+The same explicit `resume_run`/`resume_attempt` inputs also support one narrow
+pre-sign recovery: the latest original attempt's authenticated checkpoint must
+be the exact untouched source/Q/helper/package/identity-bound state, containing
+no signed artifacts, checks, submission intent/IDs, DMG phase, continuation or
+unknown fields. Its original immutable refusal artifact must positively record
+the pre-yield pinned-identity admission failure and every required successful
+credential cleanup stage. Empty maps alone never authorize another build.
+After the operator corrects the underlying credential/chain configuration and
+approves the new attempt, that admission selects the existing build path and
+retains the original checkpoint/refusal artifact identities in its continuation
+record. No accepted or possibly submitted bytes enter this branch. Missing,
+expired, incomplete or conflicting evidence stops for reconciliation. An
+additional failed recovery with continuation state is not automatically cleared
+or retried. Ordinary reruns and fresh starts with prior history still refuse.
+
+This recovery does not loosen exact-source production qualification. A later
+controller/workflow repair must pass normal review/integration/promotion; an old
+Q at another SHA cannot be relabeled as a qualification of the new controller,
+even if helper or component inputs are unchanged. Component reuse and complete
+source-bound Q admission are distinct decisions. Preserve original artifacts and
+resolve that boundary before authorizing another production preparation.
+
 The credential-free importer authenticates the original failed/cancelled run,
 exact attempt/job, source and immutable artifact digest against GitHub, and checks
 the embedded producer and Q bindings. Public-only native signature, pinned

@@ -192,6 +192,34 @@ def signing_attempt(revision, current_run, current_attempt, resume_run='', resum
             'run_id': int(resume_run), 'run_attempt': int(resume_attempt)}
 
 
+def pre_sign_identity_refusal(state, context, origin, manifest, helper, diagnostics):
+    """Only the literal pre-yield identity refusal proves the build body never ran."""
+    expected = {'schema': 1, 'status': 'not-ready', 'source_revision': context['qualification']['source_revision'],
+                'input_manifest_sha256': checksum(manifest), 'original_qualified_helper_sha256': checksum(helper),
+                'artifacts': {}, 'submissions': {}, 'checks': [], 'archive_name': context['archive_name'],
+                'context': dict(context, origin=origin)}
+    require(isinstance(state, dict) and type(state.get('schema')) is int and state == expected,
+            'pre-sign checkpoint is not the exact untouched qualified attempt')
+    stages = ['snapshot-search-list', 'decode-p12', 'create', 'settings', 'unlock', 'configure-search-list',
+              'verify-search-list', 'read-search-list', 'import-p12', 'partition-list', 'find-identity']
+    prefix = [{'stage': 'keychain.' + stage, 'status': 'success'} for stage in stages]
+    prefix.append({'stage': 'keychain.match-pinned-identity', 'status': 'failed', 'outcome': 'operation refused'})
+    require(isinstance(diagnostics, dict) and set(diagnostics) == {'schema', 'operations'}
+            and type(diagnostics['schema']) is int and diagnostics['schema'] == 1
+            and isinstance(diagnostics['operations'], list) and diagnostics['operations'][:len(prefix)] == prefix,
+            'requires positive pre-yield identity refusal evidence; uncertain effects cannot restart')
+    cleanup = diagnostics['operations'][len(prefix):]
+    required = {'cleanup.remove-p12', 'cleanup.verify-p12-absent', 'cleanup.delete-keychain',
+                'cleanup.verify-keychain-absent', 'cleanup.inspect-search-list', 'cleanup.check-search-list',
+                'cleanup.verify-search-list-restored', 'cleanup.read-restored-search-list',
+                'cleanup.remove-recovery-record', 'cleanup.sync-private-directory'}
+    allowed = required | {'cleanup.restore-search-list'}
+    names = [item.get('stage') for item in cleanup if isinstance(item, dict)]
+    require(len(names) == len(cleanup) == len(set(names)) and required <= set(names) <= allowed
+            and all(item == {'stage': item['stage'], 'status': 'success'} for item in cleanup),
+            'pre-sign recovery requires complete successful credential cleanup')
+
+
 def checkpoint_inputs(inputs, destination, revision, current_run, current_attempt,
                       resume_run='', resume_attempt='', env=os.environ, fetch=api):
     """Credential-free source/attempt/artifact admission for the protected job."""
@@ -209,6 +237,22 @@ def checkpoint_inputs(inputs, destination, revision, current_run, current_attemp
     from macos_distribution import SignedCheckpoint, signing_context, validate_retained_native
     context = signing_context(package, env, inputs / 'qualification.json')
     digest = checksum(destination / 'checkpoint.json')
+    state = json.loads((destination / 'checkpoint.json').read_text())
+    if not state.get('artifacts'):
+        # Empty state alone is NEVER evidence that no signing or POST occurred.
+        require(set(p.name for p in destination.iterdir()) == {'checkpoint.json'},
+                'pre-sign recovery has unexpected retained files')
+        refusal = destination.with_name(destination.name + '-refusal')
+        refused_artifact = download(resume_run, resume_attempt, revision,
+                                   f'production-signing-refused-{resume_run}-{resume_attempt}', refusal, fetch)
+        require(set(p.name for p in refusal.iterdir()) == {'keychain-diagnostics.json'},
+                'pre-sign refusal has unexpected evidence; reconcile original effects')
+        pre_sign_identity_refusal(state, context, origin, manifest, inputs / 'helper/symphony-host',
+                                  json.loads((refusal / 'keychain-diagnostics.json').read_text()))
+        admission = {'mode': 'build', 'origin': origin, 'artifact': artifact,
+                     'checkpoint_sha256': digest, 'refusal_artifact': refused_artifact, 'context': state['context']}
+        write_json(destination.with_name(destination.name + '-admission.json'), admission)
+        return admission
     retained = SignedCheckpoint.load(destination, revision, manifest, checksum(inputs / 'helper/symphony-host'), digest, context)
     require(retained.value['context']['origin'] == origin, 'checkpoint embedded producer origin differs')
     validate_retained_native(retained, package, inputs / 'helper/symphony-host', env)

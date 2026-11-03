@@ -70,6 +70,22 @@ ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/Users/admin/.local/share/persistent-mac-job-c
 TMPDIR=/Users/admin/.local/share/symphony-ci-runner-25a/_work/_temp
 ```
 
+Production signing also requires the guest's native code-signing policy to
+resolve the operator's Developer ID Application leaf through Apple's matching
+intermediate chain. For a G2-issued identity, use Apple’s official
+[Developer ID Certification Authority G2 certificate](https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer),
+SHA-256 `f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a`.
+Include it in the separately approved guest provisioning record: source, digest,
+installation destination and readback evidence. Provision only the verified
+public intermediate through the existing native certificate installation path;
+never add a custom trust anchor, change trust overrides or remove unrelated
+certificates. Preserve this prerequisite when preparing a replacement guest.
+The leaf fingerprint and team pin remain unchanged. Import/find-identity command
+exit zero alone does not establish a valid matching identity; the signer's strict
+policy admission remains required. Missing chain material is a provisioning
+failure, not permission to weaken identity matching or retry a prior attempt
+without its maintained recovery admission.
+
 The dedicated temp directory must exist. Keep the runner's default process
 cleanup enabled. Native checkout post actions remove checkout credentials; the
 small completed hook detaches DMG images backed by this runner's work/temp and
