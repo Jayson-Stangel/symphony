@@ -69,11 +69,20 @@ jobs:
           RESUME_RUN: ${{ inputs.resume_run }}
         run: |
           python3 scripts/release/production_release.py source
+          mode=build
+          recovery_args=()
           if [ -n "$RESUME_RUN" ]; then
+            mode=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/resume-checkpoint-admission.json")).get("mode", "resume"))')
+            if [ "$mode" = build ]; then
+              recovery_args=(--pre-sign-recovery "$RUNNER_TEMP/resume-checkpoint-admission.json")
+            fi
+          fi
+          if [ "$mode" = resume ]; then
             checkpoint_digest=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/resume-checkpoint-admission.json"))["checkpoint_sha256"])')
             python3 scripts/release/macos_distribution.py resume "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --qualification "$RUNNER_TEMP/production-inputs/qualification.json" --checkpoint "$RUNNER_TEMP/resume-checkpoint" --checkpoint-sha256 "$checkpoint_digest" --checkpoint-admission "$RUNNER_TEMP/resume-checkpoint-admission.json" --authorize-apple-upload
           else
-            python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --qualification "$RUNNER_TEMP/production-inputs/qualification.json" --authorize-apple-upload
+            test "$mode" = build
+            python3 scripts/release/macos_distribution.py build "$RUNNER_TEMP/production-inputs/internal/release.json" "$RUNNER_TEMP/production-inputs/helper/symphony-host" "$RUNNER_TEMP/production-signed" --qualified-package "$RUNNER_TEMP"/production-inputs/packages/*-macos.tar.gz --qualification "$RUNNER_TEMP/production-inputs/qualification.json" "${recovery_args[@]}" --authorize-apple-upload
           fi
       - name: Preserve Linux and seal final distribution and updater hashes
         run: python3 scripts/release/production_release.py seal "$RUNNER_TEMP/production-inputs" "$RUNNER_TEMP/production-signed"

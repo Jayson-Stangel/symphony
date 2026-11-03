@@ -369,6 +369,101 @@ class ProductionCheckpointTest(unittest.TestCase):
             self.admit(invalid_native=True)
         self.assertFalse((self.root / 'imported-admission.json').exists())
 
+
+    def pre_sign_fixture(self):
+        keep = {'schema', 'status', 'source_revision', 'input_manifest_sha256',
+                'original_qualified_helper_sha256', 'context', 'archive_name', 'artifacts', 'submissions', 'checks'}
+        self.peer.checkpoint.value = {k: v for k, v in self.peer.checkpoint.value.items() if k in keep}
+        self.peer.checkpoint.value.update(artifacts={}, submissions={}, checks=[])
+        for path in self.peer.checkpoint.path.iterdir():
+            if path.name != 'checkpoint.json': path.unlink()
+        self.peer.checkpoint.save(); self.pack()
+        stages = ['snapshot-search-list', 'decode-p12', 'create', 'settings', 'unlock', 'configure-search-list',
+                  'verify-search-list', 'read-search-list', 'import-p12', 'partition-list', 'find-identity']
+        self.diagnostics = {'schema': 1, 'operations': [
+            {'stage': 'keychain.' + name, 'status': 'success'} for name in stages] + [
+            {'stage': 'keychain.match-pinned-identity', 'status': 'failed', 'outcome': 'operation refused'}] + [
+            {'stage': 'cleanup.' + name, 'status': 'success'} for name in (
+                'remove-p12', 'verify-p12-absent', 'delete-keychain', 'verify-keychain-absent',
+                'inspect-search-list', 'check-search-list', 'verify-search-list-restored',
+                'read-restored-search-list', 'remove-recovery-record', 'sync-private-directory')]}
+
+    def pre_sign_admit(self):
+        refusal = io.BytesIO()
+        with zipfile.ZipFile(refusal, 'w') as z:
+            z.writestr('keychain-diagnostics.json', json.dumps(self.diagnostics))
+        raw = refusal.getvalue()
+        item = dict(self.artifact, id=56, name='production-signing-refused-998-1',
+                    digest='sha256:' + digest(raw), size_in_bytes=len(raw))
+        def fetch(path, binary=False):
+            if path.endswith('/artifacts?per_page=100'): return {'artifacts': [self.artifact, item]}
+            if path == 'actions/artifacts/56/zip': return raw
+            return self.fetch(path, binary)
+        with patch('macos_distribution.validate_retained_native') as native:
+            result = production.checkpoint_inputs(self.inputs, self.root / 'imported', 'a' * 40,
+                '999', '1', '998', '1', env=self.env, fetch=fetch)
+            native.assert_not_called()  # No claimed signed bytes exist to validate.
+        return result
+
+    def test_authenticated_pre_yield_refusal_admits_build_and_preserves_parent(self):
+        self.pre_sign_fixture()
+        before = (self.peer.checkpoint.path / 'checkpoint.json').read_bytes()
+        result = self.pre_sign_admit()
+        self.assertEqual(result['mode'], 'build')
+        self.assertEqual(result['refusal_artifact']['id'], 56)
+        self.assertEqual(result['context']['origin']['run_id'], 998)
+        self.assertEqual(before, (self.peer.checkpoint.path / 'checkpoint.json').read_bytes())
+        import macos_distribution as dist
+        env = dict(self.env, MACOS_SIGNING_P12_BASE64='never consumed')
+        with patch.object(dist, 'credentials'), patch.object(dist.sys, 'platform', 'darwin'), \
+             patch.object(dist.os, 'uname', return_value=SimpleNamespace(machine='arm64')), \
+             patch.object(dist, 'run', side_effect=['a' * 40, '']), \
+             patch('signing_payload.helper_hash', return_value=production.checksum(self.inputs / 'helper/symphony-host')), \
+             patch.object(dist, 'signing_directory', side_effect=RuntimeError('before keychain')):
+            with self.assertRaisesRegex(RuntimeError, 'before keychain'):
+                dist.build(self.inputs / 'internal/release.json', self.inputs / 'helper/symphony-host',
+                    self.root / 'retried', env, self.inputs / 'packages' / self.peer.qualified.name,
+                    self.inputs / 'qualification.json', result)
+        state = json.loads((self.root / 'retried.checkpoint/checkpoint.json').read_text())
+        self.assertEqual(state['context']['origin']['run_id'], 999)
+        self.assertEqual(state['continuations'][0]['admission'], result)
+        self.assertEqual(state['submissions'], {})
+
+    def test_empty_maps_without_positive_refusal_or_complete_cleanup_never_admit(self):
+        self.pre_sign_fixture()
+        original = copy.deepcopy(self.diagnostics)
+        variants = [ {'schema': 1, 'operations': []},
+                     dict(original, operations=original['operations'][:-1]),
+                     dict(original, operations=original['operations'] + [{'stage': 'signature.sign', 'status': 'running'}])]
+        changed = copy.deepcopy(original); changed['operations'][11]['status'] = 'success'; variants.append(changed)
+        changed = copy.deepcopy(original); changed['operations'][-1]['status'] = 'failed'; variants.append(changed)
+        changed = copy.deepcopy(original); changed['operations'][10]['status'] = 'running'; variants.append(changed)
+        for diagnostics in variants:
+            with self.subTest(diagnostics=diagnostics):
+                self.diagnostics = diagnostics
+                with self.assertRaises(ValueError): self.pre_sign_admit()
+                self.assertFalse((self.root / 'imported-admission.json').exists())
+                for folder in ('imported', 'imported-refusal'):
+                    shutil.rmtree(self.root / folder, ignore_errors=True)
+
+    def test_pre_sign_recovery_refuses_any_uncertain_effect_or_foreign_binding(self):
+        self.pre_sign_fixture(); original = copy.deepcopy(self.peer.checkpoint.value)
+        for mutation in ({'intents': {'payload': 'b' * 64}}, {'dmg_state': 'preparing'},
+                         {'signed_helper_sha256': 'b' * 64}, {'continuations': []},
+                         {'submissions': {'payload': {'id': 'unknown'}}}, {'checks': [{'status': 'failed'}]},
+                         {'source_revision': 'b' * 40}, {'archive_name': 'foreign.tar.gz'}):
+            with self.subTest(mutation=mutation):
+                self.peer.checkpoint.value = dict(original, **mutation); self.peer.checkpoint.save(); self.pack()
+                with self.assertRaises(ValueError): self.pre_sign_admit()
+                self.assertFalse((self.root / 'imported-admission.json').exists())
+                for folder in ('imported', 'imported-refusal'):
+                    shutil.rmtree(self.root / folder, ignore_errors=True)
+        self.peer.checkpoint.value = copy.deepcopy(original)
+        self.peer.checkpoint.value['context']['identity']['certificate_sha1'] = 'B' * 40
+        self.peer.checkpoint.save(); self.pack()
+        with self.assertRaises(ValueError): self.pre_sign_admit()
+
+
     def test_history_filters_unrelated_releases_and_refuses_incomplete_relevant_inventory(self):
         def thousands_of_unrelated_runs(path, binary=False):
             if path.startswith('actions/workflows/'):

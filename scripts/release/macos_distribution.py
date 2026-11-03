@@ -948,7 +948,7 @@ def ready_distribution(output, distribution):
         f'{digest}  {name}\n' for name, digest in distribution['artifacts'].items()))
 
 
-def build(manifest, helper, output, env, qualified_archive=None, qualification=None):
+def build(manifest, helper, output, env, qualified_archive=None, qualification=None, pre_sign_recovery=None):
     credentials(env)  # Refuse before touching keychains or invoking unqualified code.
     require(sys.platform == 'darwin' and os.uname().machine == 'arm64', 'requires native Apple Silicon macOS')
     require(not output.exists(), 'signed output must be a new directory')
@@ -967,6 +967,21 @@ def build(manifest, helper, output, env, qualified_archive=None, qualification=N
     checkpoint = SignedCheckpoint(output, revision, manifest, original)
     checkpoint.value['context'] = signing_context(qualified_archive, env, qualification)
     checkpoint.value['archive_name'] = qualified_archive.name
+    if pre_sign_recovery is not None:
+        previous = pre_sign_recovery
+        context = checkpoint.value['context']
+        require(context['origin']['kind'] == 'actions' and previous['mode'] == 'build'
+                and previous['origin']['kind'] == 'actions'
+                and previous['origin']['repository'] == context['origin']['repository']
+                and previous['origin']['workflow'] == context['origin']['workflow']
+                and previous['origin']['run_id'] < context['origin']['run_id']
+                and previous['context'] == dict(context, origin=previous['origin'])
+                and re.fullmatch(r'[a-f0-9]{64}', previous['checkpoint_sha256'])
+                and all(re.fullmatch(r'sha256:[a-f0-9]{64}', previous[key]['digest'])
+                        for key in ('artifact', 'refusal_artifact')),
+                'pre-sign recovery admission differs from current qualified Actions context')
+        checkpoint.value['continuations'] = [{'checkpoint_sha256': previous['checkpoint_sha256'],
+                                             'origin': previous['origin'], 'admission': previous}]
     checkpoint.save()
     # Outputs stay private until all signatures, notarization and assessment pass.
     with signing_directory(env) as private:
@@ -1048,6 +1063,8 @@ def main():
     signed.add_argument('--qualified-package', type=Path, required=True,
                         help='original package imported from the approved qualification')
     signed.add_argument('--qualification', type=Path, help='exact original qualification receipt')
+    signed.add_argument('--pre-sign-recovery', type=Path,
+                        help='service-admitted pre-yield refusal; production workflow only')
     signed.add_argument('--authorize-apple-upload', action='store_true', required=True,
                         help='operator has approved this exact source/candidate and credential use')
     continued = commands.add_parser('resume', parents=[], help='continue an exact retained checkpoint into a new output')
@@ -1074,7 +1091,8 @@ def main():
     try:
         if args.command == 'build':
             build(args.manifest.resolve(), args.helper.resolve(), args.output.resolve(), os.environ,
-                  args.qualified_package.resolve(), args.qualification.resolve() if args.qualification else None)
+                  args.qualified_package.resolve(), args.qualification.resolve() if args.qualification else None,
+                  json.loads(args.pre_sign_recovery.read_text()) if args.pre_sign_recovery else None)
         elif args.command == 'resume':
             resume(args.manifest.resolve(), args.helper.resolve(), args.output.resolve(), os.environ,
                    args.qualified_package.resolve(), args.checkpoint.absolute(), args.checkpoint_sha256,
