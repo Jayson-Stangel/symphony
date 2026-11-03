@@ -358,7 +358,11 @@ source for a later updater transition. A normal run can restart the same profile
 ## Provider and image transitions
 
 After reviewed promotion and explicit approval for the exact stable rollout, use
-the installed updater from the target repository:
+the installed updater from the target repository. First follow the
+[idle update procedure](operations.md#idle-update-procedure): pause admission,
+finish active work and normally stop all runners in the affected installation.
+Keep the existing provider and selected environment for an ordinary update;
+provider or image changes require their own approved scope.
 
 ```sh
 symphony update --agent claude
@@ -367,10 +371,9 @@ symphony update --agent claude
 symphony update --rollback-runner
 ```
 
-The updater preflights the candidate, drains the qualified listener, waits for
-zero workers, retains the stopped prior container, and checks exclusive volume
-ownership before migrating root-owned workspace/state files to UID 11001. It
-pins the candidate image ID and journals the transition. It resumes the
+The updater preflights the candidate, retains the stopped prior container, and
+checks exclusive volume ownership before migrating root-owned workspace/state
+files to UID 11001. It pins the candidate image ID and journals the transition. It resumes the
 candidate only after native runtime/login readiness and verifies its effective admission
 result before removing the stopped prior container. A retained quota cooldown is
 reported explicitly as intentionally paused until its reset; it is not operational
@@ -384,11 +387,12 @@ and logs.
 replace an active listener. The previous Codex listener format has no provider or
 port labels and no drain API. The updater qualifies it using repository storage,
 workspace/state/login mounts, the read-only workflow mount, the original entrypoint,
-and the loopback port recorded in its metadata. First use `symphony update` without
-flags to install the new command if the installed version predates provider support.
-To migrate the runner, finish active work, then use
-`symphony update --pause-runner` explicitly. This performs a graceful
-stop with retained volumes; it cannot drain an old listener. Retry
+and the loopback port recorded in its metadata. For this older format, hold new
+work outside the listener and let active work finish before normally stopping it;
+its missing drain API cannot pause admission. Stop the other installation runners
+as described above before invoking any updater command. If the installed version
+predates provider support, use `symphony update` without flags to install the new
+command, then invoke
 `symphony update --agent codex` or `symphony update --agent claude` to replace the
 stopped listener. Rollback understands its previous state API. Unknown legacy
 formats or mismatched ownership are refused. Do not repair
