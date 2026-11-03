@@ -71,8 +71,17 @@ PERSISTENT_TARGETS = {
     '.github/workflows/package-checks.yml': {'native-host-package'},
     '.github/workflows/native-manager-helpers.yml': {'helper'},
     '.github/workflows/current-manager-package.yml': {'package'},
-    '.github/workflows/runner-release.yml': {'packaged-candidate'},
+    '.github/workflows/runner-release.yml': {'packaged-candidate', 'packaged-release-platform'},
     '.github/workflows/burrito-release.yml': {'build', 'controller-diagnostics'},
+}
+# These are the actual production_prepare consumers, including the helper
+# producer reached through runner-release -> package-checks. Reusable workflows
+# retain the original burrito-release event, not their workflow_call inputs.
+PRODUCTION_PREPARE_TARGETS = {
+    ('.github/workflows/burrito-release.yml', 'build'),
+    ('.github/workflows/package-checks.yml', 'native-host-package'),
+    ('.github/workflows/runner-release.yml', 'packaged-candidate'),
+    ('.github/workflows/runner-release.yml', 'packaged-release-platform'),
 }
 
 
@@ -84,8 +93,25 @@ def persistent_runner(env, event, consumer, job_key, requested=True, verify=veri
         raise Refusal('persistent Mac runner label differs from the configured repository runner')
     if consumer not in PERSISTENT_TARGETS or job_key not in PERSISTENT_TARGETS[consumer]:
         return None
-    if any(str(event.get('inputs', {}).get(k, '')).lower() == 'true'
-           for k in ('production_prepare', 'prepare_release', 'publish')):
+    inputs = event.get('inputs', {})
+    if any(str(inputs.get(k, '')).lower() == 'true' for k in ('prepare_release', 'publish')):
+        return None
+    preparing = str(inputs.get('production_prepare', '')).lower() == 'true'
+    if preparing:
+        if ((consumer, job_key) not in PRODUCTION_PREPARE_TARGETS
+                or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+                or env.get('GITHUB_REF') != 'refs/heads/main'
+                or env.get('GITHUB_WORKFLOW_REF') !=
+                    REPOSITORY + '/.github/workflows/burrito-release.yml@refs/heads/main'):
+            return None
+        if (str(inputs.get('packaged_host_preparation', '')).lower() != 'true'
+                or inputs.get('packaged_host_revision') != env.get('GITHUB_SHA')
+                or env.get('GITHUB_WORKFLOW_SHA') != env.get('GITHUB_SHA')
+                or any(str(inputs.get(k, '')).lower() == 'true' for k in ('engine_only', 'controller_only'))
+                or inputs.get('bootstrap_previous')):
+            raise Refusal('production preparation requires the exact approved main source and full qualification')
+    elif job_key == 'packaged-release-platform':
+        # This target is newly enabled only for the guarded preparation path.
         return None
     request, _ = request_from_event(env, event, consumer, job_key, verify=verify)
     if request is None:
@@ -163,7 +189,14 @@ def main():
                 print('eligible=true\nstatus_read=not-required\npersistent=true')
             elif not sys.argv[1:]:
                 print('runner=' + persistent['runner'])
-                print(persistent['reason'], file=sys.stderr)
+                summary = ('Owned Mac capacity route: persistent; runner=' + persistent['runner']
+                           + '; consumer=' + os.environ['SELECT_WORKFLOW_PATH']
+                           + '; job=' + os.environ['SELECT_JOB_KEY'] + '; ' + persistent['reason']
+                           + '; readiness is not test qualification.')
+                print(summary, file=sys.stderr)
+                if os.environ.get('GITHUB_STEP_SUMMARY'):
+                    with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                        output.write(summary + '\n')
             else:
                 raise Refusal('unknown persistent Mac selector argument')
             return 0

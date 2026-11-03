@@ -106,7 +106,7 @@ class DistributionTest(unittest.TestCase):
             path.write_text(PEER)
             path.chmod(0o755)
         self.log = self.root / 'commands.jsonl'
-        self.env = dict(os.environ, PATH=str(self.tools) + os.pathsep + os.environ['PATH'],
+        self.env = dict(os.environ, RUNNER_TEMP=str(self.root), PATH=str(self.tools) + os.pathsep + os.environ['PATH'],
                         MACOS_SIGNING_P12_BASE64=base64.b64encode(b'FAKE P12').decode(),
                         MACOS_SIGNING_P12_PASSWORD='FAKE password', MACOS_SIGNING_IDENTITY_SHA1=IDENTITY,
                         MACOS_TEAM_ID=TEAM, MACOS_NOTARY_APPLE_ID='fixture@example.invalid',
@@ -128,7 +128,7 @@ class DistributionTest(unittest.TestCase):
 
     def keychain(self):
         private = self.root / 'private'
-        private.mkdir(exist_ok=True)
+        private.mkdir(mode=0o700, exist_ok=True)
         evidence = self.root / 'evidence'
         evidence.mkdir(exist_ok=True)
         return dist.signing_keychain(self.env, private, evidence)
@@ -197,6 +197,51 @@ class DistributionTest(unittest.TestCase):
         self.assertEqual(records['cleanup.verify-p12-absent']['status'], 'success')
         self.assert_private_diagnostics()
 
+    def test_recovery_record_is_private_and_durable_before_p12_decode(self):
+        decode = dist.base64.b64decode
+        def inspect(*args, **kwargs):
+            record = self.root / 'private' / dist.CLEANUP_RECORD
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+            self.assertEqual(json.loads(record.read_text()),
+                             {'schema': 1, 'search_list': ['/original/login.keychain-db']})
+            self.assertFalse((record.parent / 'identity.p12').exists())
+            return decode(*args, **kwargs)
+        with patch.object(dist.base64, 'b64decode', side_effect=inspect):
+            with self.keychain():
+                pass
+        self.assertFalse((self.root / 'private' / dist.CLEANUP_RECORD).exists())
+
+    def test_primary_failure_and_cancellation_preserve_uncertain_cleanup_for_hook(self):
+        real_run = dist.run
+        def invoke(*args, **kwargs):
+            if kwargs.get('stage') == 'cleanup.restore-search-list':
+                raise dist.CommandFailure('cleanup.restore-search-list', 'failed', 45)
+            return real_run(*args, **kwargs)
+        for failure in (ValueError('primary refused'), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__), patch.object(dist, 'run', side_effect=invoke):
+                with self.assertRaises(type(failure)) as caught:
+                    with dist.signing_directory({'RUNNER_TEMP': str(self.root)}) as private:
+                        with dist.signing_keychain(self.env, private):
+                            raise failure
+                self.assertIs(caught.exception, failure)
+                self.assertTrue(private.is_dir())
+                self.assertTrue((private / dist.CLEANUP_RECORD).is_file())
+                # Ordinary retry must not overwrite unresolved cleanup metadata.
+                count = len(self.commands())
+                with self.assertRaisesRegex(ValueError, 'unreconciled'):
+                    with dist.signing_keychain(self.env, private):
+                        self.fail('must refuse')
+                self.assertEqual(len(self.commands()), count)
+                # Repair only this inert command-peer state for the next case.
+                Path(str(self.log) + '.keychains').write_text(json.dumps(['/original/login.keychain-db']))
+
+    def test_verified_cleanup_removes_private_directory_after_primary_error(self):
+        with self.assertRaisesRegex(ValueError, 'primary refused'):
+            with dist.signing_directory({'RUNNER_TEMP': str(self.root)}) as private:
+                with dist.signing_keychain(self.env, private):
+                    raise ValueError('primary refused')
+        self.assertFalse(private.exists())
+
     def test_wrong_team_import_failure_and_interruption_cleanup(self):
         for failure in ('wrong-team', 'security import', 'interrupt'):
             with self.subTest(failure=failure):
@@ -264,6 +309,7 @@ class DistributionTest(unittest.TestCase):
                 self.assertEqual(next(x for x in self.diagnostics()
                                       if x['stage'] == 'cleanup.verify-search-list-restored')['status'], 'success')
                 self.assert_private_diagnostics()
+                (self.root / 'private').rename(self.root / ('retained-' + str(interrupted)))
 
     def test_evidence_io_failure_does_not_block_cleanup_or_mask_primary_error(self):
         with patch.object(dist, 'write_json', side_effect=OSError('FAKE-SECRET-MUST-NOT-LEAK')):
@@ -279,7 +325,7 @@ class DistributionTest(unittest.TestCase):
         self.assertFalse((self.root / 'private/signing.keychain-db').exists())
         self.assertEqual(len([c for c in self.commands() if c[:2] == ['security', 'delete-keychain']]), 2)
 
-    def test_cleanup_inspect_failure_still_restores_and_verifies_saved_search_list(self):
+    def test_cleanup_inspect_failure_does_not_overwrite_unobserved_search_list(self):
         real_run = dist.run
 
         def invoke(*args, **kwargs):
@@ -292,9 +338,18 @@ class DistributionTest(unittest.TestCase):
                 with self.keychain():
                     pass
         records = {x['stage']: x for x in self.diagnostics()}
-        self.assertEqual(records['cleanup.restore-search-list']['status'], 'success')
-        self.assertEqual(records['cleanup.verify-search-list-restored']['status'], 'success')
-        self.assertTrue(any('-s' in cmd for cmd in self.commands()))
+        self.assertNotIn('cleanup.restore-search-list', records)
+        self.assertEqual(records['cleanup.check-search-list']['status'], 'failed')
+        self.assertTrue((self.root / 'private' / dist.CLEANUP_RECORD).exists())
+
+    def test_cleanup_does_not_remove_unrelated_concurrent_keychain_entry(self):
+        with self.assertRaisesRegex(ValueError, 'keychain cleanup failed'):
+            with self.keychain():
+                state = Path(str(self.log) + '.keychains')
+                observed = json.loads(state.read_text()) + ['/unrelated/added.keychain-db']
+                state.write_text(json.dumps(observed))
+        self.assertEqual(json.loads(state.read_text()), observed)
+        self.assertTrue((self.root / 'private' / dist.CLEANUP_RECORD).exists())
 
     def test_keychain_stat_failure_does_not_mask_import_or_skip_search_list_cleanup(self):
         real_exists = Path.exists
@@ -454,7 +509,7 @@ class DistributionTest(unittest.TestCase):
         original = dist.checksum(helper)
         manifest = self.root / 'release.json'
         manifest.write_text('{}')
-        qualified = self.root / 'qualified-package.tar.gz'
+        qualified = self.root / 'symphony-fixture-macos.tar.gz'
         original_bundle = self.root / 'original-bundle'
         (original_bundle / 'libexec').mkdir(parents=True)
         (original_bundle / 'libexec/symphony-host').write_bytes(helper.read_bytes())
@@ -507,12 +562,15 @@ class DistributionTest(unittest.TestCase):
                 return ''
             return real_run(*args, **kwargs)
 
-        for failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'security delete-keychain', ''):
+        retained = set()
+        for failure in ('package evidence', 'payload modes', 'directory modes', 'inventory modes', 'checkpoint retention', 'codesign -vvvv', 'spctl --assess', 'mounted payload', 'security delete-keychain', ''):
             output = self.root / (failure.split()[0] if failure else 'success')
             retention_failure = (patch.object(dist.SignedCheckpoint, 'retain', side_effect=OSError('FAKE SECRET /PRIVATE/PATH'))
                                  if failure == 'checkpoint retention' else nullcontext())
             with patch.object(dist.sys, 'platform', 'darwin'), patch.object(dist.os, 'uname') as uname, \
-                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask():
+                    patch.object(dist, 'run', side_effect=invoke), patch.dict(os.environ, PEER_FAIL=failure), retention_failure, private_umask(), \
+                    patch.object(dist, 'verify_mounted_payload',
+                          side_effect=ValueError('mounted payload mismatch') if failure == 'mounted payload' else None):
                 uname.return_value.machine = 'arm64'
                 if failure:
                     with self.assertRaises(OSError if failure == 'checkpoint retention' else ValueError):
@@ -539,7 +597,15 @@ class DistributionTest(unittest.TestCase):
                         self.assertEqual(dist.checksum(output / name), digest)
                     self.assertTrue((output / 'symphony-fixture-macos.dmg').read_bytes().endswith(b'-stapled'))
                     self.assertEqual(dist.checksum(helper), original)
-            self.assertFalse(list(self.root.glob('symphony-signing-*')))
+            current = set(self.root.glob('symphony-signing-*'))
+            if failure == 'security delete-keychain':
+                self.assertEqual(len(current - retained), 1)
+                private = next(iter(current - retained))
+                self.assertTrue((private / dist.CLEANUP_RECORD).is_file())
+                self.assertTrue((private / 'signing.keychain-db').is_file())
+            else:
+                self.assertEqual(current, retained)
+            retained = current
 
     def test_package_shell_failure_retains_nested_stage_without_output(self):
         evidence = self.root / 'package.json'

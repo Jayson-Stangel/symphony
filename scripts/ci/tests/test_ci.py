@@ -21,6 +21,14 @@ validator = module('check_pr_body')
 
 
 class EventReplay(unittest.TestCase):
+    def test_shared_git_helper_selects_both_providers_and_credential_contracts(self):
+        selected, _reason = classifier.consumer_selection('runner/claude/git-credential.sh')
+        self.assertEqual(selected, {'application', 'claude', 'contracts'})
+        selected, _reason = classifier.consumer_selection('runner/entrypoint.sh')
+        self.assertEqual(selected, {'application', 'contracts'})
+        selected, _reason = classifier.consumer_selection('runner/claude/entrypoint.sh')
+        self.assertEqual(selected, {'claude', 'contracts'})
+
     def test_real_git_events(self):
         with tempfile.TemporaryDirectory() as folder:
             def git(*args):

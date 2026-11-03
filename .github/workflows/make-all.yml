@@ -177,15 +177,20 @@ jobs:
       - name: Select audited coverage preparation and isolated cache family
         id: profile
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py select
+      - name: Prove actual read-only evidence service access
+        id: capability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py capability
       - name: Set up mise tools
-        if: steps.profile.outputs.supported == 'false'
+        if: steps.capability.outputs.supported == 'false'
         uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           install: true
-          cache: ${{ steps.profile.outputs.supported == 'false' }}
+          cache: ${{ steps.capability.outputs.supported == 'false' }}
           working_directory: elixir
       - name: Cache ordinary deps and build
-        if: steps.profile.outputs.supported == 'false'
+        if: steps.capability.outputs.supported == 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -194,13 +199,10 @@ jobs:
           key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-
-      - name: Prove actual read-only evidence service access
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py capability
       - name: Load immutable protected-dev coverage controller or force fresh
         id: controller
         env:
+          COVERAGE_EVIDENCE_AVAILABLE: ${{ steps.capability.outputs.available }}
           GH_TOKEN: ${{ github.token }}
         run: |
           /usr/bin/python3 -B -I - <<'PY'
@@ -214,7 +216,7 @@ jobs:
           eligible = ((os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ.get('GITHUB_REF') in ('refs/heads/dev','refs/heads/main'))
               or (os.environ['GITHUB_EVENT_NAME'] == 'pull_request'
               and os.environ.get('COVERAGE_HEAD_REPOSITORY') == 'Jayson-Stangel/symphony'))
-          if eligible:
+          if eligible and os.environ.get('COVERAGE_EVIDENCE_AVAILABLE') == 'true':
               try:
                   temporary = Path(os.environ['RUNNER_TEMP'])
                   home = temporary / 'symphony-coverage-bootstrap-fetch-v1'
@@ -250,10 +252,10 @@ jobs:
               target.write('No eligible immutable protected-dev controller; full coverage is forced fresh.\n')
           PY
       - name: Prove read-only OCI tool and isolation profile
-        if: steps.profile.outputs.supported == 'true'
+        if: steps.capability.outputs.supported == 'true'
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py oci_setup
       - name: Authenticate protected-origin cache before preparation
-        if: steps.profile.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'
+        if: steps.capability.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: /usr/bin/python3 -B "${{ steps.controller.outputs.controller }}/elixir_coverage.py" warm
@@ -293,7 +295,7 @@ jobs:
 
       - name: Prepare bounded unqualified public input diagnostics
         id: diagnostics
-        if: always() && steps.profile.outputs.supported == 'true' && (failure() || (steps.producer.outputs.available != 'true' && steps.evidence.outputs.mode != 'REUSED'))
+        if: always() && steps.capability.outputs.supported == 'true' && (failure() || (steps.producer.outputs.available != 'true' && steps.evidence.outputs.mode != 'REUSED'))
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py diagnostics
       - name: Retain unqualified public input diagnostics
         if: always() && steps.diagnostics.outputs.available == 'true'
@@ -306,7 +308,7 @@ jobs:
           compression-level: 1
 
       - name: Remove owned OCI execution resources
-        if: always() && steps.profile.outputs.supported == 'true'
+        if: always() && steps.capability.outputs.supported == 'true'
         run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py cleanup
 
   claude-checks:

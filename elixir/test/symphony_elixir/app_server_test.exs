@@ -1857,6 +1857,100 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "GitHub tracker scrubbing preserves selected Git capability in the local Codex child" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "git-child-boundary")
+    home = Path.join(root, "home")
+    workspace = Path.join(root, "workspaces/issue")
+    File.mkdir_p!(home)
+    File.mkdir_p!(workspace)
+    helper = Path.join(root, "symphony-git-credential")
+    File.cp!(Path.expand("../../../runner/claude/git-credential.sh", __DIR__), helper)
+    File.chmod!(helper, 0o755)
+    marker = Path.join(root, "git-ready")
+    binary = Path.join(root, "fake-codex")
+
+    environment = %{
+      "HOME" => home,
+      "GIT_CONFIG_GLOBAL" => Path.join(home, ".gitconfig"),
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_TERMINAL_PROMPT" => "0",
+      "GIT_ASKPASS" => "false",
+      "GH_TOKEN" => "synthetic-selected-git",
+      "GITHUB_TOKEN" => "synthetic-other-alias",
+      "SYMPHONY_GITHUB_TOKEN" => "synthetic-tracker-only",
+      "SYMPHONY_GIT_TOKEN" => "synthetic-unselected-ambient"
+    }
+
+    for {key, value} <- environment do
+      previous = System.get_env(key)
+      System.put_env(key, value)
+      on_exit(fn -> restore_env(key, previous) end)
+    end
+
+    configuration =
+      Path.expand("../../../runner/entrypoint.sh", __DIR__)
+      |> File.read!()
+      |> String.split("\n")
+      |> Enum.filter(&(String.starts_with?(&1, "git config --global") or String.starts_with?(&1, "export SYMPHONY_GIT_TOKEN=")))
+      |> Enum.join("\n")
+      |> String.replace("/usr/local/bin/symphony-git-credential", helper)
+
+    # Consume the real entrypoint binding before the listener/Port boundary.
+    assert {selected_route, 0} = System.cmd("sh", ["-ec", configuration <> ~s(\nprintf '%s' "${SYMPHONY_GIT_TOKEN:-}")], cd: home)
+    System.put_env("SYMPHONY_GIT_TOKEN", selected_route)
+    fill = "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill"
+    assert {manager_credentials, 0} = System.cmd("sh", ["-ec", fill], cd: home)
+    assert manager_credentials =~ "password=synthetic-selected-git"
+
+    File.write!(binary, """
+    #!/bin/sh
+    set -eu
+    [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${SYMPHONY_GITHUB_TOKEN:-}" ] || exit 41
+    for url in https://github.com/example/private.git git@github.com:example/private.git ssh://git@github.com/example/private.git; do
+      resolved=$(git ls-remote --get-url "$url")
+      [ "$resolved" = https://github.com/example/private.git ] || exit 42
+      credentials=$(printf 'url=%s\\n\\n' "$resolved" | git credential fill)
+      printf '%s\\n' "$credentials" | grep -qx 'password=synthetic-selected-git' || exit 43
+    done
+    printf git-ready > "#{marker}"
+    while IFS= read -r line; do
+      case "$line" in
+        *'"method":"initialize"'*) printf '%s\\n' '{"id":1,"result":{}}' ;;
+        *'"method":"thread/start"'*) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"git-child-thread"}}}' ;;
+      esac
+    done
+    """)
+
+    File.chmod!(binary, 0o755)
+
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: github
+      provider:
+        repo: example/private
+        token: $SYMPHONY_GITHUB_TOKEN
+      active_states: [open]
+      terminal_states: [closed]
+    workspace:
+      root: #{Path.join(root, "workspaces")}
+    codex:
+      command: #{binary} app-server
+      read_timeout_ms: 1000
+    ---
+    Synthetic local child credential boundary; no model or network request.
+    """)
+
+    WorkflowStore.force_reload()
+    SymphonyElixir.TestSupport.record_sandbox_fixture()
+    binding = Tracker.bind_agent_tools()
+    assert Enum.all?(["GH_TOKEN", "GITHUB_TOKEN", "SYMPHONY_GITHUB_TOKEN"], &(&1 in binding.secret_environment_names))
+    assert {:ok, session} = AppServer.start_session(workspace)
+    AppServer.stop_session(session)
+    assert File.read!(marker) == "git-ready"
+    refute File.read!(Path.join(home, ".gitconfig")) =~ "synthetic-"
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(

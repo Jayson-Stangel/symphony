@@ -477,6 +477,13 @@ the shared manager and skills; `--agent` also transitions only that project's
 runner. Other projects keep their qualified image and retained storage until
 their own explicit transition.
 
+First follow the [idle update procedure](operations.md#idle-update-procedure):
+pause admission, finish active work and normally stop all runners in the affected
+installation. `update --agent` owns the target's replacement startup, readiness
+checks and admission resume before returning; no separate target restart is
+needed. Other projects remain stopped until their normal restart/readiness under
+the intake hold. This procedure does not change provider or selected image pins.
+
 ```sh
 symphony update                         # latest completed production manager
 symphony update --agent codex           # manager and this project's runner
@@ -501,7 +508,7 @@ manager update, including one using alternate configuration paths.
 
 ```sh
 # Retry an interrupted transition at its already selected release, without
-# consulting latest or requiring the original archive again:
+# new release/candidate flags or requiring the original archive again:
 symphony update --agent codex
 # Restore the retained prior runner and its compatible manager after failure:
 symphony update --rollback-runner

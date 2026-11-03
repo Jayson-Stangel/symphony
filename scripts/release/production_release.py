@@ -136,6 +136,87 @@ def qualification(run_id, attempt, revision, destination, fetch=api):
     return receipt
 
 
+def signing_attempt(revision, current_run, current_attempt, resume_run='', resume_attempt='', fetch=api):
+    """Existing Actions concurrency serializes effects; history refuses repeats."""
+    require(re.fullmatch(r'[1-9][0-9]*', str(current_run)) and str(current_attempt) == '1',
+            'ordinary signing rerun refused; start a new explicit continuation run')
+    require(bool(resume_run) == bool(resume_attempt), 'both original signing run and attempt are required')
+    require(re.fullmatch(r'[a-f0-9]{40}', revision), 'invalid signing source')
+    listing = fetch('actions/workflows/macos-production-signing.yml/runs?event=workflow_dispatch&head_sha=' + revision + '&per_page=100')
+    require(type(listing.get('total_count')) is int and isinstance(listing.get('workflow_runs'), list)
+            and listing['total_count'] == len(listing['workflow_runs']) <= 100
+            and all(isinstance(r, dict) and r.get('head_sha') == revision for r in listing['workflow_runs']),
+            'exact-source signing history incomplete or exceeds bound; reconcile before signing')
+    current = [r for r in listing['workflow_runs'] if str(r['id']) == str(current_run)]
+    require(len(current) == 1 and current[0].get('head_sha') == revision
+            and current[0].get('head_branch') == 'main'
+            and current[0].get('path') == '.github/workflows/macos-production-signing.yml'
+            and current[0].get('event') == 'workflow_dispatch'
+            and current[0].get('head_repository', {}).get('full_name') == REPOSITORY
+            and current[0].get('run_attempt') == int(current_attempt),
+            'current protected signing run missing or differs; no submission authorized')
+    prior = [r for r in listing['workflow_runs'] if r.get('head_sha') == revision and str(r['id']) != str(current_run)]
+    require(all(r.get('head_branch') and r.get('path') == '.github/workflows/macos-production-signing.yml'
+                and r.get('event') == 'workflow_dispatch'
+                and r.get('head_repository', {}).get('full_name') == REPOSITORY for r in prior),
+            'signing history identity uncertain; reconcile before signing')
+    prior = [r for r in prior if r['head_branch'] == 'main']
+    require(all(r.get('status') == 'completed' and r.get('conclusion') in ('failure', 'cancelled', 'timed_out')
+                for r in prior), 'signing is active, succeeded or uncertain; reconcile before signing')
+    if not resume_run:
+        require(not prior, 'original signing attempt exists; use explicit continuation, never repeat build')
+        return None
+    require(re.fullmatch(r'[1-9][0-9]*', str(resume_run)) and
+            re.fullmatch(r'[1-9][0-9]*', str(resume_attempt)) and prior
+            and int(resume_run) == max(int(r['id']) for r in prior),
+            'continuation must use the latest original attempt; reconcile conflicting runs')
+    run = fetch(f'actions/runs/{resume_run}')
+    require(run.get('path') == '.github/workflows/macos-production-signing.yml'
+            and run.get('head_sha') == revision and run.get('head_branch') == 'main'
+            and run.get('event') == 'workflow_dispatch' and run.get('status') == 'completed'
+            and run.get('conclusion') in ('failure', 'cancelled', 'timed_out')
+            and run.get('run_attempt') == int(resume_attempt)
+            and run.get('head_repository', {}).get('full_name') == REPOSITORY,
+            'original protected signing run/source/attempt differs')
+    exact = fetch(f'actions/runs/{resume_run}/attempts/{resume_attempt}')
+    require(exact.get('head_sha') == revision and exact.get('run_attempt') == int(resume_attempt)
+            and exact.get('status') == 'completed' and exact.get('conclusion') == run['conclusion'],
+            'original signing attempt is not completed or differs')
+    jobs = fetch(f'actions/runs/{resume_run}/attempts/{resume_attempt}/jobs?per_page=100')
+    matches = [j for j in jobs['jobs'] if j['name'] == 'Sign exact production preparation']
+    require(jobs.get('total_count', len(jobs['jobs'])) <= 100 and len(matches) == 1
+            and matches[0].get('conclusion') in ('failure', 'cancelled', 'timed_out'),
+            'original protected signing job did not produce resumable failure')
+    return {'kind': 'actions', 'repository': REPOSITORY,
+            'workflow': REPOSITORY + '/.github/workflows/macos-production-signing.yml',
+            'run_id': int(resume_run), 'run_attempt': int(resume_attempt)}
+
+
+def checkpoint_inputs(inputs, destination, revision, current_run, current_attempt,
+                      resume_run='', resume_attempt='', env=os.environ, fetch=api):
+    """Credential-free source/attempt/artifact admission for the protected job."""
+    origin = signing_attempt(revision, current_run, current_attempt, resume_run, resume_attempt, fetch)
+    if origin is None:
+        return
+    artifact = download(resume_run, resume_attempt, revision,
+                        f'production-signing-checkpoint-{revision}-{resume_run}-{resume_attempt}', destination, fetch)
+    destination.chmod(0o700)
+    require(all(p.is_file() and not p.is_symlink() for p in destination.iterdir()),
+            'unexpected checkpoint archive layout')
+    for path in destination.iterdir(): path.chmod(0o600)
+    manifest = inputs / 'internal/release.json'
+    package = inputs / 'packages' / json.loads(manifest.read_text())['bundles']['macos']['filename']
+    from macos_distribution import SignedCheckpoint, signing_context, validate_retained_native
+    context = signing_context(package, env, inputs / 'qualification.json')
+    digest = checksum(destination / 'checkpoint.json')
+    retained = SignedCheckpoint.load(destination, revision, manifest, checksum(inputs / 'helper/symphony-host'), digest, context)
+    require(retained.value['context']['origin'] == origin, 'checkpoint embedded producer origin differs')
+    validate_retained_native(retained, package, inputs / 'helper/symphony-host', env)
+    admission = {'origin': origin, 'artifact': artifact, 'checkpoint_sha256': digest}
+    write_json(destination.with_name(destination.name + '-admission.json'), admission)
+    return admission
+
+
 def seal_signed(inputs, output, revision):
     """Finalize the existing updater contract and bind signed bytes to original Q."""
     import importlib.util
@@ -197,7 +278,9 @@ def verify_signed(folder, inputs, revision):
     required_cleanup = {'cleanup.remove-p12', 'cleanup.verify-p12-absent', 'cleanup.delete-keychain',
                         'cleanup.verify-keychain-absent', 'cleanup.inspect-search-list',
                         'cleanup.verify-search-list-restored'}
-    require(required_cleanup <= set(cleanup) and set(cleanup) <= required_cleanup | {'cleanup.restore-search-list', 'cleanup.read-restored-search-list'}
+    require(required_cleanup <= set(cleanup) and set(cleanup) <= required_cleanup | {
+                'cleanup.restore-search-list', 'cleanup.read-restored-search-list',
+                'cleanup.check-search-list', 'cleanup.remove-recovery-record', 'cleanup.sync-private-directory'}
             and all(status == 'success' for status in cleanup.values()),
             'production credential cleanup incomplete')
     return manifest
@@ -394,10 +477,14 @@ def source(revision, tag=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('qualify', 'seal', 'signed', 'source', 'compare', 'public', 'publish'))
+    parser.add_argument('mode', choices=('qualify', 'checkpoint-inputs', 'seal', 'signed', 'source', 'compare', 'public', 'publish'))
     parser.add_argument('paths', nargs='*')
     args = parser.parse_args(); revision = os.environ['GITHUB_SHA']
     if args.mode == 'qualify': qualification(args.paths[0], args.paths[1], revision, Path(args.paths[2]))
+    elif args.mode == 'checkpoint-inputs':
+        checkpoint_inputs(Path(args.paths[0]), Path(args.paths[1]), revision,
+                          os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'],
+                          args.paths[2], args.paths[3])
     elif args.mode == 'seal': seal_signed(Path(args.paths[0]), Path(args.paths[1]), revision)
     elif args.mode == 'signed':
         origin = os.environ.get('SIGNED_ORIGIN', 'hosted')
@@ -427,5 +514,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, KeyError, OSError, zipfile.BadZipFile, tarfile.TarError, subprocess.SubprocessError):
+    except (ValueError, KeyError, OSError, TypeError, AttributeError, zipfile.BadZipFile, tarfile.TarError, subprocess.SubprocessError):
         raise SystemExit('Production release refused: exact source, qualification, signing or artifact evidence failed') from None

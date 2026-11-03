@@ -54,9 +54,9 @@ for selection in current previous; do
     grep -q 'package_platform=linux_x86_64' "$source/scripts/symphony-package.sh" || { echo 'previous source lacks Linux package capability' >&2; exit 1; }
   fi
   revision=$(git -C "$source" rev-parse HEAD)
-  version=$(sed -nE 's/^[[:space:]]*version: "([^"]+)",$/\1/p' "$source/elixir/mix.exs" | head -n1)
+  version=$(python3 "$root/scripts/release/engine_version.py" "$source")
   image="localhost:5000/symphony-$provider:$tag"
-  record_flags=(); build_flags=()
+  record_flags=(--source-root "$source"); build_flags=()
   unset SYMPHONY_CANDIDATE_INPUT_IDENTITY
   if [ "${SYMPHONY_CANDIDATE_CAPTURE_INPUTS:-}" = 1 ]; then
     inputs="$destination/$provider-$architecture.inputs.txt"

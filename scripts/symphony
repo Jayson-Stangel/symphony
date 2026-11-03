@@ -138,13 +138,23 @@ except Exception:
     workflow-mount) python3 -c '
 import json, sys
 try:
-    expected, platform = sys.argv[1:]
-    mounts = [m for m in json.load(sys.stdin) if m.get("Destination") == "/etc/symphony/WORKFLOW.md"]
-    valid = {expected}
-    if platform == "Darwin":
-        valid.add("/host_mnt" + expected)
-    owned = (len(mounts) == 1 and mounts[0].get("Type") == "bind"
-             and mounts[0].get("RW") is False and mounts[0].get("Source") in valid)
+    root, platform, layout = sys.argv[1:]
+    # Refuse covering/child mounts: they can hide or replace the owned view.
+    def overlaps(destination):
+        return (destination in ("/", "/etc", "/etc/symphony")
+                or destination.startswith("/etc/symphony/"))
+    mounts = [m for m in json.load(sys.stdin) if overlaps(m.get("Destination", ""))]
+    owned = False
+    if len(mounts) == 1:
+        mount = mounts[0]
+        destination = mount.get("Destination")
+        expected = root if destination == "/etc/symphony" else root + "/WORKFLOW.md"
+        valid = {expected}
+        if platform == "Darwin":
+            valid.add("/host_mnt" + expected)
+        destinations = {"/etc/symphony"} if layout == "directory" else {"/etc/symphony", "/etc/symphony/WORKFLOW.md"}
+        owned = (destination in destinations and mount.get("Type") == "bind"
+                 and mount.get("RW") is False and mount.get("Source") in valid)
 except (ValueError, TypeError, AttributeError):
     owned = False
 sys.exit(0 if owned else 1)' "$@" ;;
@@ -993,6 +1003,19 @@ claude_image_ready() {
   [ "$agent" = claude ] && [ "$uid" = 11001:11001 ] || die 'Claude image does not meet the non-root runner contract'
 }
 
+# Match the listener's actual container identity and mount before disrupting a
+# working single-file listener. A readable file alone does not grant traversal
+# through a private project directory on a native Linux bind.
+runner_claude_workflow_ready() {
+  local root=$1 runtime=$2 image=$3
+  if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --user 11001:11001 --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
+    --entrypoint sh "$image" -ceu 'test -f /etc/symphony/WORKFLOW.md && test -r /etc/symphony/WORKFLOW.md'; then
+    printf '%s\n' 'Claude cannot read the project-root WORKFLOW.md through its directory bind. Provide project-root traversal and workflow read access to container UID/GID 11001:11001, then retry. Host permissions were not changed.' >&2
+    return 1
+  fi
+}
+
 ensure_claude_auth_volume() {
   local root=$1 runtime=$2 volume=$3 storage owner
   storage=$(runner_storage_id "$root")
@@ -1389,7 +1412,7 @@ runner_claude_run() {
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token workflow storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
+  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
   validate_agent "$agent"
   runner_project_lock "$root" || return
   runner_require_identity "$root"
@@ -1401,7 +1424,7 @@ runner_start() {
   id=$(project_id "$root"); runtime=$(container_runtime); name=$(runner_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
   else expected_runtime=$(claude_runtime_profile_id); fi
-  env_file="$runner_home/$id.env"; image=$(runner_image "$agent"); workflow="$root/WORKFLOW.md"
+  env_file="$runner_home/$id.env"; image=$(runner_image "$agent")
   storage_id=$(runner_storage_id "$root")
   project_env="$config_home/projects/$id.env"
   git_token=$credential_git
@@ -1420,6 +1443,9 @@ runner_start() {
     existing_storage=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
     [ "$existing_storage" = "$storage_id" ] || die "container $name has legacy or foreign storage; refusing to replace it"
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")" = listener ] || die 'existing container is not a qualified listener; use the installed updater'
+  fi
+  if [ "$state" != missing ] && [ "$authority" != update ]; then
+    runner_workflow_mount_owned "$root" "$runtime" "$name" directory || die 'listener workflow layout differs; adopt through symphony update --agent'
   fi
   if [ "$state" != missing ] && [ "$agent" = claude ] && [ "$authority" != update ]; then
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = claude ] || die 'listener agent differs; transition through symphony update --agent'
@@ -1473,7 +1499,10 @@ runner_start() {
       [ "${SYMPHONY_RUNNER_PROFILE:-none}" = "$profile" ] || die 'native profile change requires symphony update --agent'
     ) || return 1
   fi
-  if [ "$agent" = claude ]; then claude_image_ready "$runtime" "$image"; fi
+  if [ "$agent" = claude ]; then
+    claude_image_ready "$runtime" "$image"
+    runner_claude_workflow_ready "$root" "$runtime" "$image_id" || return
+  fi
   if [ "$agent" = codex ]; then
     if [ "$authority" != update ]; then
       if [ "$state" = missing ]; then codex_config_select "$root" "$runtime" "$image_id" || return
@@ -1499,7 +1528,7 @@ runner_start() {
       --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
       --publish "127.0.0.1:$port:4010" \
       --env-file "$project_env" --env LINEAR_API_KEY --env GH_TOKEN --env GITHUB_TOKEN --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
-      --mount "type=bind,source=$workflow,target=/etc/symphony/WORKFLOW.md,readonly" \
+      --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
       --volume "$storage_id-workspaces:/workspaces" --volume "$storage_id-state:/var/lib/symphony" \
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
     unset SYMPHONY_GIT_TOKEN
@@ -1519,7 +1548,7 @@ runner_start() {
     --env HOME=/root --env CODEX_HOME=/root/.codex \
     --env "SYMPHONY_CODEX_CONFIG_PROFILE=$(codex_config_profile)" --env "SYMPHONY_CODEX_CONFIG_SHA256=$codex_config_sha" --env "SYMPHONY_CODEX_CONFIG_OWNER=$codex_config_owner" \
     --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
-    --volume "$workflow:/etc/symphony/WORKFLOW.md:ro" \
+    --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
     --volume "$storage_id-workspaces:/workspaces" \
     --volume "$storage_id-state:/var/lib/symphony" \
     --volume "$codex_auth_volume:/root/.codex" \
@@ -1566,12 +1595,12 @@ runner_record_observed_metadata() {
 }
 
 # Docker Desktop may report a Darwin host bind through its VM's /host_mnt
-# projection. Compare only that exact projection of the expected host file;
+# projection. Compare only that exact projection of the expected host source;
 # destination, bind type and read-only ownership remain mandatory.
 runner_workflow_mount_owned() {
-  local root=$1 runtime=$2 name=$3 mounts
+  local root=$1 runtime=$2 name=$3 layout=${4:-owned} mounts
   mounts=$("$runtime" inspect --format '{{json .Mounts}}' "$name") || return
-  printf '%s\n' "$mounts" | host_json workflow-mount "$root/WORKFLOW.md" "$(uname -s)"
+  printf '%s\n' "$mounts" | host_json workflow-mount "$root" "$(uname -s)" "$layout"
 }
 
 # Runner transitions are owned by the installed updater. Every failure retains
@@ -1593,6 +1622,7 @@ runner_owned() {
       ;;
     *) validate_agent "$agent" ;;
   esac
+  runner_workflow_mount_owned "$root" "$runtime" "$name" || die 'workflow mount differs; updater refused'
   # Consume the whole list: grep -q can SIGPIPE printf and fail pipefail after a match.
   mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name")
   printf '%s\n' "$mounts" | grep -Fx -- "$storage-workspaces /workspaces" >/dev/null || die 'workspace mount identity differs; updater refused'
@@ -1877,6 +1907,7 @@ runner_refresh_pending() {
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
     if [ "$state" != missing ]; then
       runner_owned "$root" "$runtime" "$name"
+      runner_workflow_mount_owned "$root" "$runtime" "$name" directory || die 'candidate workflow layout differs; roll back through symphony update --rollback-runner'
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$old" ] || die 'candidate image differs; updater refused'
       if [ "$state" = true ] &&
@@ -2047,6 +2078,8 @@ runner_transition() (
     if [ "$agent" = codex ]; then
       codex_config_journal_load "$root" "$candidate" "$journal"
       runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
+    else
+      runner_claude_workflow_ready "$root" "$runtime" "$candidate" || return
     fi
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
@@ -2088,6 +2121,9 @@ runner_transition() (
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
     if [ "$(runner_status "$root")" = true ] &&
        ! runner_is_legacy "$runtime" "$name" &&
+       runner_workflow_mount_owned "$root" "$runtime" "$name" directory &&
+       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] &&
+       [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] &&
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] &&
        { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ]; } &&
        { [ "$agent" != codex ] || { [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.sha256" }}' "$name")" = "$codex_config_sha" ] && [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.owner" }}' "$name")" = "$codex_config_owner" ]; }; } &&
@@ -2112,6 +2148,7 @@ runner_transition() (
     runner_start "$root" "$port" "$agent" update
   else
     runner_owned "$root" "$runtime" "$name"
+    runner_workflow_mount_owned "$root" "$runtime" "$name" directory || die 'candidate workflow layout differs; roll back through symphony update --rollback-runner'
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
     [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
@@ -2232,7 +2269,7 @@ runner_codex_sandbox_ready() {
     --volume /root/.codex --mount "type=bind,source=$codex_config_file,target=/root/.codex/config.toml,readonly" \
     --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
     --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
-    --volume "$root/WORKFLOW.md:/etc/symphony/WORKFLOW.md:ro" \
+    --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
     --volume /workspaces --volume /var/lib/symphony \
     --entrypoint /usr/bin/timeout "$image" --signal=KILL 195 \
     /opt/symphony/elixir/bin/symphony --check-codex-sandbox /etc/symphony/WORKFLOW.md 2>&1); then
@@ -2277,6 +2314,7 @@ runner_doctor() {
     printf 'Protected project launch checks passed. Native authentication, Git preflight, tracker access and model tasks remain untested. No listener or model request was started.\n'
     return
   fi
+  if [ "$agent" = claude ]; then runner_claude_workflow_ready "$root" "$runtime" "$image" || return; fi
   if [ "$agent" = claude ]; then claude_auth check || { printf 'Native authentication/policy failed; run symphony auth claude login and retry.\n' >&2; return 1; }
   else auth_codex_check || { printf 'Native authentication/policy failed; run symphony auth codex login and retry.\n' >&2; return 1; }; fi
   if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \

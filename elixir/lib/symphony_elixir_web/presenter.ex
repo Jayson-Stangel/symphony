@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Workspace}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, WorkflowStore, Workspace}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -13,6 +13,7 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         %{
           generated_at: generated_at,
+          workflow: WorkflowStore.status(),
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying),

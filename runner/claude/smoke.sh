@@ -34,7 +34,7 @@ runner_claude_run docker -d --name "$name" --network none \
   --tmpfs /var/lib/symphony:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   --tmpfs /workspaces:rw,nosuid,nodev,uid=11001,gid=11001,mode=700,size=32m \
   -e SYMPHONY_GIT_TOKEN=credential-free-smoke-placeholder \
-  --mount "type=bind,src=$fixture/WORKFLOW.md,dst=/etc/symphony/WORKFLOW.md,readonly" \
+  --mount "type=bind,src=$fixture,dst=/etc/symphony,readonly" \
   --mount "type=bind,src=$root/runner/claude/test,dst=/opt/symphony/claude/test,readonly" \
   "$image" >/dev/null
 [ "$(docker exec "$name" id -u)" = 11001 ]
@@ -65,6 +65,19 @@ assert agent['provider'] == 'claude', agent
 assert agent['readiness']['ready'] is False, agent
 assert agent['readiness']['code'] == 'auth_required', agent
 print(json.dumps({'counts': state['counts'], 'agent': agent}, sort_keys=True))
+PY
+# The full-HOME mount masks image contents. Trusted startup must prepare only
+# its missing header view as the native UID, retaining image-owned header data.
+docker exec -i "$name" python3 - <<'PY'
+import json
+from pathlib import Path
+store = Path('/usr/local/share/symphony/node-gyp')
+version = json.loads((store / 'manifest.json').read_text())['version']
+view = Path.home() / '.cache/node-gyp' / version
+assert view.parent.stat().st_uid == 11001
+assert (view / 'include/node').resolve() == Path('/usr/local/include/node')
+assert (view / 'installVersion').read_text() == (store / version / 'installVersion').read_text()
+print('Claude full-HOME volume header view prepared by UID 11001')
 PY
 [ "$(docker inspect --format '{{.State.Running}}' "$name")" = true ]
 docker stop --time 20 "$name" >/dev/null

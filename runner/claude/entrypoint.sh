@@ -4,6 +4,7 @@ set -eu
 workflow=/etc/symphony/WORKFLOW.md
 [ -r "$workflow" ] || { echo 'missing workflow' >&2; exit 1; }
 [ -n "${SYMPHONY_GIT_TOKEN:-}" ] || { echo 'missing selected repository Git credential' >&2; exit 1; }
+python3 /usr/local/lib/symphony/node-headers.py --prepare-home /home/claude
 git config --global user.name "${SYMPHONY_GIT_AUTHOR_NAME:-Symphony}"
 git config --global user.email "${SYMPHONY_GIT_AUTHOR_EMAIL:-symphony@localhost}"
 git config --global credential.helper /usr/local/bin/symphony-git-credential

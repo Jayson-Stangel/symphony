@@ -45,8 +45,8 @@ def precoverage_fixture(outer):
     return root,state,inputs
 
 
-class RequiredEvidenceCapability(unittest.TestCase):
-    def test_supported_trusted_namespaces_fail_before_preparation_on_boundary_errors(self):
+class OptionalEvidenceCapability(unittest.TestCase):
+    def test_supported_trusted_namespaces_select_ordinary_fresh_on_boundary_errors(self):
         from unittest.mock import Mock
         from validation_evidence import Fresh
         for event,ref,head in (('push','refs/heads/dev',''),('push','refs/heads/main',''),
@@ -67,10 +67,11 @@ class RequiredEvidenceCapability(unittest.TestCase):
                         self.assertEqual(path,'actions/artifacts?per_page=1')
                         return {} if defect=='artifact' else dict(artifacts=[])
                     service.read.side_effect=read
-                    with patch.object(controller,'paths',return_value=(root,root,'a'*40,root,selection)),patch.object(controller,'client',return_value=service),patch.object(controller,'context',side_effect=Fresh('inert context refusal') if defect=='context' else None,return_value=caller),patch.object(controller,'output'),patch.object(controller,'summary'),patch.object(controller,'phase_run') as prepare,patch.dict(os.environ,dict(GITHUB_EVENT_NAME=event,GITHUB_REF=ref,COVERAGE_HEAD_REPOSITORY=head)),self.assertRaisesRegex(Fresh,'required supported-profile'):
+                    with patch.object(controller,'paths',return_value=(root,root,'a'*40,root,selection)),patch.object(controller,'client',return_value=service),patch.object(controller,'context',side_effect=Fresh('inert context refusal') if defect=='context' else None,return_value=caller),patch.object(controller,'output'),patch.object(controller,'summary'),patch.object(controller,'phase_run') as prepare,patch.dict(os.environ,dict(GITHUB_EVENT_NAME=event,GITHUB_REF=ref,COVERAGE_HEAD_REPOSITORY=head)):
                         controller.capability()
                     prepare.assert_not_called()
-                    self.assertEqual(controller.read(root/'symphony-evidence-capability.json')['reason'],'required_supported_profile_evidence_unavailable')
+                    self.assertFalse(controller.read(selection)['supported'])
+                    self.assertEqual(controller.read(root/'symphony-evidence-capability.json')['reason'],'fresh_fallback')
 
     def test_unsupported_and_fork_callers_keep_fresh_fallback_without_compare(self):
         from unittest.mock import Mock
@@ -84,6 +85,39 @@ class RequiredEvidenceCapability(unittest.TestCase):
                         controller.capability()
                     self.assertFalse(any(call.args[0].startswith('compare/') for call in service.read.call_args_list))
                     self.assertEqual(controller.read(root/'symphony-evidence-capability.json')['available'],available)
+
+    def test_unavailable_evidence_reaches_existing_ordinary_complete_qualification(self):
+        from validation_evidence import Fresh
+        with tempfile.TemporaryDirectory() as directory:
+            outer=Path(directory);root=outer/'source';root.mkdir();state=outer/'state';selection=outer/'selection'
+            controller.store(selection,dict(source='a'*40,supported=True))
+            calls=[];outputs=[];messages=[]
+            def ordinary(arguments,source,environment,**options):
+                calls.append(arguments)
+                self.assertNotIn('GH_TOKEN',environment);self.assertNotIn('GITHUB_TOKEN',environment)
+                options['log'].write_bytes(COVERAGE_FIXTURE)
+                return 1.0
+            with patch.object(controller,'paths',return_value=(root,outer,'a'*40,state,selection)),patch.object(controller,'client',side_effect=Fresh('unavailable dummy-token-never-print')),patch.object(controller,'output',side_effect=lambda **value:outputs.append(value)),patch.object(controller,'summary',side_effect=messages.append),patch.object(controller,'run',side_effect=ordinary),patch.object(controller,'phase_run') as isolated,patch.dict(os.environ,dict(GITHUB_EVENT_NAME='push',GITHUB_REF='refs/heads/dev',GH_TOKEN='dummy-token-never-print',GITHUB_TOKEN='dummy-token-never-print')):
+                controller.capability();controller.prepare();controller.measure();controller.decide();controller.execute();controller.dialyzer();controller.seal()
+            isolated.assert_not_called()
+            self.assertEqual(calls,[['make','elixir-ci']])
+            self.assertEqual(outputs[0],dict(available=False,supported=False))
+            self.assertEqual(controller.read(state/'execution.json')['mode'],'EXECUTED')
+            self.assertEqual(controller.read(state/'decision.json')['mode'],'EXECUTED')
+            self.assertFalse(outputs[-1]['available'])
+            self.assertFalse((state/'proof').exists())
+            self.assertNotIn('dummy-token-never-print',' '.join(messages)+(outer/'symphony-evidence-capability.json').read_text())
+
+    def test_capability_precedes_ordinary_setup_and_gates_protected_preparation(self):
+        from test_components import job,workflow
+        block=job(workflow('make-all'),'elixir-checks')
+        capability=block.index('run: /usr/bin/python3 -B scripts/ci/elixir_coverage.py capability')
+        self.assertLess(capability,block.index('- name: Set up mise tools'))
+        self.assertLess(capability,block.index('- name: Cache ordinary deps and build'))
+        self.assertNotIn('steps.profile.outputs.supported',block)
+        self.assertIn("if: steps.capability.outputs.supported == 'false'",block)
+        self.assertIn("if: steps.capability.outputs.supported == 'true'",block)
+        self.assertIn("os.environ.get('COVERAGE_EVIDENCE_AVAILABLE') == 'true'",block)
 
     def test_supported_actual_caller_uses_authenticated_dev_not_temporary_merge(self):
         from unittest.mock import Mock
@@ -149,13 +183,13 @@ class ProtectedStartingWorld(unittest.TestCase):
         for supported in ('true','false',''):
             for proof,mode in ((proof,mode) for proof in ('true','false','') for mode in ('EXECUTED','REUSED','')):
                 for failed in (True,False):
-                    code=condition.replace('always()','True').replace('failure()',repr(failed)).replace('steps.profile.outputs.supported',repr(supported)).replace('steps.producer.outputs.available',repr(proof)).replace('steps.evidence.outputs.mode',repr(mode)).replace('&&',' and ').replace('||',' or ')
+                    code=condition.replace('always()','True').replace('failure()',repr(failed)).replace('steps.capability.outputs.supported',repr(supported)).replace('steps.producer.outputs.available',repr(proof)).replace('steps.evidence.outputs.mode',repr(mode)).replace('&&',' and ').replace('||',' or ')
                     self.assertEqual(eval(code,{'__builtins__':{}}),supported=='true' and (failed or (proof!='true' and mode!='REUSED')))
         self.assertNotIn('GH_TOKEN',prepare)
         retained=block.split('      - name: Retain unqualified public input diagnostics\n',1)[1].split('      - name:',1)[0]
         self.assertIn('name: elixir-coverage-diagnostics-',retained);self.assertIn('retention-days: 3',retained)
         self.assertIn('actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',retained)
-        self.assertIn("if: always() && steps.profile.outputs.supported == 'true'",block.split('      - name: Remove owned OCI execution resources\n',1)[1])
+        self.assertIn("if: always() && steps.capability.outputs.supported == 'true'",block.split('      - name: Remove owned OCI execution resources\n',1)[1])
 
     def test_healthy_reused_execution_never_mints_an_original(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -363,7 +397,7 @@ class ExistingJobPhases(unittest.TestCase):
         for supported,expected in (('true',False),('false',True),('',False),('unknown',False)):
             # This exact supported=false predicate drives both action cache
             # restore/save and the old compiled-cache restore boundary.
-            observed=eval(condition.replace('steps.profile.outputs.supported',repr(supported)),{'__builtins__':{}})
+            observed=eval(condition.replace('steps.capability.outputs.supported',repr(supported)),{'__builtins__':{}})
             self.assertEqual(observed,expected)
 
 
@@ -378,10 +412,10 @@ class ExistingJobPhases(unittest.TestCase):
         self.assertNotIn('continue-on-error:', block)
         self.assertIn('steps.controller.outputs.trusted !=', block)
         self.assertIn('steps.controller.outputs.trusted ==', block)
-        self.assertIn("      - name: Authenticate protected-origin cache before preparation\n        if: steps.profile.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'", block)
+        self.assertIn("      - name: Authenticate protected-origin cache before preparation\n        if: steps.capability.outputs.supported == 'true' && steps.controller.outputs.trusted == 'true'", block)
         self.assertIn("os.environ.get('GITHUB_REF') in ('refs/heads/dev','refs/heads/main')", block)
-        self.assertIn("cache: ${{ steps.profile.outputs.supported == 'false' }}", block)
-        self.assertIn("      - name: Cache ordinary deps and build\n        if: steps.profile.outputs.supported == 'false'", block)
+        self.assertIn("cache: ${{ steps.capability.outputs.supported == 'false' }}", block)
+        self.assertIn("      - name: Cache ordinary deps and build\n        if: steps.capability.outputs.supported == 'false'", block)
         self.assertIn("key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}", block)
         self.assertIn('            ${{ runner.os }}-mix-', block)
         self.assertLess(block.index('Select audited coverage preparation'), block.index('Set up mise tools'))
@@ -581,7 +615,7 @@ class OwnedOCIProtocol(unittest.TestCase):
         block=job(workflow('make-all'),'elixir-checks')
         self.assertLess(block.index('Load immutable protected-dev'),block.index('Authenticate protected-origin'))
         self.assertLess(block.index('Authenticate protected-origin'),block.index('Prepare controlled full'))
-        self.assertIn("if: always() && steps.profile.outputs.supported == 'true'",block)
+        self.assertIn("if: always() && steps.capability.outputs.supported == 'true'",block)
         source=Path(controller.__file__).read_text()
         self.assertLess(source.index('ExUnit.FailuresManifest.write!'),source.index('def measure():'))
 

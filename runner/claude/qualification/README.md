@@ -131,3 +131,51 @@ the lab does not substitute for its tests or authenticated deployment acceptance
 - [Usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)
 - [SDK and distribution scope](https://code.claude.com/docs/en/agent-sdk/overview)
 - [Native binary and authentication terms](https://code.claude.com/docs/en/legal-and-compliance)
+
+## Native Node dependency fixture
+
+`native-node-fixture.py` is a model-free local command for a disposable production
+Claude container. Mount the repository's `runner/` directory read-only at
+`/qualification`, use the production UID/container restrictions and an executable
+fresh workspace at `/workspaces/native-node-qualification`.
+
+Before worker startup, trusted test setup runs:
+
+```sh
+cd /workspaces/native-node-qualification
+python3 /qualification/claude/qualification/native-node-fixture.py --prepare
+```
+
+This refuses an existing workspace or `.npmrc`, prepares the missing stock header
+view, and creates synthetic config/auth canaries. It must never run against a real
+project or a shared/active native profile. The actual native Bash tool then runs
+exactly once:
+
+```sh
+python3 /qualification/claude/qualification/native-node-fixture.py --run
+```
+
+It uses the maintained native addon tarball to install/load/delete/rebuild/load
+with both supplied and private stock node-gyp, verifies canaries and image headers,
+and writes `native-node-result.json`. A second run refuses existing project output.
+Only the resolved local dependency has lifecycle permission. Running this command
+through Docker-exec proves container toolchain behavior; actual SDK Bash acceptance
+requires the unchanged production helper/native tool path and separate explicit
+model/account authorization. The lab's MCP-only `live` command is not that proof.
+
+`native-node-session.py --plan` prints the exact production-helper start/turn/stop
+frames without starting a native process or sending a model request. The explicit
+`--live` mode sends one SDK query session and one user turn through the unchanged
+production `helper.mjs` CLI. It sets three agentic turns and a 120-second turn limit,
+requires an outer disposable-container timeout of 180 seconds, and never retries.
+Only run it after exact candidate/profile/usage authorization and trusted fixture
+preparation. It records fixed categories and the fixture receipt, suppressing raw
+native diagnostics and provider prose. Non-command tool progress stops the probe;
+this is observation after dispatch, not a built-in-tool permission allowlist.
+Native API retries and multiple tool uses in an assistant message are not counted
+as a precise request ceiling. The production helper exposes no dollar budget cap;
+subscription status alone does not prove billing or extra-usage settings.
+The session driver consumes a one-attempt marker before native profile validation;
+an auth-refused or failed attempt cannot be repeated in that prepared workspace.
+It requires a correlated helper stop acknowledgement and exit0, and checks the receipt, canaries
+and header hash independently before reporting success.

@@ -15,7 +15,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow, :settings]
+    defstruct [:path, :stamp, :workflow, :settings, :accepted_at, :checked_at, status: "loaded"]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -45,6 +45,15 @@ defmodule SymphonyElixir.WorkflowStore do
           {:ok, %State{settings: settings}} -> {:ok, settings}
           {:error, reason} -> {:error, reason}
         end
+    end
+  end
+
+  @doc "Returns only accepted-byte identity and safe reload status; never workflow contents or errors."
+  @spec status() :: map()
+  def status do
+    case Process.whereis(__MODULE__) do
+      pid when is_pid(pid) -> GenServer.call(__MODULE__, :status)
+      _ -> %{sha256: nil, status: "unavailable", accepted_at: nil, checked_at: nil}
     end
   end
 
@@ -105,6 +114,23 @@ defmodule SymphonyElixir.WorkflowStore do
     end
   end
 
+  def handle_call(:status, _from, %State{} = state) do
+    new_state =
+      case reload_state(state) do
+        {:ok, reloaded} -> reloaded
+        {:error, _reason, reloaded} -> reloaded
+      end
+
+    status = %{
+      sha256: new_state.stamp,
+      status: new_state.status,
+      accepted_at: new_state.accepted_at,
+      checked_at: new_state.checked_at
+    }
+
+    {:reply, status, new_state}
+  end
+
   @impl true
   def handle_info(:poll, %State{} = state) do
     schedule_poll()
@@ -121,63 +147,68 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp reload_state(%State{} = state) do
     path = Workflow.workflow_file_path()
+    checked_at = timestamp()
 
-    if path != state.path do
-      reload_path(path, state)
-    else
-      reload_current_path(path, state)
+    case read_workflow(path) do
+      {:ok, content, stamp} ->
+        reload_content(path, content, stamp, state, checked_at)
+
+      {:error, reason} ->
+        reject_reload(path, reason, state, checked_at)
     end
   end
 
-  defp reload_path(path, state) do
-    case load_state(path) do
-      {:ok, new_state} ->
-        {:ok, new_state}
+  defp reload_content(path, _content, stamp, state, checked_at)
+       when path == state.path and stamp == state.stamp do
+    {:ok, %{state | status: "loaded", checked_at: checked_at}}
+  end
 
-      {:error, reason} ->
-        log_reload_error(path, reason)
-        {:error, reason, state}
+  defp reload_content(path, content, stamp, state, checked_at) do
+    case load_content(path, content, stamp, checked_at) do
+      {:ok, new_state} -> {:ok, new_state}
+      {:error, reason} -> reject_reload(path, reason, state, checked_at)
     end
   end
 
-  defp reload_current_path(path, state) do
-    case current_stamp(path) do
-      {:ok, stamp} when stamp == state.stamp ->
-        {:ok, state}
-
-      {:ok, _stamp} ->
-        reload_path(path, state)
-
-      {:error, reason} ->
-        log_reload_error(path, reason)
-        {:error, reason, state}
-    end
+  defp reject_reload(path, reason, state, checked_at) do
+    log_reload_error(path, reason)
+    {:error, reason, %{state | status: "rejected", checked_at: checked_at}}
   end
 
   defp load_state(path) do
-    with {:ok, workflow} <- Workflow.load(path),
+    with {:ok, content, stamp} <- read_workflow(path) do
+      load_content(path, content, stamp, timestamp())
+    end
+  end
+
+  defp load_content(path, content, stamp, checked_at) do
+    with {:ok, workflow} <- Workflow.parse(content),
          {:ok, settings} <- Schema.parse(workflow.config),
-         :ok <- Config.validate_settings(settings),
-         {:ok, stamp} <- current_stamp(path) do
+         :ok <- Config.validate_settings(settings) do
       if settings.execution.mode == "container" do
         Logger.info("Container execution bindings: #{inspect(settings.execution)}")
       end
 
-      {:ok, %State{path: path, stamp: stamp, workflow: workflow, settings: settings}}
-    else
-      {:error, reason} ->
-        {:error, reason}
+      {:ok,
+       %State{
+         path: path,
+         stamp: stamp,
+         workflow: workflow,
+         settings: settings,
+         accepted_at: checked_at,
+         checked_at: checked_at
+       }}
     end
   end
 
-  defp current_stamp(path) when is_binary(path) do
-    with {:ok, stat} <- File.stat(path, time: :posix),
-         {:ok, content} <- File.read(path) do
-      {:ok, {stat.mtime, stat.size, :erlang.phash2(content)}}
-    else
-      {:error, reason} -> {:error, reason}
+  defp read_workflow(path) do
+    case File.read(path) do
+      {:ok, content} -> {:ok, content, :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)}
+      {:error, reason} -> {:error, {:missing_workflow_file, path, reason}}
     end
   end
+
+  defp timestamp, do: DateTime.utc_now() |> DateTime.to_iso8601()
 
   defp log_reload_error(path, reason) do
     Logger.error("Failed to reload workflow path=#{path} reason=#{inspect(reason)}; keeping last known good configuration")

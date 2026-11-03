@@ -23,6 +23,13 @@ def historical_selector_workflow(name):
     The live workflow remains subject to conservative behavioral qualification.
     """
     text = workflow(name)
+    if name == 'make-all':
+        fixture = json.loads((ROOT / 'scripts/ci/tests/fixtures/coverage-job-before.json').read_text())
+        frozen = fixture['selector_coverage_before']['jobs']['elixir-checks']
+        # Keep historical parser/omission inputs at their recorded source even
+        # when the independent live coverage implementation changes.
+        text = text.replace('  elixir-checks:\n' + job(text, 'elixir-checks'),
+                            '  elixir-checks:\n' + frozen, 1)
     line = '          PERSISTENT_MAC_RUNNER: ${{ vars.SYMPHONY_PERSISTENT_MAC_RUNNER }}\n'
     assert text.count(line) == 2, 'persistent selector fixture changed'
     return text.replace(line, '')
@@ -297,7 +304,7 @@ class Consumers(unittest.TestCase):
             names.update(item.name for item in node.names) if isinstance(node, ast.Import) else None
             if isinstance(node, ast.ImportFrom):
                 names.add(node.module)
-        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'tarfile'})
+        self.assertTrue(names <= {'hashlib', 'pathlib', 're', 'stat', 'struct', 'tarfile', 'zipfile'})
         distribution = ast.parse((ROOT / 'scripts/release/macos_distribution.py').read_text())
         imports = {node.module for node in ast.walk(distribution) if isinstance(node, ast.ImportFrom)}
         self.assertIn('signing_payload', imports)

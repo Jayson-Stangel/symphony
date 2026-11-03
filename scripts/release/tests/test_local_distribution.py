@@ -30,6 +30,38 @@ def zip_bytes(files):
 
 
 class LocalTransportTest(unittest.TestCase):
+    def test_resume_native_refusal_precedes_all_secret_prompts(self):
+        from test_signing_checkpoint import ContinuationTests
+        peer = ContinuationTests(); peer.setUp(); self.addCleanup(peer.doCleanups)
+        manifest = {'source_revision': 'a' * 40, 'bundles': {'macos': {'filename': peer.qualified.name}}}
+        peer.manifest.write_text(json.dumps(manifest))
+        receipt = {'repository': production.REPOSITORY, 'source_revision': 'a' * 40,
+                   'run_id': 123, 'run_attempt': 2, 'original_artifacts': [],
+                   'original_qualified_helper_sha256': production.checksum(peer.helper)}
+        peer.checkpoint.value['context']['qualification'] = receipt
+        peer.checkpoint.value['input_manifest_sha256'] = production.checksum(peer.manifest)
+        peer.checkpoint.save()
+        def qualification(run, attempt, revision, destination):
+            for name in ('internal', 'helper', 'packages'): (destination / name).mkdir(parents=True)
+            (destination / 'internal/release.json').write_bytes(peer.manifest.read_bytes())
+            (destination / 'helper/symphony-host').write_bytes(peer.helper.read_bytes())
+            (destination / 'packages' / peer.qualified.name).write_bytes(peer.qualified.read_bytes())
+            production.write_json(destination / 'qualification.json', receipt)
+        argv = ['local_distribution.py', 'resume', '123', '2', str(peer.root / 'new'),
+                '--checkpoint', str(peer.checkpoint.path), '--checkpoint-sha256',
+                production.checksum(peer.checkpoint.path / 'checkpoint.json'), '--authorize-apple-upload']
+        with patch.object(sys, 'argv', argv), patch.object(local.subprocess, 'check_output', return_value='a' * 40 + '\n'), \
+                patch.object(local, 'exact_source'), patch.object(local, 'no_parallel_signing'), \
+                patch.object(local.sys, 'platform', 'darwin'), patch.object(local.os, 'uname') as uname, \
+                patch.object(local.sys.stdin, 'isatty', return_value=True), patch.object(local.sys.stdout, 'isatty', return_value=True), \
+                patch.object(production, 'qualification', side_effect=qualification), \
+                patch('builtins.input', side_effect=['A' * 40, 'FAKETEAM00']) as public, \
+                patch.object(local.getpass, 'getpass') as secret, \
+                patch('macos_distribution.validate_retained_native', side_effect=ValueError('invalid retained native signature')) as native:
+            uname.return_value.machine = 'arm64'
+            with self.assertRaisesRegex(ValueError, 'invalid retained native signature'): local.main()
+            native.assert_called_once(); self.assertEqual(public.call_count, 2); secret.assert_not_called()
+
     def test_asset_download_requests_original_binary_and_keeps_escape_bytes(self):
         raw=b'PK\x03\x04\x1b[31m BINARY MUST NOT BE FILTERED'
         command=['gh','api','--allow-escape-sequences','repos/'+production.REPOSITORY+'/releases/assets/71']

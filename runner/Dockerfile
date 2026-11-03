@@ -10,7 +10,7 @@ COPY runner/claude/*.mjs ./
 FROM elixir:1.19@sha256:db1cbca0b49e26e65dd804c75f27ec5f01835f1d29f8b8e4cc8a51f01f986f9f AS browser-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git python3 ripgrep \
+    ca-certificates curl git python3 build-essential ripgrep \
   && install -d -m 755 /etc/apt/keyrings \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -23,9 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Node and its matching npm together, without distro Node/npm or Yarn.
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/include/node /usr/local/include/node
 COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Keep node-gyp unmodified. Its ordinary cache discovery consumes these
+# immutable matching headers for both supplied and project-local consumers.
+COPY runner/node-headers.py /usr/local/lib/symphony/node-headers.py
+RUN python3 /usr/local/lib/symphony/node-headers.py --build-store \
+  && python3 /usr/local/lib/symphony/node-headers.py --prepare-home /root
 
 # Keep browser binaries shared across the root Codex and non-root Claude users.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/symphony/ms-playwright
@@ -57,7 +64,8 @@ RUN MIX_ENV=prod mix escript.build
 COPY .codex/skills /opt/symphony/skills
 RUN install -d -m 700 /root/.codex /workspaces /var/lib/symphony
 COPY runner/entrypoint.sh /usr/local/bin/symphony-runner
-RUN chmod 755 /usr/local/bin/symphony-runner
+COPY runner/claude/git-credential.sh /usr/local/bin/symphony-git-credential
+RUN chmod 755 /usr/local/bin/symphony-runner /usr/local/bin/symphony-git-credential
 
 EXPOSE 4010
 
@@ -80,11 +88,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini \
      done \
   && chmod -R a-w /opt/symphony/claude /opt/symphony/skills
 COPY runner/claude/entrypoint.sh /usr/local/bin/symphony-claude-runner
-COPY runner/claude/git-credential.sh /usr/local/bin/symphony-git-credential
 RUN chmod 755 /usr/local/bin/symphony-claude-runner /usr/local/bin/symphony-git-credential
 ENV HOME=/home/claude CLAUDE_CONFIG_DIR=/home/claude/.claude \
     CLAUDE_CODE_DISABLE_FAST_MODE=1 DISABLE_AUTOUPDATER=1 SYMPHONY_CONTAINERIZED=1
 USER 11001:11001
+RUN python3 /usr/local/lib/symphony/node-headers.py --prepare-home /home/claude
 WORKDIR /var/lib/symphony
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/symphony-claude-runner"]
 

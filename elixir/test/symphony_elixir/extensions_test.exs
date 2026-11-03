@@ -259,9 +259,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
+    assert Enum.sort(Map.keys(state_payload["workflow"])) == ["accepted_at", "checked_at", "sha256", "status"]
+    assert state_payload["workflow"]["status"] == "loaded"
+
+    assert state_payload["workflow"]["sha256"] ==
+             :crypto.hash(:sha256, File.read!(Workflow.workflow_file_path())) |> Base.encode16(case: :lower)
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
+             "workflow" => state_payload["workflow"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
              "running" => [
                %{

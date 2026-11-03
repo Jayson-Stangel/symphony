@@ -135,6 +135,46 @@ Stop retains the qualified container, workspaces, state, logs and native login.
 Use the same development command for status/logs/recovery. Never stop or remove
 containers by a broad name filter.
 
+## Root workflow mounts and adoption
+
+Both providers mount the project root read-only at `/etc/symphony`; entrypoints
+continue to read `/etc/symphony/WORKFLOW.md`. The committed root file remains
+authoritative, including across editor atomic replacements. Codex also retains
+its read-only `/opt/symphony/project` launch-root mount. This exposes readable
+project contents, including `.git` and ignored/untracked files, to Claude as well
+as Codex. Read-only prevents writes through the bind; it does not provide secrecy
+or workspace-only read isolation. No parent, home or credential directory is
+added. The image's unused `/etc/symphony/claude` directory is hidden by the bind;
+provider code and plugins live under `/opt/symphony` and are unaffected.
+
+Claude's container UID/GID `11001:11001` must be able to traverse the project root
+and read `WORKFLOW.md`. A readable file inside a private `0700`/`0750` host directory
+may have worked through the prior single-file bind while failing through a
+directory bind on native Linux. Credential-free preflight checks the selected
+image and actual container identity before adoption replaces the stopped runner.
+If it refuses, provide access through your approved host permissions/ACL policy and
+retry; the manager does not change host permissions automatically.
+
+Existing single-file containers are adopted only through `symphony update --agent
+codex` or `symphony update --agent claude` (with the appropriate development wrapper
+for disposable tests). Follow the [idle update procedure](operations.md#idle-update-procedure):
+pause admission, finish active work and normally stop all runners in the affected
+installation before invoking the updater. Even an unchanged selected image needs
+replacement: the updater retains the stopped old container, starts the new layout,
+checks readiness and resumes admission before returning. No separate target
+restart is needed. Ordinary `run` refuses an old layout. Ownership and rollback
+accept the exact prior read-only single-file layout; completed-candidate recovery
+requires the directory layout. An interrupted old-layout candidate with a retained backup
+must use `symphony update --rollback-runner` before retrying adoption.
+
+Codex preflight receives both project aliases. Its effective-policy qualification
+continues to require full read access and exercise allowed workspace writes and
+denied outside writes; restricted custom read policies fail with
+`sandbox_unsupported_policy`, rather than silently gaining a read alias. Custom
+write grants cannot override the read-only host binds. Fixture checks establish
+launcher/lifecycle behavior, not native Docker Desktop reload or authenticated
+session behavior.
+
 ## Refresh the development build
 
 Preserve local edits. Inspect status and divergence before integrating upstream:
@@ -143,17 +183,18 @@ Preserve local edits. Inspect status and divergence before integrating upstream:
 git -C "$HOME/Repos/symphony-dev-workspace/source" status --short
 git -C "$HOME/Repos/symphony-dev-workspace/source" fetch origin dev
 git -C "$HOME/Repos/symphony-dev-workspace/source" merge --ff-only origin/dev
-# From the disposable target clone, with an existing development runner:
+# From the disposable target clone, after the idle update procedure:
 "$dev" update --agent claude
 ```
 
 The wrapper supplies `--development-runner`. This requires a nonempty namespace
 and uses the current development source without fetching `main`, changing global
 links or running host setup. It builds a revision-tagged namespaced candidate,
-preflights it, drains active work, retains the prior container, and resumes only
-after readiness succeeds. On a retry, development mode rebuilds and preflights
-from the current checkout. If its image differs from the pending candidate, the
-updater verifies ownership, drains/stops that candidate, and replaces it while
+preflights it, retains the stopped prior container, starts the replacement, and
+resumes only after readiness succeeds. Keep other projects stopped until their
+normal restart/readiness under the intake hold. On a retry, development mode
+rebuilds and preflights from the current checkout. If its image differs from the
+pending candidate, the updater verifies ownership and replaces that stopped candidate while
 retaining the original rollback source and volumes. It commits the new image
 identity atomically before starting it, so an interrupted refresh can be retried.
 A failed build or preflight leaves the pending candidate unchanged; a failed new
@@ -699,8 +740,12 @@ Pure documentation changes run lightweight classification and PR metadata valida
 The normal `burrito-release.yml` caller reads `scripts/release/release-schema`
 through portable preflight and forwards it to component planning. Policy 2 builds
 changed component inputs and preserves verified original identities for unchanged
-inputs. `scripts/release/manager-version` selects the fresh manager release
-(currently 0.0.5); `elixir/mix.exs` remains the independent engine version.
+inputs. `scripts/release/manager-version` selects the fresh manager release;
+`elixir/mix.exs` remains the independent engine version. Follow the
+[engine increment and candidate verification rule](../scripts/release/README.md#package-engine-and-source-versions).
+New records compare source, compiled application and image version; reused runners
+retain their original version/source/digest. The next release after 0.0.7 still
+requires actual candidate verification across both providers and architectures.
 Tag mismatch and completed release targets refuse before expensive fanout;
 publication also checks again and retains the production environment gate.
 Explicit schema1 diagnostics retain their pinned finite-transition restrictions.
@@ -909,9 +954,14 @@ For a supported profile in the same repository's ready PR or protected push,
 the existing capability stage authenticates the actual caller, then performs a
 real workflow-token self-comparison GET of the authenticated protected `dev`
 revision. The response must be identical with that exact merge base. Failure of
-this caller, compare or artifact-read boundary fails the required job before
-costly preparation or coverage. This proves API access, not ancestry or reuse.
-Unsupported profiles and untrusted forks retain ordinary fresh qualification.
+this caller, compare or artifact-read boundary disables evidence reuse before
+preparation and selects the existing ordinary mise/Mix cache and fresh
+`make elixir-ci` path, including quality, build, full coverage and Dialyzer.
+Bounded diagnostics identify the failed stage without provider output or secrets.
+The capability result gates controller loading and OCI preparation as well as
+reuse; unavailable evidence cannot install retained checkpoints or mint a proof.
+Successful capability proves API access, not ancestry or reuse. Unsupported
+profiles and untrusted forks retain ordinary fresh qualification.
 
 Protected code authenticates an original merged PR or protected-dev producer
 before installing any dependency or compiler cache. The bounded public bundle
@@ -980,3 +1030,54 @@ The first ordinary PR and merged `dev` run must establish clean setup, original
 provenance, actual cache restoration and net benefit including cold toolchain,
 dependency/PLT work, hashing and artifact/API overhead. A mismatch stays fresh and
 requires diagnosis before further experiments.
+
+## Native Node development toolchain in worker images
+
+The common image supplies pinned Node/npm, matching `/usr/local/include/node`
+headers, Python, make and the C/C++ build tools needed by ordinary native
+packages. Node-gyp itself is unmodified, including normal project-local copies.
+No project downloader, header override or preload is needed for the shipped
+Node version.
+
+The image provides a read-only versioned header view under
+`/usr/local/share/symphony/node-gyp`: `installVersion` metadata and `include/node`
+pointing to the matching image-owned headers. Stock node-gyp discovers it through
+its usual native-HOME `.cache/node-gyp/VERSION` location. Trusted startup prepares
+only missing links before workers start; it never replaces existing caches,
+follows custom cache-parent symlinks, changes HOME or touches auth/config data.
+This also handles existing Claude full-HOME volumes that mask image directories.
+Explicit `XDG_CACHE_HOME` remains selected by stock node-gyp.
+
+Stock cache semantics apply. Explicit `nodedir` bypasses the cache; `devdir` and
+`target` select their normal locations. A valid current-version cache may satisfy
+`dist-url`, mirror or same-version target settings without fetching again.
+Explicit `tarball` forces upstream reinstall behavior, which can fail against the
+protected read-only default view; an owned writable devdir is the ordinary choice
+for intentional header acquisition. Invalid explicit destinations are not
+redirected to image headers. Npm user/project/custom-global/environment/CLI cache
+precedence is unchanged. Team images own unusual runtime versions and layouts.
+
+Cold qualification uses a fresh project with no addon binary or warm user header
+cache. The immutable image header distribution is part of the supplied toolchain,
+not a warmed project artifact. The synthetic HOME gets the same trusted cache-view
+preparation before native app-server startup; actual protected commands must read
+it while native HOME/auth/config/header/view writes remain denied.
+
+`runner/node-smoke.sh IMAGE` checks the toolchain/header view in a finished image.
+`python3 runner/test_node_headers.py` checks missing-only initialization, existing
+cache preservation and native-auth symlink escape rejection. The maintained
+`runner/codex-sandbox-smoke.sh IMAGE` runs `test_native_node.py --protected` through
+native Codex `command/exec`: cold compile/load, delete/rebuild/load, ordinary private
+node-gyp, login/nested/lifecycle, stock overrides/cache behavior and protected
+HOME/auth/config/image/header/symlink denials. Only the fixture dependency has
+lifecycle permission. Host effects, Docker-exec, emulation and Claude startup
+smoke remain distinct from actual protected provider/architecture acceptance.
+
+For rollout, first complete the reviewed PR's acceptance and authorized merge to
+`dev`, then qualify the final combined source for Codex/Claude on native Linux
+amd64/arm64. Record immutable IDs/digests and application/image/manifest version
+identities from those final images. Earlier receipts do not cover changed image
+inputs. Keep Linux x86-64/macOS ARM64 manager-host support separate. Exact-scope
+promotion, publication and stable rollout need their separate operator approvals;
+only the installed `symphony update` may adopt the published stable candidate for
+explicitly approved targets. Never copy development assets into a stable runtime.

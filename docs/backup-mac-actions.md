@@ -23,9 +23,17 @@ Keep the old disposable `SYMPHONY_BACKUP_MAC_PERMIT` absent while this route is 
 | `current-manager-package.yml / package` | Existing credential-free Mac package used by runner-integration |
 | `runner-release.yml / packaged-candidate` | Existing nonpublishing manual Mac candidate package |
 | `burrito-release.yml / build, controller-diagnostics` | Existing nonproduction manual engine/controller jobs |
+| `burrito-release.yml / build` → `runner-release.yml` → `package-checks.yml / native-host-package`, `runner-release.yml / packaged-release-platform` | Credential-free production preparation of engines, helpers and final packages |
 
-Production preparation, publication, signing/import and privileged release-package
-selectors keep their current route. Linux selection, all native job bodies,
+The production route requires the original owner-triggered `burrito-release.yml`
+manual event on `main`, `production_prepare=true`, and exact approved
+`packaged_host_revision` with host-preparation consent. Reusable selectors retain
+that original event and live run/attempt/source verification. Existing lifecycle
+inputs can also select `packaged-candidate`; ordinary final-only preparation
+continues to omit it. `native-manager-helpers` and `current-manager-package` belong
+to ordinary integration and are not additional production-preparation consumers.
+Publication, signing/import and other `prepare_release` contexts remain excluded
+from persistent routing. Linux selection, all native job bodies,
 required checks, timeouts, cancellation and artifact identities remain unchanged.
 Historical native provenance still checks original source/steps/artifact digests;
 only exact routing-only workflow fingerprints are added. No old VM-deleted proof
@@ -96,6 +104,13 @@ A disabled service refuses startup. No host command is required between jobs.
 The physical Mac must be powered, awake and network-connected. An offline VM
 cannot boot itself from a queued job; this explicit start path does not promise
 wake-on-queue. Host startup automation would be a separate activation choice.
+Busy configured capacity stays in the normal Actions queue, including production
+preparation. Offline configured capacity also stays queued; there is no automatic
+fallback after assignment. Empty configuration retains the existing bounded
+pre-execution fallback. Cleanup uncertainty still refuses service restart; do not
+turn it into a retry on another runner. Selector summaries name the selected
+runner and consumer, but real production job/artifact/cleanup proof still requires
+a separately authorized production-preparation run on qualified exact source.
 
 ## Native mechanism and proof limits
 

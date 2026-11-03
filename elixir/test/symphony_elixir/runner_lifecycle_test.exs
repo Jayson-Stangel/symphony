@@ -65,7 +65,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
           *Mounts*)
             case "$*" in
-              *'{{json .Mounts}}'*) printf '[{"Type":"bind","Source":"%s/WORKFLOW.md","Destination":"/etc/symphony/WORKFLOW.md","RW":false}]\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
+              *'{{json .Mounts}}'*) python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[0]["Mounts"]))' "$state.inspect" ;;
               *Source*) printf '%s/WORKFLOW.md /etc/symphony/WORKFLOW.md false\\n' "$(git -C '#{repo}' rev-parse --show-toplevel)" ;;
               *) storage=$(cat "$state.storage"); printf '%s-workspaces /workspaces\\n%s-state /var/lib/symphony\\n%s /root/.codex\\n' "$storage" "$storage" "symphony${SYMPHONY_RUNNER_NAMESPACE:+-$SYMPHONY_RUNNER_NAMESPACE}-codex-auth" ;;
             esac
@@ -102,6 +102,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
+          *'test -f /etc/symphony/WORKFLOW.md'*) [ "${FIXTURE_WORKFLOW_UNREADABLE:-false}" != true ] || exit 1 ;;
           *--codex-config-snapshot*)
             [ "${FIXTURE_CONFIG_FAIL:-false}" != true ] || { echo '{"error":"sandbox_unqualified_config"}'; exit 1; }
             if [ -n "${FIXTURE_CONFIG_JSON:-}" ]; then printf '%s\\n' "$FIXTURE_CONFIG_JSON"
@@ -245,14 +246,17 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   test "Codex startup Git rewrites remain idempotent for a retained container", ctx do
     entrypoint = Path.expand("../../../runner/entrypoint.sh", __DIR__) |> File.read!()
-    [_, rewrite] = Regex.run(~r/if \[ -n "\$\{GH_TOKEN:-\}" \]; then\n(.*?)\nfi/s, entrypoint)
+    rewrite = entrypoint |> String.split("\n") |> Enum.filter(&String.starts_with?(&1, "git config --global")) |> Enum.join("\n")
     home = Path.join(ctx.root, "git-home")
     File.mkdir_p!(home)
     env = [{"HOME", home}, {"GIT_CONFIG_GLOBAL", Path.join(home, ".gitconfig")}, {"GIT_CONFIG_NOSYSTEM", "1"}, {"GH_TOKEN", "inert-restart-fixture"}]
     assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
     assert {_, 0} = System.cmd("bash", ["-euc", rewrite], env: env, stderr_to_stdout: true)
-    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://x-access-token:inert-restart-fixture@github.com/.insteadOf"], env: env)
+    assert {values, 0} = System.cmd("git", ["config", "--global", "--get-all", "url.https://github.com/.insteadOf"], env: env)
     assert String.split(values, "\n", trim: true) == ["git@github.com:", "ssh://git@github.com/"]
+    refute File.read!(Path.join(home, ".gitconfig")) =~ "inert-restart-fixture"
+    assert {helper, 0} = System.cmd("git", ["config", "--global", "--get-all", "credential.helper"], env: env)
+    assert String.trim(helper) == "/usr/local/bin/symphony-git-credential"
   end
 
   test "cross-provider completion restores target ownership in both directions", ctx do
@@ -455,6 +459,106 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.read!(ctx.log) =~ "stop\t"
     refute File.read!(ctx.log) =~ "rename\t"
     assert File.exists?(journal)
+  end
+
+  for agent <- ["codex", "claude"] do
+    @workflow_agent agent
+    test "#{agent} same-image update adopts a single-file bind only after drain", ctx do
+      agent = @workflow_agent
+      assert {_, 0} = launch_args(ctx, ["run", "--agent", agent])
+      inspect_path = ctx.state <> ".inspect"
+      [observed] = inspect_path |> File.read!() |> Jason.decode!()
+      assert Enum.any?(observed["Mounts"], &(&1["Destination"] == "/etc/symphony" and &1["Source"] == ctx.repo and &1["RW"] == false))
+
+      legacy_mounts =
+        Enum.map(observed["Mounts"], fn
+          %{"Destination" => "/etc/symphony"} = mount -> %{mount | "Destination" => "/etc/symphony/WORKFLOW.md", "Source" => ctx.repo <> "/WORKFLOW.md"}
+          mount -> mount
+        end)
+
+      File.write!(inspect_path, Jason.encode!([%{observed | "Mounts" => legacy_mounts}]))
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["run", "--agent", agent])
+      assert message =~ "adopt through symphony update"
+      refute File.read!(ctx.log) =~ "stop\t"
+
+      # Busy sessions prevent replacement even though image/config/profile match.
+      File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
+      File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
+      File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nprintf '%s' '{\"counts\":{\"running\":1},\"agent\":{\"draining\":true}}'\n")
+      assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      calls = File.read!(ctx.log)
+      refute calls =~ "stop\t"
+      refute calls =~ "rename\t"
+      assert File.read!(inspect_path) |> Jason.decode!() == [%{observed | "Mounts" => legacy_mounts}]
+
+      ready_curl!(ctx)
+      File.write!(ctx.log, "")
+      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      refute message =~ "Previously completed runner transition recovered"
+      calls = File.read!(ctx.log)
+      assert calls =~ "stop\t"
+      assert calls =~ "rename\t"
+      assert calls =~ "source=#{ctx.repo},target=/etc/symphony,readonly"
+      if agent == "codex", do: assert(calls =~ "source=#{ctx.repo},target=/opt/symphony/project,readonly")
+      [adopted] = inspect_path |> File.read!() |> Jason.decode!()
+      assert adopted["Mounts"] == observed["Mounts"]
+      assert File.read!(ctx.state <> ".image") == if(agent == "claude", do: "fixture-claude-image", else: "sha256:" <> String.duplicate("a", 64))
+    end
+  end
+
+  test "Claude directory access refuses fresh launch and adoption before drain", ctx do
+    env = [{"FIXTURE_WORKFLOW_UNREADABLE", "true"}]
+    assert {message, 1} = launch_args(ctx, ["run", "--agent", "claude"], env)
+    assert message =~ "project-root traversal and workflow read access"
+    refute File.read!(ctx.log) =~ "--detach"
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    legacy_workflow_mount!(ctx)
+    ready_curl!(ctx)
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
+    assert message =~ "Host permissions were not changed"
+    refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rename|rm)\t/
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+    calls = File.read!(ctx.log)
+    assert calls =~ "--user\t11001:11001"
+    assert calls =~ "source=#{ctx.repo},target=/etc/symphony,readonly"
+  end
+
+  for agent <- ["codex", "claude"] do
+    @rollback_agent agent
+    test "#{agent} recovery refuses an old-layout candidate and rollback preserves the old bind", ctx do
+      agent = @rollback_agent
+      assert {_, 0} = launch_args(ctx, ["run", "--agent", agent])
+      legacy_workflow_mount!(ctx)
+      ready_curl!(ctx)
+      fail_create = Path.join(ctx.root, "fail-workflow-create")
+      File.touch!(fail_create)
+      assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent], [{"FIXTURE_FAIL_CREATE_FILE", fail_create}])
+      assert File.exists?(ctx.state <> ".backup")
+      legacy_workflow_mount!(ctx)
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", agent])
+      assert message =~ "candidate workflow layout differs"
+      refute File.read!(ctx.log) =~ ~r/(^|\n)(stop|rename|rm)\t/
+      assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"])
+      assert message =~ "Prior runner restored"
+      [restored] = File.read!(ctx.state <> ".inspect") |> Jason.decode!()
+      assert Enum.any?(restored["Mounts"], &(&1["Destination"] == "/etc/symphony/WORKFLOW.md" and &1["Source"] == ctx.repo <> "/WORKFLOW.md"))
+    end
+  end
+
+  defp legacy_workflow_mount!(ctx) do
+    path = ctx.state <> ".inspect"
+    [observed] = File.read!(path) |> Jason.decode!()
+
+    mounts =
+      Enum.map(observed["Mounts"], fn
+        %{"Destination" => "/etc/symphony"} = mount -> %{mount | "Destination" => "/etc/symphony/WORKFLOW.md", "Source" => ctx.repo <> "/WORKFLOW.md"}
+        mount -> mount
+      end)
+
+    File.write!(path, Jason.encode!([%{observed | "Mounts" => mounts}]))
   end
 
   test "ordinary journal retry cannot resume a same-image legacy listener as a completed candidate", ctx do
