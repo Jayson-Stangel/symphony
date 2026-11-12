@@ -7,12 +7,14 @@ grant execution or merge authority.
 
 ## Development process and Linear lifecycle
 
-- This project develops Symphony; it does not use Symphony to develop itself.
-  Implementation runs through operator-directed coding-agent chats in isolated
+- Implementation normally runs through operator-directed coding-agent chats in isolated
   development checkouts, with Linear as the work contract and GitHub as the
   implementation, review and merge record.
-- Do not dispatch this project's issues through a Symphony listener, add routing
-  labels to enable execution, or start a listener to implement repository work.
+- The [JAY-934 runner pilot](symphony-runner-pilot/README.md) is the only
+  exception, after explicit operator approval of its issue, workflow and dispatch.
+  The coordinator owns the upstream PR and the review endpoint. For all other
+  issues, keep implementation, routing and listener activation in their existing
+  direct-development scope.
   `elixir/WORKFLOW.md` is a shipped runner workflow. Reuse its useful delivery
   practices (acceptance checklists, validation, feedback sweeps and rework), but
   follow this file for this project's coordination, status and authority rules.

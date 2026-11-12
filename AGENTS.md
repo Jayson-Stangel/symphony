@@ -79,9 +79,12 @@ waive required checks, replace the issue's contract or grant authority.
 
 - This project develops Symphony through operator-directed coding-agent chats in
   isolated checkouts. Linear owns the work contract; GitHub owns implementation,
-  review and merge records. Never dispatch this project's implementation through
-  a Symphony listener or add routing labels to enable execution. Explicitly
-  authorized qualification against a separate target project tests the product.
+  review and merge records. The sole proposed exception is the
+  [JAY-934 runner pilot](docs/symphony-runner-pilot/README.md), which requires
+  explicit operator approval of the issue, workflow and dispatch. The exception
+  expires at the pilot's review endpoint or earlier stop. All other Symphony
+  implementation remains in direct chats. Explicitly authorized qualification
+  against a separate target project tests the product.
 - `elixir/WORKFLOW.md` is a shipped runner contract, not this project's delivery
   policy. Do not import its routing, worker-only skills or shutdown instructions.
 - Read [Agent delivery](docs/agent-delivery.md) for lifecycle and coordination.
