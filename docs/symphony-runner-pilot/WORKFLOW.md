@@ -48,14 +48,14 @@ Current tracker state is `{{ issue.state }}`. Contract at {{ issue.url }}:
 
 {% if attempt %}
 This is attempt {{ attempt }}. Reconcile the existing workspace, workpad and
-remote branch before continuing. Reuse evidence for the same inputs and resume
+local branch before continuing. Reuse evidence for the same inputs and resume
 from the last confirmed checkpoint.
 {% endif %}
 
 1. Read the issue, its comments and the coordinator's approved handoff details.
    Obtain the exact upstream `dev` base SHA from that record. Confirm the
-   handoff destination is `https://github.com/Jayson-Stangel/symphony-jay934-pilot.git`
-   and the branch is `codex/jay-934-retry-deadline`. If a detail is
+   repository is `Jayson-Stangel/symphony` and the local branch is
+   `codex/jay-934-retry-deadline`. If a detail is
    missing or disagrees with this workflow, stop and record the blocker. In a
    fresh workspace, verify the approved SHA is on upstream `dev` before
    creating the branch from it. On return, inspect the existing branch and
@@ -74,22 +74,22 @@ from the last confirmed checkpoint.
    and applicable repository gates, including `make -C elixir all`. Record
    commands, outcomes and any omissions against the exact candidate SHA.
    Retain the same checkout and branch when handling review feedback.
-4. Publish only the named feature branch to the disposable repository. Verify the
-   remote branch points to the tested SHA. In the workpad record that SHA,
+4. Commit the tested change to the named local branch and verify the branch tip.
+   In the workpad record the tested SHA,
    branch and base, validation results, gaps, and a PR body matching the
    upstream template. Check the PR body with the repository validator. Move
    the issue to `Agent Review`, verify the transition and end the turn. The
-   coordinator fetches and verifies the tested commit, publishes it upstream,
+   coordinator exports and verifies the tested commit, publishes it upstream,
    and opens the PR against `dev`.
 5. If the coordinator returns the issue to `Rework`, read the upstream PR and
    review findings. Make at most one requested revision on the existing
-   disposable branch, refresh the evidence, and return to `Agent Review`.
+   local branch, refresh the evidence, and return to `Agent Review`.
    If a further revision is needed, record the findings and hand them back.
 
 Use `Blocked` for an external access or tooling failure that prevents the
 handoff. Record the failing boundary, evidence and the needed coordinator
 action, then end the turn. Keep writes limited to this issue's workpad and
-authorized states, and the one disposable feature branch. The coordinator owns
+authorized states, and the one local feature branch. The coordinator owns
 upstream GitHub writes, final disposition and cleanup. Worker authority ends
 at the review handoff. Keep the installed runtime, tracker routing, release
 tooling and stable installation outside the workspace change.
