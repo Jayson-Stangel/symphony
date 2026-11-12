@@ -40,23 +40,27 @@ the review handoff and, if requested, one revision on the same PR.
 - Supply a dedicated Codex login and the minimum Linear access for project
   reads, workpad updates and the pilot issue's state changes. Confirm the
   actual Linear credential scope and keep it out of the workspace. Give the
-  worker a GitHub credential with write access only to the approved fork.
-  Upstream source and PRs are public. The coordinator uses a separate identity
-  to open the upstream PR and verify CI on the fork head.
+  worker a GitHub credential with Contents read/write scoped only to
+  [`Jayson-Stangel/symphony-jay934-pilot`](https://github.com/Jayson-Stangel/symphony-jay934-pilot),
+  the private disposable repository used for branch handoff. Keep Actions
+  disabled there. The coordinator publishes the tested commit to the upstream
+  feature branch and opens the PR using a separate identity.
 
 ## Approval and execution
 
 1. Review and adopt the narrowly scoped policy change through the ordinary
    `dev` PR process. Record the current upstream `dev` SHA containing that
-   policy, the approved fork, and the worker branch
+   policy and the worker branch
    `codex/jay-934-retry-deadline` on JAY-934. Leave the issue in Backlog.
+   Seed the disposable repository's `dev` with the same upstream commit so the
+   worker can publish its branch with ordinary Contents write access.
 2. With approval to prepare the isolated environment, materialize the reviewed
    pilot workflow as the root `WORKFLOW.md` in the separate launch checkout.
    Set its Git origin to the upstream repository so project identity resolves
    correctly. Verify the bundle and image, dedicated configuration and mounts,
    strict rendering of fresh and retry prompts, protected toolchain, and
-   GitHub and Linear access. Verify the approved fork permits the intended
-   upstream PR and review CI path. The released image uses Elixir 1.19.6/OTP 28
+   GitHub and Linear access. Verify the worker can use the disposable repository
+   and the coordinator can fetch from it. The released image uses Elixir 1.19.6/OTP 28
    and Node 24.22.1; repository CI uses the pins in `elixir/mise.toml`. Record
    any checks deferred to CI. A failed boundary check leaves the issue held.
 3. After explicit activation approval, create the temporary routing label
@@ -72,19 +76,20 @@ the review handoff and, if requested, one revision on the same PR.
    The turn limit applies per attempt, so ending a turn can leave the issue
    eligible for another attempt. If a worker cannot finish after drain, use the
    isolated runner's supported stop command and preserve its workspace.
-4. At Agent Review, open the PR from the fork branch to upstream `dev`.
-   Compare the reviewed head with the recorded branch tip, review the diff
-   and verify Application checks, Package qualification, Browser qualification
-   and PR description. Record any GitHub approval needed for fork CI and any
-   intentionally omitted checks. If rework is needed, record the findings,
+4. At Agent Review, fetch the disposable branch and verify its tip against the
+   tested SHA in the workpad. Review the diff, then push that exact commit as the
+   upstream feature branch and open the PR against `dev`. Verify Application
+   checks, Package qualification, Browser qualification and PR description.
+   Record any intentionally omitted checks. If rework is needed, record the findings,
    move only JAY-934 to Rework, and confirm that the same checkout and branch
-   produce the next reviewable head. Further rework goes back to the
+   produce the next reviewable head. Fetch, verify and fast-forward the
+   upstream feature branch with that commit. Further rework goes back to the
    coordinator. An open PR left for the operator remains in Human Review.
 5. At handoff or an earlier stop, drain the dedicated runner, wait for zero
    workers, then stop it using the same pilot command context. Remove the
    opt-in and record the final issue, PR, CI and runtime evidence. Preserve
    open PR work and review evidence. Apply the repository cleanup procedure to
-   verified pilot-owned resources and record any retained fork, branch,
+   verified pilot-owned resources and record any retained repository, branch,
    workspace, image reference or auth volume with its owner and removal
    condition. The coordinator retires the one-use routing label after checking
    its attachments and removes the expired policy exception through normal
