@@ -76,9 +76,10 @@ the review handoff and, if requested, one revision on the same PR.
    isolated runner's supported stop command and preserve its workspace.
 4. At Agent Review, use the pilot runner container to export the local branch
    as a Git bundle. Verify the container's pilot namespace and workspace mount,
-   then run `git -C /workspaces/JAY-934 bundle create - refs/heads/codex/jay-934-retry-deadline`
-   inside it and capture stdout to a private coordinator file. Verify the bundle
-   and fetch the branch into a coordinator checkout. Compare its tip with the
+   then run `git -C /workspaces/JAY-934 bundle create - refs/heads/codex/jay-934-retry-deadline ^BASE_SHA`
+   inside it, substituting the approved upstream base SHA, and capture stdout
+   to a private coordinator file. Verify the bundle and fetch the branch into
+   a coordinator checkout that already has the base commit. Compare its tip with the
    tested SHA in the workpad. Review the diff, then push that exact commit as the
    upstream feature branch and open the PR against `dev`. Verify Application
    checks, Package qualification, Browser qualification and PR description.
