@@ -3,6 +3,7 @@ tracker:
   kind: linear
   provider:
     project_slug: "81955ff329e0"
+    api_key: $LINEAR_API_KEY
   required_labels:
     - "Symphony Pilot JAY-934"
   active_states:
@@ -62,8 +63,10 @@ from the last confirmed checkpoint.
    if missing and update it with the plan, base, checkpoints and evidence.
    Move `Todo` to `In Progress` and read it back. Use exact team state IDs.
    Reconcile uncertain writes by reading the target before any retry. If
-   Linear is unavailable, record the blocker in the workspace and end the turn
-   so the coordinator can reconcile and stop the pilot.
+   Linear is unavailable or a write outcome remains unresolved, record the
+   blocker in the workspace, make no further service writes and end the turn.
+   On continuation, preserve the evidence and wait for the coordinator to
+   reconcile the blocker.
 3. Read repository and Elixir instructions. Restore locked dependencies from
    the issue checkout and record the actual tool versions. Reproduce the bug
    with the regression first, apply the focused fix, then run the regression

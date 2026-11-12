@@ -14,8 +14,9 @@ the review handoff and, if requested, one revision on the same PR.
   [release manifest](https://github.com/Jayson-Stangel/symphony/releases/download/v0.0.8/release.json)
   records the Linux bundle SHA-256
   `7932158b01bde32982c7f223fa02292f8b79ef92c921333abe374681b2406823`.
-  Invoke the dedicated bundle directly. Keep its manager and image pinned for
-  the full pilot, including any rework.
+  Run the verified installer with pilot-owned paths and invoke its installed
+  command by absolute path. Keep its manager and image pinned for the full
+  pilot, including any rework.
 - Select the released Codex linux/amd64 image with the packaged
   `environment select --agent codex` command in the pilot context. The registry
   reference is
@@ -28,7 +29,7 @@ the review handoff and, if requested, one revision on the same PR.
   recorded separately.
 - Use namespace `selfdev-jay934`, loopback port `14034` after checking it is
   free, a pilot-owned launch checkout and separate config, runner state,
-  workspace and Codex auth storage. Set `SYMPHONY_HOME`,
+  workspace and Codex auth storage. Set `SYMPHONY_APP_HOME`,
   `SYMPHONY_CONFIG_HOME`, `SYMPHONY_RUNNER_HOME`,
   `SYMPHONY_RUNNER_NAMESPACE`, `SYMPHONY_CODEX_AUTH_VOLUME`,
   `SYMPHONY_BIN_DIR` and `SYMPHONY_SKILLS_DIR` in the pilot command context.
@@ -65,9 +66,12 @@ the review handoff and, if requested, one revision on the same PR.
    dashboard. The label and active states narrow admission, and the
    `before_run` hook checks the exact workspace before every worker start.
    After explicit dispatch approval, apply the label to JAY-934 alone and
-   move it to Todo. The coordinator observes one worker and verifies the
-   issue, workspace and workpad. If unexpected work appears, drain immediately
-   and preserve evidence.
+   move it to Todo. The coordinator monitors the dashboard and logs through
+   handoff, verifies the issue, workspace and workpad, and drains on unexpected
+   work, unresolved Linear access, or repeated attempts with no progress.
+   The turn limit applies per attempt, so ending a turn can leave the issue
+   eligible for another attempt. If a worker cannot finish after drain, use the
+   isolated runner's supported stop command and preserve its workspace.
 4. At Agent Review, open the PR from the fork branch to upstream `dev`.
    Compare the reviewed head with the recorded branch tip, review the diff
    and verify Application checks, Package qualification, Browser qualification
