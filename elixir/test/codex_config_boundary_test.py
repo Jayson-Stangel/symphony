@@ -705,6 +705,56 @@ class LaunchReceiptTest(unittest.TestCase):
         finally:
             os.close(read_fd)
 
+    def test_actual_launch_propagates_browser_defaults_and_override_precedence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            executable = str(Path(sys.executable).resolve())
+            chain = {"node": None}
+            value = {"operation": "exec", "expected_launch_chain": chain, "workspace": str(workspace),
+                     "expected_home": str(workspace.parent / "home"),
+                     "expected_codex_home": str(workspace.parent / "home/.codex")}
+            self.launch["attest_context"] = lambda *args, **kwargs: {"executable": executable}
+            self.launch["attest_runtime_chain"] = lambda *args, **kwargs: chain
+            chrome, xdg = str(workspace / "chrome settings"), str(workspace / "xdg settings")
+            for initial, expected in (
+                    ({}, {"CHROME_CONFIG_HOME": str(workspace / ".symphony-browser")}),
+                    ({"CHROME_CONFIG_HOME": "", "XDG_CONFIG_HOME": xdg}, {"XDG_CONFIG_HOME": xdg}),
+                    ({"CHROME_CONFIG_HOME": chrome, "XDG_CONFIG_HOME": "/foreign"},
+                     {"CHROME_CONFIG_HOME": chrome, "XDG_CONFIG_HOME": "/foreign"})):
+                with self.subTest(initial=initial), patch.dict(os.environ, {"HOME": value["expected_home"], **initial}, clear=True), \
+                        patch.object(sys, "argv", ["-c", json.dumps(value), executable, "app-server"]), \
+                        patch.object(os, "execve") as run:
+                    self.launch["launch_main"]()
+                    run.assert_called_once_with(executable, [executable, "app-server"],
+                                                {"HOME": value["expected_home"], **expected})
+            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_browser_config_refuses_foreign_or_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / "task"
+            workspace.mkdir()
+            value = {"workspace": str(workspace), "expected_home": str(root / "home"),
+                     "expected_codex_home": str(root / "home/.codex")}
+            (workspace / ".symphony-browser").symlink_to(root / "missing")
+            (workspace / "regular").touch()
+            (workspace / "shared").mkdir()
+            (workspace / "shared").chmod(0o777)
+            for override in (None, "relative", str(root / "foreign"), str(workspace),
+                             str(workspace / "nested/.git/browser"), str(workspace / ".codex"),
+                             str(workspace / "regular/config"), str(workspace / "shared/config"),
+                             str(workspace / "non-utf8-\udcff")):
+                environment = {} if override is None else {"CHROME_CONFIG_HOME": override}
+                with self.subTest(override=override), patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(boundary.Refusal, "sandbox_unqualified_config"):
+                        self.launch["browser_environment"](value)
+            owned = workspace / "owned"
+            owned.mkdir()
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(owned)}, clear=True), \
+                    patch.object(os, "getuid", return_value=owned.stat().st_uid + 1), \
+                    self.assertRaisesRegex(boundary.Refusal, "sandbox_unqualified_config"):
+                self.launch["browser_environment"](value)
+
 
 if __name__ == "__main__":
     unittest.main()
