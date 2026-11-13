@@ -13,6 +13,7 @@ from unittest.mock import Mock
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'scripts/ci'))
 import select_mac_runner as selector
+import mac_runner_request as request
 sys.path.pop(0)
 from test_components import job, scripts, workflow, env_for
 
@@ -158,7 +159,7 @@ class Selection(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(selector.Refusal):
                 self.select()
             self.context[key] = original
-        for branch, key, value in (('head', 'sha', SOURCE), ('base', 'ref', 'main')):
+        for branch, key, value in (('head', 'sha', SOURCE), ('base', 'ref', 'unsupported')):
             original = self.event['pull_request'][branch][key]
             self.event['pull_request'][branch][key] = value
             with self.assertRaises(selector.Refusal):
@@ -272,8 +273,36 @@ class Selection(unittest.TestCase):
             with self.subTest(workflow=workflow_path):
                 self.assertEqual(self.select_using_real_live_verifier(documents), LABEL)
 
-    def test_promotion_ci_refuses_feature_to_main_fork_and_nonowner_event(self):
-        for branch, key, value in (('head', 'ref', 'codex/feature'),
+    def test_persistent_hotfix_ci_requires_current_main_and_hotfix_refs(self):
+        documents = self.promotion_documents()
+        root = 'repos/' + REPO
+        head_ref = 'codex/jay-955-main-mac-ci'
+        self.event['pull_request']['head']['ref'] = head_ref
+        documents[root + '/pulls/34']['head']['ref'] = head_ref
+        del documents[root + '/git/ref/heads/dev']
+        head_endpoint = root + '/git/ref/heads/' + head_ref
+        documents[head_endpoint] = {'object': {'sha': HEAD}}
+        self.context['PERSISTENT_MAC_RUNNER'] = request.PERSISTENT_LABEL
+
+        def verify(permit, **kwargs):
+            return selector.verify_live(permit, read=documents.__getitem__, **kwargs)
+
+        def select():
+            return request.persistent_runner(
+                self.context, self.event, self.workflow, 'platform-contracts', verify=verify
+            )
+
+        self.assertEqual(select()['runner'], request.PERSISTENT_LABEL)
+        self.assertEqual(self.select_using_real_live_verifier(documents), LABEL)
+        for endpoint, current in ((head_endpoint, HEAD), (root + '/git/ref/heads/main', BASE)):
+            with self.subTest(endpoint=endpoint):
+                documents[endpoint]['object']['sha'] = 'd' * 40
+                with self.assertRaises(selector.Refusal):
+                    select()
+                documents[endpoint]['object']['sha'] = current
+
+    def test_main_ci_refuses_unsupported_branch_fork_and_nonowner_event(self):
+        for branch, key, value in (('head', 'ref', 'unsupported/feature'),
                                     ('head', 'repo', {'full_name': 'untrusted/fork'}),
                                     ('user', 'login', 'untrusted')):
             documents = self.promotion_documents()
