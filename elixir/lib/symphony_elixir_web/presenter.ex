@@ -5,8 +5,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, WorkflowStore, Workspace}
 
-  @spec state_payload(GenServer.name(), timeout()) :: map()
-  def state_payload(orchestrator, snapshot_timeout_ms) do
+  @spec state_payload(GenServer.name(), timeout(), DateTime.t() | nil) :: map()
+  def state_payload(orchestrator, snapshot_timeout_ms, now \\ nil) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
@@ -20,7 +20,7 @@ defmodule SymphonyElixirWeb.Presenter do
             blocked: length(Map.get(snapshot, :blocked, []))
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          retrying: Enum.map(snapshot.retrying, &retry_entry_payload(&1, now)),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
@@ -38,8 +38,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp maybe_agent(payload, %{agent: agent}), do: Map.put(payload, :agent, agent)
   defp maybe_agent(payload, _snapshot), do: payload
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
-  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+  @spec issue_payload(String.t(), GenServer.name(), timeout(), DateTime.t() | nil) :: {:ok, map()} | {:error, :issue_not_found}
+  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms, now \\ nil)
+      when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
@@ -49,7 +50,7 @@ defmodule SymphonyElixirWeb.Presenter do
         if is_nil(running) and is_nil(retry) and is_nil(blocked) do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry, blocked)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, blocked, now)}
         end
 
       _ ->
@@ -68,7 +69,7 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry, blocked) do
+  defp issue_payload_body(issue_identifier, running, retry, blocked, now) do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry, blocked),
@@ -82,7 +83,7 @@ defmodule SymphonyElixirWeb.Presenter do
         current_retry_attempt: retry_attempt(retry)
       },
       running: running && running_issue_payload(running),
-      retry: retry && retry_issue_payload(retry),
+      retry: retry && retry_issue_payload(retry, now),
       blocked: blocked && blocked_issue_payload(blocked),
       logs: %{
         codex_session_logs: []
@@ -126,13 +127,13 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp retry_entry_payload(entry) do
+  defp retry_entry_payload(entry, now) do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       attempt: entry.attempt,
-      due_at: due_at_iso8601(entry.due_in_ms),
+      due_at: due_at_iso8601(entry.due_in_ms, now),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
@@ -181,10 +182,10 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp retry_issue_payload(retry) do
+  defp retry_issue_payload(retry, now) do
     %{
       attempt: retry.attempt,
-      due_at: due_at_iso8601(retry.due_in_ms),
+      due_at: due_at_iso8601(retry.due_in_ms, now),
       error: retry.error,
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
@@ -240,14 +241,13 @@ defmodule SymphonyElixirWeb.Presenter do
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
 
-  defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
-    DateTime.utc_now()
-    |> DateTime.add(div(due_in_ms, 1_000), :second)
+  defp due_at_iso8601(due_in_ms, now) when is_integer(due_in_ms) do
+    DateTime.add(now || DateTime.utc_now(), due_in_ms, :millisecond)
     |> DateTime.truncate(:second)
     |> DateTime.to_iso8601()
   end
 
-  defp due_at_iso8601(_due_in_ms), do: nil
+  defp due_at_iso8601(_due_in_ms, _now), do: nil
 
   defp iso8601(%DateTime{} = datetime) do
     datetime
