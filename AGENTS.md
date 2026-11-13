@@ -180,19 +180,22 @@ Use this exception when an urgent production fix needs to ship independently
 of the planned `dev` promotion.
 
 1. Branch from the live `main` head in an isolated development checkout. Open a
-   focused PR to `main` containing the fix, its validation and any required
-   patch-release version change. Use the normal review, required checks and
-   exact-scope production merge approval. Use that approval for the hotfix
-   route as well.
-2. Release from the actual merged `main` revision through the existing
+   focused PR to `main` for each independent fix. Review them in parallel,
+   then merge them in order with required checks against the current base.
+   A fix that depends on another can be reviewed as a stack. Use the normal
+   exact-scope production merge approval for the included PRs. That approval
+   also covers the hotfix route.
+2. Set the patch version once for the release, either in an included fix PR
+   or a version-only PR in the approved set. Release from the final merged
+   `main` revision through the existing
    [production runbook](docs/macos-release-signing.md#source-freeze-and-exact-execution-order).
    This section supplies the source and PR route for the release skill's
    preparation steps. Follow its remaining version, validation and release
    requirements.
-3. Promptly open a reviewed PR to bring the merged hotfix back into `dev`.
-   Preserve in-flight feature work, resolve conflicts there and verify the fix
-   is present before the next planned promotion. This reconciliation can
-   proceed while the patch release is qualified and published.
+3. Promptly bring each merged fix back into `dev` through reviewed PRs.
+   Preserve in-flight feature work, resolve conflicts there and verify the
+   fixes are present before the next planned promotion. This reconciliation
+   can proceed while the patch release is qualified and published.
 
 ## Clean up after each task
 
