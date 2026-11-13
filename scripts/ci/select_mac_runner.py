@@ -139,7 +139,7 @@ def select_runner(raw, context, event, consumer, job_key, now=None, verify=verif
                     or pr["head"]["repo"]["full_name"] != REPOSITORY
                     or pr["base"]["repo"]["full_name"] != REPOSITORY or not supported_pr_route(pr)
                     or context["GITHUB_REF"] != f"refs/pull/{permit['pr_number']}/merge"):
-                raise Refusal("routing permit requires the exact owner feature-to-dev or dev-to-main CI source")
+                raise Refusal("routing permit requires the exact owner feature, promotion, or hotfix CI source")
         elif permit["event_name"] in {"push", "workflow_dispatch"}:
             if not context["GITHUB_REF"].startswith("refs/heads/"):
                 raise Refusal("backup routing does not admit tag publication events")

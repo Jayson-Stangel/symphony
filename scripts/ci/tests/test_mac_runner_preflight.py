@@ -65,7 +65,7 @@ class PreparationIdentity(unittest.TestCase):
             (root + "/pulls/34", ("head", "repo", "full_name"), "untrusted/fork"),
             (root + "/pulls/34", ("head", "sha"), "d" * 40),
             (root + "/pulls/34", ("merge_commit_sha",), "d" * 40),
-            (root + "/pulls/34", ("base", "ref"), "main"),
+            (root + "/pulls/34", ("base", "ref"), "unsupported"),
             (root + "/commits/" + SOURCE, ("parents",), [{"sha": HEAD}]),
             (root + "/commits/" + SOURCE, ("parents",), [{"sha": "d" * 40}, {"sha": HEAD}]),
         ]
