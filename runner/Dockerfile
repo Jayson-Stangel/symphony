@@ -123,7 +123,7 @@ CMD ["test", "--cover"]
 # The default target retains Codex's existing root/auth layout.
 FROM common AS codex
 LABEL com.symphony.agent=codex com.symphony.protocol=1
-ARG CODEX_VERSION=0.163.0
+ARG CODEX_VERSION=0.166.0
 # The bundled helper matches this Codex release's proc-fallback diagnostics.
 # System Bubblewrap 0.12 reports a different path and prevents that fallback.
 RUN apt-get purge -y bubblewrap && npm install --global "@openai/codex@$CODEX_VERSION" \
