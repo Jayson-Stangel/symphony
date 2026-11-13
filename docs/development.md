@@ -210,10 +210,11 @@ delete metadata or force-replace active work. For a retained failed transition:
 "$dev" update --rollback-runner
 ```
 
-Stable deployment requires a reviewed `dev` → `main` promotion and the installed
-global `symphony update` command. Promotion and stable rollout need separate explicit
-operator approval for the complete PR inventory, exact revisions and rollout targets;
-development testing or landing a feature in `dev` supplies neither approval. See
+Stable deployment uses the approved release from `main` and the installed global
+`symphony update` command. Planned releases use a reviewed `dev` → `main`
+promotion. Urgent fixes can use the [production hotfix path](../AGENTS.md#production-hotfixes).
+The production merge and stable rollout need separate explicit operator approval
+for the complete PR inventory, exact revisions and rollout targets. See
 [repository approval boundaries](../AGENTS.md#explicit-approval-for-production).
 
 ## Opt-in updater lifecycle proof

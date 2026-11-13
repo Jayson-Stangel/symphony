@@ -338,12 +338,14 @@ these settings changes; workflow source cannot create or enforce them.
 
 ### Source freeze and exact execution order
 
-1. Finish and review the feature PR to `dev`, then freeze its integrated source
-   `D`. Refresh the complete included PR/link/purpose inventory against live
-   `main`; include this PR and all other intervening work. Obtain explicit
-   promotion approval for that inventory and promotion PR/head. Promote normally
-   and observe the actual resulting main commit **`P`**. Equal trees between
-   `D` and `P` never permit rewriting a receipt's source SHA.
+1. For a planned release, finish and review the feature PR to `dev`, then freeze
+   its integrated source `D` and prepare the promotion PR. For an urgent fix
+   shipping independently, use the reviewed
+   [production hotfix PR](../AGENTS.md#production-hotfixes). In either case,
+   refresh the complete included PR/link/purpose inventory against live `main`
+   and obtain explicit production merge approval for that inventory and the
+   exact PR head. Observe the actual merged `main` commit **`P`**. Equal trees
+   across revisions never permit rewriting a receipt's source SHA.
 2. Keep main at `P` through qualification and signing. With separate execution
    authority, manually run `burrito-release.yml` **on main**, setting
    `production_prepare=true`. It performs full existing runner/helper/package and
