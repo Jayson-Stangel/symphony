@@ -249,6 +249,23 @@ if mode=='denial-fixture':
             expected,
         )
 
+    def test_copy_excludes_only_root_browser_state_with_stale_profile_links(self):
+        source = self.root / "source"
+        target = self.root / "copy"
+        profile = source / ".symphony-browser" / "chromium"
+        profile.mkdir(parents=True)
+        stale = profile / "SingletonSocket"
+        stale.symlink_to(self.root / "expired-socket")
+        nested = source / "nested" / ".symphony-browser"
+        nested.mkdir(parents=True)
+        (nested / "tracked").write_text("project input")
+        target.mkdir(mode=0o700)
+
+        probe.copy_project(source, target, managed_browser=True)
+        self.assertFalse((target / ".symphony-browser").exists())
+        self.assertTrue(stale.is_symlink())
+        self.assertEqual((target / nested.relative_to(source) / "tracked").read_text(), "project input")
+
     def test_copy_failure_restores_only_the_owned_private_destination(self):
         source = self.root / "source"
         source.mkdir(mode=0o775)

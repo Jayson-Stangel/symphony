@@ -99,14 +99,21 @@ def launch_command(value):
     return args[0], options, wrapper
 
 
-def copy_project(source, target):
+def copy_project(source, target, *, managed_browser=False):
     # Preserve only links whose resolved destinations stay in the project, and
     # rewrite absolute internal links into the disposable copy. Never traverse
     # a project link into the runtime's native login/configuration directories.
     links = []
     def ignored(directory, names):
-        return {name for name in names if name == ".git" or
-                (Path(directory) / name).resolve() == target}
+        # Chrome may leave live or stale profile links to /tmp. Exclude only
+        # the reserved browser state directory, leaving links for normal checks.
+        excluded = set()
+        if managed_browser and Path(directory) == source and ".symphony-browser" in names:
+            browser = source / ".symphony-browser"
+            if not browser.is_symlink() and browser.is_dir():
+                excluded.add(browser.name)
+        return excluded | {name for name in names if name == ".git" or
+                           (Path(directory) / name).resolve() == target}
     for directory, dirs, files in os.walk(source, followlinks=False):
         excluded = ignored(directory, dirs)
         dirs[:] = [name for name in dirs if name not in excluded]
@@ -210,7 +217,7 @@ def check(value):
         if wrapper:
             # Never mutate the source checkout. The trusted setup script runs in
             # a disposable project copy under the real effective writable root.
-            copy_project(launch_root, allowed)
+            copy_project(launch_root, allowed, managed_browser=value.get("containerized", False) and retained_config is not None)
             script = allowed / wrapper[1]
             if not script.is_file() or not contains(allowed, script.resolve()):
                 raise Refusal("sandbox_launch_unavailable")

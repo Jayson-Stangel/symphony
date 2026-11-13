@@ -25,6 +25,16 @@ sandbox-only diagnostics. Trusted project scripts still execute and can read
 project files or download their pinned tools; keep unrelated secrets out of the
 project checkout. Claude retains its native readiness check.
 
+Managed Codex launches supply `CHROME_CONFIG_HOME` under the task workspace
+when neither Chrome nor XDG config home is set. Chrome initializes its Crashpad
+database there even when the browser command selects a separate profile with
+`--user-data-dir`. The reserved `.symphony-browser/` directory may hold local
+profiles as well as crash reports. Keep it out of project commits. Wrapped
+readiness omits this generated directory from its disposable project copy.
+A nonempty `CHROME_CONFIG_HOME` takes precedence over `XDG_CONFIG_HOME`.
+The selected override must be an absolute, canonical path inside the task
+workspace. Launch refuses unsafe, foreign, or protected directory components.
+
 The image's model-free diagnostic is
 `/opt/symphony/elixir/bin/symphony --check-codex-sandbox /path/to/WORKFLOW.md`.
 It exits without starting a listener or making a model request. Startup receipts
