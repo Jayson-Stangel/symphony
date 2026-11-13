@@ -28,13 +28,13 @@ INJECTION_VARIABLES = (
     "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
     "DYLD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
 )
-NPM_FRONTEND_SHA256 = "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70"
-NPM_PACKAGE_SHA256 = "691468e75b276e5a824cbf8ad180f072307dcf01178d403405af6f11d6b5ce14"
+NPM_FRONTEND_SHA256 = "e14fc83739c13c1074b12bd1acce4010c893c7f6fbfc1593b4a31d74cabb57af"
+NPM_PACKAGE_SHA256 = "e554d18c0a7c06bb9d81d5c154e869f6d4e55ad7906e2dd2de0258750861d0f6"
 NPM_LINUX_TARGETS = {
     "x86_64": ("x64", "x86_64-unknown-linux-musl", 62,
-               "79676eba7965ef9b8c4f02bf6c0956e6252c25447bcdd98dedcb1fc2be6e2c7a"),
+               "b24beb736031a7565b8c70adf3c55cf9640b9ff6812c4a2cf3878f44e723fb0f"),
     "aarch64": ("arm64", "aarch64-unknown-linux-musl", 183,
-                "6aa21ae6e4ec81fcf687d635f8a3aa37af8132eadc63f207aca0215c0f593167"),
+                "fd4c5c6aefe0cf866c7edf02a5dfbf96a3edf1f7585b16016e06edd8a90ca27d"),
 }
 
 
@@ -314,7 +314,7 @@ def _pinned_package(path, expected_digest):
 
 
 def image_chain(executable):
-    """Exact official 0.163 Linux npm closure.
+    """Exact official 0.166 Linux npm closure.
 
     Only the observed ordinary-file npm platform layout is qualified. Node's
     vendor fallback, linked package layouts, script trampolines and other npm
@@ -333,15 +333,15 @@ def image_chain(executable):
             refuse()
         package, metadata = _pinned_package(package_root / "package.json", NPM_PACKAGE_SHA256)
         alias = "@openai/codex-linux-" + cpu
-        alias_version = "npm:@openai/codex@0.163.0-linux-" + cpu
-        if (metadata.get("name") != "@openai/codex" or metadata.get("version") != "0.163.0" or
+        alias_version = "npm:@openai/codex@0.166.0-linux-" + cpu
+        if (metadata.get("name") != "@openai/codex" or metadata.get("version") != "0.166.0" or
                 metadata.get("bin") != {"codex": "bin/codex.js"} or
                 metadata.get("optionalDependencies", {}).get(alias) != alias_version):
             refuse()
         native_root = package_root / "node_modules" / "@openai" / ("codex-linux-" + cpu)
         native_package, native_metadata = _pinned_package(native_root / "package.json", native_package_digest)
         if (native_metadata.get("name") != "@openai/codex" or
-                native_metadata.get("version") != "0.163.0-linux-" + cpu or
+                native_metadata.get("version") != "0.166.0-linux-" + cpu or
                 native_metadata.get("os") != ["linux"] or native_metadata.get("cpu") != [cpu]):
             refuse()
         native_path = native_root / "vendor" / target / "bin" / "codex"
