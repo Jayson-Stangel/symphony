@@ -213,6 +213,42 @@ if mode=='denial-fixture':
         self.assertEqual((source / "tracked").read_text(), "preserved source")
         self.assertEqual((target / "tracked").read_text(), "preserved source")
 
+    def test_copy_keeps_path_resolution_linear_for_thousands_of_siblings(self):
+        siblings = 4171
+        source = self.workspace
+        generated = source / "var"
+        generated.mkdir()
+        target = generated / "snapshot"
+        target.mkdir(mode=0o700)
+        (generated / ".git").mkdir()
+        expected = {}
+        for index in range(siblings):
+            name = f"generated-{index}"
+            directory = generated / name
+            directory.mkdir()
+            content = str(index)
+            (directory / "data").write_text(content)
+            expected[name] = content
+
+        resolve = Path.resolve
+        resolutions = 0
+
+        def bounded_resolve(path, *args, **kwargs):
+            nonlocal resolutions
+            resolutions += 1
+            if resolutions > 10 * siblings:
+                self.fail("snapshot exceeded the linear path resolution budget")
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", bounded_resolve):
+            probe.copy_project(source, target)
+
+        self.assertEqual(
+            {directory.name: (directory / "data").read_text()
+             for directory in (target / "var").iterdir()},
+            expected,
+        )
+
     def test_copy_failure_restores_only_the_owned_private_destination(self):
         source = self.root / "source"
         source.mkdir(mode=0o775)
