@@ -47,13 +47,12 @@ def github_read(path, *, timeout=30):
 
 
 def supported_pr_route(pr):
-    """Feature CI targets dev; promotion CI is only same-repo dev into main.
-
-    This route check grants no merge, production promotion or rollout authority.
-    Repository/owner/source identity checks remain required separately.
-    """
-    return pr.get("base", {}).get("ref") == "dev" or (
-        pr.get("base", {}).get("ref") == "main" and pr.get("head", {}).get("ref") == "dev"
+    """Recognize feature, promotion, and hotfix routes for credential-free CI."""
+    base = pr.get("base", {}).get("ref")
+    head = pr.get("head", {}).get("ref")
+    return base == "dev" or (
+        base == "main" and isinstance(head, str)
+        and (head == "dev" or re.fullmatch(r"codex/[A-Za-z0-9][A-Za-z0-9._/-]*", head) is not None)
     )
 
 
@@ -86,7 +85,7 @@ def _inspect_run(run_id, attempt, pr_number, head, source, workflow, read, requi
         (pr.get("number") == pr_number and pr.get("state") == "open", "PR is not the selected open PR"),
         (pr.get("head", {}).get("repo", {}).get("full_name") == REPOSITORY, "fork source is refused"),
         (pr.get("base", {}).get("repo", {}).get("full_name") == REPOSITORY, "PR base repository differs"),
-        (supported_pr_route(pr), "PR must target dev, or be the same-repository dev-to-main promotion CI"),
+        (supported_pr_route(pr), "PR must use the dev, promotion, or codex/ hotfix CI route"),
         (pr.get("user", {}).get("login") == "Jayson-Stangel", "PR author differs from the approved owner"),
         (run.get("actor", {}).get("login") == "Jayson-Stangel", "run actor differs from the approved owner"),
         (run.get("triggering_actor", {}).get("login") == "Jayson-Stangel", "run triggering actor differs from the approved owner"),
@@ -96,17 +95,17 @@ def _inspect_run(run_id, attempt, pr_number, head, source, workflow, read, requi
         (commit.get("sha") == source, "tested source commit differs"),
         ([item.get("sha") for item in commit.get("parents", [])] == [pr.get("base", {}).get("sha"), head], "tested source does not bind the current base and PR head"),
     ]
-    if pr.get("base", {}).get("ref") == "main":
-        # A cached PR/merge snapshot must not admit stale main or dev refs.
-        main_ref = read(f"{root}/git/ref/heads/main")
-        dev_ref = read(f"{root}/git/ref/heads/dev")
-        checks.extend([
-            (main_ref.get("object", {}).get("sha") == pr.get("base", {}).get("sha"), "promotion main base advanced or differs"),
-            (dev_ref.get("object", {}).get("sha") == head, "promotion dev head advanced or differs"),
-        ])
-    failures = [message for valid, message in checks if not valid]
+    failures = [message for passed, message in checks if not passed]
     if failures:
         raise Refusal("; ".join(failures))
+    if pr["base"]["ref"] == "main":
+        # Bind both live refs before routing an exact main-targeted merge.
+        main_ref = read(f"{root}/git/ref/heads/main")
+        head_ref = read(f"{root}/git/ref/heads/{pr['head']['ref']}")
+        if main_ref.get("object", {}).get("sha") != pr["base"]["sha"]:
+            raise Refusal("main base advanced or differs")
+        if head_ref.get("object", {}).get("sha") != head:
+            raise Refusal("main-targeted PR head advanced or differs")
     owner_type = repo.get("owner", {}).get("type")
     blockers = [
         "No exact isolated host, account, mounts, network policy or toolchain has been approved and verified.",

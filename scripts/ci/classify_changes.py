@@ -222,9 +222,11 @@ def consumer_selection(path):
         return PACKAGES | {'fixtures', 'contracts', 'codex_config'}, 'release suite inventory and executor; retain every affected suite family'
     if path == 'scripts/ci/packaged_apparmor.py':
         return {'portable'}, 'manual packaged host preparation controller; portable refusal and policy contracts'
-    if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/mac_runner_watchdog.py',
-                'scripts/ci/select_mac_runner.py', 'scripts/ci/mac_runner_handoff.py',
-                'scripts/ci/mac_runner_request.py', 'scripts/ci/mac_runner_capacity.py'):
+    if path in ('scripts/ci/mac_runner_preflight.py', 'scripts/ci/select_mac_runner.py',
+                'scripts/ci/mac_runner_request.py'):
+        return {'portable', 'contracts'}, 'Mac selector changes exercise native process contract routing'
+    if path in ('scripts/ci/mac_runner_watchdog.py', 'scripts/ci/mac_runner_handoff.py',
+                'scripts/ci/mac_runner_capacity.py'):
         return {'portable'}, 'Mac admission policy covered by always-on policy tests and portable workflow contracts'
     if path.startswith('scripts/ci/') or path == '.github/workflows/change-classification.yml':
         return ALL, 'shared CI classifier, comparison or regression control'
