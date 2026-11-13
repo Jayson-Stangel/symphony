@@ -105,10 +105,11 @@ def copy_project(source, target):
     # a project link into the runtime's native login/configuration directories.
     links = []
     def ignored(directory, names):
-        return [name for name in names if name == ".git" or
-                (Path(directory) / name).resolve() == target]
+        return {name for name in names if name == ".git" or
+                (Path(directory) / name).resolve() == target}
     for directory, dirs, files in os.walk(source, followlinks=False):
-        dirs[:] = [name for name in dirs if name not in ignored(directory, dirs)]
+        excluded = ignored(directory, dirs)
+        dirs[:] = [name for name in dirs if name not in excluded]
         for name in [*dirs, *files]:
             path = Path(directory) / name
             if path.is_symlink():
