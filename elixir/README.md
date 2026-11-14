@@ -29,11 +29,13 @@ Managed Codex launches supply `CHROME_CONFIG_HOME` under the task workspace
 when neither Chrome nor XDG config home is set. Chrome initializes its Crashpad
 database there even when the browser command selects a separate profile with
 `--user-data-dir`. The reserved `.symphony-browser/` directory may hold local
-profiles as well as crash reports. Keep it out of project commits. Wrapped
-readiness omits this generated directory from its disposable project copy.
+profiles as well as crash reports. Keep it out of project commits. When rechecking
+a wrapped task, readiness omits Chromium's transient process singleton links
+from recognized Chrome and Chromium profile directories in its disposable copy.
 A nonempty `CHROME_CONFIG_HOME` takes precedence over `XDG_CONFIG_HOME`.
-The selected override must be an absolute, canonical path inside the task
-workspace. Launch refuses unsafe, foreign, or protected directory components.
+The selected override must be the canonical task workspace or an absolute,
+canonical path below it. Chrome appends its own product directory in either
+case. Launch refuses unsafe, foreign, or protected directory components.
 
 The image's model-free diagnostic is
 `/opt/symphony/elixir/bin/symphony --check-codex-sandbox /path/to/WORKFLOW.md`.

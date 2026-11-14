@@ -3,12 +3,14 @@
 Input is a resolved Symphony policy, never shell text to execute. Output is a
 fixed diagnostic code; native output is deliberately not forwarded.
 """
+import errno
 import json
 import hashlib
 import stat
 import os
 import shlex
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -99,26 +101,48 @@ def launch_command(value):
     return args[0], options, wrapper
 
 
+BROWSER_DATA_DIRS = frozenset(("chromium", "google-chrome-for-testing", "google-chrome",
+                               "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary"))
+SINGLETON_TARGETS = {
+    "SingletonSocket": r"/(?:[^/]+/)*\.?(?:com\.google\.Chrome|org\.chromium\.Chromium)\.[A-Za-z0-9]{6}/SingletonSocket",
+    "SingletonLock": r"[^/]+-[0-9]+",
+    "SingletonCookie": r"[0-9]{1,20}",
+}
+
+
+def browser_singleton(path):
+    # Linux Chromium uses these links for its process lock, cookies and
+    # temporary socket. Their targets describe the live workspace's processes.
+    pattern = SINGLETON_TARGETS.get(path.name)
+    if path.parent.name in BROWSER_DATA_DIRS and pattern:
+        try:
+            return re.fullmatch(pattern, os.readlink(path)) is not None
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            if error.errno != errno.EINVAL:
+                raise
+    return False
+
+
 def copy_project(source, target, *, managed_browser=False):
     # Preserve only links whose resolved destinations stay in the project, and
     # rewrite absolute internal links into the disposable copy. Never traverse
     # a project link into the runtime's native login/configuration directories.
     links = []
+    singletons = set()
     def ignored(directory, names):
-        # Chrome may leave live or stale profile links to /tmp. Exclude only
-        # the reserved browser state directory, leaving links for normal checks.
-        excluded = set()
-        if managed_browser and Path(directory) == source and ".symphony-browser" in names:
-            browser = source / ".symphony-browser"
-            if not browser.is_symlink() and browser.is_dir():
-                excluded.add(browser.name)
-        return excluded | {name for name in names if name == ".git" or
-                           (Path(directory) / name).resolve() == target}
+        directory = Path(directory)
+        return {name for name in names if name == ".git" or directory / name in singletons or
+                (directory / name).resolve() == target}
     for directory, dirs, files in os.walk(source, followlinks=False):
         excluded = ignored(directory, dirs)
         dirs[:] = [name for name in dirs if name not in excluded]
         for name in [*dirs, *files]:
             path = Path(directory) / name
+            if managed_browser and browser_singleton(path):
+                singletons.add(path)
+                continue
             if path.is_symlink():
                 try:
                     resolved = path.resolve()
@@ -217,7 +241,8 @@ def check(value):
         if wrapper:
             # Never mutate the source checkout. The trusted setup script runs in
             # a disposable project copy under the real effective writable root.
-            copy_project(launch_root, allowed, managed_browser=value.get("containerized", False) and retained_config is not None)
+            copy_project(launch_root, allowed, managed_browser=(
+                value.get("containerized", False) and retained_config is not None and launch_root == workspace))
             script = allowed / wrapper[1]
             if not script.is_file() or not contains(allowed, script.resolve()):
                 raise Refusal("sandbox_launch_unavailable")

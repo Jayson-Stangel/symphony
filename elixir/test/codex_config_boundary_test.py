@@ -718,6 +718,7 @@ class LaunchReceiptTest(unittest.TestCase):
             chrome, xdg = str(workspace / "chrome settings"), str(workspace / "xdg settings")
             for initial, expected in (
                     ({}, {"CHROME_CONFIG_HOME": str(workspace / ".symphony-browser")}),
+                    ({"XDG_CONFIG_HOME": str(workspace)}, {"XDG_CONFIG_HOME": str(workspace)}),
                     ({"CHROME_CONFIG_HOME": "", "XDG_CONFIG_HOME": xdg}, {"XDG_CONFIG_HOME": xdg}),
                     ({"CHROME_CONFIG_HOME": chrome, "XDG_CONFIG_HOME": "/foreign"},
                      {"CHROME_CONFIG_HOME": chrome, "XDG_CONFIG_HOME": "/foreign"})):
@@ -740,7 +741,7 @@ class LaunchReceiptTest(unittest.TestCase):
             (workspace / "regular").touch()
             (workspace / "shared").mkdir()
             (workspace / "shared").chmod(0o777)
-            for override in (None, "relative", str(root / "foreign"), str(workspace),
+            for override in (None, "relative", str(root / "foreign"),
                              str(workspace / "nested/.git/browser"), str(workspace / ".codex"),
                              str(workspace / "regular/config"), str(workspace / "shared/config"),
                              str(workspace / "non-utf8-\udcff")):
