@@ -31,7 +31,9 @@ database there even when the browser command selects a separate profile with
 `--user-data-dir`. The reserved `.symphony-browser/` directory may hold local
 profiles as well as crash reports. Keep it out of project commits. When rechecking
 a wrapped task, readiness omits Chromium's transient process singleton links
-from recognized Chrome and Chromium profile directories in its disposable copy.
+from recognized Chrome and Chromium profile directories in its disposable copy,
+including the implicit headless profile. Arbitrary `--user-data-dir` locations
+follow the ordinary workspace symlink rules.
 A nonempty `CHROME_CONFIG_HOME` takes precedence over `XDG_CONFIG_HOME`.
 The selected override must be the canonical task workspace or an absolute,
 canonical path below it. Chrome appends its own product directory in either

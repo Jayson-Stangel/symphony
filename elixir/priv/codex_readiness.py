@@ -114,7 +114,15 @@ def browser_singleton(path):
     # Linux Chromium uses these links for its process lock, cookies and
     # temporary socket. Their targets describe the live workspace's processes.
     pattern = SINGLETON_TARGETS.get(path.name)
-    if path.parent.name in BROWSER_DATA_DIRS and pattern:
+    if not pattern:
+        return False
+    profile = path.parent
+    # New headless mode puts its implicit profile in a scoped directory
+    # inside the branded headless config directory.
+    headless = (re.fullmatch(r"scoped_dir[A-Za-z0-9]{6}", profile.name) and
+                profile.parent.name.removesuffix("-headless") in BROWSER_DATA_DIRS and
+                profile.parent.name.endswith("-headless"))
+    if profile.name in BROWSER_DATA_DIRS or headless:
         try:
             return re.fullmatch(pattern, os.readlink(path)) is not None
         except FileNotFoundError:
