@@ -368,6 +368,9 @@ verifies that an ordinary sibling's disposable environment and proc-root paths
 cannot be read, sibling signal access is denied, and a controlled TCP endpoint is
 denied with network disabled and reachable when explicitly enabled. Positive
 controls run outside the protected helper to prove that denials are meaningful.
+The browser check starts the packaged full Chromium through the managed
+app-server with a fresh profile and verifies its workspace-local Crashpad
+database.
 No account secret, host home or Docker socket is mounted.
 
 `bash scripts/release/runner-startup.sh IMAGE codex` checks the actual entrypoint

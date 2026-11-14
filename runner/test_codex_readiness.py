@@ -213,6 +213,61 @@ if mode=='denial-fixture':
         self.assertEqual((source / "tracked").read_text(), "preserved source")
         self.assertEqual((target / "tracked").read_text(), "preserved source")
 
+    def test_managed_copy_preserves_profile_files_and_omits_singleton_links(self):
+        source = self.root / "source"
+        target = self.root / "copy"
+        target.mkdir(mode=0o700)
+        links = {"SingletonSocket": "/tmp/org.chromium.Chromium.Abc123/SingletonSocket",
+                 "SingletonLock": "host-name-1234", "SingletonCookie": "1234567890"}
+        profiles = [source / ".symphony-browser/chromium", source / "nested/custom config/google-chrome-for-testing",
+                    source / "nested/custom config/google-chrome-for-testing-headless/scoped_dirAb123X",
+                    source / "google-chrome"]
+        for profile in profiles:
+            profile.mkdir(parents=True)
+            (profile / "Local State").write_text("project input")
+            (profile / "ordinary-link").symlink_to("Local State")
+            for name, destination in links.items():
+                (profile / name).symlink_to(destination)
+        ordinary = source / "config/chromium/SingletonLock"
+        ordinary.parent.mkdir(parents=True)
+        ordinary.write_text("project input")
+
+        probe.copy_project(source, target, managed_browser=True)
+        for profile in profiles:
+            copied = target / profile.relative_to(source)
+            self.assertEqual((copied / "Local State").read_text(), "project input")
+            self.assertEqual((copied / "ordinary-link").read_text(), "project input")
+            for name, destination in links.items():
+                self.assertFalse(os.path.lexists(copied / name))
+                self.assertEqual(os.readlink(profile / name), destination)
+        self.assertEqual((target / ordinary.relative_to(source)).read_text(), "project input")
+
+    def test_copy_continues_to_refuse_unrelated_escaping_links(self):
+        source = self.root / "source"
+        target = self.root / "copy"
+        profile = source / "config/chromium"
+        profile.mkdir(parents=True)
+        target.mkdir(mode=0o700)
+        socket = profile / "SingletonSocket"
+        socket.symlink_to("/tmp/org.chromium.Chromium.Abc123/SingletonSocket")
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            probe.copy_project(source, target)
+
+        for relative, destination in (("config/chromium/escape", self.home),
+                                      ("config/chromium/alias", socket),
+                                      ("config/SingletonSocket", socket.readlink()),
+                                      ("config/chromium-headless/ordinary-profile/SingletonSocket", socket.readlink())):
+            link = source / relative
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(destination)
+            with self.subTest(relative=relative), self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+                probe.copy_project(source, target, managed_browser=True)
+            link.unlink()
+        socket.unlink()
+        socket.symlink_to(self.home)
+        with self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
+            probe.copy_project(source, target, managed_browser=True)
+
     def test_copy_failure_restores_only_the_owned_private_destination(self):
         source = self.root / "source"
         source.mkdir(mode=0o775)

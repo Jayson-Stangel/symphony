@@ -3,12 +3,14 @@
 Input is a resolved Symphony policy, never shell text to execute. Output is a
 fixed diagnostic code; native output is deliberately not forwarded.
 """
+import errno
 import json
 import hashlib
 import stat
 import os
 import shlex
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -99,18 +101,55 @@ def launch_command(value):
     return args[0], options, wrapper
 
 
-def copy_project(source, target):
+BROWSER_DATA_DIRS = frozenset(("chromium", "google-chrome-for-testing", "google-chrome",
+                               "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary"))
+SINGLETON_TARGETS = {
+    "SingletonSocket": r"/(?:[^/]+/)*\.?(?:com\.google\.Chrome|org\.chromium\.Chromium)\.[A-Za-z0-9]{6}/SingletonSocket",
+    "SingletonLock": r"[^/]+-[0-9]+",
+    "SingletonCookie": r"[0-9]{1,20}",
+}
+
+
+def browser_singleton(path):
+    # Linux Chromium uses these links for its process lock, cookies and
+    # temporary socket. Their targets describe the live workspace's processes.
+    pattern = SINGLETON_TARGETS.get(path.name)
+    if not pattern:
+        return False
+    profile = path.parent
+    # New headless mode puts its implicit profile in a scoped directory
+    # inside the branded headless config directory.
+    headless = (re.fullmatch(r"scoped_dir[A-Za-z0-9]{6}", profile.name) and
+                profile.parent.name.removesuffix("-headless") in BROWSER_DATA_DIRS and
+                profile.parent.name.endswith("-headless"))
+    if profile.name in BROWSER_DATA_DIRS or headless:
+        try:
+            return re.fullmatch(pattern, os.readlink(path)) is not None
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            if error.errno != errno.EINVAL:
+                raise
+    return False
+
+
+def copy_project(source, target, *, managed_browser=False):
     # Preserve only links whose resolved destinations stay in the project, and
     # rewrite absolute internal links into the disposable copy. Never traverse
     # a project link into the runtime's native login/configuration directories.
     links = []
+    singletons = set()
     def ignored(directory, names):
-        return [name for name in names if name == ".git" or
-                (Path(directory) / name).resolve() == target]
+        directory = Path(directory)
+        return [name for name in names if name == ".git" or directory / name in singletons or
+                (directory / name).resolve() == target]
     for directory, dirs, files in os.walk(source, followlinks=False):
         dirs[:] = [name for name in dirs if name not in ignored(directory, dirs)]
         for name in [*dirs, *files]:
             path = Path(directory) / name
+            if managed_browser and browser_singleton(path):
+                singletons.add(path)
+                continue
             if path.is_symlink():
                 try:
                     resolved = path.resolve()
@@ -209,7 +248,8 @@ def check(value):
         if wrapper:
             # Never mutate the source checkout. The trusted setup script runs in
             # a disposable project copy under the real effective writable root.
-            copy_project(launch_root, allowed)
+            copy_project(launch_root, allowed, managed_browser=(
+                value.get("containerized", False) and retained_config is not None and launch_root == workspace))
             script = allowed / wrapper[1]
             if not script.is_file() or not contains(allowed, script.resolve()):
                 raise Refusal("sandbox_launch_unavailable")
