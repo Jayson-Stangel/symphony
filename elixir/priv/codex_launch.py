@@ -28,7 +28,7 @@ def browser_environment(value):
     if any(0xFDD0 <= ord(char) <= 0xFDEF or ord(char) & 0xFFFF >= 0xFFFE for char in selected):
         refuse()
     path = _absolute(selected)
-    if workspace not in path.parents:
+    if path != workspace and workspace not in path.parents:
         refuse()
     parts = path.relative_to(workspace).parts
     if {".git", ".codex", ".agents"}.intersection(parts):
