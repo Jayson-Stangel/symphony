@@ -38,24 +38,22 @@ def main():
         wrapper = project / "browser-wrapper.sh"
         setup = f"#!/bin/bash\nset -eu\n{environment}\n"
         wrapper.write_text(setup + 'exec "$@"\n')
-        profile = browser_launch(chrome, home, native, project, workflow, project / state)
-        retained = {
-            "SingletonSocket": "/tmp/org.chromium.Chromium.Abc123/SingletonSocket",
-            "SingletonLock": "past-container-1234",
-            "SingletonCookie": "1234567890",
-        }
-        for name, destination in retained.items():
-            (profile / name).symlink_to(destination)
+        state = project / state
+        browser_launch(chrome, home, native, project, workflow, state, interrupt=True)
+        socket, = state.glob("*-headless/scoped_dir*/SingletonSocket")
+        profile = socket.parent
+        retained = {name: os.readlink(profile / name)
+                    for name in ("SingletonSocket", "SingletonLock", "SingletonCookie")}
         # Check preservation from inside the actual wrapper's disposable run.
         relative = shlex.quote(str((profile / "project-file").relative_to(project)))
         (profile / "project-file").write_text("preserve me")
         wrapper.write_text(setup + f'test "$(cat {relative})" = "preserve me"\nexec "$@"\n')
-        browser_launch(chrome, home, native, project, workflow, project / state)
+        browser_launch(chrome, home, native, project, workflow, state)
         assert {name: os.readlink(profile / name) for name in retained} == retained
         print(f"{label}: protected Chromium cold start and wrapped restart passed.", flush=True)
 
 
-def browser_launch(chrome, home, native, workspace, workflow, state):
+def browser_launch(chrome, home, native, workspace, workflow, state, *, interrupt=False):
     launch = subprocess.check_output(
         ["mix", "run", "--no-start", "--no-compile", "--no-deps-check", "-e", """
         alias SymphonyElixir.{Config, Workflow}
@@ -75,17 +73,41 @@ def browser_launch(chrome, home, native, workspace, workflow, state):
     server.start()
     try:
         policy = {"type": "workspaceWrite", "writableRoots": [str(workspace)], "networkAccess": True}
+        command = [str(chrome), "--headless", "--no-sandbox", "--disable-dev-shm-usage", "--no-first-run"]
+        if interrupt:
+            # Wait for this browser's real singleton links, then simulate an
+            # abrupt stop so its ordinary cleanup cannot remove them.
+            command = [sys.executable, "-c", """
+import pathlib, subprocess, sys, time
+state = pathlib.Path(sys.argv[1])
+child = subprocess.Popen(sys.argv[2:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and child.poll() is None:
+        for socket in state.glob("*-headless/scoped_dir*/SingletonSocket"):
+            if all((socket.parent / name).is_symlink()
+                   for name in ("SingletonSocket", "SingletonLock", "SingletonCookie")):
+                sys.exit(0)
+        time.sleep(0.05)
+    raise SystemExit("Chromium did not create its implicit headless profile links")
+finally:
+    if child.poll() is None:
+        child.kill()
+    child.wait()
+""", str(state), *command, "--remote-debugging-port=0", "about:blank"]
+        else:
+            command += ["--dump-dom", "about:blank"]
         result = server.request("command/exec", {
-            "command": [str(chrome), "--headless", "--no-sandbox", "--disable-dev-shm-usage",
-                        "--no-first-run", f"--user-data-dir={workspace / 'profile'}",
-                        "--dump-dom", "about:blank"],
+            "command": command,
             "cwd": str(workspace), "timeoutMs": 20000, "sandboxPolicy": policy,
         })
-        assert result["exitCode"] == 0 and "<html>" in result["stdout"], result
+        assert result["exitCode"] == 0, result
+        if not interrupt:
+            assert "<html>" in result["stdout"], result
         database, = state.glob("*/Crash Reports/settings.dat")
+        assert database.is_file()
         assert not list((home / ".config").glob("*/Crash Reports/settings.dat"))
         print("Protected Chromium startup and task-owned Crashpad database passed.", flush=True)
-        return database.parent.parent
     finally:
         server.close()
 

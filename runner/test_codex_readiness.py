@@ -256,6 +256,7 @@ if mode=='denial-fixture':
         links = {"SingletonSocket": "/tmp/org.chromium.Chromium.Abc123/SingletonSocket",
                  "SingletonLock": "host-name-1234", "SingletonCookie": "1234567890"}
         profiles = [source / ".symphony-browser/chromium", source / "nested/custom config/google-chrome-for-testing",
+                    source / "nested/custom config/google-chrome-for-testing-headless/scoped_dirAb123X",
                     source / "google-chrome"]
         for profile in profiles:
             profile.mkdir(parents=True)
@@ -290,8 +291,10 @@ if mode=='denial-fixture':
 
         for relative, destination in (("config/chromium/escape", self.home),
                                       ("config/chromium/alias", socket),
-                                      ("config/SingletonSocket", socket.readlink())):
+                                      ("config/SingletonSocket", socket.readlink()),
+                                      ("config/chromium-headless/ordinary-profile/SingletonSocket", socket.readlink())):
             link = source / relative
+            link.parent.mkdir(parents=True, exist_ok=True)
             link.symlink_to(destination)
             with self.subTest(relative=relative), self.assertRaisesRegex(probe.Refusal, "sandbox_launch_unavailable"):
                 probe.copy_project(source, target, managed_browser=True)
