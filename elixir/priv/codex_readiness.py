@@ -141,10 +141,11 @@ def copy_project(source, target, *, managed_browser=False):
     singletons = set()
     def ignored(directory, names):
         directory = Path(directory)
-        return [name for name in names if name == ".git" or directory / name in singletons or
-                (directory / name).resolve() == target]
+        return {name for name in names if name == ".git" or directory / name in singletons or
+                (directory / name).resolve() == target}
     for directory, dirs, files in os.walk(source, followlinks=False):
-        dirs[:] = [name for name in dirs if name not in ignored(directory, dirs)]
+        excluded = ignored(directory, dirs)
+        dirs[:] = [name for name in dirs if name not in excluded]
         for name in [*dirs, *files]:
             path = Path(directory) / name
             if managed_browser and browser_singleton(path):

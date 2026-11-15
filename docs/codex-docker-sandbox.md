@@ -1,6 +1,6 @@
 # Codex protected commands in Docker
 
-Codex 0.163.0 needs Linux user, mount and PID namespaces to enforce workspace
+Codex 0.166.0 needs Linux user, mount and PID namespaces to enforce workspace
 permissions. A successful app-server handshake does not establish that commands
 can run. Symphony uses the public `codex sandbox` interface to check actual
 allowed writes and denied writes before startup and candidate transition.
