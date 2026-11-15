@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixirWeb.Presenter
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -388,6 +389,33 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "state retry projection adds the full delay before truncating the deadline" do
+    snapshot = retry_deadline_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :StateRetryDeadlineOrchestrator)
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot})
+
+    payload = Presenter.state_payload(orchestrator_name, 50, ~U[2026-11-13 12:00:00.800Z])
+
+    assert Enum.map(payload.retrying, & &1.due_at) == ["2026-11-13T12:00:02Z", nil, nil]
+  end
+
+  test "issue retry projection adds the full delay before truncating the deadline" do
+    snapshot = retry_deadline_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :IssueRetryDeadlineOrchestrator)
+    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot})
+
+    for {identifier, expected} <- [
+          {"MT-RETRY", "2026-11-13T12:00:02Z"},
+          {"MT-NIL", nil},
+          {"MT-INVALID", nil}
+        ] do
+      assert {:ok, payload} =
+               Presenter.issue_payload(identifier, orchestrator_name, 50, ~U[2026-11-13 12:00:00.800Z])
+
+      assert payload.retry.due_at == expected
+    end
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -731,6 +759,20 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp retry_deadline_snapshot do
+    snapshot = static_snapshot()
+    [retry] = snapshot.retrying
+
+    %{
+      snapshot
+      | retrying: [
+          %{retry | due_in_ms: 1_250},
+          %{retry | identifier: "MT-NIL", due_in_ms: nil},
+          %{retry | identifier: "MT-INVALID", due_in_ms: "invalid"}
+        ]
+    }
   end
 
   defp static_snapshot do
