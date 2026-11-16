@@ -66,6 +66,16 @@ runner_codex_run docker --rm \
   --volume "$root/runner:/qualification:ro" \
   --entrypoint /usr/bin/timeout "$image_id" 180 python3 /qualification/test_npm_cache.py --protected
 
+# Full Chromium initializes Crashpad even with an explicit browser profile.
+# Bind an empty synthetic snapshot and anonymous native-auth storage.
+snapshot=$(mktemp)
+trap 'rm -f "$snapshot"' EXIT
+runner_codex_run docker --rm --network none --env SYMPHONY_CONTAINERIZED=1 \
+  --volume /workspaces --volume /var/lib/symphony --volume /root/.codex \
+  --mount "type=bind,source=$snapshot,target=/root/.codex/config.toml,readonly" \
+  --volume "$root/runner:/qualification:ro" \
+  --entrypoint /usr/bin/timeout "$image_id" 225 python3 /qualification/browser/protected-smoke.py
+
 # Compile/load a genuinely native dependency through the same protected API.
 # The project fixture permits only its own cold-fixture lifecycle scripts.
 runner_codex_run docker --rm \

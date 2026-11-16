@@ -1,6 +1,6 @@
 # Codex protected commands in Docker
 
-Codex 0.163.0 needs Linux user, mount and PID namespaces to enforce workspace
+Codex 0.166.0 needs Linux user, mount and PID namespaces to enforce workspace
 permissions. A successful app-server handshake does not establish that commands
 can run. Symphony uses the public `codex sandbox` interface to check actual
 allowed writes and denied writes before startup and candidate transition.
@@ -368,6 +368,9 @@ verifies that an ordinary sibling's disposable environment and proc-root paths
 cannot be read, sibling signal access is denied, and a controlled TCP endpoint is
 denied with network disabled and reachable when explicitly enabled. Positive
 controls run outside the protected helper to prove that denials are meaningful.
+The browser check starts the packaged full Chromium through the managed
+app-server with a fresh profile and verifies its workspace-local Crashpad
+database.
 No account secret, host home or Docker socket is mounted.
 
 `bash scripts/release/runner-startup.sh IMAGE codex` checks the actual entrypoint
