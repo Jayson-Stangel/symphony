@@ -348,7 +348,7 @@ workspace:
   clone_url: https://github.com/your-org/your-repo.git
 agent:
   max_concurrent_agents: 10
-  max_turns: 20
+  max_turns_per_attempt: 20
 codex:
   command: codex app-server
 ---
@@ -401,14 +401,14 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-  Reaching this per-attempt allowance closes the native session normally and schedules the existing
-  continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Claude helper replay history uses this same captured attempt allowance, with no
-  separate input ceiling; workflow reloads apply to the next attempt. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
-  session; it does not permanently block active work or reuse the exhausted session. Tracker state
-  and dispatch limits are checked again before another attempt starts.
+- `agent.max_turns_per_attempt` limits completed turns in one worker attempt for both providers.
+  It accepts a positive integer and defaults to `20`. At the limit, the worker closes the native
+  session normally. The scheduler rechecks eligibility and can continue in the retained workspace
+  with a fresh count. Claude helper replay uses the same captured allowance.
+  Workflow reloads apply to the next attempt. The deprecated `agent.max_turns` key is used only
+  when `agent.max_turns_per_attempt` is absent. A Claude native `error_max_turns` also
+  yields after cleanup. The scheduler rechecks tracker state and dispatch limits
+  before opening a fresh session for eligible work.
   Only a successful native turn result completes a turn (`turn/completed` for Codex or
   a correlated successful SDK result for Claude). Progress messages, review polling, and
   status notifications remain inside that turn and do not consume continuation turns.
@@ -432,12 +432,13 @@ Notes:
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.
-- `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
-  run. When the count reaches this value, Symphony stops the worker and exposes the issue as
-  blocked instead of retrying it. Set to `0` to disable. Default: `0`.
-  Generated and sample workflows leave both live circuit breakers disabled. Existing project
-  workflows keep any explicitly configured limits; remove them or set them to `0` to use ordinary
-  continuation behavior. Symphony does not rewrite existing project policy on update.
+- `agent.live_max_turns` is a live circuit breaker on distinct turn starts in the current worker
+  run for both providers. When the count reaches this value, Symphony stops and cleans up the
+  worker, reports the count and limit in blocked status, and suppresses automatic continuation.
+  The shared breaker is disabled by default. Codex falls back to `codex.live_max_turns` when
+  the shared key is absent. Setting the shared key to `0` disables that fallback.
+  Generated and sample workflows leave live circuit breakers disabled. Updates preserve stored
+  workflows and their explicit settings.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - For local clone-only setup, use `workspace.clone_url` as above; it cannot be combined

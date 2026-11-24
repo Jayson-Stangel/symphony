@@ -100,7 +100,14 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
     settings = Config.settings!()
     config = settings.claude
-    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
+    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns_per_attempt)
+
+    helper_config =
+      config
+      |> Map.take([:model, :effort, :max_agentic_turns, :turn_timeout_ms])
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.put(:max_turns, max_turns)
+
     binding = Keyword.fetch!(opts, :tool_binding)
 
     with :ok <-
@@ -110,7 +117,7 @@ defmodule SymphonyElixir.Claude.Adapter do
              session_id: id,
              request_id: start_id,
              workspace: workspace,
-             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]) |> Map.put(:max_turns, max_turns),
+             config: helper_config,
              tools: binding.tool_specs,
              skills: skills,
              instructions: instructions
@@ -199,8 +206,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
     case write(session.port, %{v: 1, type: "turn", session_id: session.id, request_id: request, prompt: prompt}) do
       :ok ->
-        emit(callback, :session_started, %{session_id: event_id, provider: :claude})
-        await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), %{})
+        await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), nil)
 
       {:error, :port_closed} ->
         {:error, :claude_helper_closed}
@@ -210,7 +216,8 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  @spec await_turn(map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  # Pending tool acknowledgements are tracked after the helper accepts the turn.
+  @spec await_turn(map(), String.t(), String.t(), map(), function(), integer(), map() | nil) :: term()
   defp await_turn(session, request, event_id, issue, callback, until, pending) do
     case frame(session.port, min(until, deadline(session.config.read_timeout_ms))) do
       {:error, :timeout} ->
@@ -241,7 +248,15 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map() | nil) :: term()
+  defp handle_message(%{"type" => "turn_accepted"}, session, request, event_id, issue, callback, until, pending) do
+    if is_nil(pending), do: emit(callback, :session_started, %{session_id: event_id, provider: :claude})
+    await_turn(session, request, event_id, issue, callback, until, pending || %{})
+  end
+
+  defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, nil),
+    do: pending_failure(session, nil)
+
   defp handle_message(%{"type" => "progress", "activity" => activity} = message, session, request, event_id, issue, callback, until, pending)
        when activity in ["agent", "tool"] do
     {text, advances?} = progress_summary(message)
@@ -367,7 +382,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   defp pending_failure(session, pending, cause \\ nil) do
-    Enum.each(pending, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
+    Enum.each(pending || %{}, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
     if cause, do: {:error, cause}, else: pause(session, "protocol_error", %{})
   end
 

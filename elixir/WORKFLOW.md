@@ -46,7 +46,10 @@ agent:
   # A zero-worker recheck acknowledges the current qualified native profile;
   # automatic refresh/resume never accepts an unexpected profile change.
   max_concurrent_agents: 10
-  max_turns: 20
+  # Completed turns per worker attempt, shared by Codex and Claude.
+  max_turns_per_attempt: 20
+  # Optional live stop on distinct turn starts for either provider. Omit or set 0 to disable.
+  # live_max_turns: 0
   # Opt in with destination names already listed in tracker.active_states.
   # fresh_session_on_enter: ["Agent Review"]
 codex:
@@ -492,13 +495,16 @@ Claude configuration lives in a `claude` front-matter mapping. Only `model`
 (sonnet by default; current model IDs and family aliases listed in docs/claude.md),
 `effort` (low, medium, high, xhigh, max; omitted/null uses the model default),
 `max_concurrent_agents` (deprecated and ignored; shared `agent.max_concurrent_agents`
-controls capacity), `max_agentic_turns` (1–100; native allowance yields
-after session cleanup to ordinary tracker-revalidated continuation),
+controls capacity), `max_agentic_turns` (deprecated native override, 1–100;
+omit to use the native runtime's default),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider
-selection is fixed across workflow reloads. Shared `agent.max_turns` also bounds helper replay
-history per attempt without an independent request ceiling. -->
+selection is fixed across workflow reloads. Shared `agent.max_turns_per_attempt` also bounds
+helper replay history per attempt. The deprecated `agent.max_turns` applies only when the
+canonical key is absent. Native allowance exhaustion yields after session cleanup to
+ordinary tracker-revalidated continuation. An explicit `agent.live_max_turns`,
+including 0, takes precedence over the legacy Codex-only `codex.live_max_turns`. -->
 
 Installed updates require a clean local main tracking a configured remote's main. The
 launcher's --config-dir selects derived runner storage unless SYMPHONY_RUNNER_HOME

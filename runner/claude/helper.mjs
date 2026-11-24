@@ -57,6 +57,7 @@ export class Helper {
     this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set(), progressEvents: new Set() };
     this.pendingInput.push({ type: 'user', session_id: '', uuid: this.active.uuid, parent_tool_use_id: null,
       message: { role: 'user', content: command.prompt } });
+    this.emit('turn_accepted', command.request_id);
     this.wake?.();
     this.turnDeadline = setTimeout(() => {
       if (this.active) this.finish({ outcome: 'protocol_error', code: 'turn_timeout' });
@@ -88,7 +89,7 @@ export class Helper {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `${command.instructions}\nCanonical skill aliases: symphony-commit, symphony-push, symphony-pull, symphony-linear and symphony-land are available as symphony:<name>. Follow the same procedures.\nTracker tool aliases:\n${aliases}` },
       model: command.config.model,
       ...(command.config.effort ? { effort: command.config.effort } : {}),
-      maxTurns: command.config.max_agentic_turns,
+      ...(command.config.max_agentic_turns ? { maxTurns: command.config.max_agentic_turns } : {}),
       permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,
       promptSuggestions: false, agentProgressSummaries: false, persistSession: false, stderr: () => {},
       spawnClaudeCodeProcess: options => {
