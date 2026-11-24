@@ -2934,14 +2934,17 @@ runner_transition() (
   if [ "$agent" = codex ]; then codex_config_journal_load "$root" "$candidate" "$journal"; fi
   state=$(runner_transition_state "$runtime" "$name") || return
   if [ "$backup_state" = missing ]; then
-    local previous_image
+    local previous_image previous_limit
     previous_image=$(runner_read_transition_field "$journal" SYMPHONY_RUNNER_IMAGE_ID) || return
-    # Older journals can prove a replacement by a different immutable image.
-    # A matching image alone never proves that a same-image update ran.
+    previous_limit=$(runner_read_transition_field "$journal" SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT) || return
+    # Older journals can prove replacement by a different image or task
+    # limit, when the current listener matches the exact target below.
     if { "$resumed_candidate" || "$migration_completed" ||
          { "$recovering_transition" && [ "$state" = true ] &&
            [ -z "$prior_id$resumed_id" ] &&
-           [ -n "$previous_image" ] && [ "$candidate" != "$previous_image" ]; }; } &&
+           [ -n "$previous_image" ] &&
+           { [ "$candidate" != "$previous_image" ] ||
+             { [ -n "$previous_limit" ] && [ "$task_limit" != "$previous_limit" ]; }; }; }; } &&
        ! runner_is_legacy "$runtime" "$name" &&
        runner_workflow_mount_owned "$root" "$runtime" "$name" directory &&
        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] &&

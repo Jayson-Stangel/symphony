@@ -2364,6 +2364,38 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(ctx.state <> ".pids-limit") == "2048"
   end
 
+  test "older same-image journal settles a running candidate with the pinned changed cap", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    image = File.read!(ctx.state <> ".image")
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+    fail = Path.join(ctx.root, "interrupt-after-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "claude"]
+
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_FILE", fail}])
+    refute File.exists?(ctx.state <> ".backup")
+    candidate = File.read!(ctx.state <> ".id")
+    assert File.read!(ctx.state <> ".image") == image
+    assert File.read!(ctx.state <> ".pids-limit") == "2048"
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    # Match older launchers' journal format at the same interruption point.
+    previous = Path.join(journal, "previous.env")
+    legacy = Regex.replace(~r/^SYMPHONY_TRANSITION_(PRIOR|RESUMED)_CONTAINER_ID=.*\n/m, File.read!(previous), "")
+    assert legacy =~ "SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=inherited\n"
+    assert legacy =~ "SYMPHONY_TRANSITION_PIDS_LIMIT=2048\n"
+    File.write!(previous, legacy)
+    File.write!(ctx.log, "")
+
+    assert {message, 0} = launch_args(ctx, update)
+    assert message =~ "Previously completed runner transition recovered"
+    assert File.read!(ctx.state <> ".id") == candidate
+    refute File.read!(ctx.log) =~ "--detach"
+    refute File.read!(ctx.log) =~ "rename\t"
+    refute File.exists?(journal)
+  end
+
   defp launch_args(ctx, args, extra_env \\ []) do
     env = Map.merge(Map.new(ctx.env), Map.new(extra_env)) |> Enum.to_list()
     # Historical mount and crash-recovery cases exercise checkout ownership in
