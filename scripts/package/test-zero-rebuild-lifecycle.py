@@ -241,8 +241,8 @@ def main():
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0)); return listener.getsockname()[1]
 
-    def product(*arguments, cwd=None, expected=0):
-        return run([command, *arguments], product=True, cwd=cwd, expected=expected)
+    def product(*arguments, cwd=None, expected=0, launcher=None):
+        return run([launcher or command, *arguments], product=True, cwd=cwd, expected=expected)
 
     def identity():
         return json.loads(product("--version").stdout)["source_revision"]
@@ -275,6 +275,11 @@ def main():
             assert revision == core["manager_source_revision"]
             packages.append((outer, core, folder, revision))
         before, after = packages
+        def remote_manager(package):
+            return "project migrate --linear-project" in (package[2] / "scripts/symphony").read_text()
+        if remote_manager(before):
+            raise ValueError("This original-image fixture needs a checkout-era baseline. Use the registered package lifecycle fixture for remote images.")
+        retirement = remote_manager(after)
         assert before[3] != after[3]
         assert before[1]["original_components"] == after[1]["original_components"]
         assert before[1]["distribution"] == after[1]["distribution"]
@@ -315,6 +320,7 @@ def main():
             "SYMPHONY_CONTAINER_RUNTIME": str(wrapper), "PROOF_ROOT": str(root), "ACTUAL_DOCKER": docker}
         run([before[2] / "install.sh"], product=True)
         command = root / "bin/symphony"
+        historical = root / "app" / os.readlink(root / "app/current") / "scripts/symphony"
         assert identity() == before[3]
         projects = []
         create_volume(prefix + "-codex-auth")
@@ -396,7 +402,11 @@ def main():
         product("update", *selection, cwd=projects[0][0]); assert identity() == after[3]; unchanged()
         check("actual B-to-C activation, rollback, checksum refusal and retry retain both original runners/states/canaries")
         for repo, name, port, provider in projects:
-            product("runner", "stop", cwd=repo)
+            if retirement:
+                retired = product("run", cwd=repo, expected=1)
+                assert "project migrate" in retired.stdout + retired.stderr
+            launcher = historical if retirement else command
+            product("runner", "stop", cwd=repo, launcher=launcher)
             stopped = inspect(name)
             assert stopped["State"]["Running"] is False
             assert_owned_listener(stopped, name, provider, images[provider], policy["images"][provider][1], containers[name])
@@ -404,7 +414,7 @@ def main():
             # planned exact name/storage/image ownership if acquisition loses
             # its receipt; capture the replacement ID immediately on success.
             del containers[name]
-            product("run", "--agent", provider, "--port", str(port), cwd=repo)
+            product("run", "--agent", provider, "--port", str(port), cwd=repo, launcher=launcher)
             restarted = inspect(name)
             assert_owned_listener(restarted, name, provider, images[provider], policy["images"][provider][1])
             containers[name] = restarted["Id"]
@@ -415,7 +425,7 @@ def main():
             assert current["data"] == baseline[name]["data"]
             assert {p: stock.digest(p) for p in canaries} == canaries
             assert auth_snapshot() == auth_before
-            product("runner", "stop", cwd=repo)
+            product("runner", "stop", cwd=repo, launcher=launcher)
         completed = True
     finally:
         # Remove only exact captured product IDs, plus our labelled temporary

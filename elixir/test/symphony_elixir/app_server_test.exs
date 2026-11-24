@@ -1980,6 +1980,7 @@ defmodule SymphonyElixir.AppServerTest do
       trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
       count=0
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf '%s\\n' '__SYMPHONY_CODEX_PID__=12345 aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/101'
 
       while IFS= read -r line; do
         count=$((count + 1))
@@ -2025,13 +2026,10 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:ok, _result} =
-               AppServer.run(
-                 remote_workspace,
-                 "Run remote worker",
-                 issue,
-                 worker_host: "worker-01:2200"
-               )
+      assert {:ok, session} = AppServer.start_session(remote_workspace, worker_host: "worker-01:2200")
+      assert session.shutdown_identity == {12_345, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/101"}
+      assert {:ok, _result} = AppServer.run_turn(session, "Run remote worker", issue)
+      assert :ok = AppServer.stop_session(session)
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -2041,8 +2039,8 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
       assert argv_line =~ "unset LINEAR_API_KEY"
-      assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
+      assert argv_line =~ "__SYMPHONY_CODEX_PID__="
+      assert trace =~ "exec fake-remote-codex app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",

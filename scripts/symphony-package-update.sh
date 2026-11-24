@@ -21,6 +21,30 @@ package_update_lock() {
   package_helper lock "$path" 8 "$mode"
 }
 
+# Keep a monotonic receipt on the already locked file. All configuration roots
+# selecting this application share the receipt without recording their paths.
+package_note_project_registration() {
+  [ -s "$package_app_home/update.lock" ] || printf '%s\n' 'registered projects' >&8
+}
+
+package_remember_project_registrations() {
+  local previous=${1:-} record
+  [ ! -s "$package_app_home/update.lock" ] || return 0
+  for record in "$config_home"/projects/*.remote; do
+    if [ -e "$record" ] || [ -L "$record" ]; then
+      package_note_project_registration
+      return
+    fi
+  done
+  # Earlier remote managers could register projects under an arbitrary root
+  # without recording that use. Preserve their ability to manage those records.
+  if [ -n "$previous" ] &&
+     grep -Fqx 'project_registration_write() (' "$previous/scripts/symphony" 2>/dev/null &&
+     ! grep -Fqx '# Manager capability: records registration use v1' "$previous/scripts/symphony-package.sh" 2>/dev/null; then
+    package_note_project_registration
+  fi
+}
+
 # This is only a locator. All selected release and recovery information lives
 # in the existing project transition directory, including with config overrides.
 package_pending_transition() {
@@ -60,10 +84,7 @@ package_recover_completed_transition() {
   elif [ -f "$complete/package.target" ]; then
     die 'completed packaged transition has no verified committed manager; recovery refused'
   fi
-  package_remove_transition_fields "$complete" || return
-  rm -f "$complete/target" "$complete/port" "$complete/previous.env" "$complete/image" \
-    "$complete/image.next" "$complete/previous.env.next" || return
-  rmdir "$complete" || die 'unknown completed packaged transition metadata; recovery refused'
+  runner_clear_completed_journal "$complete" || return
   printf 'Previously completed packaged transition recovered; no newer release selected.\n'
 }
 
@@ -242,7 +263,8 @@ package_update() {
         [ "$#" -ge 2 ] || die '--agent requires codex or claude'
         [ -z "$transition" ] || die 'choose only one runner transition'
         validate_agent "$2"; transition=$2; shift 2 ;;
-      --rollback-runner|--pause-runner|--migrate-project-identity)
+      --migrate-project-identity) project_migration_required ;;
+      --rollback-runner|--pause-runner)
         [ -z "$transition" ] || die 'choose only one runner transition'
         transition=${1#--}; shift ;;
       --rollback-release) rollback_release=true; shift ;;
@@ -251,7 +273,7 @@ package_update() {
         case "$1" in --bin-dir) bin_dir=$2 ;; --config-dir) config_home=$2 ;; --skills-dir) skills_dir=$2 ;; esac
         shift 2 ;;
       --help|-h)
-        printf 'Usage: symphony update [--release VERSION | --rollback-release] [--agent codex|claude | --rollback-runner | --pause-runner | --migrate-project-identity]\n'
+        printf 'Usage: symphony update [--release VERSION | --rollback-release] [--agent codex|claude | --rollback-runner | --pause-runner]\n'
         printf 'Isolated candidate validation: --candidate-manifest FILE --candidate-bundle FILE\n'; return ;;
       *) die "unknown packaged update option: $1" ;;
     esac
@@ -269,6 +291,7 @@ package_update() {
   [ "$previous" = "$(cd "$symphony_home" && pwd -P)" ] || die 'invoke the installed current manager before updating'
   if [ -n "$transition" ]; then
     root=$(repo_root); journal="$runner_home/$(project_id "$root").transition"
+    if registered_project "$root"; then export SYMPHONY_PROJECT=$(project_id "$root"); fi
     if [ "$pending" = "$journal.complete" ]; then
       [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'complete the retained packaged update before selecting another release'
       package_recover_completed_transition "$pending"
@@ -276,15 +299,15 @@ package_update() {
     fi
     [ -z "$pending" ] || [ "$pending" = "$journal" ] || die 'another project has an unfinished packaged update; finish or roll it back first'
     case "$transition" in
-      pause-runner|migrate-project-identity|rollback-runner)
+      pause-runner|rollback-runner)
         [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'release selection cannot be combined with this runner control'
         case "$transition" in
           pause-runner) runner_pause "$root" true; return ;;
-          migrate-project-identity) [ -z "$pending" ] || die 'finish or roll back the packaged update before migrating project identity'; runner_migrate_identity "$root"; return ;;
           rollback-runner) package_update_rollback=true; runner_rollback "$root"; return ;;
         esac ;;
     esac
     if [ -d "$journal" ]; then
+      runner_pending_migration "$root" || return
       [ -f "$journal/package.target" ] || die 'pending transition has no packaged release identity; use --rollback-runner'
       [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'a packaged transition is pending; retry without changing its selected release or use --rollback-runner'
       target=$(package_verified_home "$(cat "$journal/package.target")") || return
@@ -300,6 +323,11 @@ package_update() {
       case "$target" in /*) ;; *) target="$package_app_home/$target" ;; esac
       target=$(package_verified_home "$target") || return
     else target=$(package_stage_download "$requested" "$candidate_manifest" "$candidate_bundle") || return; fi
+  fi
+  package_remember_project_registrations "$previous" || return
+  if [ -s "$package_app_home/update.lock" ]; then
+    grep -Fqx '# Manager capability: adopted project registrations v1' "$target/scripts/symphony-package.sh" 2>/dev/null ||
+      die 'selected release cannot manage registered projects with the adopted record format; select a compatible manager'
   fi
   # Re-enter the exact verified manager without resolving latest a second time.
   unset SYMPHONY_RUNNER_IMAGE
@@ -318,6 +346,7 @@ complete_package_update() {
   # mutate any installed manager or project. The previous verified schema1
   # manifest is the sole migration route for images without a protocol label.
   package_check_retained_images "$package_update_previous" || return
+  package_remember_project_registrations "$package_update_previous" || return
   if [ -n "$2" ]; then
     local root
     root=$(repo_root)

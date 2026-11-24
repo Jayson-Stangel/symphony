@@ -43,18 +43,25 @@ elif cmd == 'inspect':
     data = read(args[-1])
     if '--format' in args:
         fmt = option('--format')
-        if 'State.Running' in fmt: print(str(data['running']).lower())
+        if '{{.Id}}' == fmt: print(data.get('id', 'd' * 64))
+        elif 'State.Running' in fmt and 'State.Restarting' in fmt: print(str(data['running']).lower() + ':false')
+        elif 'State.Running' in fmt: print(str(data['running']).lower())
+        elif 'State.Status' in fmt: print('running' if data['running'] else 'exited')
         elif 'State.Restarting' in fmt: print('false')
         elif 'State.Pid' in fmt: print('42')
         elif 'Mounts' in fmt:
             if '{{json .Mounts}}' in fmt:
                 print(json.dumps(mounts(data)))
             elif '.Source' in fmt: print(data['workflow'] + ' /etc/symphony/WORKFLOW.md false')
+            elif 'println .Destination' in fmt: print('\n'.join(item['Destination'] for item in mounts(data)))
             else: print('\n'.join(item.get('Name', '') + ' ' + item['Destination'] for item in mounts(data)))
         elif '{{.Image}}' in fmt: print(data['image'])
+        elif 'com.symphony.storage' in fmt and 'com.symphony.linear-project' in fmt:
+            print(data['storage'] + '|' + data.get('linear-project', ''))
         elif 'com.symphony.' in fmt:
             key = fmt.split('com.symphony.')[1].split('"')[0]
-            print(data.get(key, '<no value>'))
+            if '{{with index' in fmt: print(data.get(key, ''))
+            else: print(data.get(key, '<no value>'))
         elif 'Entrypoint' in fmt: print('/usr/local/bin/symphony-runner')
         elif 'PortBindings' in fmt: print('127.0.0.1 ' + data['port'])
     else:
@@ -64,7 +71,16 @@ elif cmd == 'image':
     elif 'Config.User' in ' '.join(args): print('11001:11001')
     else: print('fixture-claude-image' if 'claude' in args[-1] else 'sha256:' + 'a' * 64)
 elif cmd == 'volume':
-    if '--format' in args: print(args[-1].removesuffix('-claude-auth'))
+    volume = root / (args[-1] + '.volume')
+    if args[1] == 'create':
+        owner = next((arg.split('=', 1)[1] for arg in args if arg.startswith('com.symphony.linear-project=')), None)
+        if not volume.exists(): volume.write_text(owner or '')
+    elif '--format' in args:
+        if 'com.symphony.linear-project' in option('--format'):
+            if not volume.exists(): sys.exit(1)
+            storage = args[-1].removesuffix('-workspaces').removesuffix('-state').removesuffix('-claude-auth')
+            print(storage + '|' + volume.read_text())
+        else: print(args[-1].removesuffix('-claude-auth'))
 elif cmd == 'run':
     if '--detach' in args:
         name = option('--name')
@@ -92,7 +108,17 @@ elif cmd == 'run':
                 if mount['Type'] == 'volume': mount['Name'] = parts[0]
                 data['mounts'].append(mount)
                 if mount['Destination'] in ('/etc/symphony', '/etc/symphony/WORKFLOW.md'): data['workflow'] = mount['Source']
+        if 'linear-project' in data and (root / 'remote-start-fail').exists():
+            data['running'] = False
         save(name, data)
+    elif '--remote-workflow-probe' in args:
+        if (root / 'remote-probe-fail').exists(): sys.exit(1)
+        branch = next(arg.split('=', 1)[1] for arg in args if arg.startswith('SYMPHONY_REMOTE_BRANCH='))
+        branch = branch or (root / 'remote-default').read_text()
+        if '--compare-local' in args:
+            print(branch, (root / 'migration-commit').read_text(), 'a' * 64, 'b' * 64)
+        else:
+            print(branch)
     elif args[-1:] == ['--codex-config-snapshot'] and option('--entrypoint') == '/opt/symphony/elixir/bin/symphony':
         print(json.dumps({'schema': 1, 'mode': 'codex-config-snapshot', 'profile': 'trust-ro-v2',
                           'config_base64': '', 'sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
@@ -104,10 +130,32 @@ elif cmd == 'run':
         print(pathlib.Path(fields['source']).stat().st_uid)
     elif 'check' in args:
         print(json.dumps({'ready': True, 'profile': 'a' * 64}))
+elif cmd == 'exec':
+    data = read(args[1])
+    if not data['running']: sys.exit(1)
+    counts = {'running': 0}
+    if (root / 'migration-commit').exists() and 'linear-project' in data:
+        if args[-1].endswith('/resume'):
+            print(json.dumps({'draining': False, 'admission': {'ready': True}}))
+        else:
+            workflow = {'commit': (root / 'migration-commit').read_text(), 'branch': data['workflow-branch'],
+                        'project': data['linear-project'], 'status': 'loaded', 'source_block': None, 'source_error': None}
+            print(json.dumps({'counts': counts, 'workflow': workflow,
+                              'agent': {'draining': True, 'readiness': {'ready': True}, 'admission': {'ready': False}}}))
+    else:
+        print(json.dumps({'counts': counts, 'workflow': {'sha256': 'b' * 64}}))
 elif cmd in ['stop', 'start']:
     data = read(args[-1]); data['running'] = cmd == 'start'; save(args[-1], data)
 elif cmd == 'rm':
+    before = root / 'fail-before-backup-removal-once'
+    if args[-1].endswith('-before-update') and before.exists():
+        before.unlink()
+        sys.exit(97)
     path(args[-1]).unlink()
+    fault = root / 'fail-backup-removal-once'
+    if args[-1].endswith('-before-update') and fault.exists():
+        fault.unlink()
+        sys.exit(97)
 elif cmd == 'rename':
     source, target = args[1:]
     read(source)

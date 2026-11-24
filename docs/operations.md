@@ -1,8 +1,8 @@
 # Operating Symphony
 
 This guide covers packaged and source-backed installations. Run project commands
-from the target repository with the same configuration and namespace used for
-initialization. For installation, see the [macOS/Ubuntu bundle guide](packaged-install.md)
+with `symphony --project PROJECT-ID` and the same configuration and namespace
+used for registration. For installation, see the [macOS/Ubuntu bundle guide](packaged-install.md)
 or [getting started](getting-started.md). Use `symphony --version` to identify the
 installed release and `symphony --help` for the command summary.
 
@@ -11,9 +11,9 @@ installed release and `symphony --help` for the command summary.
 | Command | Purpose |
 | --- | --- |
 | `symphony doctor` | Check the installation, command/skill links, and container runtime; packaged diagnostics report release identity without host Git. |
-| `symphony project doctor` | Inspect workflow references, credentials, and legacy project setup without changing files. |
+| `symphony project doctor` | Inspect the registered workflow source and credential configuration. |
 | `symphony runner doctor --agent codex` | Check the selected image's native login and disposable local Git operations. Use `claude` for Claude. |
-| `symphony runner status` | Show the project's container, dashboard address, and retained volumes. |
+| `symphony runner status` | Show the project's container, dashboard address, task limit, and retained volumes. |
 | `symphony runner logs` | Follow container logs. |
 | `symphony runner drain` | Persistently prevent new dispatch while current workers finish. |
 | `symphony runner resume` | Clear an explicit drain, subject to native readiness and retained pause checks. |
@@ -175,6 +175,30 @@ These update commands preserve project workflows, credentials and native login;
 they do not turn a source installation into a packaged installation. Use separate
 paths and a namespace for [isolated candidate testing](packaged-install.md#isolated-candidate-installation).
 
+### Managed runner task limit
+
+Managed Codex and Claude listeners inherit the container engine's process and
+thread limit by default. To set a project-specific cap, add
+`SYMPHONY_RUNNER_PIDS_LIMIT=2048` to the private project `.env` printed by
+`symphony init`. Use a positive decimal integer without leading zeros. Remove
+the line or leave its value empty to inherit the engine default again.
+
+Follow the [idle update procedure](#idle-update-procedure) and run
+`symphony update --agent claude` or `symphony update --agent codex` for the
+selected project. The packaged updater can apply this change with the same
+selected image. When the project has no override, upgrading an existing Claude
+runner drops Symphony's former 512-task cap and the replacement inherits Docker's
+default. The checkout migration applies the same rule. Before draining a healthy
+listener, the updater checks that the selected image can boot with an explicit
+cap.
+`symphony runner status` shows the desired setting, the launch setting, and
+the running container's observed `pids.max` when the engine can read it.
+
+An interrupted update retries with its original cap. Use
+`symphony update --rollback-runner` to restore the retained container and its
+previous limit. Review the desired value in the project `.env` before the next
+update.
+
 ## Workflow reload identity
 
 The successful `/api/v1/state` response includes a `workflow` object with
@@ -193,15 +217,11 @@ session reads the currently accepted prompt. Live-session continuity across an
 update is outside the current release acceptance, as described in the
 [idle update procedure](#idle-update-procedure).
 
-To diagnose reloads, compare the host workflow's SHA-256 with the bytes visible
-at `/etc/symphony/WORKFLOW.md` inside the container and the API's accepted hash.
-For example, use `shasum -a 256 WORKFLOW.md` on macOS and
-`docker exec CONTAINER sha256sum /etc/symphony/WORKFLOW.md` for the container view.
-After a valid reload all three should agree. After a rejected reload, the API
-continues identifying the last accepted bytes rather than attesting rejected disk
-contents. This identity field cannot correct stale single-file bind mounts;
-directory-mount adoption and native Docker Desktop acceptance remain separate
-unfinished work under JAY-783. It does not authorize changing an installed runner.
+For a registered project, state additionally reports the watched branch,
+accepted commit, last successful source check, and source error. Compare the
+committed root workflow at that revision with the reported accepted SHA-256.
+See the [packaged workflow source guide](packaged-install.md#register-a-new-project-from-a-remote-workflow)
+for stale sources, rejection and admission behavior.
 
 ## Credentials and project identity
 
@@ -223,32 +243,14 @@ host agent login. Tracker credentials remain with the listener; agents use
 Symphony's tracker tools. For explicitly forwarded project-tool credentials, see
 [the Claude tool environment](claude.md#project-tool-credentials).
 
-### Migrate an older project identity
+### Migrate an older project
 
-For an installation with basename-only credentials or container names, use the
-installed updater from the target repository:
-
-```bash
-symphony update --migrate-project-identity
-```
-
-Migration requires an owned retained runner. It verifies repository storage and
-the workflow mount before renaming credentials, cache, transition journals, and
-retained containers. It preserves file contents, running/stopped state, volumes,
-native login, and `WORKFLOW.md`. Retry the same command after interruption, then
-continue any pending runner update or rollback. Foreign or conflicting resources
-are refused before moves.
-
-A basename-only credential file without an owned runner cannot prove its repository.
-Review it explicitly and copy only the intended values into the new credential path
-reported by `init` or `run`. Preserve the old file until its owner is known. Existing
-custom workflows need deliberate review; `symphony project doctor` identifies legacy
-references without rewriting them. Development namespaces use
-`update --development-runner --migrate-project-identity` through their isolated command.
-
-Older containers without persistent mounts remain ephemeral. Before an approved
-replacement, finish active work or back up `/workspaces` and `/var/lib/symphony`.
-New mounts do not automatically migrate files from those containers.
+Follow the [checkout migration procedure](packaged-install.md#migrate-a-checkout-based-project)
+to register the existing repository ID and preserve its resources. A pending
+migration can restore the exact stopped checkout listener with
+`symphony --project PROJECT-ID update --rollback-runner`.
+Projects with an older basename-only identity must first use their prior
+installed manager's repository identity migration.
 
 ## Shared skills and local overrides
 
@@ -261,8 +263,6 @@ Most projects can use the shared skills directly. For an intentional customizati
 
 ```bash
 symphony skill override land
-# Equivalent during initialization:
-# symphony init --linear-project PROJECT_SLUG --local-skill land
 ```
 
 This creates `.codex/skills/symphony-land/` and records it in

@@ -62,6 +62,7 @@ environment_select() {
   if [ ! -e "$runner_home" ] && [ ! -L "$runner_home" ]; then (umask 077; mkdir -p "$runner_home") || return; fi
   package_helper selection-storage-directory "$runner_home" || return
   runner_project_lock "$root"
+  runner_pending_migration "$root" || return
   runtime=$(container_runtime)
   "$runtime" image inspect "$reference" >/dev/null 2>&1 || die "team environment is unavailable locally: $reference; build or obtain it with your team tools, then select it again"
   image=$("$runtime" image inspect --format '{{.Id}}' "$reference") || return

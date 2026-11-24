@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   @behaviour SymphonyElixir.CodingAgent
 
   require Logger
-  alias SymphonyElixir.{AgentPause, AgentReadiness, Config, ToolCall, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, AgentReadiness, CodingAgent, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
@@ -19,8 +19,12 @@ defmodule SymphonyElixir.Claude.Adapter do
   @impl true
   def start_session(workspace, opts) do
     case Keyword.get(opts, :worker_host) do
-      nil -> start_local_session(workspace, opts)
-      _ -> {:error, :claude_ssh_unsupported}
+      nil ->
+        start_local_session(workspace, opts)
+
+      _ ->
+        CodingAgent.report_startup_cleanup(opts, :closed)
+        {:error, :claude_ssh_unsupported}
     end
   end
 
@@ -32,6 +36,10 @@ defmodule SymphonyElixir.Claude.Adapter do
          {:ok, env} <- Config.claude_child_environment(System.get_env(), binding.secret_environment_names),
          {:ok, port} <- start_port(workspace, env, opts) do
       initialize_or_close(port, workspace, instructions, skills, Keyword.put(opts, :tool_binding, binding))
+    else
+      error ->
+        CodingAgent.report_startup_cleanup(opts, :closed)
+        error
     end
   end
 
@@ -45,6 +53,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:readiness_observation, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
 
         if AgentReadiness.observation_code?(code),
           do: {:error, {:claude_startup_failed, code}},
@@ -52,10 +61,12 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:before_start, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, :ok)
 
       {:error, {:stopped, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, :ok)
 
       {:error, code} ->
@@ -64,6 +75,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         write(port, %{v: 1, type: "stop", session_id: id, request_id: request})
         cleanup = await_startup_stop(port, deadline(5_000), id, request)
         close_port(port)
+        if cleanup == :ok, do: CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, cleanup)
     end
   end
@@ -105,29 +117,40 @@ defmodule SymphonyElixir.Claude.Adapter do
            }),
          {:ok, %{"v" => 1, "type" => "ready", "session_id" => ^id, "request_id" => ^start_id, "identity" => %{"profile" => profile} = identity, "owned_native" => owned}} <-
            frame(port, deadline(15_000)),
-         true <- valid_profile?(profile) and valid_owned?(owned),
-         :ok <- match_expected_profile(profile, Keyword.get(opts, :expected_profile)) do
-      {:ok,
-       %{
-         port: port,
-         owner: self(),
-         id: id,
-         workspace: workspace,
-         config: config,
-         binding: binding,
-         identity: identity,
-         owned_native: owned,
-         helper_identity: port_identity(port),
-         node: Keyword.get(opts, :node_path, Config.claude_node_path()),
-         cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
-       }}
+         true <- valid_profile?(profile) and valid_owned?(owned) do
+      session = %{
+        port: port,
+        owner: self(),
+        id: id,
+        workspace: workspace,
+        config: config,
+        binding: binding,
+        identity: identity,
+        owned_native: owned,
+        helper_identity: port_identity(port),
+        node: Keyword.get(opts, :node_path, Config.claude_node_path()),
+        cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
+      }
+
+      accept_native_session(session, opts)
     else
       {:ok, %{"v" => 1, "type" => "stopped", "session_id" => ^id, "request_id" => ^start_id}} -> {:error, {:stopped, "protocol_error"}}
-      {:error, :native_identity_mismatch} -> {:error, "policy_blocked"}
       false -> {:error, "native_ownership_unavailable"}
       {:ok, %{"ready" => false, "code" => code}} -> {:error, code}
       {:ok, %{"type" => "error", "code" => code}} -> {:error, code}
       _ -> {:error, "protocol_error"}
+    end
+  end
+
+  defp accept_native_session(session, opts) do
+    if session.helper_identity || session.owned_native != [] do
+      target = Map.take(session, [:helper_identity, :owned_native, :node, :cleanup])
+      CodingAgent.report_startup_cleanup(opts, fn -> cleanup_owned(target) end)
+    end
+
+    case match_expected_profile(session.identity["profile"], opts[:expected_profile]) do
+      :ok -> {:ok, session}
+      {:error, :native_identity_mismatch} -> {:error, "policy_blocked"}
     end
   end
 

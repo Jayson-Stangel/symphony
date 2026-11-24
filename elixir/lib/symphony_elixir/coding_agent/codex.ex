@@ -13,6 +13,7 @@ defmodule SymphonyElixir.CodingAgent.Codex do
   # Interrupt invalidates this native session. A new attempt starts a new one.
   # Preserve the existing Codex shutdown path rather than adding another protocol.
   @impl true
+  def interrupt(session, reason) when reason in [:fresh_session, :tracker_blocked], do: AppServer.interrupt_and_confirm_exit(session)
   def interrupt(session, _reason), do: AppServer.stop_session(session)
 
   @impl true

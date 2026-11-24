@@ -173,7 +173,7 @@ runner_doctor "$FIXTURE_PROJECT" codex true
         env = self.env | {'FIXTURE_COMPAT_HELD': str(holder_ready), 'FIXTURE_COMPAT_RELEASE': str(holder_release),
                           'FIXTURE_DOCTOR_REFUSED': str(failed), 'FIXTURE_DOCTOR_RETRY': str(retry)}
         holder = subprocess.Popen(self.command(r'''
-mkdir -p "$runner_home"
+runner_prepare_home
 runner_transition_lock "$runner_home/$(project_id "$FIXTURE_PROJECT").transition.lock"
 touch "$FIXTURE_COMPAT_HELD"
 for attempt in $(seq 1 1000); do [ ! -e "$FIXTURE_COMPAT_RELEASE" ] || exit 0; sleep .01; done
@@ -275,7 +275,9 @@ class CodexStoreParent(unittest.TestCase):
             'store': 'codex_config_store_root "$FIXTURE_REPO" >/dev/null',
             'lock': 'runner_project_lock "$FIXTURE_REPO"',
             'start': 'package_use_project_image() { :; }; runner_require_identity() { exit 47; }; runner_start "$FIXTURE_REPO"',
-            'migration': 'container_runtime() { printf false; }; runner_resource_lock_path() { exit 47; }; runner_migrate_identity "$FIXTURE_REPO"',
+            'migration': ('cd "$FIXTURE_REPO"; touch WORKFLOW.md; package_update_lock() { :; }; '
+                          'package_current_home() { printf "%s" "$symphony_home"; }; package_pending_transition() { :; }; '
+                          'container_runtime() { exit 47; }; project_migrate --linear-project fixture'),
             'transition': 'container_runtime() { printf false; }; runner_require_identity() { exit 47; }; runner_transition "$FIXTURE_REPO" claude',
         }
 

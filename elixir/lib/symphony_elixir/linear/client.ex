@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   require Logger
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.Schema.Tracker
   alias SymphonyElixir.Linear.Operation
   alias SymphonyElixir.Tracker.Issue
 
@@ -95,6 +96,30 @@ defmodule SymphonyElixir.Linear.Client do
     }
   }
   """
+
+  @project_query """
+  query SymphonyLinearProject($projectSlug: String!) {
+    projects(filter: {slugId: {eq: $projectSlug}}, first: 2) {
+      nodes { id slugId }
+    }
+  }
+  """
+
+  @doc false
+  @spec verify_project(Tracker.t(), keyword()) :: :ok | {:error, atom()}
+  def verify_project(tracker, opts \\ []) do
+    slug = tracker.project_slug
+
+    with {:ok, _} <- Application.ensure_all_started(:req),
+         {:ok, %{"data" => %{"projects" => %{"nodes" => [%{"id" => id, "slugId" => ^slug}]}}} = body}
+         when is_binary(id) and byte_size(id) > 0 <-
+           graphql(@project_query, %{projectSlug: slug}, Keyword.put(opts, :tracker_settings, tracker)),
+         [] <- Map.get(body, "errors", []) do
+      :ok
+    else
+      _ -> {:error, :linear_project_unverified}
+    end
+  end
 
   @viewer_query """
   query SymphonyLinearViewer {

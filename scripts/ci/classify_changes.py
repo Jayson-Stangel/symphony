@@ -284,6 +284,8 @@ def consumer_selection(path):
     if path in ('scripts/release/engine-smoke.py', 'scripts/release/tests/test_engine_smoke.py',
                 'scripts/release/tests/test_package_update.py'):
         return {'portable', 'fixtures'}, 'native process or installed updater fixture'
+    if path == 'scripts/release/workflow_fixture.py':
+        return {'portable', 'fixtures'}, 'private service process fixture for the installed lifecycle'
     if path in ('scripts/release/tests/test_component_provenance.py',
                 'scripts/release/tests/fixtures/manager-original-68.json'):
         return PACKAGES, 'packaged provenance validator fixture dependency'

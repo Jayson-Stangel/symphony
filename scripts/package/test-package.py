@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native macOS/Linux package and helper regressions; no account/model requests."""
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -585,6 +586,37 @@ PY
         self.assertOK(call([command, "update", "--candidate-manifest", old_external, "--candidate-bundle", old_archive], env=env))
         self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
 
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        register = [command, "init", "--repository", "https://github.com/fixture/project.git",
+                    "--linear-project", "disposable-fixture"]
+        registered_root = self.root / "registered-override"
+        selected = dict(env, SYMPHONY_CONFIG_HOME=str(registered_root))
+        registration = registered_root / "projects"
+        app = self.root / "app"
+        self.assertEqual((app / "update.lock").stat().st_size, 0)
+        with (app / "update.lock").open("a") as updater_lock:
+            fcntl.flock(updater_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            blocked = call(register, env=selected)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("another updater is active", blocked.stderr)
+            self.assertFalse(registration.exists())
+
+        self.assertOK(call(register, env=selected))
+        record, = registration.glob("*.remote")
+        canary = record.read_bytes()
+        activations = {link: (app / link).readlink() for link in ("current", "previous")}
+        engine_calls = (self.root / "docker.calls").read_bytes()
+        alternate = self.root / "empty-override"
+        alternate.mkdir()
+        for selection in (["--rollback-release"],
+                          ["--candidate-manifest", old_external, "--candidate-bundle", old_archive]):
+            refused = call([command, "update", *selection, "--config-dir", alternate], env=env)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("selected release cannot manage registered projects", refused.stderr)
+            self.assertEqual({link: (app / link).readlink() for link in activations}, activations)
+            self.assertEqual(record.read_bytes(), canary)
+            self.assertEqual((self.root / "docker.calls").read_bytes(), engine_calls)
+
     @unittest.skipUnless(sys.platform == "darwin", "legacy Mac policy replay requires native macOS")
     def test_actual_legacy_updater_intel_policy_replay_stages_but_cannot_activate_arm_bundle(self):
         # Real old installed updater/helper, actual new ARM bundle. uname replay
@@ -685,39 +717,81 @@ PY
         repo = self.root / "provider-project"; repo.mkdir(); (repo / ".git").mkdir()
         (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/provider.git\n')
         for provider in ("codex", "claude"):
-            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", provider], cwd=repo, env=env))
+            output = self.assertOK(call([command, "init", "--repository", "https://github.com/fixture/provider.git", "--linear-project", "fixture", "--agent", provider], cwd=repo, env=env))
             self.assertIn("auth " + provider + " login", output)
             self.assertIn("run --agent " + provider, output)
         credentials = next((self.root / "config/projects").glob("*.env"))
         workflow = repo / "WORKFLOW.md"
+        workflow.write_text("unpublished workflow\n")
         before = (credentials.read_bytes(), workflow.read_bytes())
         directory = self.root / "config/runners/environments"; directory.mkdir(parents=True, mode=0o700)
         selection = directory / (credentials.stem + ".json")
         docker = self.root / "tools/docker"
         docker.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_DOCKER_CALLS"\n'
-            'case "$*" in *State.Status*) echo running ;; *com.symphony.agent*) echo "$ACTUAL" ;; *) exit 97 ;; esac\n')
+            'case "$*" in info) exit 0 ;; *State.Status*) echo running ;; *com.symphony.agent*) echo "$ACTUAL" ;; *) exit 97 ;; esac\n')
         for old, new in (("claude", "codex"), ("codex", "claude")):
             selection.write_text(json.dumps(dict(schema_version=1, provider=old,
                 image_id="sha256:" + "a" * 64, reference="team:retained",
                 runtime_revision="b" * 40, platform="linux/amd64", protocol=1)))
             selection.chmod(0o600)
             retained = selection.read_bytes()
-            output = self.assertOK(call([command, "init", "--linear-project", "fixture", "--agent", new],
+            output = self.assertOK(call([command, "init", "--repository", "https://github.com/fixture/provider.git", "--linear-project", "fixture", "--agent", new],
                 cwd=repo, env=dict(env, ACTUAL=old)))
             self.assertIn("Stored desired provider: " + old, output)
             self.assertIn("Actual runner provider: " + old, output)
             self.assertIn("environment select --agent " + new + " IMAGE", output)
-            self.assertIn("symphony update --agent " + new, output)
+            self.assertIn("update --agent " + new, output)
             self.assertLess(output.index("auth " + new + " check"), output.index("update --pause-runner"))
             self.assertLess(output.index("update --pause-runner"), output.index("auth " + new + " login"))
             self.assertEqual(selection.read_bytes(), retained)
             self.assertEqual((credentials.read_bytes(), workflow.read_bytes()), before)
-            refused = call([command, "init", "--linear-project", "fixture"], cwd=repo, env=dict(env, ACTUAL=old))
+            refused = call([command, "init", "--repository", "https://github.com/fixture/provider.git", "--linear-project", "fixture"], cwd=repo, env=dict(env, ACTUAL=old))
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("unavailable or incompatible", refused.stdout)
             self.assertNotIn("auth " + old + " login", refused.stdout)
         operations = (self.root / "docker.calls").read_text().splitlines()
-        self.assertTrue(all(line.startswith("inspect ") or line.startswith("image inspect ") for line in operations))
+        self.assertTrue(all(line == "info" or line.startswith("inspect ") or line.startswith("volume inspect ") or line.startswith("image inspect ") for line in operations))
+
+    def test_installed_remote_registration_targets_projects_without_host_git(self):
+        bundle = self.bundle()
+        env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = Path(env["SYMPHONY_BIN_DIR"]) / "symphony"
+        projects = Path(env["SYMPHONY_CONFIG_HOME"]) / "projects"
+        first = [command, "init", "--repository", "git@github.com:example/alpha.git",
+                 "--linear-project", "alpha-linear", "--workflow-branch", "release/watch"]
+        self.assertIn("Workflow branch: release/watch", self.assertOK(call(first, cwd=self.root, env=env)))
+        alpha = next(projects.glob("alpha-*.remote"))
+        self.assertEqual(alpha.read_text(), "alpha-linear\nhttps://github.com/example/alpha.git\nrelease/watch\n")
+        self.assertEqual(stat.S_IMODE(alpha.stat().st_mode), 0o600)
+        credentials = alpha.with_suffix(".env")
+        self.assertEqual(stat.S_IMODE(credentials.stat().st_mode), 0o600)
+        self.assertIn("not running", self.assertOK(call([command, "runner", "status"], cwd=self.root, env=env)))
+
+        credentials.write_text("GH_TOKEN=fixture-canary\n")
+        self.assertOK(call(first[:-2], cwd=self.root, env=env))
+        self.assertTrue(alpha.read_text().endswith("release/watch\n"))
+        self.assertEqual(credentials.read_text(), "GH_TOKEN=fixture-canary\n")
+        second = [command, "init", "--repository", "https://github.com/example/beta",
+                  "--linear-project", "beta-linear"]
+        self.assertOK(call(second, cwd=self.root, env=env))
+        self.assertTrue(next(projects.glob("beta-*.remote")).read_text().endswith("\n\n"))
+        ambiguous = call([command, "runner", "status"], cwd=self.root, env=env)
+        self.assertNotEqual(ambiguous.returncode, 0)
+        self.assertIn("multiple registered projects", ambiguous.stderr)
+        for action in ("login", "check"):
+            ambiguous_auth = call([command, "auth", "codex", action], cwd=self.root, env=env)
+            self.assertNotEqual(ambiguous_auth.returncode, 0)
+            self.assertIn("multiple registered projects", ambiguous_auth.stderr)
+        self.assertNotIn("volume create", Path(env["TEST_DOCKER_CALLS"]).read_text())
+        self.assertIn("not running", self.assertOK(call(
+            [command, "--project", alpha.stem, "runner", "status"], cwd=self.root, env=env)))
+
+        conflict = call([*first[:-4], "--linear-project", "wrong-linear"], cwd=self.root, env=env)
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertIn("already belongs to Linear project alpha-linear", conflict.stderr)
+        self.assertNotIn("fixture-canary", alpha.read_text())
+        self.assertNotIn("unexpected host dependency", ambiguous.stderr)
 
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
@@ -729,10 +803,15 @@ PY
         self.assertIn('"ready":true', self.assertOK(call([command, "doctor", "--json"], env=env)))
         repo = self.root / "project"; repo.mkdir(); (repo / ".git").mkdir()
         (repo / ".git/config").write_text('[remote "origin"]\nurl = https://github.com/fixture/project.git\n')
-        self.assertIn("Project: initialized", self.assertOK(call([command, "init", "--linear-project", "disposable-fixture"], cwd=repo, env=env)))
-        original = (repo / "WORKFLOW.md").read_text()
-        self.assertOK(call([command, "init", "--linear-project", "preserve"], cwd=repo, env=env))
-        self.assertEqual((repo / "WORKFLOW.md").read_text(), original)
+        retired = call([command, "init", "--linear-project", "disposable-fixture"], cwd=repo, env=env)
+        self.assertNotEqual(retired.returncode, 0)
+        self.assertIn("project migrate", retired.stderr)
+        register = [command, "init", "--repository", "https://github.com/fixture/project.git",
+                    "--linear-project", "disposable-fixture"]
+        self.assertIn("Registered project:", self.assertOK(call(register, cwd=repo, env=env)))
+        workflow = repo / "WORKFLOW.md"; workflow.write_text("unpublished workflow\n")
+        self.assertOK(call(register, cwd=repo, env=env))
+        self.assertEqual(workflow.read_text(), "unpublished workflow\n")
         failed = call([command, "auth", "codex", "login"], cwd=repo, env=env)
         self.assertNotEqual(failed.returncode, 0); self.assertIn("cannot pull released codex image", failed.stderr)
         self.assertNotIn("build", (self.root / "docker.calls").read_text())

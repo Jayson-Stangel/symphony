@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[3]
 SOURCE = (ROOT/'scripts/symphony-package.sh').read_text()
 CHECKS = SOURCE[SOURCE.index('package_selected_image_compatible() {'):SOURCE.index('package_build_image() {')]
 UPDATER = (ROOT/'scripts/symphony-package-update.sh').read_text()
-COMPLETE = UPDATER[UPDATER.index('complete_package_update() {'):]
 BUILD = SOURCE[SOURCE.index('package_build_image() {'):SOURCE.index('# A shared manager update')]
 
 
@@ -36,7 +35,7 @@ esac
             (runners/'actual.env').write_text('SYMPHONY_RUNNER_IMAGE_ID='+image+'\nSYMPHONY_RUNNER_AGENT=codex\n')
             env=dict(os.environ,PATH=str(path)+':'+os.environ['PATH'],IMAGE=image,REVISION='a'*40,
                      DIGEST='registry.invalid/codex@sha256:'+'d'*64,PREVIOUS=str(previous),
-                     MARKER=str(path/'activated'),SCHEMA='1')
+                     MARKER=str(path/'activated'), PACKAGE_STORAGE=str(path), SCHEMA='1')
             env.update(variant)
             shell='''set -euo pipefail
 die() { echo "$*" >&2; exit 42; }
@@ -68,7 +67,12 @@ runner_transition() { touch "$MARKER"; }
                     shell+='rm "$package_app_home/previous"\nmkdir "$package_app_home/new-schema2"\nln -s "$package_app_home/new-schema2" "$package_app_home/previous"\n'
                 shell+='package_build_image codex\n'
             elif activation:
-                shell+=COMPLETE+'\nrunner_home='+str(runners)+'\nsymphony_home="$PREVIOUS"\ncomplete_package_update "$PREVIOUS" ""\n'
+                shell=UPDATER+'\n'+shell+'''\n
+package_app_home="$PACKAGE_STORAGE"
+config_home="$PACKAGE_STORAGE/config"
+symphony_home="$PREVIOUS"
+complete_package_update "$PREVIOUS" ""
+'''
             else:
                 shell+='\npackage_retained_image_compatible docker "$IMAGE" codex "$PREVIOUS"\npackage_retained_image_compatible docker "$IMAGE" codex \"\"\n'
             result=subprocess.run(['bash','-c',shell],env=env,text=True,capture_output=True)

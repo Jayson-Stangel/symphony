@@ -130,18 +130,11 @@ defmodule SymphonyElixir.InstallationTest do
     assert output =~ ~s("runtime":false)
   end
 
-  test "supported host run executes the installed runtime and Claude host remains refused", ctx do
-    assert {_, 0} = cli(ctx, ["setup"])
-    config = Path.join(ctx.root, "config/projects")
-    File.mkdir_p!(config)
-    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "fixture", @launcher, git!(ctx.source, ["rev-parse", "--show-toplevel"])])
-    File.write!(Path.join(config, String.trim(identity) <> ".env"), "")
-    File.write!(Path.join(ctx.source, "WORKFLOW.md"), "fixture")
-    assert {output, 0} = cli(ctx, ["run", "--host"])
-    assert output =~ "host executed:"
-    assert output =~ "--agent codex"
-    assert {output, 1} = cli(ctx, ["run", "--host", "--agent", "claude"])
-    assert output =~ "Claude host/SSH execution is unsupported"
+  test "checkout host run directs both providers to local workflow validation", ctx do
+    for agent <- ["codex", "claude"] do
+      assert {output, 1} = cli(ctx, ["run", "--host", "--agent", agent])
+      assert output =~ "symphony project validate"
+    end
   end
 
   test "source update retries failed real setup at the installed revision without host agents", ctx do

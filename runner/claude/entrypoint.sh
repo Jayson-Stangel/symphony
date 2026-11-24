@@ -1,8 +1,12 @@
 #!/bin/sh
 set -eu
 [ "$(id -u)" = 11001 ] || { echo 'Claude runner requires UID 11001' >&2; exit 1; }
-workflow=/etc/symphony/WORKFLOW.md
-[ -r "$workflow" ] || { echo 'missing workflow' >&2; exit 1; }
+if [ -n "${SYMPHONY_REMOTE_REPOSITORY:-}" ]; then
+  workflow=/var/lib/symphony/remote-workflow/WORKFLOW.md
+else
+  workflow=/etc/symphony/WORKFLOW.md
+  [ -r "$workflow" ] || { echo "missing workflow at $workflow" >&2; exit 1; }
+fi
 [ -n "${SYMPHONY_GIT_TOKEN:-}" ] || { echo 'missing selected repository Git credential' >&2; exit 1; }
 python3 /usr/local/lib/symphony/node-headers.py --prepare-home /home/claude
 git config --global user.name "${SYMPHONY_GIT_AUTHOR_NAME:-Symphony}"
