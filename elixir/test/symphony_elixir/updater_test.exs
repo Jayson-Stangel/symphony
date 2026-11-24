@@ -397,7 +397,10 @@ defmodule SymphonyElixir.UpdaterTest do
       config = Path.join(ctx.root, "selected-config")
       runners = Path.join(ctx.root, "selected-runners")
       File.mkdir_p!(runners)
-      id = project_id!(ctx.installation)
+      id = "service-a655f1ffd4d3"
+      record = Path.join(config, "projects/#{id}.remote")
+      File.mkdir_p!(Path.dirname(record))
+      File.cp!(Path.join(ctx.root, "config/projects/#{id}.remote"), record)
       File.write!(Path.join(runners, "#{id}.env"), "fixture metadata")
       paused = Path.join(ctx.root, "source-paused")
       peer_dir = Path.join(ctx.root, "source-python-peer")
@@ -502,11 +505,6 @@ defmodule SymphonyElixir.UpdaterTest do
 
     assert {_, 137} = Task.await(first, 15_000)
     assert {_, 0} = installed_update(ctx)
-  end
-
-  defp project_id!(repo) do
-    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "identity", @launcher, repo])
-    String.trim(identity)
   end
 
   defp transition_fixture_launcher(version) do
