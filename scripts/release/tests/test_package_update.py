@@ -595,17 +595,23 @@ runner_resume_when_ready() { :; }; runner_record_observed_metadata() { :; }
 package_write_transition() { :; }; package_remove_transition_fields() { :; }
 package_finish_transition() { die 'injected manager activation failure'; }
 fixture_runtime() {
+  local file
   case "$1" in
     info) printf '%s\n' 'name=seccomp,profile=builtin' ;;
     image) echo new ;;
     inspect)
       case "${!#}" in
-        project-before-update)
-          [ -f "$fixture/backup" ] || return 1
-          case "$*" in *State.Running*) echo false ;; *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/backup" ;; esac ;;
-        project)
-          [ -f "$fixture/current" ] || return 1
-          case "$*" in *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/current" ;; esac ;;
+        project-before-update) file="$fixture/backup" ;;
+        project) file="$fixture/current" ;;
+        *) return 1 ;;
+      esac
+      [ -f "$file" ] || return 1
+      case "$*" in
+        *State.Running*) echo false ;;
+        *com.symphony.agent*) echo claude ;;
+        *'{{.Image}}'*) cat "$file" ;;
+        *'{{.Id}}'*)
+          if [ "$(cat "$file")" = old ]; then printf '%064d\n' 1; else printf '%064d\n' 2; fi ;;
       esac ;;
     rename)
       if [ "$2" = project ]; then mv "$fixture/current" "$fixture/backup"
