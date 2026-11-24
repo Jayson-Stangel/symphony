@@ -468,9 +468,11 @@ Fields:
 - `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
-- `max_turns` (positive integer)
+- `max_turns_per_attempt` (positive integer)
   - Default: `20`
   - Limits the number of completed coding-agent turns within one worker attempt, for both providers.
+  - The count resets for each new attempt. Apply deprecated `max_turns` only when
+    `max_turns_per_attempt` is absent.
   - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
     continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
@@ -674,7 +676,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
+- `agent.max_turns_per_attempt`: positive integer, default `20`. Falls back to deprecated
+  `agent.max_turns` when omitted.
 - `agent.live_max_turns`: optional nonnegative integer, disabled by default for both providers.
   An explicit value, including `0`, overrides `codex.live_max_turns`.
 - `agent.fresh_session_on_enter`: list of active destination status names, default `[]`.
@@ -751,7 +754,7 @@ Important nuance:
 - The worker MAY continue through multiple back-to-back coding-agent turns before it exits.
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
-  coding-agent thread in the same workspace, up to `agent.max_turns`.
+  coding-agent thread in the same workspace, up to `agent.max_turns_per_attempt`.
 - A successfully observed change into a configured fresh-session destination interrupts
   the captured native session. Apply the same rule in scheduler polls and before a
   continuation turn. Remaining in the same status continues the session.
@@ -2069,11 +2072,11 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     run_hook_best_effort("after_run", workspace.path)
     fail_worker("agent session startup error")
 
-  max_turns = config.agent.max_turns
+  max_turns_per_attempt = config.agent.max_turns_per_attempt
   turn_number = 1
 
   while true:
-    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
+    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns_per_attempt)
     if prompt failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
@@ -2105,7 +2108,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     if issue.state is not active or not issue_routable(issue):
       break
 
-    if turn_number >= max_turns:
+    if turn_number >= max_turns_per_attempt:
       break
 
     turn_number = turn_number + 1

@@ -348,7 +348,7 @@ workspace:
   clone_url: https://github.com/your-org/your-repo.git
 agent:
   max_concurrent_agents: 10
-  max_turns: 20
+  max_turns_per_attempt: 20
 codex:
   command: codex app-server
 ---
@@ -401,12 +401,12 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-  Reaching this per-attempt allowance closes the native session normally and schedules the existing
-  continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Claude helper replay history uses the same captured attempt allowance.
-  Workflow reloads apply to the next attempt. A Claude native `error_max_turns` also
+- `agent.max_turns_per_attempt` limits completed turns in one worker attempt for both providers.
+  It accepts a positive integer and defaults to `20`. At the limit, the worker closes the native
+  session normally. The scheduler rechecks eligibility and can continue in the retained workspace
+  with a fresh count. Claude helper replay uses the same captured allowance.
+  Workflow reloads apply to the next attempt. The deprecated `agent.max_turns` key is used only
+  when `agent.max_turns_per_attempt` is absent. A Claude native `error_max_turns` also
   yields after cleanup. The scheduler rechecks tracker state and dispatch limits
   before opening a fresh session for eligible work.
   Only a successful native turn result completes a turn (`turn/completed` for Codex or

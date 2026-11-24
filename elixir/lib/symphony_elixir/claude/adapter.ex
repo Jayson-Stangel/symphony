@@ -100,7 +100,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
     settings = Config.settings!()
     config = settings.claude
-    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
+    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns_per_attempt)
 
     helper_config =
       config
