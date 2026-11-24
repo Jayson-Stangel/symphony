@@ -655,6 +655,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
+- `agent.fresh_session_on_enter`: list of active destination status names, default `[]`.
+  Trim and compare status names case-insensitively. Reject malformed values.
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
@@ -725,6 +727,13 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
+- A successfully observed change into a configured fresh-session destination interrupts
+  the captured native session. Apply the same rule in scheduler polls and before a
+  continuation turn. Remaining in the same status continues the session.
+- Retain the claim until native shutdown is confirmed. Revalidate current dispatch
+  eligibility before replacement and refresh the issue before its first turn. Use a
+  fresh conversation and the existing workspace. Terminal, inactive, blocked and
+  unrouted issues are ineligible for a replacement.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
@@ -904,6 +913,8 @@ Part B: Tracker state refresh
 - For each running issue:
   - If tracker state is terminal: terminate worker and clean workspace.
   - If tracker state is still active and routable: update the in-memory issue snapshot.
+    An entry into a configured fresh-session destination stops the old session first.
+  - If tracker state is Blocked: stop the native session and retain the workspace.
   - If tracker state is active but no longer routable: terminate worker without workspace cleanup.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.

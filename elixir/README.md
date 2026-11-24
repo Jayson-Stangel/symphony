@@ -214,7 +214,9 @@ still-active tracker issue can become a dispatch candidate again after restart.
 For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create that status in the
 tracker. These states must not overlap active or terminal states. Symphony polls them alongside
 active work and shows matching issues in the dashboard and JSON API, including after a restart.
-Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
+Blocked issues are not dispatched. Moving an active issue to Blocked interrupts its current
+session and retains the claim until native shutdown is confirmed. The issue workpad holds the
+blocker and exact unblock action;
 `Human Review` holds validated PRs awaiting human assessment. Record available feedback
 and pending external reviews, then end the worker turn. Required repository checks,
 reviews and human approval remain merge obligations; optional bot latency is not a
@@ -402,6 +404,22 @@ Notes:
   Only a successful native turn result completes a turn (`turn/completed` for Codex or
   a correlated successful SDK result for Claude). Progress messages, review polling, and
   status notifications remain inside that turn and do not consume continuation turns.
+- `agent.fresh_session_on_enter` is an optional list of active destination status names.
+  Symphony trims whitespace and ignores case. Omit the setting or use `[]` to continue
+  the current conversation across active statuses. An observed entry into a configured
+  status interrupts the captured Codex or Claude session, including when the entry is
+  first seen between turns. A session that starts in the destination can continue there.
+  Leaving and later re-entering that destination creates a new boundary.
+  After the old session exits, Symphony refreshes eligibility and starts a fresh
+  conversation in the same workspace. It reads the current issue again before the
+  first turn and uses the current workflow. The branch, PR and untracked files stay
+  available in the workspace. If shutdown is unconfirmed, Symphony keeps the claim
+  and retries confirmation on subsequent polls when it has a captured session.
+  A pending startup with neither a captured session nor closure evidence keeps
+  the claim. A failed tracker refresh delays replacement until a successful
+  current read. Pending stops survive a scheduler child restart within the
+  running manager. Before restarting the manager itself after an unconfirmed
+  stop, verify that the old native worker has exited.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.

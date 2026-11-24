@@ -4,13 +4,16 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, Codex.SandboxReadiness, Config, SSH, ToolCall, Workspace}
+  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, CodingAgent, Codex.SandboxReadiness, Config, SSH, ToolCall, Workspace}
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @remote_pid_marker "__SYMPHONY_CODEX_PID__="
+  @exit_proof_marker "__SYMPHONY_CODEX_EXITED__"
+  @exit_check_timeout_ms 9_000
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -22,6 +25,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           model: String.t() | nil,
           workspace: Path.t(),
           worker_host: String.t() | nil,
+          shutdown_identity: {pos_integer(), String.t() | nil},
           dynamic_tool_binding: map()
         }
 
@@ -52,31 +56,78 @@ defmodule SymphonyElixir.Codex.AppServer do
          {:ok, port} <- start_port(expanded_workspace, worker_host, dynamic_tool_binding, command) do
       metadata = port_metadata(port, worker_host)
 
-      case do_start_session(port, expanded_workspace, session_policies, dynamic_tool_binding) do
-        {:ok, thread_id, model} ->
-          {:ok,
-           %{
-             port: port,
-             metadata: metadata,
-             approval_policy: session_policies.approval_policy,
-             auto_approve_requests: session_policies.approval_policy == "never",
-             thread_sandbox: session_policies.thread_sandbox,
-             turn_sandbox_policy: session_policies.turn_sandbox_policy,
-             thread_id: thread_id,
-             model: model,
-             workspace: expanded_workspace,
-             worker_host: worker_host,
-             dynamic_tool_binding: dynamic_tool_binding
-           }}
+      case shutdown_identity(port, worker_host) do
+        {:ok, identity} ->
+          session = %{
+            port: port,
+            metadata: metadata,
+            approval_policy: session_policies.approval_policy,
+            auto_approve_requests: session_policies.approval_policy == "never",
+            thread_sandbox: session_policies.thread_sandbox,
+            turn_sandbox_policy: session_policies.turn_sandbox_policy,
+            workspace: expanded_workspace,
+            worker_host: worker_host,
+            shutdown_identity: identity,
+            dynamic_tool_binding: dynamic_tool_binding
+          }
+
+          initialize_native_session(session, session_policies, opts)
 
         {:error, reason} ->
           stop_port(port)
           {:error, reason}
       end
     else
-      false -> {:error, :sandbox_inputs_changed}
-      error -> error
+      false ->
+        CodingAgent.report_startup_closed(opts)
+        {:error, :sandbox_inputs_changed}
+
+      error ->
+        CodingAgent.report_startup_closed(opts)
+        error
     end
+  end
+
+  defp initialize_native_session(session, policies, opts) do
+    case do_start_session(session.port, session.workspace, policies, session.dynamic_tool_binding) do
+      {:ok, thread_id, model} ->
+        {:ok, Map.merge(session, %{thread_id: thread_id, model: model})}
+
+      {:error, reason} ->
+        if opts[:on_startup_closed] do
+          if interrupt_and_confirm_exit(session) == :ok, do: CodingAgent.report_startup_closed(opts)
+        else
+          stop_port(session.port)
+        end
+
+        {:error, reason}
+    end
+  end
+
+  defp shutdown_identity(port, nil) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> {:ok, {pid, nil}}
+      nil -> {:error, :port_closed}
+    end
+  end
+
+  defp shutdown_identity(port, _worker_host) do
+    receive do
+      {^port, {:data, {:eol, @remote_pid_marker <> value}}} ->
+        case Integer.parse(value) do
+          {pid, " " <> host_identity} when pid > 1 -> {:ok, {pid, remote_identity(host_identity)}}
+          _ -> {:error, :invalid_app_server_pid}
+        end
+
+      {^port, {:exit_status, status}} ->
+        {:error, {:port_exit, status}}
+    after
+      Config.settings!().codex.read_timeout_ms -> {:error, :response_timeout}
+    end
+  end
+
+  defp remote_identity(value) do
+    if Regex.match?(~r/^[A-Fa-f0-9-]+(?:\/[0-9]+)?$/, value), do: value
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -192,6 +243,90 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
+  @spec interrupt_and_confirm_exit(session()) :: :ok | {:error, :cleanup_unconfirmed}
+  def interrupt_and_confirm_exit(%{port: port, worker_host: worker_host, shutdown_identity: {pid, host_identity}}) do
+    :ok = stop_port(port)
+
+    # Closing stdio initiates native shutdown. The pinned app-server gives
+    # active turns five seconds to quiesce. The port closes earlier, and an
+    # SSH port only identifies the local SSH client.
+    with {:ok, check} <- start_exit_check(worker_host, pid, host_identity) do
+      try do
+        await_exit_check(check, System.monotonic_time(:millisecond) + @exit_check_timeout_ms, false)
+      after
+        stop_port(check)
+      end
+    end
+  end
+
+  defp exit_check_command(pid) when is_integer(pid) and pid > 1 do
+    """
+    export LC_ALL=C
+    command -v ps >/dev/null || exit 2
+    ps -p "$$" -o stat= >/dev/null || exit 2
+    for ((n=0; n<80; n++)); do
+      state=$(ps -p #{pid} -o stat= 2>&1)
+      status=$?
+      if { [ "$status" -eq 1 ] && [ -z "$state" ]; } || { [ "$status" -eq 0 ] && [[ "$state" == Z* ]]; }; then
+        printf '%s\n' '#{@exit_proof_marker}'
+        exit 0
+      fi
+      [ "$status" -eq 0 ] || exit 2
+      sleep 0.1
+    done
+    exit 2
+    """
+  end
+
+  defp start_exit_check(nil, pid, nil) do
+    case System.find_executable("bash") do
+      nil ->
+        {:error, :cleanup_unconfirmed}
+
+      bash ->
+        {:ok, Port.open({:spawn_executable, to_charlist(bash)}, [:binary, :exit_status, args: [~c"-c", to_charlist(exit_check_command(pid))], line: 128])}
+    end
+  end
+
+  defp start_exit_check(host, pid, host_identity) when is_binary(host_identity) do
+    # A new SSH connection must observe the same boot and PID namespace.
+    command = """
+    test "$(#{remote_identity_command()})" = '#{host_identity}' || exit 2
+    #{exit_check_command(pid)}
+    """
+
+    case SSH.start_port(host, command, line: 128) do
+      {:ok, port} -> {:ok, port}
+      {:error, _} -> {:error, :cleanup_unconfirmed}
+    end
+  end
+
+  defp start_exit_check(_host, _pid, _identity), do: {:error, :cleanup_unconfirmed}
+
+  defp remote_identity_command do
+    """
+    case "$(uname -s)" in
+      Linux)
+        boot=$(cat /proc/sys/kernel/random/boot_id) || exit 2
+        ns=$(readlink /proc/self/ns/pid | tr -cd '0-9')
+        [ -n "$boot" ] && [ -n "$ns" ] && printf '%s/%s' "$boot" "$ns"
+        ;;
+      Darwin) sysctl -n kern.bootsessionuuid ;;
+    esac
+    """
+  end
+
+  defp await_exit_check(port, deadline, proved?) do
+    receive do
+      {^port, {:data, {:eol, @exit_proof_marker}}} -> await_exit_check(port, deadline, true)
+      {^port, {:data, _other}} -> await_exit_check(port, deadline, proved?)
+      {^port, {:exit_status, 0}} when proved? -> :ok
+      {^port, {:exit_status, _}} -> {:error, :cleanup_unconfirmed}
+    after
+      max(0, deadline - System.monotonic_time(:millisecond)) -> {:error, :cleanup_unconfirmed}
+    end
+  end
+
   defp start_port(workspace, nil, dynamic_tool_binding, command) do
     executable = System.find_executable("bash")
 
@@ -245,6 +380,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     [
       "cd #{shell_escape(workspace)}",
       tracker_secret_unset_command(dynamic_tool_binding),
+      String.trim_trailing("""
+      printf '%s%s %s\\n' '#{@remote_pid_marker}' "$$" "$(#{remote_identity_command()})"
+      """),
       "exec #{command}"
     ]
     |> Enum.reject(&is_nil/1)

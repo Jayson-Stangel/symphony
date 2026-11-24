@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   @behaviour SymphonyElixir.CodingAgent
 
   require Logger
-  alias SymphonyElixir.{AgentPause, AgentReadiness, Config, ToolCall, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, AgentReadiness, CodingAgent, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
@@ -19,8 +19,12 @@ defmodule SymphonyElixir.Claude.Adapter do
   @impl true
   def start_session(workspace, opts) do
     case Keyword.get(opts, :worker_host) do
-      nil -> start_local_session(workspace, opts)
-      _ -> {:error, :claude_ssh_unsupported}
+      nil ->
+        start_local_session(workspace, opts)
+
+      _ ->
+        CodingAgent.report_startup_closed(opts)
+        {:error, :claude_ssh_unsupported}
     end
   end
 
@@ -32,6 +36,10 @@ defmodule SymphonyElixir.Claude.Adapter do
          {:ok, env} <- Config.claude_child_environment(System.get_env(), binding.secret_environment_names),
          {:ok, port} <- start_port(workspace, env, opts) do
       initialize_or_close(port, workspace, instructions, skills, Keyword.put(opts, :tool_binding, binding))
+    else
+      error ->
+        CodingAgent.report_startup_closed(opts)
+        error
     end
   end
 
@@ -45,6 +53,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:readiness_observation, code}} ->
         close_port(port)
+        CodingAgent.report_startup_closed(opts)
 
         if AgentReadiness.observation_code?(code),
           do: {:error, {:claude_startup_failed, code}},
@@ -52,10 +61,12 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:before_start, code}} ->
         close_port(port)
+        CodingAgent.report_startup_closed(opts)
         startup_failure(code, :ok)
 
       {:error, {:stopped, code}} ->
         close_port(port)
+        CodingAgent.report_startup_closed(opts)
         startup_failure(code, :ok)
 
       {:error, code} ->
@@ -64,6 +75,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         write(port, %{v: 1, type: "stop", session_id: id, request_id: request})
         cleanup = await_startup_stop(port, deadline(5_000), id, request)
         close_port(port)
+        if cleanup == :ok, do: CodingAgent.report_startup_closed(opts)
         startup_failure(code, cleanup)
     end
   end
