@@ -124,6 +124,23 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     assert {:error, :workflow_storage_unavailable} = WorkflowStore.prepare_remote(ctx.source, true, fetch)
   end
 
+  test "remote Claude workflows leave the unused Codex command unvalidated", ctx do
+    previous_agent = Application.fetch_env(:symphony_elixir, :coding_agent)
+    Application.put_env(:symphony_elixir, :coding_agent, :claude)
+
+    on_exit(fn ->
+      case previous_agent do
+        {:ok, provider} -> Application.put_env(:symphony_elixir, :coding_agent, provider)
+        :error -> Application.delete_env(:symphony_elixir, :coding_agent)
+      end
+    end)
+
+    malformed = String.replace(ctx.bytes, "\n---\n", "\ncodex:\n  command: 'codex \"unterminated'\n---\n")
+    commit = commit!(ctx.root, malformed)
+    fetch = fn _ -> RemoteWorkflow.fetch(ctx.remote) end
+    assert {:ok, %{commit: ^commit}} = WorkflowStore.prepare_remote(ctx.source, false, fetch)
+  end
+
   test "reloads from Git while retaining accepted state through source failures", ctx do
     fetch = fn _ -> RemoteWorkflow.fetch(ctx.remote) end
     assert {:ok, state} = WorkflowStore.prepare_remote(ctx.source, true, fetch)
@@ -166,6 +183,24 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
       assert WorkflowStore.admission_block() == nil
       assert :ok = WorkflowStore.force_reload()
       File.rename!(hidden, Path.join(ctx.root, ".git"))
+
+      malformed = String.replace(next, "\n---\n", "\ncodex:\n  command: 'codex \"unterminated'\n---\n")
+      assert {:ok, %{config: %{"codex" => %{"command" => ~s(codex "unterminated)}}}} = Workflow.parse(malformed)
+      commit!(ctx.root, malformed)
+      assert {:error, :invalid_workflow} = WorkflowStore.prepare_remote(ctx.source, false, fetch)
+      status = check_now(store)
+      assert %{status: "rejected", commit: ^next_commit, source_block: :invalid_workflow} = status
+      assert status.source_error == :invalid_workflow
+      assert WorkflowStore.admission_block() == "workflow_source_rejected"
+      assert WorkflowStore.force_reload() == {:error, :invalid_workflow}
+      assert WorkflowStore.status().sha256 == digest(next)
+      assert File.read!(state.path) == next
+      assert {:ok, %{prompt: "changed prompt for {{ issue.identifier }}"}} = WorkflowStore.current()
+
+      git!(ctx.root, ["revert", "--no-edit", "HEAD"])
+      next_commit = git!(ctx.root, ["rev-parse", "HEAD"])
+      assert %{status: "loaded", commit: ^next_commit, source_error: nil, source_block: nil} = check_now(store)
+      assert WorkflowStore.admission_block() == nil
 
       commit!(ctx.root, workflow("different-project", "rejected change"))
       assert %{status: "rejected", commit: ^next_commit, source_block: :linear_project_mismatch} = check_now(store)
