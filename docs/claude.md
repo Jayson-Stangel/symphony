@@ -119,7 +119,7 @@ by editing the workflow. Existing Codex settings retain their meaning.
 
 ```yaml
 agent:
-  max_turns: 20
+  max_turns_per_attempt: 20
   # live_max_turns: 0
 claude:
   model: sonnet
@@ -162,10 +162,11 @@ The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
 model support and account policies may cap the effective level. The web UI
 shows status; edit `WORKFLOW.md` to change the setting.
 
-`agent.max_turns` caps completed Symphony turns in one worker attempt for both
+`agent.max_turns_per_attempt` caps completed Symphony turns in one worker attempt for both
 providers and defaults to 20. Reaching it closes the session normally. The
 scheduler reads live tracker state and can start another attempt in the same
-workspace. Progress, tool calls and SDK steps occur inside a Symphony turn.
+workspace with a fresh count. The deprecated `agent.max_turns` applies only when
+`agent.max_turns_per_attempt` is absent. Progress, tool calls and SDK steps occur inside a Symphony turn.
 `agent.live_max_turns` is an optional circuit breaker for both providers. Each
 distinct turn start counts once in the current worker run. At the threshold,
 Symphony stops and cleans up the worker, reports the count and limit in blocked

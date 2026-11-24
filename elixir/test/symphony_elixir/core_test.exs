@@ -17,7 +17,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
-    assert config.agent.max_turns == 20
+    assert config.agent.max_turns_per_attempt == 20
     assert config.agent.live_max_turns == nil
     assert config.claude.max_agentic_turns == nil
     assert config.codex.live_max_total_tokens == 0
@@ -30,13 +30,6 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
-
-    write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.max_turns"
-
-    write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
-    assert Config.settings!().agent.max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_live_max_total_tokens: 50_000,
@@ -110,6 +103,34 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+  end
+
+  test "completed-turn allowance uses the canonical workflow key before the legacy alias" do
+    path = Workflow.workflow_file_path()
+
+    for {keys, expected} <- [
+          {[], 20},
+          {[max_turns: 5], 5},
+          {[max_turns_per_attempt: 6], 6},
+          {[max_turns: 5, max_turns_per_attempt: 6], 6},
+          {[max_turns: 0, max_turns_per_attempt: 6], 6}
+        ] do
+      write_workflow_file!(path, keys)
+      assert Config.settings!().agent.max_turns_per_attempt == expected
+    end
+
+    for keys <- [
+          [max_turns: 0],
+          [max_turns_per_attempt: 0],
+          [max_turns_per_attempt: -1],
+          [max_turns_per_attempt: 1.5],
+          [max_turns_per_attempt: "invalid"],
+          [max_turns: 5, max_turns_per_attempt: nil]
+        ] do
+      write_workflow_file!(path, keys)
+      assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+      assert message =~ "agent.max_turns_per_attempt"
+    end
   end
 
   test "shared live turn allowance accepts nonnegative integers" do
@@ -2116,7 +2137,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "agent runner stops continuing once agent.max_turns is reached" do
+  test "agent runner stops continuing once agent.max_turns_per_attempt is reached" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2176,7 +2197,7 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
-        max_turns: 2
+        max_turns_per_attempt: 2
       )
 
       state_fetcher = fn [_issue_id] ->

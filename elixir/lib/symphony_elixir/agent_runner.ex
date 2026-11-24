@@ -97,12 +97,12 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
   defp run_codex_turns(workspace, issue, recipient, opts, worker_host) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    max_turns_per_attempt = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns_per_attempt)
     orchestrator = opts[:orchestrator]
     issue_state_fetcher = issue_state_fetcher(orchestrator, opts)
 
     session_opts = [
-      max_turns: max_turns,
+      max_turns: max_turns_per_attempt,
       worker_host: worker_host,
       expected_profile: opts[:expected_profile],
       on_startup_cleanup: startup_cleanup_callback(orchestrator, issue.id)
@@ -120,7 +120,7 @@ defmodule SymphonyElixir.AgentRunner do
         try do
           result =
             with {:ok, current_issue} <- register_session(orchestrator, recipient, issue, session) do
-              do_run_codex_turns(session, workspace, current_issue, recipient, opts, issue_state_fetcher, 1, max_turns)
+              do_run_codex_turns(session, workspace, current_issue, recipient, opts, issue_state_fetcher, 1, max_turns_per_attempt)
             end
 
           {:returned, result}
@@ -193,8 +193,8 @@ defmodule SymphonyElixir.AgentRunner do
   defp cleanup_cause({:error, :cleanup_unconfirmed}), do: :cleanup_unconfirmed
   defp cleanup_cause(_cleanup), do: :cleanup_failed
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns_per_attempt) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns_per_attempt)
 
     case CodingAgent.run_turn(
            app_session,
@@ -203,11 +203,11 @@ defmodule SymphonyElixir.AgentRunner do
            on_message: codex_message_handler(codex_update_recipient, issue)
          ) do
       {:ok, turn_session} ->
-        Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+        Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns_per_attempt}")
 
         case continue_with_issue?(issue, issue_state_fetcher) do
-          {:continue, refreshed_issue} when turn_number < max_turns ->
-            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+          {:continue, refreshed_issue} when turn_number < max_turns_per_attempt ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns_per_attempt}")
 
             do_run_codex_turns(
               app_session,
@@ -217,11 +217,11 @@ defmodule SymphonyElixir.AgentRunner do
               opts,
               issue_state_fetcher,
               turn_number + 1,
-              max_turns
+              max_turns_per_attempt
             )
 
           {:continue, refreshed_issue} ->
-            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+            Logger.info("Reached agent.max_turns_per_attempt for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
             :ok
 
@@ -234,7 +234,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, :agent_turn_limit} ->
         Logger.info(
-          "Native turn allowance reached for #{issue_context(issue)} session_id=#{CodingAgent.session_identity(app_session)} cause=agent_turn_limit turn=#{turn_number}/#{max_turns}; closing session for active-state continuation"
+          "Native turn allowance reached for #{issue_context(issue)} session_id=#{CodingAgent.session_identity(app_session)} cause=agent_turn_limit turn=#{turn_number}/#{max_turns_per_attempt}; closing session for active-state continuation"
         )
 
         :ok
@@ -244,14 +244,14 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns_per_attempt), do: PromptBuilder.build_prompt(issue, opts)
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns_per_attempt) do
     """
     Continuation guidance:
 
     - The previous coding-agent turn completed normally, but the tracker work item is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
+    - This is continuation turn ##{turn_number} of #{max_turns_per_attempt} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.

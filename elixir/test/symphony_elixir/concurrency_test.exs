@@ -96,15 +96,16 @@ defmodule SymphonyElixir.ConcurrencyTest do
   end
 
   for {name, limits} <- [
-        {"omitted", []},
-        {"explicit zero overrides legacy Codex limit", [live_max_turns: 0, codex_live_max_turns: 1]},
-        {"positive shared overrides legacy Codex limit", [live_max_turns: 3, codex_live_max_turns: 1]},
-        {"legacy Codex fallback", [codex_live_max_turns: 3]}
+        {"omitted", [max_turns_per_attempt: 3]},
+        {"explicit zero overrides legacy Codex limit", [max_turns: 3, live_max_turns: 0, codex_live_max_turns: 1]},
+        {"canonical attempt limit overrides legacy on continuation", [max_turns_per_attempt: 3, max_turns: 1]},
+        {"positive shared overrides legacy Codex limit", [max_turns_per_attempt: 3, live_max_turns: 3, codex_live_max_turns: 1]},
+        {"legacy Codex fallback", [max_turns_per_attempt: 3, codex_live_max_turns: 3]}
       ] do
-    test "live turn breaker with #{name}", ctx do
+    test "attempt budget and live turn breaker with #{name}", ctx do
       limits = unquote(limits)
       [issue | _] = ctx.issues
-      options = Keyword.merge(ctx.options, [max_turns: 3] ++ limits)
+      options = Keyword.merge(ctx.options, limits)
       write_workflow_file!(Workflow.workflow_file_path(), options)
       assert :ok = WorkflowStore.force_reload()
       set_issues([issue])
@@ -148,6 +149,13 @@ defmodule SymphonyElixir.ConcurrencyTest do
         refute Process.alive?(worker.pid)
         assert Port.info(worker.agent_session.native.port) == nil
         assert :sys.get_state(ctx.server).blocked == %{}
+
+        for {total_turns, attempt_turns} <- [{4, 1}, {5, 2}] do
+          release_input(ctx, issue, Enum.at(inputs(ctx, issue), total_turns - 1))
+          await(fn -> turn_count(ctx, issue) == total_turns + 1 and running_turn_count(ctx, issue) == attempt_turns + 1 end)
+          assert_retained_session(ctx, issue, renewed)
+        end
+
         stop_workers(ctx)
       end
     end
@@ -209,7 +217,7 @@ defmodule SymphonyElixir.ConcurrencyTest do
     [old_issue, future_issue | _] = ctx.issues
     old_template = "OLD {{ issue.identifier }}\n" <> String.duplicate("original café 世界\n", 100) <> "OLD-END"
     new_template = "NEW {{ issue.identifier }}\n" <> String.duplicate("complete café 世界\n", 4_000) <> "NEW-END"
-    options = Keyword.merge(ctx.options, max_concurrent_agents: 2, max_turns: 2, prompt: old_template)
+    options = Keyword.merge(ctx.options, max_concurrent_agents: 2, max_turns_per_attempt: 2, prompt: old_template)
     write_workflow_file!(Workflow.workflow_file_path(), options)
     old_settings = Config.settings!()
     old_hash = WorkflowStore.status().sha256

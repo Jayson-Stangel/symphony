@@ -47,7 +47,7 @@ agent:
   # automatic refresh/resume never accepts an unexpected profile change.
   max_concurrent_agents: 10
   # Completed turns per worker attempt, shared by Codex and Claude.
-  max_turns: 20
+  max_turns_per_attempt: 20
   # Optional live stop on distinct turn starts for either provider. Omit or set 0 to disable.
   # live_max_turns: 0
   # Opt in with destination names already listed in tracker.active_states.
@@ -500,8 +500,9 @@ omit to use the native runtime's default),
 `read_timeout_ms` (up to 60000), `turn_timeout_ms` (up to 3600000), and
 `stall_timeout_ms` are accepted. Authentication, commands and raw SDK settings
 are runtime-owned. Select using the isolated launcher's --agent claude; provider
-selection is fixed across workflow reloads. Shared `agent.max_turns` also bounds helper replay
-history per attempt. Native allowance exhaustion yields after session cleanup to
+selection is fixed across workflow reloads. Shared `agent.max_turns_per_attempt` also bounds
+helper replay history per attempt. The deprecated `agent.max_turns` applies only when the
+canonical key is absent. Native allowance exhaustion yields after session cleanup to
 ordinary tracker-revalidated continuation. An explicit `agent.live_max_turns`,
 including 0, takes precedence over the legacy Codex-only `codex.live_max_turns`. -->
 

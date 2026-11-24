@@ -1401,9 +1401,12 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "shared attempt override permits 129 inputs through the production helper Port", ctx do
-    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :max_turns, 129))
-    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", max_turns: 1)
+  test "shared attempt budget is captured by the production helper Port", ctx do
+    path = Workflow.workflow_file_path()
+    workflow = [workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory"]
+    write_workflow_file!(path, Keyword.merge(workflow, max_turns_per_attempt: 129, max_turns: 1))
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    write_workflow_file!(path, Keyword.put(workflow, :max_turns, 1))
 
     try do
       for _ <- 1..129, do: assert({:ok, _} = Adapter.run_turn(session, "ordinary continuation", ctx.issue, []))
@@ -1411,6 +1414,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
+    end
+
+    assert {:ok, replacement} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(replacement, "legacy allowance", ctx.issue, [])
+      assert {:error, :claude_attempt_turn_limit} = Adapter.run_turn(replacement, "attempt overrun", ctx.issue, [])
+    after
+      Adapter.stop_session(replacement)
     end
   end
 

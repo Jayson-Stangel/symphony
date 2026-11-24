@@ -175,7 +175,7 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:max_concurrent_agents, :integer, default: 10)
-      field(:max_turns, :integer, default: 20)
+      field(:max_turns_per_attempt, :integer, default: 20)
       # Omission allows the Codex fallback; an explicit zero disables it.
       field(:live_max_turns, :integer)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
@@ -185,12 +185,18 @@ defmodule SymphonyElixir.Config.Schema do
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
+      attrs =
+        case attrs do
+          %{"max_turns" => limit} -> Map.put_new(attrs, "max_turns_per_attempt", limit)
+          _ -> attrs
+        end
+
       schema
       |> cast(
         attrs,
         [
           :max_concurrent_agents,
-          :max_turns,
+          :max_turns_per_attempt,
           :live_max_turns,
           :max_retry_backoff_ms,
           :max_concurrent_agents_by_state,
@@ -199,7 +205,8 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
-      |> validate_number(:max_turns, greater_than: 0)
+      |> validate_required(:max_turns_per_attempt)
+      |> validate_number(:max_turns_per_attempt, greater_than: 0)
       |> validate_number(:live_max_turns, greater_than_or_equal_to: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
@@ -681,7 +688,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp drop_nil_values(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->
       case drop_nil_values(nested) do
-        nil when key != "fresh_session_on_enter" -> acc
+        nil when key not in ["fresh_session_on_enter", "max_turns_per_attempt"] -> acc
         normalized -> Map.put(acc, key, normalized)
       end
     end)
