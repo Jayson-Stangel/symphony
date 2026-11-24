@@ -66,6 +66,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       case shutdown_identity(port, worker_host) do
         {:ok, identity} ->
+          report_startup_target(port, worker_host, identity, opts)
+
           session = %{
             port: port,
             metadata: metadata,
@@ -87,11 +89,11 @@ defmodule SymphonyElixir.Codex.AppServer do
       end
     else
       false ->
-        CodingAgent.report_startup_closed(opts)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         {:error, :sandbox_inputs_changed}
 
       error ->
-        CodingAgent.report_startup_closed(opts)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         error
     end
   end
@@ -107,9 +109,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp report_startup_target(_port, host, {_pid, nil}, _opts) when is_binary(host), do: :ok
+
+  defp report_startup_target(port, host, identity, opts) do
+    target = %{port: port, worker_host: host, shutdown_identity: identity}
+    CodingAgent.report_startup_cleanup(opts, fn -> interrupt_and_confirm_exit(target) end)
+  end
+
   defp close_failed_startup(session, opts) do
-    if opts[:on_startup_closed] do
-      with :ok <- interrupt_and_confirm_exit(session), do: CodingAgent.report_startup_closed(opts)
+    if opts[:on_startup_cleanup] do
+      with :ok <- interrupt_and_confirm_exit(session), do: CodingAgent.report_startup_cleanup(opts, :closed)
     else
       stop_port(session.port)
     end

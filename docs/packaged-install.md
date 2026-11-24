@@ -245,6 +245,68 @@ isolated Apple Silicon macOS account with no prior Symphony setup and record:
 Retain the evidence against that artifact. This implementation does not change
 JAY-735's separate native acceptance or select a release candidate.
 
+## Register a new project from a remote workflow
+
+Commit a root `WORKFLOW.md` to the GitHub branch Symphony should watch. Set
+`tracker.kind` to `linear` and `tracker.provider.project_slug` to the Linear
+project's slug ID. Use the standard Linear endpoint and `LINEAR_API_KEY`
+binding. The workflow still controls worker checkout and delivery conventions.
+
+Run initialization from any directory and use the printed project ID in later
+commands. The registered repository may use an HTTPS or standard GitHub SSH
+URL. Symphony uses its project-scoped GitHub HTTPS credential from the runner
+image.
+
+```sh
+symphony init --repository https://github.com/OWNER/REPO.git \
+  --linear-project LINEAR-SLUG-ID --workflow-branch dev
+# Fill the printed private .env with LINEAR_API_KEY and GH_TOKEN.
+symphony --project PROJECT-ID auth codex login
+symphony --project PROJECT-ID runner doctor
+symphony --project PROJECT-ID run --port 4010
+symphony --project PROJECT-ID runner status
+```
+
+Omit `--workflow-branch` to resolve and record the remote default on the first
+run that verifies the source. Future runs continue to use the recorded branch.
+To switch, drain and stop that runner, repeat initialization with a new
+`--workflow-branch` or `--default-workflow-branch`, then run it again. Use
+`runner resume` when you are ready to clear the retained drain. If you
+have one registration, you can omit `--project` from outside a checkout. With
+several registrations, use the ID for auth, preflight, run, status, logs,
+drain, stop, resume and project-scoped update. The second project needs a
+different `--port` on its first run. Later plain runs reuse each runner's port
+and provider.
+
+The existing configuration root and runner namespace still apply. Registration
+metadata and private credentials are separate files under `projects/` and use
+the existing repository-derived ID. Workspaces and runtime state stay in
+project volumes. Codex login is shared within the installation namespace.
+Claude login stays project-scoped. For a retained checkout project, keep using
+the checkout during this integration. Its cutover needs to verify the existing
+workspace, state and Claude login volumes in place before registering the same
+repository identity. The new-project registration path refuses unlabeled
+checkout resources and volumes claimed by a different Linear project.
+
+A remote Codex workflow uses a direct `codex … app-server` command. A wrapper
+that needs a checkout at listener startup still uses the checkout path below.
+Put worker checkout and setup steps in the workflow's workspace hooks.
+
+The dashboard and `/api/v1/state` report the watched branch, accepted commit,
+workflow SHA-256 and last successful source check. Initial source and Linear
+project verification must pass before the manager starts the listener. During
+operation Symphony checks the watched branch about every 30 seconds. A
+temporary Git failure reports stale and keeps using the last accepted workflow.
+A confirmed missing branch or root workflow, or a rejected candidate, holds
+new claims and retains the accepted commit and bytes. A later valid commit
+clears the source hold independently of operator drain and native readiness.
+Workflow changes that alter Codex sandbox inputs may require a controlled
+restart to establish readiness again.
+
+A new session gets the currently accepted prompt. Existing sessions retain
+their start prompt. Tracker state and routing changes still apply at ordinary
+reconciliation and can end work that no longer qualifies.
+
 ## Connect and run a project
 
 Follow [project initialization](getting-started.md#initialize-a-repository) from

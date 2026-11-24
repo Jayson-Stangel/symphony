@@ -269,6 +269,7 @@ package_update() {
   [ "$previous" = "$(cd "$symphony_home" && pwd -P)" ] || die 'invoke the installed current manager before updating'
   if [ -n "$transition" ]; then
     root=$(repo_root); journal="$runner_home/$(project_id "$root").transition"
+    if registered_project "$root"; then export SYMPHONY_PROJECT=$(project_id "$root"); fi
     if [ "$pending" = "$journal.complete" ]; then
       [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'complete the retained packaged update before selecting another release'
       package_recover_completed_transition "$pending"

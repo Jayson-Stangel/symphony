@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.StatusDashboard
   alias SymphonyElixir.Tracker
   alias SymphonyElixir.Tracker.Issue
+  alias SymphonyElixir.WorkflowStore
   alias SymphonyElixir.Workspace
 
   @continuation_retry_delay_ms 1_000
@@ -228,10 +229,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:worker_startup_closed, issue_id, pid}, state) do
+  def handle_info({:worker_startup_cleanup, issue_id, pid, update}, state)
+      when update == :closed or is_function(update, 0) do
     case state.running[issue_id] do
-      %{pid: ^pid} = entry ->
-        entry = %{entry | session_starting: false}
+      %{pid: ^pid, session_starting: true} = entry when not is_map_key(entry, :agent_session) ->
+        entry =
+          if update == :closed,
+            do: entry |> Map.put(:session_starting, false) |> Map.delete(:startup_cleanup),
+            else: Map.put(entry, :startup_cleanup, update)
 
         state =
           if entry[:tracker_stop],
@@ -443,7 +448,9 @@ defmodule SymphonyElixir.Orchestrator do
     finish_agent_down(state, issue_id, Map.put(entry, :replacement_stop, entry.tracker_stop), reason)
   end
 
-  defp finish_pending_startup(state, issue_id, entry, _reason), do: retain_unconfirmed_tracker_stop(state, issue_id, entry)
+  defp finish_pending_startup(state, issue_id, entry, reason) do
+    retain_unconfirmed_tracker_stop(state, issue_id, Map.put(entry, :cleanup_action, {:down, reason}))
+  end
 
   defp remember_tracker_stop(state, issue_id, entry) do
     if table = state.tracker_stop_claims do
@@ -477,7 +484,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_unconfirmed_tracker_stops(state) do
     Enum.reduce(state.running, state, fn
       {issue_id, %{tracker_stop: _, ref: nil} = entry}, state
-      when is_map_key(entry, :agent_session) or :erlang.map_get(:session_starting, entry) == false ->
+      when is_map_key(entry, :agent_session) or is_map_key(entry, :startup_cleanup) or
+             :erlang.map_get(:session_starting, entry) == false ->
         begin_tracker_stop(state, issue_id, entry)
 
       _, state ->
@@ -789,9 +797,14 @@ defmodule SymphonyElixir.Orchestrator do
       retry_at: nil
     }
 
+    source_block = WorkflowStore.admission_block()
+
     cond do
       state.draining ->
         %{admission | reason: "draining"}
+
+      source_block ->
+        %{admission | reason: source_block}
 
       not Map.get(readiness, :ready, false) ->
         %{admission | reason: readiness[:code] || "native_not_ready"}
@@ -903,7 +916,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
-          {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
+          {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:held, String.t()} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
       when is_function(issue_fetcher, 1) do
     revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
@@ -1000,7 +1013,7 @@ defmodule SymphonyElixir.Orchestrator do
             remember_tracker_stop(state, issue.id, entry)
 
           entry[:session_starting] == true and not Map.has_key?(entry, :agent_session) ->
-            # Wait for initialization to publish the captured native handle.
+            # Startup owns cleanup until the worker exits or registers a ready session.
             remember_tracker_stop(state, issue.id, entry)
 
           true ->
@@ -1336,12 +1349,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp stop_running_task(issue_id, entry, task_supervisor, reason \\ :scheduler_stop) do
     pid = Map.get(entry, :pid)
     ref = Map.get(entry, :ref)
-    session = Map.get(entry, :agent_session)
 
     result =
       try do
-        case session do
-          %{adapter: _, native: _} -> CodingAgent.interrupt(session, reason)
+        case entry do
+          %{agent_session: %{adapter: _, native: _} = session} -> CodingAgent.interrupt(session, reason)
+          %{tracker_stop: _, startup_cleanup: cleanup} -> cleanup.()
           _ -> :ok
         end
       catch
@@ -1530,14 +1543,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case refresh_issue_for_dispatch(issue) do
-      {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
-
-      {:skip, _reason} ->
-        state
-
-      {:error, _reason} ->
-        state
+      {:ok, %Issue{} = refreshed_issue} -> do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+      _ -> state
     end
   end
 
@@ -1545,6 +1552,9 @@ defmodule SymphonyElixir.Orchestrator do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         {:ok, refreshed_issue}
+
+      {:held, _reason} = held ->
+        held
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -1640,7 +1650,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
+  defp revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states) do
+    with {:ok, refreshed_issue} <- fetch_dispatch_issue(issue, issue_fetcher, terminal_states) do
+      case WorkflowStore.admission_block() do
+        nil -> {:ok, refreshed_issue}
+        reason -> {:held, reason}
+      end
+    end
+  end
+
+  defp fetch_dispatch_issue(%Issue{id: issue_id}, issue_fetcher, terminal_states)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
     case issue_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
@@ -1658,7 +1677,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
+  defp fetch_dispatch_issue(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
     %{
@@ -1907,6 +1926,9 @@ defmodule SymphonyElixir.Orchestrator do
       case refresh_issue_for_dispatch(issue) do
         {:ok, %Issue{} = refreshed_issue} ->
           {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
+
+        {:held, reason} ->
+          {:noreply, schedule_issue_retry(state, issue.id, attempt, Map.put(metadata, :error, reason))}
 
         {:skip, :missing} ->
           {:noreply, release_issue_claim(state, issue.id)}
@@ -2389,7 +2411,8 @@ defmodule SymphonyElixir.Orchestrator do
     model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
     notify_dashboard()
 
-    %{state | agent_model: model, running: Map.put(state.running, issue_id, Map.put(entry, :agent_session, session))}
+    entry = entry |> Map.delete(:startup_cleanup) |> Map.put(:agent_session, session)
+    %{state | agent_model: model, running: Map.put(state.running, issue_id, entry)}
   end
 
   defp update_running_entry(state, issue_id, update), do: update_in(state.running[issue_id], update)

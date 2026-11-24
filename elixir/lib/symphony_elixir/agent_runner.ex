@@ -105,7 +105,7 @@ defmodule SymphonyElixir.AgentRunner do
       max_turns: max_turns,
       worker_host: worker_host,
       expected_profile: opts[:expected_profile],
-      on_startup_closed: startup_closed_callback(orchestrator, issue.id)
+      on_startup_cleanup: startup_cleanup_callback(orchestrator, issue.id)
     ]
 
     session_opts =
@@ -148,8 +148,11 @@ defmodule SymphonyElixir.AgentRunner do
     fn [issue_id] -> GenServer.call(orchestrator, {:worker_refresh_issue, issue_id}, :infinity) end
   end
 
-  defp startup_closed_callback(nil, _issue_id), do: nil
-  defp startup_closed_callback(orchestrator, issue_id), do: fn -> send(orchestrator, {:worker_startup_closed, issue_id, self()}) end
+  defp startup_cleanup_callback(nil, _issue_id), do: nil
+
+  defp startup_cleanup_callback(orchestrator, issue_id) do
+    fn update -> send(orchestrator, {:worker_startup_cleanup, issue_id, self(), update}) end
+  end
 
   defp authorize_session_start(nil, _issue), do: :ok
   defp authorize_session_start(orchestrator, issue), do: GenServer.call(orchestrator, {:worker_starting_session, issue.id}, :infinity)

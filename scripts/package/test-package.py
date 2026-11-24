@@ -719,6 +719,47 @@ PY
         operations = (self.root / "docker.calls").read_text().splitlines()
         self.assertTrue(all(line.startswith("inspect ") or line.startswith("image inspect ") for line in operations))
 
+    def test_installed_remote_registration_targets_projects_without_host_git(self):
+        bundle = self.bundle()
+        env = self.environment()
+        self.assertOK(call([bundle / "install.sh"], env=env))
+        command = Path(env["SYMPHONY_BIN_DIR"]) / "symphony"
+        projects = Path(env["SYMPHONY_CONFIG_HOME"]) / "projects"
+        first = [command, "init", "--repository", "git@github.com:example/alpha.git",
+                 "--linear-project", "alpha-linear", "--workflow-branch", "release/watch"]
+        self.assertIn("Workflow branch: release/watch", self.assertOK(call(first, cwd=self.root, env=env)))
+        alpha = next(projects.glob("alpha-*.remote"))
+        self.assertEqual(alpha.read_text(), "alpha-linear\nhttps://github.com/example/alpha.git\nrelease/watch\n")
+        self.assertEqual(stat.S_IMODE(alpha.stat().st_mode), 0o600)
+        credentials = alpha.with_suffix(".env")
+        self.assertEqual(stat.S_IMODE(credentials.stat().st_mode), 0o600)
+        self.assertIn("not running", self.assertOK(call([command, "runner", "status"], cwd=self.root, env=env)))
+
+        credentials.write_text("GH_TOKEN=fixture-canary\n")
+        self.assertOK(call(first[:-2], cwd=self.root, env=env))
+        self.assertTrue(alpha.read_text().endswith("release/watch\n"))
+        self.assertEqual(credentials.read_text(), "GH_TOKEN=fixture-canary\n")
+        second = [command, "init", "--repository", "https://github.com/example/beta",
+                  "--linear-project", "beta-linear"]
+        self.assertOK(call(second, cwd=self.root, env=env))
+        self.assertTrue(next(projects.glob("beta-*.remote")).read_text().endswith("\n\n"))
+        ambiguous = call([command, "runner", "status"], cwd=self.root, env=env)
+        self.assertNotEqual(ambiguous.returncode, 0)
+        self.assertIn("multiple registered projects", ambiguous.stderr)
+        for action in ("login", "check"):
+            ambiguous_auth = call([command, "auth", "codex", action], cwd=self.root, env=env)
+            self.assertNotEqual(ambiguous_auth.returncode, 0)
+            self.assertIn("multiple registered projects", ambiguous_auth.stderr)
+        self.assertNotIn("volume create", Path(env["TEST_DOCKER_CALLS"]).read_text())
+        self.assertIn("not running", self.assertOK(call(
+            [command, "--project", alpha.stem, "runner", "status"], cwd=self.root, env=env)))
+
+        conflict = call([*first[:-4], "--linear-project", "wrong-linear"], cwd=self.root, env=env)
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertIn("already belongs to Linear project alpha-linear", conflict.stderr)
+        self.assertNotIn("fixture-canary", alpha.read_text())
+        self.assertNotIn("unexpected host dependency", ambiguous.stderr)
+
     def test_install_twice_source_free_init_doctor_and_failed_pull(self):
         bundle = self.bundle(); env = self.environment()
         self.assertOK(call([bundle / "install.sh"], env=env))
