@@ -57,6 +57,7 @@ export class Helper {
     this.active = { id: command.request_id, uuid: randomUUID(), cause: null, cancelled: false, messages: new Set(), progressEvents: new Set() };
     this.pendingInput.push({ type: 'user', session_id: '', uuid: this.active.uuid, parent_tool_use_id: null,
       message: { role: 'user', content: command.prompt } });
+    this.emit('turn_accepted', command.request_id);
     this.wake?.();
     this.turnDeadline = setTimeout(() => {
       if (this.active) this.finish({ outcome: 'protocol_error', code: 'turn_timeout' });

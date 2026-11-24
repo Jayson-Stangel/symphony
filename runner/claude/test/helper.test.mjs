@@ -53,6 +53,7 @@ test('a future native model ID reaches the SDK unchanged', async t => {
   const ctx = await fixture(t, 'future-native-model-99');
   assert.equal(ctx.query.params.options.model, 'future-native-model-99');
   const input = await turn(ctx);
+  assert.deepEqual(ctx.messages.at(-1), { v: 1, type: 'turn_accepted', session_id: 'session', request_id: 'turn-one' });
   result(ctx.query, input);
   await tick();
   assert.equal(ctx.messages.find(value => value.type === 'turn_result').outcome, 'completed');
@@ -303,6 +304,8 @@ test('shared attempt allowance permits 129 inputs while bounding replay history'
   assert.equal(ctx.messages.filter(value => value.type === 'turn_result').length, 129);
   await assert.rejects(() => turn(ctx, 'turn-130'), { message: 'agent_max_turns' });
   await assert.rejects(() => turn(ctx, 'turn-1'), { message: 'invalid_turn_state' });
+  const admitted = ctx.messages.filter(value => value.type === 'turn_accepted').map(value => value.request_id);
+  assert.deepEqual(admitted, Array.from({ length: 129 }, (_, index) => `turn-${index + 1}`));
   assert.equal(ctx.helper.usedRequests.size, 129);
   assert.equal(ctx.helper.terminals.size, 129);
 });

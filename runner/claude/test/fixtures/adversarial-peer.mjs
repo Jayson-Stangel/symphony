@@ -27,10 +27,19 @@ for await (const line of createInterface({ input: process.stdin })) {
     active = base; activePrompt = c.prompt;
     const type = c.prompt;
     if (type === 'exit') process.exit(1);
-    if (type === 'diagnostic-unknown' || type === 'diagnostic-map') { send({ ...base, type: 'turn_result', outcome: 'protocol_error', code: type === 'diagnostic-map' ? { secret: 'secret-canary' } : 'secret-canary' }); continue; }
     if (type === 'oversized') { process.stdout.write('x'.repeat(1_100_000) + '\n'); continue; }
     if (type === 'array') { send([]); continue; }
     if (type === 'wrong-session') { send({ ...base, session_id: 'wrong', type: 'progress', activity: 'agent' }); continue; }
+    if (type === 'foreign-turn-ack') { send({ ...base, session_id: 'wrong', type: 'turn_accepted' }); continue; }
+    if (type === 'stale-turn-ack') { send({ ...base, request_id: 'stale', type: 'turn_accepted' }); continue; }
+    if (type === 'missing-turn-ack') { send({ ...base, type: 'turn_result', outcome: 'completed' }); continue; }
+    send({ ...base, type: 'turn_accepted' });
+    if (type === 'duplicate-turn-ack') {
+      send({ ...base, type: 'turn_accepted' });
+      send({ ...base, type: 'turn_result', outcome: 'completed' });
+      continue;
+    }
+    if (type === 'diagnostic-unknown' || type === 'diagnostic-map') { send({ ...base, type: 'turn_result', outcome: 'protocol_error', code: type === 'diagnostic-map' ? { secret: 'secret-canary' } : 'secret-canary' }); continue; }
     if (type === 'usage-invalid') { send({ ...base, type: 'usage', totals: { input_tokens: -1 } }); continue; }
     if (type === 'usage-array') { send({ ...base, type: 'usage', totals: [] }); continue; }
     if (type === 'unexpected') { send({ ...base, type: 'unknown' }); continue; }

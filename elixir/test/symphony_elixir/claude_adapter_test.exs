@@ -1401,6 +1401,52 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "a turn rejected by the helper does not emit a start", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    owner = self()
+    on_message = &send(owner, {:turn_update, &1})
+
+    try do
+      assert {:error, {:agent_blocked, "protocol_error"}} =
+               Adapter.run_turn(session, String.duplicate("x", 524_289), ctx.issue, on_message: on_message)
+
+      refute_received {:turn_update, %{event: :session_started}}
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "a turn start requires an acknowledgement for its session and request and emits once", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+    opts = Keyword.put(ctx.opts, :helper_path, helper)
+    owner = self()
+    on_message = &send(owner, {:turn_update, &1})
+
+    for prompt <- ["foreign-turn-ack", "stale-turn-ack", "missing-turn-ack"] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
+
+      try do
+        assert {:error, {:agent_blocked, "protocol_error"}} =
+                 Adapter.run_turn(session, prompt, ctx.issue, on_message: on_message)
+
+        refute_received {:turn_update, %{event: :session_started}}
+      after
+        Adapter.stop_session(session)
+      end
+    end
+
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
+
+    try do
+      assert {:ok, %{session_id: id}} = Adapter.run_turn(session, "duplicate-turn-ack", ctx.issue, on_message: on_message)
+      assert_received {:turn_update, %{event: :session_started, provider: :claude, session_id: ^id}}
+      refute_received {:turn_update, %{event: :session_started}}
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
   test "shared attempt override permits 129 inputs through the production helper Port", ctx do
     assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :max_turns, 129))
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", max_turns: 1)
