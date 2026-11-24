@@ -22,7 +22,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (mode === 'error-start') { send({ v: 1, type: 'error', code: 'unsupported_tool_schema' }); continue; }
     if (mode === 'auth-start') { send({ ready: false, code: 'auth_required' }); continue; }
     send({ ...base, type: 'ready', identity: { profile: mode === 'bad-profile' ? 12 : 'a'.repeat(64) },
-      owned_native: mode === 'bad-owned' ? 'invalid' : mode === 'bad-pid' ? [{ pid: 1, start: '0' }] : mode === 'valid-owned' ? [{ pid: 999999, start: '0' }] : [] });
+      owned_native: mode === 'bad-owned' ? 'invalid' : mode === 'bad-pid' ? [{ pid: 1, start: '0' }] : ['valid-owned', 'valid-owned-lost-stop'].includes(mode) ? [{ pid: 999999, start: '0' }] : [] });
   } else if (c.type === 'turn') {
     active = base; activePrompt = c.prompt;
     const type = c.prompt;
@@ -55,7 +55,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     send({ ...active, type: 'turn_result', outcome: 'completed' }); // Deliberately missing tool ACK.
   } else if (c.type === 'stop') {
     if (mode === 'silent-stop') continue;
-    if (mode === 'exit-on-stop') process.exit(1);
+    if (['exit-on-stop', 'valid-owned-lost-stop'].includes(mode)) process.exit(1);
     if (mode === 'invalid-stop') { process.stdout.write('bad-json\n'); continue; }
     send({ ...base, type: 'progress', activity: 'agent' });
     send({ ...base, type: 'stopped', ...(mode === 'wrong-stop' ? { request_id: 'foreign' } : {}), ...(mode === 'wrong-session-stop' ? { session_id: 'foreign' } : {}) });

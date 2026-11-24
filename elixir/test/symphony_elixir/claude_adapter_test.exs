@@ -492,6 +492,36 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert :ready = AgentPause.current()
   end
 
+  test "a rejected Claude profile retains validated startup ownership when stop is unconfirmed", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "valid-owned-lost-stop")
+    cleanup = Path.join(ctx.root, "capture-cleanup.mjs")
+    receipt = Path.join(ctx.root, "cleanup-receipt")
+
+    File.write!(cleanup, """
+    import { writeFileSync } from 'node:fs';
+    writeFileSync(#{Jason.encode!(receipt)}, process.argv[2]);
+    """)
+
+    owner = self()
+
+    opts =
+      Keyword.merge(ctx.opts,
+        helper_path: helper,
+        cleanup_path: cleanup,
+        expected_profile: String.duplicate("b", 64),
+        on_startup_cleanup: &send(owner, {:startup_cleanup, &1})
+      )
+
+    assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.start_session(ctx.workspace, opts)
+    assert_received {:startup_cleanup, retry} when is_function(retry, 0)
+    refute_received {:startup_cleanup, :closed}
+    refute File.exists?(receipt)
+
+    assert :ok = retry.()
+    assert %{"native" => [%{"pid" => 999_999, "start" => "0"}]} = receipt |> File.read!() |> Jason.decode!()
+  end
+
   test "a transient error after quota recovery remains eligible for scheduler backoff", ctx do
     helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
     File.write!(Path.join(ctx.workspace, "peer-mode"), "events")

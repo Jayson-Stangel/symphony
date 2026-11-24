@@ -47,6 +47,8 @@ agent:
   # automatic refresh/resume never accepts an unexpected profile change.
   max_concurrent_agents: 10
   max_turns: 20
+  # Opt in with destination names already listed in tracker.active_states.
+  # fresh_session_on_enter: ["Agent Review"]
 codex:
   command: codex --config shell_environment_policy.inherit=all app-server
   model: gpt-5.5

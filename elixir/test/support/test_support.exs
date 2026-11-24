@@ -232,6 +232,10 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        if(Keyword.has_key?(overrides, :fresh_session_on_enter),
+          do: "  fresh_session_on_enter: #{yaml_value(Keyword.fetch!(config, :fresh_session_on_enter))}",
+          else: ""
+        ),
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  model: #{yaml_value(Keyword.get(config, :codex_model))}",
