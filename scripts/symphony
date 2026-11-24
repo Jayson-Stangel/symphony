@@ -157,8 +157,11 @@ repo_root() {
     printf '%s\n' "$record"
     return
   elif [ -n "${record:-}" ]; then
-    [ "$mode" != optional ] || return 0
-    project_migration_required
+    local legacy="$runner_home/$(basename "$record" .remote).env"
+    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+      [ "$mode" != optional ] || return 0
+      project_migration_required
+    fi
   fi
   selected=
   for record in "$config_home"/projects/*.remote; do
@@ -2486,21 +2489,33 @@ runner_transition() (
     if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
     candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
     if [ -n "${migration_commit:-}" ] && [ -f "$journal/migration.resume" ] &&
-       [ "$(cat "$journal/migration.resume")" = resumed ] &&
-       ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
-      # The verified cutover was already committed. Finish metadata recovery
-      # without making a newly unavailable/changed branch an updater blocker.
-      migration_completed=true
-    elif [ "$agent" = codex ]; then
-      codex_config_journal_load "$root" "$candidate" "$journal"
-      runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
-    elif registered_project "$root"; then
-      local remote_resolved_branch
-      project_credentials_require "$root" || return
-      project_credentials_export
-      runner_remote_probe "$root" "$runtime" "$candidate" claude || return
-    else
-      runner_claude_workflow_ready "$root" "$runtime" "$candidate" || return
+       [ "$(cat "$journal/migration.resume")" = resumed ]; then
+      if ! "$packaged_install"; then
+        migration_completed=true
+      elif [ -f "$journal/package.committed" ]; then
+        local committed
+        committed=$(package_verified_home "$(cat "$journal/package.committed")") || return
+        [ "$committed" = "$(cat "$journal/package.target")" ] &&
+          [ "$committed" = "$(package_current_home)" ] &&
+          [ "$(cat "$journal/package.revision")" = "$(source_revision)" ] ||
+          die 'committed migration manager differs; recovery refused'
+        migration_completed=true
+      fi
+    fi
+    # After verified resume and package activation, the journal only needs
+    # settlement. A changed or unavailable workflow is handled by the listener.
+    if ! "$migration_completed"; then
+      if [ "$agent" = codex ]; then
+        codex_config_journal_load "$root" "$candidate" "$journal"
+        runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
+      elif registered_project "$root"; then
+        local remote_resolved_branch
+        project_credentials_require "$root" || return
+        project_credentials_export
+        runner_remote_probe "$root" "$runtime" "$candidate" claude || return
+      else
+        runner_claude_workflow_ready "$root" "$runtime" "$candidate" || return
+      fi
     fi
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
@@ -2565,6 +2580,7 @@ runner_transition() (
       printf 'Previously completed runner transition recovered.\n'
       return
     fi
+    ! "$migration_completed" || die 'committed migration candidate differs; recovery refused'
     if [ -n "${migration_commit:-}" ]; then
       runner_migration_prior "$prior" "$runtime" "$name" false
       runner_pause "$prior"
@@ -2582,6 +2598,7 @@ runner_transition() (
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
   fi
   if [ "$(runner_status "$root")" = missing ]; then
+    ! "$migration_completed" || die 'committed migration candidate is missing; recovery refused'
     # Keep a newly created candidate idle until readiness has been verified.
     if [ -z "${migration_commit:-}" ]; then runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true; fi
     runner_start "$root" "$port" "$agent" update
@@ -2598,7 +2615,7 @@ runner_transition() (
     if [ "$agent" = claude ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Claude runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
     fi
-    if [ "$(runner_status "$root")" = false ]; then
+    if ! "$migration_completed" && [ "$(runner_status "$root")" = false ]; then
       # The retained container already has the chosen immutable image, mounts and
       # persistent drain markers. Restart it without recreating or rewriting them.
       local previous_image
@@ -2609,7 +2626,8 @@ runner_transition() (
       "$runtime" start "$name" >/dev/null
     fi
   fi
-  runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  "$migration_completed" || runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" ||
+    die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
   # Validate selection staging before package activation or backup deletion.

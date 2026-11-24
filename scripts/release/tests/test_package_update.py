@@ -207,12 +207,14 @@ class PackageUpdateTest(unittest.TestCase):
         (self.app / "current").symlink_to(self.initial)
         self.command = self.app / "current/scripts/symphony"
 
-    def bundle(self, version, revision, channel="candidate"):
+    def bundle(self, version, revision, channel="candidate", registered=False):
         directory = self.root / f"{version}-{revision}"
         (directory / "scripts").mkdir(parents=True)
         (directory / "libexec").mkdir()
         (directory / "scripts/symphony").write_text(LAUNCHER)
         (directory / "scripts/symphony").chmod(0o755)
+        if registered:
+            shutil.copyfile(REPOSITORY / "scripts/symphony-package.sh", directory / "scripts/symphony-package.sh")
         shutil.copyfile(UPDATER, directory / "scripts/symphony-package-update.sh")
         (directory / "libexec/symphony-host").write_text(HELPER.replace("__FIXTURE_BUILD_REVISION__", revision))
         (directory / "libexec/symphony-host").chmod(0o755)
@@ -295,6 +297,35 @@ class PackageUpdateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.current(), self.initial)
         self.assertEqual((self.config / "runners/project-one.image").read_text().strip(), "a" * 40)
+
+    def test_registered_projects_require_compatible_manager_before_release_rollback(self):
+        self.assertEqual(self.candidate().returncode, 0)
+        current = self.current()
+        compatible = self.bundle("0.0.3", "c" * 40, registered=True)[2]
+        retained = self.app / "releases" / compatible.name
+        shutil.copytree(compatible, retained)
+        projects = self.config / "projects"
+        projects.mkdir()
+        registration = projects / "project-one-a655f1ffd4d3.remote"
+        registration.write_text("fixture\nhttps://github.com/one/project-one.git\nmain\nadopted\n")
+        previous = self.app / "previous"
+
+        for transition in ([], ["--agent", "codex"]):
+            with self.subTest(transition=transition):
+                result = self.run_update("--rollback-release", *transition)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("selected release cannot manage registered projects", result.stdout)
+                self.assertEqual(self.current(), current)
+                self.assertEqual(previous.resolve(), self.initial)
+                self.assertFalse((self.app / "pending-transition").exists())
+                self.assertFalse((self.config / "runners/project-one.image").exists())
+                self.assertTrue(registration.is_file())
+
+        previous.unlink()
+        previous.symlink_to(retained)
+        result = self.run_update("--rollback-release")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current(), retained)
 
     def test_failed_verification_keeps_current_and_existing_project_canaries(self):
         evidence = self.projects[1] / "untracked-evidence"

@@ -938,6 +938,15 @@ exec /usr/bin/curl "$@"
             moved = repo.with_name("former-checkout")
             repo.rename(moved)
             try:
+                activation_links = {path: os.readlink(root / "app" / path) for path in ("current", "previous")}
+                engine_calls = (root / "docker-calls.log").read_bytes()
+                for rollback in ([str(command), "update", "--rollback-release"],
+                                 [*project, "update", "--rollback-release", "--agent", primary_agent]):
+                    refused = client_run(rollback, expected=1)
+                    assert "selected release cannot manage registered projects" in refused.stdout
+                    assert {path: os.readlink(root / "app" / path) for path in activation_links} == activation_links
+                    assert (root / "docker-calls.log").read_bytes() == engine_calls
+                record("both completed release rollback paths refuse a checkout-only prior manager with the old checkout unavailable")
                 client_run([*project, "runner", "drain"])
                 assert state(port)["agent"]["draining"] is True
                 client_run([*project, "runner", "stop"])

@@ -616,7 +616,10 @@ For a Claude project, substitute `--agent claude` for `--agent codex` in the
 update/retry/rollback examples. Use the same provider as the retained project when
 restoring a completed release. `--rollback-release` without `--agent` restores only the shared manager;
 project image pins remain unchanged. A previous release directory is retained
-and verified before recovery. An unfinished transition must first be retried or
+and verified before recovery. Once the selected configuration has a registered
+project, both forms of release rollback require a manager that supports remote
+project registration. This preserves checkout-free controls after migration.
+An unfinished transition must first be retried or
 rolled back before selecting another release. Recovery refuses unknown owners,
 altered release bytes, incompatible images and unrelated current-manager links.
 Do not manually repoint `current`, remove transition metadata, or manipulate

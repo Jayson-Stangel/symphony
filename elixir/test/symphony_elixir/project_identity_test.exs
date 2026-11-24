@@ -136,6 +136,28 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     refute File.exists?(Path.join(ctx.runtime, "calls.jsonl"))
   end
 
+  test "the sole registration resolves even from an unrelated Git checkout", ctx do
+    [registered, unrelated] = ctx.repos
+    id = identity(ctx, registered)
+    assert {_, 0} = launch(ctx, ctx.root, ["init", "--repository", "https://github.com/one/service.git", "--linear-project", "fixture", "--workflow-branch", "main"])
+
+    credentials = Path.join(ctx.root, "config/projects/#{id}.env")
+    File.write!(credentials, "GH_TOKEN=fixture\nLINEAR_API_KEY=fixture\n")
+    assert {_, 0} = launch(ctx, ctx.root, ["run", "--agent", "claude"])
+
+    for directory <- [ctx.root, unrelated] do
+      assert {status, 0} = launch(ctx, directory, ["runner", "status"])
+      assert status =~ "Isolated Symphony: running"
+    end
+
+    legacy = Path.join(ctx.root, "config/runners/#{identity(ctx, unrelated)}.env")
+    File.write!(legacy, "SYMPHONY_RUNNER_AGENT=claude\n")
+    assert {message, 1} = launch(ctx, unrelated, ["runner", "status"])
+    assert message =~ "project migrate"
+    assert {status, 0} = launch(ctx, unrelated, ["--project", id, "runner", "status"])
+    assert status =~ "Isolated Symphony: running"
+  end
+
   test "unlabeled retained volumes cannot be claimed by a fresh registration", ctx do
     repo = hd(ctx.repos)
     id = identity(ctx, repo)
@@ -147,7 +169,14 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     refute File.exists?(Path.join(ctx.root, "config/projects/#{id}.remote"))
   end
 
-  test "pending Claude checkout migration retries via the remote preflight", ctx do
+  for removal_failure <- ["fail-before-backup-removal-once", "fail-backup-removal-once"] do
+    @removal_failure removal_failure
+    test "pending Claude migration recovers with unavailable workflow after #{@removal_failure}", ctx do
+      assert_migration_recovers(ctx, @removal_failure)
+    end
+  end
+
+  defp assert_migration_recovers(ctx, removal_failure) do
     repo = hd(ctx.repos)
     id = identity(ctx, repo)
     name = "#{ctx.prefix}-#{id}"
@@ -171,19 +200,22 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     log = Path.join(ctx.runtime, "calls.jsonl")
     File.write!(log, "")
 
-    File.write!(Path.join(ctx.runtime, "fail-backup-removal-once"), "")
+    File.write!(Path.join(ctx.runtime, removal_failure), "")
     assert {message, 97} = launch(ctx, repo, command)
     assert message =~ @commit
     assert %{"running" => true, "linear-project" => "fixture", "workflow-branch" => "main"} = container(ctx, name)
     calls = File.read!(log)
     assert calls =~ "--remote-workflow-probe"
     refute calls =~ "target=/etc/symphony"
-    refute File.exists?(Path.join(ctx.runtime, name <> "-before-update.json"))
+    backup = Path.join(ctx.runtime, name <> "-before-update.json")
+    assert File.exists?(backup) == (removal_failure == "fail-before-backup-removal-once")
 
     # A completed cutover can settle even if the watched branch is unavailable.
+    File.write!(log, "")
     File.write!(Path.join(ctx.runtime, "remote-probe-fail"), "")
-    assert {message, 0} = launch(ctx, repo, command)
-    assert message =~ "Previously completed runner transition recovered"
+    assert {_, 0} = launch(ctx, repo, command)
+    refute File.read!(log) =~ "--remote-workflow-probe"
+    refute File.exists?(backup)
     refute File.exists?(Path.join(ctx.root, "config/runners/#{id}.transition"))
   end
 

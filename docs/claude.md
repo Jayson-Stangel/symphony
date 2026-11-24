@@ -18,19 +18,19 @@ resources as well as the checkout, configuration and dashboard port.
 Install a completed [macOS release bundle](packaged-install.md) or use your
 approved source installation, updated through the installed `symphony update`
 command. No host Claude CLI is needed for either container flow.
-From the target repository, [initialize its workflow](getting-started.md#initialize-a-repository)
+From any directory, [register the repository and workflow](getting-started.md#initialize-a-repository)
 and [configure repository-scoped credentials](getting-started.md#configure-credentials).
 Choose one disposable issue and restrict its labels and concurrency before starting
 the listener, as described in the [first-run guide](getting-started.md#initialize-a-repository):
 
 ```sh
 symphony init --repository https://github.com/OWNER/REPO.git --linear-project YOUR_LINEAR_PROJECT_SLUG --agent claude
-# Fill the printed credentials file before continuing.
-symphony auth claude login
+# Fill the printed credentials file and set PROJECT_ID to the printed project ID.
+symphony --project "$PROJECT_ID" auth claude login
 # Complete native sign-in in the terminal; never paste its codes into a workpad.
-symphony auth claude check
-symphony runner doctor --agent claude
-symphony run --agent claude
+symphony --project "$PROJECT_ID" auth claude check
+symphony --project "$PROJECT_ID" runner doctor --agent claude
+symphony --project "$PROJECT_ID" run --agent claude
 ```
 
 For an existing Codex runner, first follow the
@@ -49,9 +49,11 @@ credentials file. The listener keeps tracker credentials; its explicitly selecte
 Git credential and named project-tool variables can reach the coding process. Credentials are never
 copied from the host Claude or Codex home. Native login lives in a project-scoped
 Docker volume; workspace and state/log volumes are separate and retained.
-Use `symphony run --agent claude --port PORT` to restart the same project and port;
-clear a deliberate drain with `symphony runner resume` when ready. For packaged
-updates use `symphony update --agent claude`; see
+Keep the project ID in your commands to select the right runner on a multi-project
+host. Use `symphony --project "$PROJECT_ID" run --agent claude --port PORT` to
+restart the same project and port. Clear a deliberate drain with
+`symphony --project "$PROJECT_ID" runner resume` when ready. For packaged updates
+use `symphony --project "$PROJECT_ID" update --agent claude`. See
 [update and rollback](packaged-install.md#updating-a-packaged-installation).
 
 The Claude image uses UID/GID 11001, a read-only root filesystem, no Linux
@@ -303,9 +305,9 @@ An intentional scheduler stop when an issue leaves active states is cancellation
 not a helper protocol failure. Healthy explicit operator recheck clears recovered auth/policy pauses before dispatch. Recoverable turn failures then use normal scheduler retries, with no consumed-recheck latch.
 
 ```sh
-symphony runner drain
-symphony runner recheck  # requires zero active workers and healthy native/runtime checks
-symphony runner resume
+symphony --project "$PROJECT_ID" runner drain
+symphony --project "$PROJECT_ID" runner recheck  # requires zero active workers and healthy native checks
+symphony --project "$PROJECT_ID" runner resume
 ```
 
 These operations do not perform model probes. They restore normal configured admission after their existing native/profile checks; drain remains explicit. State snapshots (`agent.admission`) and successful resume/recheck
@@ -340,10 +342,10 @@ healthy explicit recheck; an old marker cannot turn that into a replacement gate
 For native reauthentication with the same account:
 
 ```sh
-symphony update --pause-runner
-symphony auth claude login
-symphony update --agent claude
-symphony runner recheck
+symphony --project "$PROJECT_ID" update --pause-runner
+symphony --project "$PROJECT_ID" auth claude login
+symphony --project "$PROJECT_ID" update --agent claude
+symphony --project "$PROJECT_ID" runner recheck
 ```
 
 Native login and logout/removal hold the existing project transition lock through
@@ -357,18 +359,20 @@ source for a later updater transition. A normal run can restart the same profile
 
 ## Provider and image transitions
 
-After reviewed promotion and explicit approval for the exact stable rollout, use
-the installed updater from the target repository. First follow the
+After reviewed promotion and explicit approval for the exact stable rollout, select
+the registered project by ID from any directory. First follow the
 [idle update procedure](operations.md#idle-update-procedure): pause admission,
 finish active work and normally stop all runners in the affected installation.
 Keep the existing provider and selected environment for an ordinary update;
 provider or image changes require their own approved scope.
 
 ```sh
-symphony update --agent claude
-# or: symphony update --agent codex
+symphony --project "$PROJECT_ID" update --agent claude
+# or: symphony --project "$PROJECT_ID" update --agent codex
 # If a candidate cannot become ready:
-symphony update --rollback-runner
+symphony --project "$PROJECT_ID" update --rollback-runner
+# To restore a compatible previous release after a completed update:
+symphony --project "$PROJECT_ID" update --rollback-release --agent claude
 ```
 
 The updater preflights the candidate, retains the stopped prior container, and
@@ -390,11 +394,10 @@ workspace/state/login mounts, the read-only workflow mount, the original entrypo
 and the loopback port recorded in its metadata. For this older format, hold new
 work outside the listener and let active work finish before normally stopping it;
 its missing drain API cannot pause admission. Stop the other installation runners
-as described above before invoking any updater command. If the installed version
-predates provider support, use `symphony update` without flags to install the new
-command, then invoke
-`symphony update --agent codex` or `symphony update --agent claude` to replace the
-stopped listener. Rollback understands its previous state API. Unknown legacy
+as described above before invoking any updater command. For a retained
+checkout-based project, update the manager and
+[migrate the checkout project](packaged-install.md#migrate-a-checkout-based-project)
+before changing providers. Rollback understands the previous state API. Unknown legacy
 formats or mismatched ownership are refused. Do not repair
 or restart a stable installation manually when the updater refuses; report the
 limitation. Rollback can stop a verified candidate whose control API never became
@@ -500,5 +503,6 @@ the CPU budget. Higher concurrent workloads require their own capacity proof.
 
 The launcher records this resource profile separately from the native account
 profile. An existing listener with an old or unknown resource profile requires
-`symphony update --agent claude`; ordinary start does not silently reuse it. The
-updater retains its normal drain, retry and rollback behavior.
+`symphony --project "$PROJECT_ID" update --agent claude`; ordinary start does not
+silently reuse it. The updater retains its normal drain, retry and rollback
+behavior.

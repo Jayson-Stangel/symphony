@@ -147,6 +147,10 @@ elif cmd == 'exec':
 elif cmd in ['stop', 'start']:
     data = read(args[-1]); data['running'] = cmd == 'start'; save(args[-1], data)
 elif cmd == 'rm':
+    before = root / 'fail-before-backup-removal-once'
+    if args[-1].endswith('-before-update') and before.exists():
+        before.unlink()
+        sys.exit(97)
     path(args[-1]).unlink()
     fault = root / 'fail-backup-removal-once'
     if args[-1].endswith('-before-update') and fault.exists():
