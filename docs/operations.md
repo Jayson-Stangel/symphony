@@ -13,7 +13,7 @@ installed release and `symphony --help` for the command summary.
 | `symphony doctor` | Check the installation, command/skill links, and container runtime; packaged diagnostics report release identity without host Git. |
 | `symphony project doctor` | Inspect the registered workflow source and credential configuration. |
 | `symphony runner doctor --agent codex` | Check the selected image's native login and disposable local Git operations. Use `claude` for Claude. |
-| `symphony runner status` | Show the project's container, dashboard address, and retained volumes. |
+| `symphony runner status` | Show the project's container, dashboard address, task limit, and retained volumes. |
 | `symphony runner logs` | Follow container logs. |
 | `symphony runner drain` | Persistently prevent new dispatch while current workers finish. |
 | `symphony runner resume` | Clear an explicit drain, subject to native readiness and retained pause checks. |
@@ -174,6 +174,30 @@ stable processes manually to bypass it. Stable changes go through `symphony upda
 These update commands preserve project workflows, credentials and native login;
 they do not turn a source installation into a packaged installation. Use separate
 paths and a namespace for [isolated candidate testing](packaged-install.md#isolated-candidate-installation).
+
+### Managed runner task limit
+
+Managed Codex and Claude listeners inherit the container engine's process and
+thread limit by default. To set a project-specific cap, add
+`SYMPHONY_RUNNER_PIDS_LIMIT=2048` to the private project `.env` printed by
+`symphony init`. Use a positive decimal integer without leading zeros. Remove
+the line or leave its value empty to inherit the engine default again.
+
+Follow the [idle update procedure](#idle-update-procedure) and run
+`symphony update --agent claude` or `symphony update --agent codex` for the
+selected project. The packaged updater can apply this change with the same
+selected image. When the project has no override, upgrading an existing Claude
+runner drops Symphony's former 512-task cap and the replacement inherits Docker's
+default. The checkout migration applies the same rule. Before draining a healthy
+listener, the updater checks that the selected image can boot with an explicit
+cap.
+`symphony runner status` shows the desired setting, the launch setting, and
+the running container's observed `pids.max` when the engine can read it.
+
+An interrupted update retries with its original cap. Use
+`symphony update --rollback-runner` to restore the retained container and its
+previous limit. Review the desired value in the project `.env` before the next
+update.
 
 ## Workflow reload identity
 
