@@ -596,9 +596,9 @@ exec /usr/bin/curl "$@"
             credentials = root / "config/projects" / (identity + ".env")
             credentials.write_text(f"GH_TOKEN=fixture_git_placeholder_{number}\nLINEAR_API_KEY=synthetic-tracker-placeholder\n# credential-canary\n")
             credentials.chmod(0o600)
+            owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             client_run([str(command), "auth", "codex", "login"], cwd=repo)
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
-            owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
             if current_only and not result["diagnostic_artifact_run"]:
                 client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
