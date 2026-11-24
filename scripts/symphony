@@ -2700,12 +2700,11 @@ runner_rollback_migration() {
   temporary=$(mktemp "$runner_home/.runner.XXXXXX")
   cp -p "$journal/previous.env" "$temporary"
   mv -f "$temporary" "$(runner_env_file "$root")"
-  # The prior installed manager can resume it explicitly after release rollback.
-  # Keep the original stopped state and shared hold instead of starting a checkout.
+  # Keep the restored checkout listener stopped and held for migration retry.
   : >"$journal/migration.rollback"
   runner_finish_journal "$journal"
   codex_config_cleanup "$migration_checkout" "$runtime"
-  printf 'Prior checkout runner restored stopped. Retry migration or use the prior installed release to resume it.\n'
+  printf 'Prior checkout runner restored stopped. Retry migration from the original checkout.\n'
 }
 
 runner_rollback() (

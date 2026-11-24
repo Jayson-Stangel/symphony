@@ -126,6 +126,18 @@ def acquire_container(run, *args):
     return created.stdout.strip()
 
 
+def package_uses_adopted_registrations(archive_path):
+    with tarfile.open(archive_path, "r:gz") as archive:
+        payload = {member.name.removeprefix("./"): member for member in archive.getmembers()}
+        launcher = archive.extractfile(payload["scripts/symphony"]).read().splitlines()
+        package = archive.extractfile(payload["scripts/symphony-package.sh"]).read().splitlines()
+    if b"# Manager capability: adopted project registrations v1" in package:
+        return True
+    if b"project_registration_write() (" in launcher:
+        raise ValueError("the installed lifecycle fixture requires a checkout-only or adopted-registration manager")
+    return False
+
+
 def remove_local_image(run, image):
     def present():
         observed = run(["docker", "image", "inspect", image], expected=None)
@@ -437,6 +449,9 @@ def main():
             archive = folder / bundle["filename"]
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == bundle["sha256"]
             source_archives.append(archive)
+        registrations = [package_uses_adopted_registrations(archive) for archive in source_archives]
+        initial_remote, current_remote = registrations[0], registrations[-1]
+        assert not legacy_chain or not any(registrations[:-1]), "legacy bridge baselines must support checkout listeners"
         result["packages"] = [{"source_revision": manifest["source_revision"], **manifest["bundles"]["linux_x86_64"]}
                               for _, manifest in selections]
         from component_restore import prepare_graphs, restore_component
@@ -532,15 +547,6 @@ exec /usr/bin/curl "$@"
             assert initial_version["source_revision"] == initial["source_revision"], "bootstrap initial installed source differs"
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
         initial_launcher = root / "app" / os.readlink(root / "app/current") / "scripts/symphony"
-        initial_remote = "project migrate" in client_run([str(command), "--help"]).stdout
-        adopted_capability = b"# Manager capability: adopted project registrations v1"
-        with tarfile.open(second_archive, "r:gz") as archive:
-            payload = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony")
-            current_remote = b"project migrate --linear-project" in archive.extractfile(payload).read()
-            package = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony-package.sh")
-            current_adopted = adopted_capability in archive.extractfile(package).read().splitlines()
-        prior_adopted = adopted_capability in initial_launcher.with_name("symphony-package.sh").read_bytes().splitlines()
-        incompatible_rollback = initial_remote and current_adopted and not prior_adopted
         retired_layout = current_remote and not initial_remote
         migration = retired_layout and not manager_update_only
         if migration:
@@ -750,10 +756,8 @@ exec /usr/bin/curl "$@"
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
             retained()
-            rollback = client_run([str(command), "update", "--rollback-release"], cwd=repo, expected=int(incompatible_rollback))
-            if incompatible_rollback:
-                assert "selected release cannot manage registered projects" in rollback.stdout
-            retained_revision = current['source_revision'] if incompatible_rollback else previous['source_revision']
+            client_run([str(command), "update", "--rollback-release"], cwd=repo)
+            retained_revision = previous['source_revision']
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == retained_revision
             retained()
             corrupted = json.loads(second_manifest.read_text())
@@ -801,15 +805,11 @@ exec /usr/bin/curl "$@"
             client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
             result["current_packaged_protected_execution"] = True
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
-        rollback = client_run([str(command), "update", "--rollback-release"], cwd=repo, expected=int(incompatible_rollback))
-        if incompatible_rollback:
-            assert "selected release cannot manage registered projects" in rollback.stdout
-        retained_revision = current["source_revision"] if incompatible_rollback else previous["source_revision"]
-        assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == retained_revision
+        client_run([str(command), "update", "--rollback-release"], cwd=repo)
+        assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         unchanged()
-        historical_command = initial_launcher if retired_layout else command
-        client_run([str(historical_command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
+        client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
         record("two real package revisions: manager-only activation and checked rollback compatibility retain stopped runner until explicit run, preserving both selected images")
         # Remove only the unselected new candidate image from this disposable
         # daemon/registry and prove a real immutable-digest pull failure. Restore
@@ -873,7 +873,9 @@ exec /usr/bin/curl "$@"
                 assert state(port)["agent"]["draining"] is True
                 unchanged(migrated=True)
             interrupt_migration()
-            client_run([*project, "update", "--rollback-runner"])
+            restored = client_run([*project, "update", "--rollback-runner"])
+            assert "Retry migration from the original checkout" in restored.stdout
+            assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
             assert inspect(name, "{{.Id}}") == baseline_container and inspect(name, "{{.State.Running}}") == "false"
             assert metadata[0].read_bytes() == stopped_metadata and not journal.exists()
             assert not (root / "config/projects" / (identifiers[0] + ".remote")).exists()

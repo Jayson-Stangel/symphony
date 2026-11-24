@@ -341,9 +341,10 @@ Use the project ID from the preflight to restore the prior container stopped:
 symphony --project PROJECT-ID update --rollback-runner
 ```
 
-The rollback retains the stopped checkout listener as the migration source.
-Resolve the failure and review and apply a new cutover from the original
-checkout. Retain the checkout until migration succeeds. After success, use
+The rollback retains the stopped checkout listener as the migration source and
+keeps the current manager selected. Resolve the failure, then review and apply
+a new cutover from the original checkout. Retain the checkout until migration
+succeeds. After success, use
 `symphony --project PROJECT-ID` for restart, status, drain, resume, update and
 rollback.
 
