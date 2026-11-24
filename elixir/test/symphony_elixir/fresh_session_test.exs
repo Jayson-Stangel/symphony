@@ -5,6 +5,24 @@ defmodule SymphonyElixir.FreshSessionTest do
 
   @active_states ["In Progress", "Agent Review", "Verification", "Retest"]
 
+  setup_all do
+    # The default scheduler would poll the same process-wide workflow and tracker fixtures.
+    previous_workflow = Application.fetch_env(:symphony_elixir, :workflow_file_path)
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, AgentRuntimeSupervisor)
+
+    on_exit(fn ->
+      case previous_workflow do
+        {:ok, path} -> Application.put_env(:symphony_elixir, :workflow_file_path, path)
+        :error -> Application.delete_env(:symphony_elixir, :workflow_file_path)
+      end
+
+      WorkflowStore.force_reload()
+      assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, AgentRuntimeSupervisor)
+    end)
+
+    :ok
+  end
+
   setup do
     root = Path.dirname(Workflow.workflow_file_path())
     workspace_root = Path.join(root, "workspaces")
@@ -106,10 +124,10 @@ defmodule SymphonyElixir.FreshSessionTest do
     File.touch!(hold)
 
     move(fixture, "Agent Review")
-    await(fn -> running(fixture)[:ref] == nil end)
+    await(fn -> match?(%{ref: nil}, running(fixture)) end)
     assert running(fixture).tracker_stop.reason == :fresh_session
     assert claimed?(fixture)
-    assert length(turns(ctx)) == 1
+    assert [^first] = turns(ctx)
 
     move(fixture, "Blocked")
     assert claimed?(fixture)
@@ -269,7 +287,7 @@ defmodule SymphonyElixir.FreshSessionTest do
     Process.exit(scheduler, :kill)
     await(fn -> is_pid(Process.whereis(fixture.server)) and Process.whereis(fixture.server) != scheduler end)
     assert claimed?(fixture)
-    assert length(turns(ctx)) == 1
+    assert [^first] = turns(ctx)
 
     File.rm!(hold)
     second = await_turn(ctx, 2)
