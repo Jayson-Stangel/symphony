@@ -45,7 +45,13 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       # Recheck may await one existing bounded observation before its own fresh check.
       timeout = if action == "recheck", do: 75_000, else: 40_000
 
-      case GenServer.call(orchestrator(), {:agent_control, actions[action], params["confirm_tools_reconciled"] == true}, timeout) do
+      confirmation =
+        case params do
+          %{"expected_workflow_commit" => commit} -> {:workflow_migration, commit}
+          _ -> params["confirm_tools_reconciled"] == true
+        end
+
+      case GenServer.call(orchestrator(), {:agent_control, actions[action], confirmation}, timeout) do
         {:ok, value} -> json(conn, value)
         {:error, reason} -> error_response(conn, 409, to_string(reason), "Agent control refused")
       end

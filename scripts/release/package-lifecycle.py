@@ -21,6 +21,7 @@ import time
 import urllib.request
 import uuid
 import prior_baseline
+from workflow_fixture import WorkflowFixture
 
 
 # Only exact native account entrypoints are replaced. This fixture grants no
@@ -28,7 +29,7 @@ import prior_baseline
 CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
   local action="${@: -1}" storage image actual expected expected_build argument index auth_like=false
   for argument in "$@"; do
-    case "$argument" in *auth.mjs*) auth_like=true ;; esac
+    case "$argument" in /opt/symphony/claude/auth.mjs) auth_like=true ;; esac
   done
   "$auth_like" || return 1
   local -a args=("$@") command=(run --rm)
@@ -86,7 +87,17 @@ else
     exit "$fixture_status"
   fi
 fi
-''' + shlex.quote(docker) + ''' "$@"
+args=("$@")
+if [[ -n "${PROOF_WORKFLOW_NETWORK:-}" && "$1" = run ]] &&
+   { [[ "$*" = *"--detach"* ]] || [[ "$*" = *"SYMPHONY_REMOTE_REPOSITORY="* ]]; }; then
+  args=(run --network "$PROOF_WORKFLOW_NETWORK"
+    --mount "type=bind,source=$PROOF_WORKFLOW_CA,target=/etc/ssl/certs/ca-certificates.crt,readonly" "${@:2}")
+fi
+if [ "$1" = rm ] && [ "$#" -eq 2 ] && [[ "$2" == *-before-update ]] &&
+   [ -f "$PROOF_ROOT/fault" ] && [ "$(cat "$PROOF_ROOT/fault")" = before-backup-remove ]; then
+  rm "$PROOF_ROOT/fault"; echo 'FAULT before actual Docker backup removal' >&2; exit 97
+fi
+''' + shlex.quote(docker) + ''' "${args[@]}"
 if [ -f "$PROOF_ROOT/fault" ]; then
   mode=$(cat "$PROOF_ROOT/fault")
   if [ "$mode" = create ] && [ "$1" = run ] && [[ "$*" == *"--detach"* ]]; then
@@ -113,6 +124,18 @@ def acquire_container(run, *args):
     if not re.fullmatch(r"[0-9a-f]{64}\n?", created.stdout):
         raise AssertionError(("invalid detached container ID", created.stdout))
     return created.stdout.strip()
+
+
+def package_uses_adopted_registrations(archive_path):
+    with tarfile.open(archive_path, "r:gz") as archive:
+        payload = {member.name.removeprefix("./"): member for member in archive.getmembers()}
+        launcher = archive.extractfile(payload["scripts/symphony"]).read().splitlines()
+        package = archive.extractfile(payload["scripts/symphony-package.sh"]).read().splitlines()
+    if b"# Manager capability: adopted project registrations v1" in package:
+        return True
+    if b"project_registration_write() (" in launcher:
+        raise ValueError("the installed lifecycle fixture requires a checkout-only or adopted-registration manager")
+    return False
 
 
 def remove_local_image(run, image):
@@ -345,12 +368,15 @@ def main():
     def mount_snapshot(name):
         return sorted(json.loads(inspect(name, "{{json .Mounts}}")), key=lambda m: json.dumps(m, sort_keys=True))
 
-    def workflow_mounts(mounts, project, allow_legacy=True):
+    def workflow_mounts(mounts, project, allow_legacy=True, remote=False):
         # Compare preserved resources across adoption while checking the intentional
         # workflow-layout change independently. Old package baselines retain their
         # original single-file bind until an explicit runner update.
         workflow = [m for m in mounts if m["Destination"] in ("/", "/etc", "/etc/symphony")
                     or m["Destination"].startswith("/etc/symphony/")]
+        if remote:
+            assert not workflow and not any(m["Destination"].startswith("/opt/symphony/project") for m in mounts), mounts
+            return mounts
         assert len(workflow) == 1
         mount = workflow[0]
         directory = mount["Destination"] == "/etc/symphony"
@@ -392,6 +418,7 @@ def main():
         external = external_dir / "release.json"; external.write_text(json.dumps(outer))
         return external, archive
 
+    workflow_fixture = None
     try:
         selections = package_selections(packages, current_only, result["source_revision"], manager_update_only)
         current = selections[-1][1]
@@ -422,6 +449,9 @@ def main():
             archive = folder / bundle["filename"]
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == bundle["sha256"]
             source_archives.append(archive)
+        registrations = [package_uses_adopted_registrations(archive) for archive in source_archives]
+        initial_remote, current_remote = registrations[0], registrations[-1]
+        assert not legacy_chain or not any(registrations[:-1]), "legacy bridge baselines must support checkout listeners"
         result["packages"] = [{"source_revision": manifest["source_revision"], **manifest["bundles"]["linux_x86_64"]}
                               for _, manifest in selections]
         from component_restore import prepare_graphs, restore_component
@@ -469,6 +499,18 @@ def main():
         tools = root / "tools"; tools.mkdir()
         for name in ("git", "python", "python3", "node", "mise", "swift", "swiftc", "elixir", "erl", "shasum", "codex", "claude"):
             tool = tools / name; tool.write_text("#!/bin/sh\necho 'unexpected host dependency: " + name + "' >&2\nexit 98\n"); tool.chmod(0o755)
+        curl_peer = tools / "curl"
+        curl_peer.write_text("""#!/bin/sh
+for argument in "$@"; do
+  case "$argument" in
+    https://api.github.com/repos/Jayson-Stangel/symphony/actions/artifacts/*)
+      echo 'FIXTURE: original candidate companion unavailable' >&2
+      exit 22 ;;
+  esac
+done
+exec /usr/bin/curl "$@"
+""")
+        curl_peer.chmod(0o755)
         wrapper = root / "docker-peer"
         wrapper.write_text(docker_peer_script()); wrapper.chmod(0o755)
         socket_gid = os.stat("/var/run/docker.sock").st_gid
@@ -504,45 +546,66 @@ def main():
         if bootstrap:
             assert initial_version["source_revision"] == initial["source_revision"], "bootstrap initial installed source differs"
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
+        initial_launcher = root / "app" / os.readlink(root / "app/current") / "scripts/symphony"
+        retired_layout = current_remote and not initial_remote
+        migration = retired_layout and not manager_update_only
+        if migration:
+            primary_agent, project_agents = "codex", ("codex", "claude")
+            result["project_agents"] = list(project_agents)
+        if initial_remote or migration:
+            directory = root / "workflow-peer"; directory.mkdir(mode=0o700)
+            workflow_fixture = WorkflowFixture(directory, docker, prefix + "-workflow-peer",
+                                               initial["runners"]["codex"]["x86_64"]["image"])
+            workflow_fixture.start()
+            environment.update(workflow_fixture.environment)
         repositories = [root / "one/service", root / "two/service"]
-        identifiers, names, ports = [], [], []
+        identifiers, names, ports, slugs, commits = [], [], [], [], []
         for number, repo in enumerate(repositories):
             repo.mkdir(parents=True)
-            # Preparing the target checkout is a controller responsibility,
-            # separate from installing/running the product in the clean client.
-            # Use real Git metadata, then poison Git for every product command.
             git_env = {"PATH": os.environ["PATH"], "HOME": str(home), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
-            run(["git", "init", "--quiet", str(repo)], env=git_env)
-            run(["git", "-C", str(repo), "remote", "add", "origin", f"https://example.invalid/{number}/service.git"], env=git_env)
+            origin_owner = f"fixture-{number}"
+            origin = f"https://github.com/{origin_owner}/service.git"
+            slug = f"fixture-package-{number}"; slugs.append(slug)
+            run(["git", "init", "--quiet", "-b", "main", str(repo)], env=git_env)
+            run(["git", "-C", str(repo), "remote", "add", "origin", origin], env=git_env)
             tracked = repo / "tracked-project-canary"; tracked.write_text("committed project canary\n")
-            run(["git", "-C", str(repo), "add", tracked.name], env=git_env)
+            override = repo / ".codex/skills/symphony-commit/SKILL.md"
+            override.parent.mkdir(parents=True)
+            override.write_text("Intentional local override canary " + str(number) + "\n")
+            workflow = repo / "WORKFLOW.md"
+            tracker = f"  kind: linear\n  provider:\n    project_slug: {slug}\n    api_key: $LINEAR_API_KEY\n  active_states: [Todo]\n" if workflow_fixture else "  kind: memory\n"
+            workflow.write_text(f"---\ntracker:\n{tracker}workspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\n---\nEmpty isolated candidate fixture; zero inference.\n")
+            run(["git", "-C", str(repo), "add", tracked.name, workflow.name], env=git_env)
             run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"], env=git_env)
+            commits.append(workflow_fixture.publish(repo, origin_owner, "service") if workflow_fixture else None)
             tracked.write_text(tracked.read_text() + "dirty project change\n")
             (repo / "untracked-project-canary").write_text("untracked project evidence\n")
-            client_run([str(command), "init", "--linear-project", "disposable-package-proof", "--local-skill", "commit"], cwd=repo)
-            # No real tracker is ever started: replace the generated template
-            # before launching the disposable fixture.
-            override = repo / ".codex/skills/symphony-commit/SKILL.md"
-            override.write_text(override.read_text() + "\nIntentional local override canary " + str(number) + "\n")
-            (repo / "WORKFLOW.md").write_text("---\ntracker:\n  kind: memory\nworkspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\n---\nEmpty isolated candidate fixture; zero inference.\n")
-            # Ask the actual packaged launcher for its canonical resource id.
+            if migration and number == 0:
+                with workflow.open("a") as f:
+                    f.write("Local-only prompt edit using ./checkout-script.\n")
+            if initial_remote:
+                client_run([str(command), "init", "--repository", origin, "--linear-project", slug, "--workflow-branch", "main"], cwd=repo)
+            else:
+                client_run([str(command), "init", "--linear-project", slug], cwd=repo)
             script = 'source "$1" --help >/dev/null; project_id "$2"'
             identity = client_run(["bash", "-euc", script, "fixture", str(command), str(repo)]).stdout.strip()
             identifiers.append(identity); name = prefix + "-" + identity; names.append(name); owned.update((name, name + "-before-update")); storages.add(name)
             fixture_storages[str(repo)] = name
             credentials = root / "config/projects" / (identity + ".env")
-            credentials.write_text("GH_TOKEN=credential-free-placeholder-" + str(number) + "\n# credential-canary\n")
+            credentials.write_text(f"GH_TOKEN=fixture_git_placeholder_{number}\nLINEAR_API_KEY=synthetic-tracker-placeholder\n# credential-canary\n")
             credentials.chmod(0o600)
             client_run([str(command), "auth", "codex", "login"], cwd=repo)
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
             owned_volumes.update((prefix + "-codex-auth", name + "-claude-auth", name + "-workspaces", name + "-state"))
             port = free_port(); ports.append(port)
             if current_only and not result["diagnostic_artifact_run"]:
-                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
                 result["current_packaged_protected_execution"] = True
             selected_agent = project_agents[number]
             client_run([str(command), "run", "--agent", selected_agent, "--port", str(port)], cwd=repo)
-            state(port)
+            observed = state(port)
+            if initial_remote:
+                assert observed["workflow"]["commit"] == commits[number]
             assert inspect(name, "{{.Image}}") == inspect(initial["runners"][selected_agent]["x86_64"]["image"], "{{.Id}}")
             selected_reference = initial.get("distribution", {}).get(selected_agent, {}).get("x86_64", initial["runners"][selected_agent]["x86_64"]["image"])
             assert inspect(name, "{{.Config.Image}}") in (selected_reference, inspect(selected_reference, "{{.Id}}")), "installed manager did not select the validated immutable image"
@@ -580,25 +643,32 @@ def main():
         mount_before = mount_snapshot(name)
         assert {m["Destination"] for m in mount_before} >= {"/workspaces", "/var/lib/symphony", "/home/claude" if primary_agent == "claude" else "/root/.codex"}
         assert all(m["Type"] == "volume" for m in mount_before if m["Destination"] in ("/workspaces", "/var/lib/symphony"))
-        workflow_before = workflow_mounts(mount_before, repo, allow_legacy=not current_only)
+        workflow_before = workflow_mounts(mount_before, repo, allow_legacy=not current_only, remote=initial_remote)
         canaries = [root / "config/projects" / (i + ".env") for i in identifiers]
         canaries += [r / "WORKFLOW.md" for r in repositories]
         canaries += [r / filename for r in repositories for filename in ("tracked-project-canary", "untracked-project-canary")]
         canaries += [r / ".codex/skills/symphony-commit/SKILL.md" for r in repositories]
         hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries}
-        def unchanged():
+        credential_modes = {p: (p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in canaries[:2]}
+        def unchanged(migrated=False):
             assert preserved(name) == before
-            assert workflow_mounts(mount_snapshot(name), repo) == workflow_before
+            mounts = workflow_mounts(mount_snapshot(name), repo, remote=initial_remote or migrated)
+            if migrated:
+                volumes = lambda snapshot: [mount for mount in snapshot if mount["Type"] == "volume"]
+                assert volumes(mounts) == volumes(workflow_before)
+            else:
+                assert mounts == workflow_before
             assert inspect(names[1], "{{.Id}}") == second_id
             assert preserved(names[1]) == second_before and mount_snapshot(names[1]) == second_mount_before
             assert auth_canaries() == auth_before
+            assert {p: (p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in credential_modes} == credential_modes
             assert {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries} == hashes
         metadata = [root / "config/runners" / (i + ".env") for i in identifiers]
         second_metadata = metadata[1].read_bytes(); second_image = inspect(names[1], "{{.Image}}")
         client_run([str(command), "runner", "stop"], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false"
         client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port); unchanged()
-        record("two same-basename real memory listeners, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
+        record("two same-basename real listeners with isolated trackers, attributable dashboard/state, persistent mounts, dirty/untracked/state canaries and stop/restart")
         if legacy_chain:
             bridge_manifest = staged['old']/'release.json'
             bridge_archive = staged['old']/previous['bundles']['linux_x86_64']['filename']
@@ -660,7 +730,7 @@ def main():
         if current_only:
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
             if not result["diagnostic_artifact_run"]:
-                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+                client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
                 result["current_packaged_protected_execution"] = True
             assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
             for selected_repo, selected_name in zip(repositories, names):
@@ -685,31 +755,30 @@ def main():
                 unchanged()
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
-            if not result["diagnostic_artifact_run"]:
-                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
-                result["current_packaged_protected_execution"] = True
             retained()
             client_run([str(command), "update", "--rollback-release"], cwd=repo)
-            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == previous['source_revision']
+            retained_revision = previous['source_revision']
+            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == retained_revision
             retained()
             corrupted = json.loads(second_manifest.read_text())
             corrupted['bundles']['linux_x86_64']['sha256'] = '0'*64
             invalid = stage_candidate_descriptor(second_manifest, corrupted, root/'manager-only-corrupt')
             failed = client_run([str(command), 'update', '--candidate-manifest', str(invalid), '--candidate-bundle', str(second_archive)], cwd=repo, expected=1)
             assert 'release bundle checksum mismatch' in failed.stdout
-            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == previous['source_revision']
+            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == retained_revision
             retained()
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
-            if not result["diagnostic_artifact_run"]:
-                client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
-                result["current_packaged_protected_execution"] = True
             retained()
+            historical_command = initial_launcher if retired_layout else command
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
-                client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
+                if retired_layout:
+                    retired = client_run([str(command), 'run'], cwd=selected_repo, expected=1)
+                    assert 'project migrate' in retired.stdout
+                client_run([str(historical_command), 'runner', 'stop'], cwd=selected_repo)
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
                 legacy_layout = any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in mount_snapshot(selected_name))
-                restarted = client_run([str(command), 'run', '--agent', selected_agent, '--port', str(selected_port)],
+                restarted = client_run([str(historical_command), 'run', '--agent', selected_agent, '--port', str(selected_port)],
                                        cwd=selected_repo, expected=1 if legacy_layout else 0)
                 if legacy_layout:
                     assert 'adopt through symphony update' in restarted.stdout
@@ -720,11 +789,11 @@ def main():
                 assert inspect(selected_name, '{{.Image}}') == runner_snapshot[selected_name][1]
                 assert [path.read_bytes() for path in metadata] == metadata_snapshot
             for selected_repo, selected_name in zip(repositories, names):
-                client_run([str(command), 'runner', 'stop'], cwd=selected_repo)
+                client_run([str(historical_command), 'runner', 'stop'], cwd=selected_repo)
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
             unchanged()
             result['passed'] = True
-            record('actual old90 to strict schema1 bridge to schema2 manager, rollback to bridge, checksum refusal, retry and layout-appropriate restart/refusal preserve both unlabeled legacy projects and all canaries' if legacy_chain else 'two actual manager sources with exact unchanged runners: activation, rollback, checksum refusal, retry and layout-appropriate restart/refusal preserve both projects and all canaries; legacy three-source chain not requested')
+            record("manager activation, checked release rollback compatibility, checksum refusal, retry and layout-appropriate restart preserve both projects and their canaries")
             return
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
@@ -732,8 +801,8 @@ def main():
         client_run([str(command), "update", *update_args], cwd=repo)
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
-        if not result["diagnostic_artifact_run"]:
-            client_run([str(command), "runner", "doctor", "--agent", "codex", "--sandbox-only"], cwd=repo)
+        if initial_remote and not result["diagnostic_artifact_run"]:
+            client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
             result["current_packaged_protected_execution"] = True
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
         client_run([str(command), "update", "--rollback-release"], cwd=repo)
@@ -741,46 +810,149 @@ def main():
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         unchanged()
         client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
-        record("two real package revisions: manager-only activation and updater-controlled rollback retain stopped runner until explicit run, preserving both selected images")
+        record("two real package revisions: manager-only activation and checked rollback compatibility retain stopped runner until explicit run, preserving both selected images")
         # Remove only the unselected new candidate image from this disposable
         # daemon/registry and prove a real immutable-digest pull failure. Restore
         # from the same checksummed archive before positive transition proof.
         image = current["runners"][primary_agent]["x86_64"]["image"]
         remove_local_image(run, f"localhost:5000/symphony-{primary_agent}:candidate")
+        selected_distribution = current.get("distribution", {}).get(primary_agent, {}).get("x86_64")
+        if (migration or initial_remote) and selected_distribution and selected_distribution != image:
+            remove_local_image(run, selected_distribution)
         remove_local_image(run, image)
         digest = image.split("@", 1)[1]
         request = urllib.request.Request(f"http://127.0.0.1:5000/v2/symphony-{primary_agent}/manifests/" + digest, method="DELETE")
         with urllib.request.urlopen(request, timeout=5) as response: assert response.status == 202
-        failed = client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=1)
-        assert f"cannot pull released {primary_agent} image" in failed.stdout
-        assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
-        assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
-        unchanged()
-        restore_component(run, graphs[("candidate", primary_agent)], registry_state)
-        record("actual missing image/digest pull refuses before journal or manager activation; checksummed image restored for retry")
-        (root / "fault").write_text("create")
-        client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=97)
-        assert (root / "config/runners" / (identifiers[0] + ".transition")).is_dir()
-        client_run([str(command), "update", "--agent", primary_agent], cwd=repo)
-        state(port); unchanged()
-        assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
-        assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
-        workflow_mounts(mount_snapshot(name), repo, allow_legacy=False)
-        record("real selected-runner update after post-create failure, pinned retry and unchanged second-project selected image")
-        # Explicit --agent transitions preserve the updater's existing policy:
-        # a stopped source may become a running selected candidate; rollback
-        # resumes the retained previous runner. Manager-only updates above do
-        # not start it. Prove both supported paths without changing policy.
-        client_run([str(command), "runner", "stop"], cwd=repo)
-        assert inspect(name, "{{.State.Running}}") == "false"
-        (root / "fault").write_text("create")
-        client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", primary_agent], cwd=repo, expected=97)
-        client_run([str(command), "update", "--rollback-runner"], cwd=repo)
-        state(port); unchanged()
-        assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
-        assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
-        workflow_mounts(mount_snapshot(name), repo, allow_legacy=False)
-        record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
+        journal = root / "config/runners" / (identifiers[0] + ".transition")
+        if migration:
+            stopped_metadata = metadata[0].read_bytes()
+            baseline_container = inspect(name, "{{.Id}}")
+            client_run([str(command), "update", *update_args], cwd=repo)
+            for old_args in (["run"], ["runner", "status"], ["update", "--agent", primary_agent], ["update", "--rollback-runner"]):
+                retired = client_run([str(command), *old_args], cwd=repo, expected=1)
+                assert "project migrate" in retired.stdout
+            migrate = [str(command), "project", "migrate", "--linear-project", slugs[0], "--workflow-branch", "main"]
+            failed = client_run(migrate, cwd=repo, expected=1)
+            assert "selected candidate artifact is inaccessible" in failed.stdout
+            assert "FIXTURE: original candidate companion unavailable" in failed.stdout
+            assert not journal.exists() and inspect(name, "{{.Id}}") == baseline_container
+            assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+            unchanged(); state(port)
+            restore_component(run, graphs[("candidate", primary_agent)], registry_state)
+            if selected_distribution and selected_distribution != image:
+                restore_component(run, graphs[("candidate", primary_agent)], registry_state, destination=selected_distribution)
+            preflight = client_run(migrate, cwd=repo).stdout
+            assert f"Remote commit: {commits[0]}" in preflight
+            assert "last accepted listener workflow" in preflight and "local-only edits" in preflight
+            assert "Review checkout-relative paths" in preflight
+            client_run([str(command), "project", "validate", str(repo / "WORKFLOW.md")], cwd=repo)
+            mismatch = client_run([*migrate, "--apply", "0" * 40], cwd=repo, expected=1)
+            assert "remote commit changed" in mismatch.stdout
+            assert inspect(name, "{{.Id}}") == baseline_container and inspect(name, "{{.State.Running}}") == "true"
+            project = [str(command), "--project", identifiers[0]]
+            apply = [*migrate, "--apply", commits[0]]
+            def interrupt_migration():
+                (root / "fault").write_text("create")
+                client_run(apply, cwd=repo, expected=97)
+                assert journal.is_dir()
+                assert inspect(name + "-before-update", "{{.Id}}") == baseline_container
+                assert inspect(name + "-before-update", "{{.State.Running}}") == "false"
+                held = state(port)
+                assert held["workflow"]["commit"] == commits[0]
+                assert held["agent"]["draining"] is True and held["agent"]["admission"]["ready"] is False
+                refused = client_run([*project, "runner", "resume"], expected=1)
+                assert "migration is pending" in refused.stdout
+                direct = urllib.request.Request(f"http://127.0.0.1:{port}/api/v1/agent/resume", data=b"{}",
+                    headers={"Content-Type": "application/json", "x-symphony-control": "1"})
+                try:
+                    urllib.request.urlopen(direct, timeout=45)
+                except urllib.error.HTTPError as error:
+                    assert error.code == 409
+                else:
+                    raise AssertionError("ordinary resume opened the migration hold")
+                assert state(port)["agent"]["draining"] is True
+                unchanged(migrated=True)
+            interrupt_migration()
+            restored = client_run([*project, "update", "--rollback-runner"])
+            assert "Retry migration from the original checkout" in restored.stdout
+            assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
+            assert inspect(name, "{{.Id}}") == baseline_container and inspect(name, "{{.State.Running}}") == "false"
+            assert metadata[0].read_bytes() == stopped_metadata and not journal.exists()
+            assert not (root / "config/projects" / (identifiers[0] + ".remote")).exists()
+            record("post-create checkout migration failure preserves a verifiable stopped rollback source, denies resume, and restores original stopped runner and metadata")
+            # Undoing a pending migration restores the deliberately stopped prior.
+            # Retry from that stopped source without needing to restart old code.
+            interrupt_migration()
+            (root / "fault").write_text("before-backup-remove")
+            client_run(apply, cwd=repo, expected=97)
+            assert (journal / "migration.resume").read_text().strip() == "resumed"
+            assert (journal / "package.committed").read_text().strip() == os.readlink(root / "app/current")
+            assert inspect(name + "-before-update", "{{.Id}}") == baseline_container
+            assert inspect(name + "-before-update", "{{.State.Running}}") == "false"
+            bare = workflow_fixture.directory / "git/fixture-0/service.git"
+            run(["git", "-C", str(bare), "update-ref", "-d", "refs/heads/main", commits[0]], env=git_env)
+            try:
+                client_run(apply, cwd=repo)
+            finally:
+                run(["git", "-C", str(bare), "update-ref", "refs/heads/main", commits[0]], env=git_env)
+            record("committed, resumed checkout migration settles a verified stopped backup without access to the workflow branch")
+            observed = state(port)
+            deadline = time.monotonic() + 30
+            while observed["agent"]["admission"]["ready"] is not True and time.monotonic() < deadline:
+                time.sleep(1)
+                observed = state(port)
+            assert observed["workflow"]["commit"] == commits[0] and observed["agent"]["admission"]["ready"] is True
+            assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
+            assert not journal.exists()
+            assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
+            unchanged(migrated=True)
+            result["current_packaged_protected_execution"] = True
+            record("installed stop-first checkout migration adopted existing credential/auth/workspace/state resources and resumed only the reviewed remote workflow commit")
+        else:
+            if initial_remote:
+                selected_image = selected_distribution or image
+                failed = client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo, expected=1)
+                assert "team environment is unavailable locally" in failed.stdout
+            else:
+                failed = client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=1)
+                assert f"cannot pull released {primary_agent} image" in failed.stdout
+            assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
+            assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
+            unchanged()
+            restore_component(run, graphs[("candidate", primary_agent)], registry_state)
+            if initial_remote:
+                if selected_image != image:
+                    restore_component(run, graphs[("candidate", primary_agent)], registry_state, destination=selected_image)
+                client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo)
+            record("missing exact candidate image refuses before journal or manager activation; checksummed image restored for retry")
+            (root / "fault").write_text("create")
+            client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=97)
+            assert (root / "config/runners" / (identifiers[0] + ".transition")).is_dir()
+            client_run([str(command), "update", "--agent", primary_agent], cwd=repo)
+            state(port); unchanged()
+            assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
+            assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
+            workflow_mounts(mount_snapshot(name), repo, allow_legacy=False, remote=initial_remote)
+            record("real selected-runner update after post-create failure, pinned retry and unchanged second-project selected image")
+            # Explicit --agent transitions preserve the updater's existing policy:
+            # a stopped source may become a running selected candidate; rollback
+            # resumes the retained previous runner. Manager-only updates above do
+            # not start it. Prove both supported paths without changing policy.
+            client_run([str(command), "runner", "stop"], cwd=repo)
+            assert inspect(name, "{{.State.Running}}") == "false"
+            if initial_remote:
+                old_image = initial.get("distribution", {}).get(primary_agent, {}).get("x86_64", initial["runners"][primary_agent]["x86_64"]["image"])
+                client_run([str(command), "environment", "select", "--agent", primary_agent, old_image], cwd=repo)
+            (root / "fault").write_text("create")
+            client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", primary_agent], cwd=repo, expected=97)
+            client_run([str(command), "update", "--rollback-runner"], cwd=repo)
+            state(port); unchanged()
+            assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
+            assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
+            workflow_mounts(mount_snapshot(name), repo, allow_legacy=False, remote=initial_remote)
+            if initial_remote:
+                client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo)
+            record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
         corrupt = json.loads(second_manifest.read_text()); corrupt["bundles"]["linux_x86_64"]["sha256"] = "0" * 64
         corrupted_manifest = stage_candidate_descriptor(second_manifest, corrupt, root / "corrupt")
@@ -795,7 +967,36 @@ def main():
         failed = client_run([str(download / "install.sh"), "--bin-dir", str(conflict), "--app-dir", str(root / "conflict-app")], expected=1)
         assert "refusing" in failed.stdout and (conflict / "symphony").read_text() == "unrelated"
         assert client_run([str(command), "--version"]).stdout == before_version
-        unchanged(); state(port)
+        unchanged(migrated=migration); state(port)
+        if migration:
+            moved = repo.with_name("former-checkout")
+            repo.rename(moved)
+            try:
+                activation_links = {path: os.readlink(root / "app" / path) for path in ("current", "previous")}
+                engine_calls = (root / "docker-calls.log").read_bytes()
+                alternate = root / "empty-rollback-config"
+                alternate.mkdir(mode=0o700)
+                for rollback in ([str(command), "update", "--rollback-release"],
+                                 [*project, "update", "--rollback-release", "--agent", primary_agent],
+                                 [str(command), "update", "--rollback-release", "--config-dir", str(alternate)]):
+                    refused = client_run(rollback, expected=1)
+                    assert "selected release cannot manage registered projects" in refused.stdout
+                    assert {path: os.readlink(root / "app" / path) for path in activation_links} == activation_links
+                    assert (root / "docker-calls.log").read_bytes() == engine_calls
+                record("both completed release rollback paths refuse a checkout-only prior manager with the old checkout unavailable")
+                client_run([*project, "runner", "drain"])
+                assert state(port)["agent"]["draining"] is True
+                client_run([*project, "runner", "stop"])
+                client_run([*project, "run"])
+                client_run([*project, "runner", "resume"])
+                client_run([*project, "runner", "recheck"])
+                report = client_run([*project, "runner", "status"]).stdout
+                assert "Isolated Symphony: running" in report and inspect(name, "{{.State.Running}}") == "true"
+                assert state(port)["workflow"]["commit"] == commits[0]
+            finally:
+                moved.rename(repo)
+            unchanged(migrated=True)
+            record("registered listener restarts and responds to normal controls with the original checkout path unavailable")
         record("wrong checksum/platform, actual missing registry image, missing Docker engine and conflicting unmanaged path refuse without data/manager loss")
         calls = (root / "docker-calls.log").read_text()
         assert " build " not in " " + calls
@@ -822,6 +1023,12 @@ def main():
                         removed.append(absent)
                 except Exception as error:
                     cleanup_errors.append(str(error))
+            if workflow_fixture:
+                try:
+                    workflow_fixture.stop()
+                    removed.append(workflow_fixture.name)
+                except Exception as error:
+                    cleanup_errors.append("workflow fixture cleanup: " + str(error))
             for reference in distribution_aliases:
                 try:
                     remove_local_image(run, reference)

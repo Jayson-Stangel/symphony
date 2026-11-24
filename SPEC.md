@@ -329,12 +329,15 @@ Loader behavior:
 - If the file cannot be read, return `missing_workflow_file` error.
 - The workflow file is expected to be repository-owned and version-controlled.
 
-The packaged manager can also resolve the root `WORKFLOW.md` from a GitHub
-branch registered with a Linear project. It passes the selected source to the
+Managed projects resolve the root `WORKFLOW.md` from a GitHub branch
+registered with a Linear project. It passes the selected source to the
 runner and retains the resolved default branch once selected. The listener
 verifies candidate source bytes against the registered project and reports the
 accepted commit and SHA-256. Worker workspace checkout and delivery targets
-are still controlled by the workflow.
+are still controlled by the workflow. A checkout-based installation can adopt
+its existing resources after the prior runner drains and stops. The replacement
+verifies the reviewed remote commit and readiness before removing its admission
+hold. Local workflow syntax and prompt rendering can be checked independently.
 
 ### 5.2 File Format
 

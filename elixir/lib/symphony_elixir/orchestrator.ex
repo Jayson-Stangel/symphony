@@ -2316,7 +2316,7 @@ defmodule SymphonyElixir.Orchestrator do
     case action do
       :drain ->
         with :ok <- File.mkdir_p(Config.agent_state_root()),
-             :ok <- File.write(drain_path(), "draining\n", [:sync]) do
+             :ok <- persist_drain() do
           state = cancel_readiness_control(%{state | draining: true})
           {:reply, {:ok, %{draining: true, running: map_size(state.running)}}, state}
         else
@@ -2441,6 +2441,7 @@ defmodule SymphonyElixir.Orchestrator do
     readiness = state.readiness
 
     with %{ready: true} <- readiness,
+         :ok <- verify_migration_resume(action, reconcile),
          :ok <- recheck_agent_pause(action, readiness, reconcile, state),
          admission = agent_admission(%{state | readiness: readiness, draining: false}),
          :ok <- resume_admission(admission),
@@ -2478,6 +2479,38 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp recheck_agent_pause(_action, _readiness, _reconcile, _state), do: :ok
+
+  defp persist_drain do
+    case File.read(drain_path()) do
+      {:ok, "migration:" <> _} -> :ok
+      _ -> File.write(drain_path(), "draining\n", [:sync])
+    end
+  end
+
+  defp verify_migration_resume(action, confirmation) do
+    case File.read(drain_path()) do
+      {:ok, "migration:" <> expected} ->
+        commit = String.trim(expected)
+
+        with :resume <- action,
+             {:workflow_migration, ^commit} <- confirmation,
+             %{commit: ^commit, status: "loaded", source_block: nil, source_error: nil} <- WorkflowStore.status() do
+          :ok
+        else
+          _ -> {:error, :workflow_migration_held}
+        end
+
+      {:ok, _} ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      _ ->
+        {:error, :state_read_failed}
+    end
+  end
+
   defp drain_path, do: Path.join(Config.agent_state_root(), "agent-draining")
 
   defp remove_drain do

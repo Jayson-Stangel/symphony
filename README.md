@@ -83,9 +83,10 @@ bundle. The manager uses prebuilt runner images; it needs no Symphony checkout,
 host Git, mise, Python, Node, agent CLI, or build toolchain.
 
 You also need a GitHub repository, tracker credentials, a repository-scoped
-GitHub credential, and a native agent login. Register a remote workflow for a new
-project or use its existing checkout with an explicit `origin`. Codex is the
-default. Claude uses native sign-in in its isolated runner.
+GitHub credential, and a native agent login. Register the GitHub branch that
+contains your root `WORKFLOW.md`. If a listener already uses a checkout, follow
+the [checkout migration guide](docs/packaged-install.md#migrate-a-checkout-based-project).
+Codex is the default. Claude uses native sign-in in its isolated runner.
 
 The [getting started guide](docs/getting-started.md) covers project initialization,
 credentials, authentication, and one disposable issue-to-PR pilot for either

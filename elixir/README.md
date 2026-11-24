@@ -91,10 +91,12 @@ is used. Local-remote Git proof does not establish GitHub authentication or a
 completed provider task.
 
 
-Packaged container runners can load a registered GitHub branch's root workflow.
+Managed container runners load a registered GitHub branch's root workflow.
 The runner validates each candidate with the same workflow loader and keeps its
 last accepted bytes in project state. See the
 [remote project setup](../docs/packaged-install.md#register-a-new-project-from-a-remote-workflow).
+Use `symphony project validate WORKFLOW.md` to check unpublished configuration
+and strict prompt rendering.
 
 ## Screenshot
 
@@ -796,7 +798,7 @@ preserving the rollback container until the replacement passes readiness. See
 
 Project configuration, container and transition names use the same normalized repository hash
 identity already used by retained storage volumes. Basename-era installations migrate only
-through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
+through `symphony update --migrate-project-identity # invoke with the prior checkout-era manager` (add `--development-runner` for an isolated
 namespace). Migration preserves volume names, credential bytes, workflow files and pending
 rollback evidence; it requires an owned retained container and refuses mixed or foreign
 resources. See the [installation migration procedure](../docs/operations.md#migrate-an-older-project-identity) for credentials without

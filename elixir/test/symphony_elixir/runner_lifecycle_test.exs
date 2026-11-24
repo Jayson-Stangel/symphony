@@ -60,6 +60,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *com.symphony.claude.runtime*) cat "$state.claude-runtime" ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
+          *com.symphony.storage*com.symphony.linear-project*) printf '%s|\\n' "$(cat "$state.storage")" ;;
           *com.symphony.storage*) cat "$state.storage" ;;
           *Config.Entrypoint*) echo "${FIXTURE_ENTRYPOINT:-/usr/local/bin/symphony-runner}" ;;
           *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
@@ -93,7 +94,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         case "$*" in
           *--format*)
             [ "${FIXTURE_FOREIGN_VOLUME:-false}" != true ] || { echo foreign; exit 0; }
-            name=${!#}; printf '%s' "${name%-claude-auth}" ;;
+            name=${!#}; storage=${name%-claude-auth}; storage=${storage%-workspaces}; storage=${storage%-state}
+            case "$*" in *com.symphony.linear-project*) printf '%s|' "$storage" ;; *) printf '%s' "$storage" ;; esac ;;
         esac ;;
       ps)
         case "$*" in
@@ -341,7 +343,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
     refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
     before_creation = Enum.take_while(calls, &(not String.contains?(&1, "--detach")))
-    refute Enum.any?(before_creation, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
+
+    refute Enum.any?(
+             before_creation,
+             &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and not String.contains?(&1, "com.symphony.linear-project") and
+                 String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t"))
+           )
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
@@ -574,7 +581,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
     # Exercise the ordinary transition after source handoff, without invoking the source updater.
-    script = ~s|source "$1" --help >/dev/null; runner_transition "$(repo_root)" codex false|
+    script = ~s|source "$1" --help >/dev/null; runner_transition "$(checkout_root)" codex false|
     assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
     assert message =~ "pending transition has no qualified Codex settings"
     refute File.read!(ctx.log) =~ "stop\t"
@@ -843,8 +850,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.mkdir_p!(other_repo)
     assert {_, 0} = System.cmd("git", ["init", "-q", other_repo])
     assert {_, 0} = System.cmd("git", ["-C", other_repo, "remote", "add", "origin", "https://github.com/example/other.git"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"])
+    other_runtime = [{"FIXTURE_STATE", Path.join(ctx.root, "other-auth-state")}]
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"], other_runtime)
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"], other_runtime)
 
     File.touch!(barrier <> ".release")
     # The updater invokes native readiness internally while holding the same lock.
@@ -1332,7 +1340,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     script = """
     source "$1" --help >/dev/null
-    root=$(repo_root)
+    root=$(checkout_root)
     # Inject an interruption at the completed candidate's commit boundary.
     # Startup and ownership/preflight still use the actual manager functions.
     runner_record_observed_metadata() {
@@ -1366,7 +1374,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     test "journal settles interrupted refresh before completion unknown=#{unknown}", ctx do
       script = """
       source "$1" --help >/dev/null
-      root=$(repo_root); runtime=$(container_runtime)
+      root=$(checkout_root); runtime=$(container_runtime)
       runner_project_lock "$root"
       journal="$runner_home/$(project_id "$root").transition"
       mkdir -m 700 "$journal"
@@ -1424,7 +1432,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     script = """
     source "$1" --help >/dev/null
-    root=$(repo_root); runtime=$(container_runtime); name=$(runner_id "$root")
+    root=$(checkout_root); runtime=$(container_runtime); name=$(runner_id "$root")
     runner_project_lock "$root"
     journal="$runner_home/$(project_id "$root").transition"
     mkdir -m 700 "$journal"; printf codex > "$journal/target"
@@ -2038,6 +2046,17 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
   defp launch_args(ctx, args, extra_env \\ []) do
     env = Map.merge(Map.new(ctx.env), Map.new(extra_env)) |> Enum.to_list()
-    System.cmd("bash", [@launcher | args], cd: ctx.repo, env: env, stderr_to_stdout: true)
+    # Historical mount and crash-recovery cases exercise checkout ownership in
+    # the shared launcher functions. The supported CLI resolver is tested with
+    # registered projects in ProjectIdentityTest and the installed lifecycle.
+    script = """
+    source "$1" --help >/dev/null
+    shift
+    repo_root() { checkout_root; }
+    command=$1; shift
+    "$command" "$@"
+    """
+
+    System.cmd("bash", ["-c", script, "lifecycle", @launcher | args], cd: ctx.repo, env: env, stderr_to_stdout: true)
   end
 end

@@ -66,9 +66,9 @@ case "${1:-}" in
       [ "$arg" != --host ] || { echo 'Use the isolated development container' >&2; exit 1; }
     done
     exec "$SYMPHONY_HOME/scripts/symphony" run --port 14030 "$@" ;;
-  auth|runner|--version|--help|-h)
+  auth|init|project|runner|--version|--help|-h)
     exec "$SYMPHONY_HOME/scripts/symphony" "$@" ;;
-  *) echo 'Use: symphony-dev auth|run|runner|update|--version|--help' >&2; exit 1 ;;
+  *) echo 'Use: symphony-dev auth|init|project|run|runner|update|--version|--help' >&2; exit 1 ;;
 esac
 SH
 chmod 755 "$workspace/bin/symphony-dev"
@@ -81,99 +81,40 @@ this wrapper. The ordinary global `symphony` command remains the stable command.
 
 ## Prepare a disposable target repository
 
-Clone a private disposable target under `projects/` and provide its test
-`WORKFLOW.md`. Restrict its tracker scope and hooks to that repository. Keep
-production trackers and production repository credentials out of this workspace.
-The tracker operates on the remote service: a second local clone does not
-isolate issues, comments or pull requests.
-
-Credentials use `config/projects/<repository-identity>.env`: the basename plus
-Symphony's existing hash of the normalized `origin` URL. `init` and a missing-credentials
-`run` message report the exact path, including configuration overrides. The development
-wrapper deliberately omits `init`; derive the same identity read-only from its source,
-from inside the disposable target clone:
-
-```sh
-repository_identity=$(bash -c 'source "$1/scripts/symphony" --help >/dev/null; project_id "$(repo_root)"' identity "$workspace/source")
-credentials="$workspace/config/projects/$repository_identity.env"
-printf '%s\n' "$credentials"
-```
-
-Save a fine-grained token restricted to that disposable repository in that file,
-with `GITHUB_TOKEN=...`. Grant Contents,
-Issues and Pull requests read/write for a GitHub issue pilot. Set file mode 600.
-Never paste the token into chat, commit it, or use the broad host GitHub login as
-the worker credential.
-
-From inside the disposable target clone:
+Commit a root workflow on a test GitHub branch and lock its tracker scope to
+one disposable Linear project and a test-only label. Configure its credentials
+with the isolated manager before running any work:
 
 ```sh
 dev="$HOME/Repos/symphony-dev-workspace/bin/symphony-dev"
+"$dev" init --repository https://github.com/OWNER/DISPOSABLE.git \
+  --linear-project TEST-LINEAR-SLUG --workflow-branch TEST-BRANCH --agent claude
+# Edit the private credential file printed by init.
 "$dev" auth claude login
-# Finish the native login in this terminal.
 "$dev" auth claude check
 "$dev" runner doctor --agent claude
 "$dev" run --agent claude
 ```
 
-The first login builds the namespaced development image. Login is separate from
-host Claude, the qualification lab, and stable; it does not copy credentials.
-Check/doctor make zero model requests. `run` polls the configured tracker and can
-dispatch open work immediately. Start with one small disposable issue. Visit
-<http://127.0.0.1:14030>, inspect provider/readiness, and verify the workpad, tests
-and test PR. Confirm included allowance and no paid usage in the account UI.
+Use this wrapper with one registration, its dedicated environment, and its
+separate loopback port. Finish the test with `"$dev" runner drain`. When the
+dashboard shows zero active workers, use `"$dev" runner stop` to retain the
+container, workspaces, state and login for subsequent tests.
 
-To finish a test without accepting more work:
+## Workflow source and local validation
+
+Registered listeners load the GitHub branch's committed root `WORKFLOW.md`.
+Runner volumes retain accepted workflow and runtime data. Host checkout paths
+are only needed to preflight a legacy project migration or validate a local
+draft:
 
 ```sh
-"$dev" runner drain
-# Wait for the dashboard to show zero running workers, then:
-"$dev" runner stop
+"$dev" project validate /path/to/project/WORKFLOW.md
 ```
 
-Stop retains the qualified container, workspaces, state, logs and native login.
-Use the same development command for status/logs/recovery. Never stop or remove
-containers by a broad name filter.
-
-## Root workflow mounts and adoption
-
-Both providers mount the project root read-only at `/etc/symphony`; entrypoints
-continue to read `/etc/symphony/WORKFLOW.md`. The committed root file remains
-authoritative, including across editor atomic replacements. Codex also retains
-its read-only `/opt/symphony/project` launch-root mount. This exposes readable
-project contents, including `.git` and ignored/untracked files, to Claude as well
-as Codex. Read-only prevents writes through the bind; it does not provide secrecy
-or workspace-only read isolation. No parent, home or credential directory is
-added. The image's unused `/etc/symphony/claude` directory is hidden by the bind;
-provider code and plugins live under `/opt/symphony` and are unaffected.
-
-Claude's container UID/GID `11001:11001` must be able to traverse the project root
-and read `WORKFLOW.md`. A readable file inside a private `0700`/`0750` host directory
-may have worked through the prior single-file bind while failing through a
-directory bind on native Linux. Credential-free preflight checks the selected
-image and actual container identity before adoption replaces the stopped runner.
-If it refuses, provide access through your approved host permissions/ACL policy and
-retry; the manager does not change host permissions automatically.
-
-Existing single-file containers are adopted only through `symphony update --agent
-codex` or `symphony update --agent claude` (with the appropriate development wrapper
-for disposable tests). Follow the [idle update procedure](operations.md#idle-update-procedure):
-pause admission, finish active work and normally stop all runners in the affected
-installation before invoking the updater. Even an unchanged selected image needs
-replacement: the updater retains the stopped old container, starts the new layout,
-checks readiness and resumes admission before returning. No separate target
-restart is needed. Ordinary `run` refuses an old layout. Ownership and rollback
-accept the exact prior read-only single-file layout; completed-candidate recovery
-requires the directory layout. An interrupted old-layout candidate with a retained backup
-must use `symphony update --rollback-runner` before retrying adoption.
-
-Codex preflight receives both project aliases. Its effective-policy qualification
-continues to require full read access and exercise allowed workspace writes and
-denied outside writes; restricted custom read policies fail with
-`sandbox_unsupported_policy`, rather than silently gaining a read alias. Custom
-write grants cannot override the read-only host binds. Fixture checks establish
-launcher/lifecycle behavior, not native Docker Desktop reload or authenticated
-session behavior.
+The installed-package lifecycle fixture uses isolated Git and Linear requests,
+real runner containers and a checksummed prior manager to exercise migration.
+See the [packaged guide](packaged-install.md#migrate-a-checkout-based-project).
 
 ## Refresh the development build
 
@@ -219,12 +160,14 @@ for the complete PR inventory, exact revisions and rollout targets. See
 
 ## Opt-in updater lifecycle proof
 
-From a separate development checkout, prepare both production images explicitly:
+The historical checkout-era updater fixture requires an isolated checkout of the
+prior manager. Build both of that revision's runner images, then point
+`SYMPHONY_HISTORICAL_SOURCE` at that checkout when running the fixture:
 
 ```sh
 docker build --file runner/Dockerfile --target codex -t updater-proof:codex .
 docker build --file runner/Dockerfile --target claude -t updater-proof:claude .
-python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
+SYMPHONY_HISTORICAL_SOURCE="$PWD" python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
 ```
 
 This optional script uses the actual application, entrypoints, Docker mounts,

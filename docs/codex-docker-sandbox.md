@@ -125,8 +125,8 @@ it never restarts Docker. Old versioned guards/policies remain for active projec
 and rollback; removal is a separate administrator decision. Unsupported service
 layouts require administrator investigation rather than a bypass.
 
-After preparation run `symphony runner doctor --agent codex --sandbox-only` from
-the project as its ordinary user. Doctor distinguishes daemon identity, missing
+After preparation and native login, run
+`symphony --project PROJECT-ID runner doctor --agent codex` as the project user. Doctor distinguishes daemon identity, missing
 kernel/tools/imports, absent enforcement, integrity/ownership conflicts and
 protected-command failure. A host setup result does not establish authentication
 or model delivery. If kernel inventory is unreadable to the user, doctor reports that limit and

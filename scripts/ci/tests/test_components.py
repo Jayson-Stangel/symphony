@@ -118,6 +118,7 @@ class Consumers(unittest.TestCase):
             'elixir/lib/symphony_elixir/orchestrator.ex': {'application'},
             'elixir/mix.lock': {'application'},
             'scripts/release/manager_inputs.py': {'portable', 'package_macos', 'package_linux'},
+            'scripts/release/workflow_fixture.py': {'portable', 'fixtures'},
             'runner/templates/team-codex.Dockerfile': {'portable', 'package_macos', 'package_linux', 'application'},
             'runner/browser/package-lock.json': {'portable'},
             'scripts/package/linux/Package.resolved': {'portable', 'package_linux'},

@@ -26,8 +26,8 @@ operator-run acceptance; credential-free CI never claims they were performed.
   administrator [prepare the shipped policy on that daemon's host](#codex-on-apparmor-docker-hosts).
   The installer does not load host policy. A remote daemon needs preparation on
   its own Linux host; a no-AppArmor Docker Desktop/macOS daemon does not.
-- Prepare an existing target project checkout with an explicit `origin` remote
-  that the worker can clone and push to. Preparing that checkout is separate from
+- Prepare a GitHub repository with a committed root `WORKFLOW.md` that the
+  worker can clone and push to. Preparing the repository is separate from
   installing Symphony; the packaged manager reads its identity without host Git.
 - Have access to a tracker project, a repository-scoped GitHub credential and a
   native Codex or Claude login. Start with a disposable issue.
@@ -137,7 +137,7 @@ default installation it is under
 `releases/VERSION-STORAGE_REVISION`; use the chosen application directory if you
 installed with `--app-dir` or a namespace. Pin that physical release directory
 before checking its inventory and policy. Do not edit installed release files.
-Then run `symphony runner doctor --agent codex --sandbox-only` as the ordinary
+Then run `symphony --project PROJECT-ID runner doctor --agent codex` as the ordinary
 project user to verify actual protected execution. Preparation alone does not
 prove authentication or model delivery. Existing profiles remain installed for
 active projects and rollback; package updates never garbage-collect these
@@ -154,7 +154,7 @@ published release or a fresh installation qualification.
 
 ## Team-owned environments
 
-Use `symphony environment select --agent codex IMAGE` from the project checkout
+Use `symphony --project PROJECT-ID environment select --agent codex IMAGE`
 to pin a compatible team environment before authentication and startup. See
 [team-owned environments](team-environments.md) for requirements, templates,
 explicit changes and update/recovery behavior.
@@ -174,26 +174,16 @@ same path recovers a pruned cache. Unavailable or expired originals refuse
 onboarding. Missing Docker sockets/contexts stop before image pulls; image
 availability and native login failures are separate stages.
 
-From the existing project checkout with its explicit local `origin` remote and
-unchanged trusted `WORKFLOW.md`, run:
+After native login, verify the registered workflow and the selected provider:
 
 ```sh
-symphony runner doctor --agent codex --sandbox-only
+symphony --project PROJECT-ID runner doctor --agent codex
 ```
 
-This checks the engine, selected image and real protected project launch command.
-It starts no listener, makes no model request, and mounts no native login or
-Symphony tracker credentials. It does execute the trusted project's setup wrapper
-in a disposable copy; setup can download dependencies, and project source may
-contain sensitive files. Review that source first. A direct Codex command needs
-no custom wrapper. Supported wrappers preserve their required setup; see the
-[launch contract](codex-docker-sandbox.md#project-launch-wrappers).
-
-After native login, `symphony runner doctor --agent codex` adds native authentication
-and isolated local Git preflight. The Claude equivalent requires its native login.
-These checks do not establish remote Git authorization, Linear access, dependency
-installation for a real task, listener operation or authenticated inference. Those
-remain separate operator-run acceptance stages.
+This checks the engine, image, protected launch command, remote workflow and
+Linear project binding, native login, and isolated Git operations. For Claude,
+pass `--agent claude`. Doctor starts no listener and makes no model requests.
+Prove remote writes and authenticated issue-to-PR operation separately.
 
 ## Select the installed command
 
@@ -282,15 +272,13 @@ The existing configuration root and runner namespace still apply. Registration
 metadata and private credentials are separate files under `projects/` and use
 the existing repository-derived ID. Workspaces and runtime state stay in
 project volumes. Codex login is shared within the installation namespace.
-Claude login stays project-scoped. For a retained checkout project, keep using
-the checkout during this integration. Its cutover needs to verify the existing
-workspace, state and Claude login volumes in place before registering the same
-repository identity. The new-project registration path refuses unlabeled
-checkout resources and volumes claimed by a different Linear project.
+Claude login stays project-scoped. Existing checkout-based listeners use the
+[migration procedure](#migrate-a-checkout-based-project) to adopt their volumes
+and credentials.
 
-A remote Codex workflow uses a direct `codex … app-server` command. A wrapper
-that needs a checkout at listener startup still uses the checkout path below.
-Put worker checkout and setup steps in the workflow's workspace hooks.
+A remote Codex workflow uses a direct `codex … app-server` command. Put worker
+checkout and setup steps in the workflow's workspace hooks. Run
+`symphony project validate WORKFLOW.md` for unpublished YAML and prompt rendering.
 
 The dashboard and `/api/v1/state` report the watched branch, accepted commit,
 workflow SHA-256 and last successful source check. Initial source and Linear
@@ -307,15 +295,63 @@ A new session gets the currently accepted prompt. Existing sessions retain
 their start prompt. Tracker state and routing changes still apply at ordinary
 reconciliation and can end work that no longer qualifies.
 
-## Connect and run a project
+## Migrate a checkout-based project
 
-Follow [project initialization](getting-started.md#initialize-a-repository) from
-the target checkout:
+Use the original checkout, configuration root and runner namespace. Update the
+installed manager with `symphony update` before migrating. A manager-only update
+leaves each running listener in place. If an older runner still uses the
+basename-only identity, complete its repository identity migration with the
+prior installed release first.
+
+From the original checkout, review the proposed cutover:
 
 ```sh
-cd /path/to/existing/project
-symphony init --linear-project YOUR-LINEAR-PROJECT-SLUG
+symphony project migrate --linear-project LINEAR-SLUG-ID --workflow-branch dev
 ```
+
+The report shows the retained project ID, provider, image and port, and the
+remote commit and workflow link. When the old listener can report its last
+accepted SHA-256, the report compares it with the remote workflow. Review the
+local file against the linked commit, publish intended local-only edits, and
+adjust checkout-relative paths or commands. The remote workflow must use the
+same Linear project. Verify any custom image supports remote workflows. Its
+existing selection stays pinned. With the release environment, migration
+selects the current release image for the same provider.
+
+Repeat the command with the reviewed full commit:
+
+```sh
+symphony project migrate --linear-project LINEAR-SLUG-ID --workflow-branch dev \
+  --apply REVIEWED-COMMIT
+```
+
+The migration drains the prior listener, waits for zero workers, and stops it.
+It registers the same repository ID under `projects/`, keeping the existing
+credential file and permissions, environment selection, native login, workspace
+and state volumes, and the port and provider. The new listener starts with
+admission held, verifies the reviewed commit and native readiness, and then
+resumes. The candidate has no checkout mount.
+
+If migration reports a pending transition, rerun the same apply command from
+the original checkout to retry. If the watched branch advanced before the
+candidate was ready, roll back the pending attempt and review its new commit.
+Use the project ID from the preflight to restore the prior container stopped:
+
+```sh
+symphony --project PROJECT-ID update --rollback-runner
+```
+
+The rollback retains the stopped checkout listener as the migration source and
+keeps the current manager selected. Resolve the failure, then review and apply
+a new cutover from the original checkout. Retain the checkout until migration
+succeeds. After success, use
+`symphony --project PROJECT-ID` for restart, status, drain, resume, update and
+rollback.
+
+## Connect and run a registered project
+
+Register your repository as above, then use the printed ID with each
+project command.
 
 Edit the exact private credentials-file path printed by `init`, adding
 `LINEAR_API_KEY` and a repository-scoped `GH_TOKEN`. The default configuration root
@@ -326,7 +362,7 @@ Use literal, unquoted `KEY=value` assignments; the launcher loads them automatic
 without `source` or `eval`. Nonempty exported credentials override file credentials;
 `GH_TOKEN` precedes `GITHUB_TOKEN` within each source. Both names are supported.
 See [credential scope and source selection](getting-started.md#configure-credentials).
-Run `symphony project doctor` or `symphony project doctor --json` before login:
+Run `symphony --project PROJECT-ID project doctor` or `symphony --project PROJECT-ID project doctor --json` before login:
 it reports all missing names, the effective private file and source types without
 printing secrets or starting a listener/model request. This works in headless Linux
 and custom candidate namespaces: run it with the same installation, configuration
@@ -342,19 +378,19 @@ execute matching issues with authenticated model requests.
 For Claude:
 
 ```sh
-symphony auth claude login
-symphony auth claude check
-symphony runner doctor --agent claude
-symphony run --agent claude --port 4010
+symphony --project PROJECT-ID auth claude login
+symphony --project PROJECT-ID auth claude check
+symphony --project PROJECT-ID runner doctor --agent claude
+symphony --project PROJECT-ID run --agent claude --port 4010
 ```
 
 For the default Codex provider instead:
 
 ```sh
-symphony auth codex login
-symphony auth codex check
-symphony runner doctor --agent codex
-symphony run --port 4010
+symphony --project PROJECT-ID auth codex login
+symphony --project PROJECT-ID auth codex check
+symphony --project PROJECT-ID runner doctor --agent codex
+symphony --project PROJECT-ID run --port 4010
 ```
 
 Complete native sign-in yourself. Login is separate from the tracker/Git credential
@@ -371,13 +407,13 @@ port per running project. Read [Claude setup](claude.md) for its native profile,
 ## Stop and restart
 
 ```sh
-symphony runner drain
-symphony runner status
+symphony --project PROJECT-ID runner drain
+symphony --project PROJECT-ID runner status
 # Wait for zero active workers in the dashboard, then:
-symphony runner stop
+symphony --project PROJECT-ID runner stop
 # Restart the same provider and port; for Codex omit --agent claude.
-symphony run --agent claude --port 4010
-symphony runner resume
+symphony --project PROJECT-ID run --agent claude --port 4010
+symphony --project PROJECT-ID runner resume
 ```
 
 Stopping retains workspaces, state/logs and native login. An explicit drain remains
@@ -386,9 +422,9 @@ in place until resumed. Use the installed updater for provider/image transitions
 
 ## Repository identity
 
-The project must already be a Git checkout with a remotely accessible, explicit
-`origin` URL. The packaged manager
-finds the repository and its local origin without host Git. Normal Git-generated
+Registration derives the project ID from the supplied GitHub URL. When
+migrating a checkout, the packaged manager finds its local origin without host
+Git. Normal Git-generated
 configuration, quoted URLs, linked worktrees and repository paths with spaces are
 supported. Identity must be explicit: repository or external Git configuration
 using includes, URL rewrite rules, external `remote.origin` definitions, or
@@ -478,12 +514,10 @@ OrbStack execution was not part of that fresh-user qualification.
 
 ## Choose or change the provider
 
-From the project repository, choose `symphony init --linear-project SLUG --agent codex`
+Register with `symphony init --repository URL --linear-project SLUG --agent codex`
 or `--agent claude`. New projects default to Codex when the flag is omitted.
-Init reports the intended provider, stored desired provider/image and observed
-runner provider separately. The flag requests guidance; it does not persist a
-new provider, replace a team image, authenticate, start work or switch a listener.
-Repeat init with the same slug and explicit provider to resume setup safely.
+The flag selects setup instructions. Use the installed updater to switch an
+existing listener, and `environment show` or `runner status` to inspect it.
 
 A retained team selection takes precedence over retained runner metadata for the
 desired image. An existing listener can still use a different provider until the
@@ -495,17 +529,16 @@ When changing from either provider to the other, wait for active work to finish.
 Use the commands below, replacing `claude` with `codex` for the reverse direction:
 
 ```sh
-symphony init --linear-project SLUG --agent claude
-symphony environment show
+symphony --project PROJECT-ID environment show
 # If the retained desired environment uses the other provider, explicitly select
 # the intended locally available, verified compatible release or team image:
-symphony environment select --agent claude IMAGE
-symphony auth claude check
+symphony --project PROJECT-ID environment select --agent claude IMAGE
+symphony --project PROJECT-ID auth claude check
 # If native login is required, release the old listener through the updater:
 # symphony update --pause-runner
-# symphony auth claude login
-# symphony auth claude check
-symphony runner doctor --agent claude
+# symphony --project PROJECT-ID auth claude login
+# symphony --project PROJECT-ID auth claude check
+symphony --project PROJECT-ID runner doctor --agent claude
 symphony update --agent claude
 ```
 
@@ -526,10 +559,10 @@ add `--development-runner` to updater commands as described in the development g
 The installed updater owns the idle prior runner transition, retaining shared
 workspace/state and both provider auth stores. Never create a second listener or
 manually kill/replace the old container. After a successful transition, resume
-with `symphony run --agent claude`; use `symphony runner resume` if you deliberately
+with `symphony --project PROJECT-ID run --agent claude`; use `symphony --project PROJECT-ID runner resume` if you deliberately
 drained dispatch. Keep native auth credentials out of the project env file.
 An unobserved runner means absent **or** engine unavailable, not proof that no
-listener exists. Restore engine access and inspect `symphony runner status` before
+listener exists. Restore engine access and inspect `symphony --project PROJECT-ID runner status` before
 starting when that state is uncertain.
 
 ## Updating a packaged installation
@@ -582,7 +615,12 @@ For a Claude project, substitute `--agent claude` for `--agent codex` in the
 update/retry/rollback examples. Use the same provider as the retained project when
 restoring a completed release. `--rollback-release` without `--agent` restores only the shared manager;
 project image pins remain unchanged. A previous release directory is retained
-and verified before recovery. An unfinished transition must first be retried or
+and verified before recovery. An installation that only managed checkout-based
+projects can return to a checkout-based release. After registering or adopting a
+project, release selection requires a manager that understands the adopted
+registration format. This requirement applies across configuration roots
+sharing the installation.
+An unfinished transition must first be retried or
 rolled back before selecting another release. Recovery refuses unknown owners,
 altered release bytes, incompatible images and unrelated current-manager links.
 Do not manually repoint `current`, remove transition metadata, or manipulate
@@ -614,9 +652,10 @@ retains both platform checksums, and runs `package-lifecycle.py` on native Linux
 The clean Ubuntu 26.04 client gets archives and isolated data only, with optional
 host tools poisoned. The controller uses CI Python/Docker as test utilities.
 
-The lifecycle proof uses real memory-tracker listeners and loopback dashboards,
-physical mounts, same-basename projects, stop/restart, manager-only activation,
-selected-runner updates, post-create failure/retry and updater-controlled rollback.
+The lifecycle proof uses real listeners and loopback dashboards with empty
+Memory or isolated HTTPS Git and Linear fixtures. It checks physical mounts,
+same-basename projects, stop/restart, manager-only activation, selected-runner
+updates, post-create failure and retry, and updater-controlled rollback.
 It checks dirty tracked files, untracked evidence, state, credentials, workflows,
 local overrides and the unchanged second project's selected image. Native login
 entrypoints/Codex login status are explicitly stubbed; this is not authenticated

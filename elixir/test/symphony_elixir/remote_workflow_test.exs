@@ -166,6 +166,12 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
       assert :ok = WorkflowStore.force_reload()
 
       :ok = ObservabilityPubSub.subscribe()
+      hold = Path.join(Config.agent_state_root(), "agent-draining")
+      File.write!(hold, "migration:#{ctx.commit}\n")
+      send(store, :poll)
+      assert :sys.get_state(store).fetch == nil
+      File.rm!(hold)
+
       next = workflow(ctx.source.project, "changed prompt for {{ issue.identifier }}")
       next_commit = commit!(ctx.root, next)
       assert %{commit: ^next_commit, status: "loaded"} = check_now(store)

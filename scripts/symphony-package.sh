@@ -1,4 +1,6 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
+# Manager capability: adopted project registrations v1
+# Manager capability: records registration use v1
 packaged_install=true
 [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
 case "$(uname -s)/$(uname -m)" in
@@ -38,9 +40,10 @@ package_usage() {
 Usage:
   symphony --version
   symphony doctor [--json]
-  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH]
   symphony --project PROJECT-ID COMMAND
+  symphony project migrate --linear-project SLUG [--workflow-branch BRANCH] [--apply REVIEWED-COMMIT]
+  symphony project validate [WORKFLOW.md]
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
@@ -52,10 +55,9 @@ Usage:
   symphony environment show [--json]
 
 This release bundle requires Docker Engine (Ubuntu) or Docker Desktop/OrbStack
-(macOS). No host build or
-agent toolchain is needed. From an existing project checkout, initialize it, edit
-the printed private credentials file, authenticate the native container login,
-and run. Runner images are pulled by immutable release digest; they never build
+(macOS). No host build or agent toolchain is needed. Register the repository and
+Linear project, edit the printed private credentials file, authenticate the
+native container login, and run by project ID. Runner images are pulled by immutable release digest; they never build
 locally. Use the installed updater for release changes and runner recovery.
 init --agent codex|claude requests setup guidance; it never switches a runner.
 Without --agent, retained state wins, then new projects default to Codex.
@@ -461,6 +463,7 @@ package_install() (
   # Another installation may share command/skill paths while using a different
   # application lock. Recheck after the long copy before any activation.
   package_preflight_links || return
+  package_remember_project_registrations || return
   package_shell_activation_write || return
   next="$package_app_home/.current-$$"
   package_helper ensure-link "releases/$package_storage_key" "$next" || return
@@ -489,7 +492,7 @@ package_install() (
     package_shell_activation_instructions
   fi
   if [ "$package_channel" = candidate ]; then printf 'Candidate runners: provider login automatically obtains missing original loopback images using project GitHub Actions read access. Availability is checked at login; unavailable originals refuse onboarding. See the bundled candidate provisioning guide.\n'; fi
-  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
+  printf 'Next: register with symphony init --repository URL --linear-project SLUG and follow the printed credentials and provider instructions.\n'
   if "$first_mac"; then
     if [ -t 0 ] && [ -t 1 ] && ! "$no_shell_handoff"; then
       printf 'Opening a configured zsh login shell here. Use Symphony commands in this shell or a new Terminal window.\n'

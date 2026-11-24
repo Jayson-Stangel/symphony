@@ -240,14 +240,22 @@ defmodule SymphonyElixir.WorkflowStore do
 
   @impl true
   def handle_info(:poll, %State{source: %{} = source} = state) do
-    parent = self()
+    case File.read(Path.join(Config.agent_state_root(), "agent-draining")) do
+      {:ok, "migration:" <> _} ->
+        # Keep the reviewed startup commit stable through the admission decision.
+        schedule_poll(@remote_poll_interval_ms)
+        {:noreply, state}
 
-    {pid, ref} =
-      spawn_monitor(fn ->
-        send(parent, {self(), check_remote(state.path, source, state.commit)})
-      end)
+      _ ->
+        parent = self()
 
-    {:noreply, %{state | fetch: {pid, ref}}}
+        {pid, ref} =
+          spawn_monitor(fn ->
+            send(parent, {self(), check_remote(state.path, source, state.commit)})
+          end)
+
+        {:noreply, %{state | fetch: {pid, ref}}}
+    end
   end
 
   def handle_info({pid, outcome}, %State{fetch: {pid, ref}} = state) do
