@@ -67,6 +67,50 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     refute File.exists?(Path.join(ctx.root, "config/projects/service.env"))
   end
 
+  test "registered runs pin the verified default and confirm the detached listener", ctx do
+    [one, two] = ctx.repos
+    id_one = identity(ctx, one)
+    id_two = identity(ctx, two)
+    default = Path.join(ctx.runtime, "remote-default")
+    File.write!(default, "original-default")
+
+    for {repository, project} <- [{"one", "project-one"}, {"two", "project-two"}] do
+      opts = if repository == "two", do: ["--workflow-branch", "explicit"], else: []
+      args = ["init", "--repository", "https://github.com/#{repository}/service.git", "--linear-project", project]
+      assert {_, 0} = launch(ctx, ctx.root, args ++ opts)
+    end
+
+    for id <- [id_one, id_two] do
+      path = Path.join(ctx.root, "config/projects/#{id}.env")
+      File.write!(path, "GH_TOKEN=fixture\nLINEAR_API_KEY=fixture\n")
+    end
+
+    one = ["--project", id_one]
+    two = ["--project", id_two]
+    assert {_, 0} = launch(ctx, ctx.root, one ++ ["run", "--port", "4010"])
+    name_one = "#{ctx.prefix}-#{id_one}"
+    name_two = "#{ctx.prefix}-#{id_two}"
+    assert container(ctx, name_one)["workflow-branch"] == "original-default"
+    assert File.read!(Path.join(ctx.root, "config/projects/#{id_one}.remote")) =~ "\noriginal-default\n"
+
+    failure = Path.join(ctx.runtime, "remote-start-fail")
+    File.write!(failure, "")
+    assert {message, 1} = launch(ctx, ctx.root, two ++ ["run", "--port", "4011"])
+    assert message =~ "did not initialize its remote workflow"
+    refute message =~ "Symphony container:"
+    refute container(ctx, name_two)["running"]
+    assert container(ctx, name_one)["running"]
+    File.rm!(failure)
+
+    assert {_, 0} = launch(ctx, ctx.root, two ++ ["run"])
+    assert %{"running" => true, "port" => "4011", "workflow-branch" => "explicit"} = container(ctx, name_two)
+    File.write!(default, "changed-default")
+    assert {_, 0} = launch(ctx, ctx.root, one ++ ["runner", "stop"])
+    assert {_, 0} = launch(ctx, ctx.root, one ++ ["run"])
+    assert %{"running" => true, "port" => "4010", "workflow-branch" => "original-default"} = container(ctx, name_one)
+    assert container(ctx, name_two)["running"]
+  end
+
   test "repository identity preserves established storage and normalized remote spellings", ctx do
     [one, two] = ctx.repos
     assert identity(ctx, one) == "service-a655f1ffd4d3"
