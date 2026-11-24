@@ -168,6 +168,7 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  @spec stop_remote(atom()) :: no_return()
   defp stop_remote(reason) do
     IO.puts(:stderr, remote_message(reason))
     System.halt(1)
