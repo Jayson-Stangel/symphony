@@ -27,7 +27,7 @@ from workflow_fixture import WorkflowFixture
 # Only exact native account entrypoints are replaced. This fixture grants no
 # credentials and does not change the real listener's own readiness result.
 CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
-  local action="${@: -1}" storage image actual expected expected_build argument index auth_like=false
+  local action="${@: -1}" storage image actual expected expected_build expected_legacy_build argument index auth_like=false
   for argument in "$@"; do
     case "$argument" in /opt/symphony/claude/auth.mjs) auth_like=true ;; esac
   done
@@ -51,17 +51,19 @@ CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
     "$image" /opt/symphony/claude/auth.mjs "$action")
   printf -v actual '%q ' "$@"
   printf -v expected '%q ' "${command[@]}"
-  # Preserve the exact original-manager auth invocation during rollback as well
-  # as the exact current build-capable profile. Never accept a loose argv match.
-  local -a build=(run --read-only --cap-drop ALL --security-opt no-new-privileges
-    --pids-limit 512 --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m
-    --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g --rm)
-  if [[ "$action" = login ]]; then build+=(--interactive --tty); fi
-  build+=(--name "$storage-claude-auth" --label "com.symphony.storage=$storage"
+  # The current launcher sets the auth cap after the shared build profile.
+  # The prior build-capable launcher sets it before the profile.
+  local -a build_prefix=(run --read-only --cap-drop ALL --security-opt no-new-privileges)
+  local -a build_profile=(--cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m
+    --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g)
+  local -a build_suffix=(--rm)
+  if [[ "$action" = login ]]; then build_suffix+=(--interactive --tty); fi
+  build_suffix+=(--name "$storage-claude-auth" --label "com.symphony.storage=$storage"
     --volume "$storage-claude-auth:/home/claude" --entrypoint /usr/local/bin/node
     "$image" /opt/symphony/claude/auth.mjs "$action")
-  printf -v expected_build '%q ' "${build[@]}"
-  [[ "$actual" = "$expected" || "$actual" = "$expected_build" ]] || return 2
+  printf -v expected_build '%q ' "${build_prefix[@]}" "${build_profile[@]}" --pids-limit 512 "${build_suffix[@]}"
+  printf -v expected_legacy_build '%q ' "${build_prefix[@]}" --pids-limit 512 "${build_profile[@]}" "${build_suffix[@]}"
+  [[ "$actual" = "$expected" || "$actual" = "$expected_build" || "$actual" = "$expected_legacy_build" ]] || return 2
   if [[ "$action" = check ]]; then
     printf '%s\n' '{"ready":true,"profile":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","model_requests":0,"fixture":"credential-free-native-status"}'
   else
