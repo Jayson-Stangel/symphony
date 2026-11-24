@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native macOS/Linux package and helper regressions; no account/model requests."""
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -584,6 +585,37 @@ PY
         self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
         self.assertOK(call([command, "update", "--candidate-manifest", old_external, "--candidate-bundle", old_archive], env=env))
         self.assertEqual(json.loads(self.assertOK(call([command, "--version"], env=env)))["source_revision"], legacy_revision)
+
+        self.assertOK(call([command, "update", "--candidate-manifest", current_external, "--candidate-bundle", current_archive], env=env))
+        register = [command, "init", "--repository", "https://github.com/fixture/project.git",
+                    "--linear-project", "disposable-fixture"]
+        registered_root = self.root / "registered-override"
+        selected = dict(env, SYMPHONY_CONFIG_HOME=str(registered_root))
+        registration = registered_root / "projects"
+        app = self.root / "app"
+        self.assertEqual((app / "update.lock").stat().st_size, 0)
+        with (app / "update.lock").open("a") as updater_lock:
+            fcntl.flock(updater_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            blocked = call(register, env=selected)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("another updater is active", blocked.stderr)
+            self.assertFalse(registration.exists())
+
+        self.assertOK(call(register, env=selected))
+        record, = registration.glob("*.remote")
+        canary = record.read_bytes()
+        activations = {link: (app / link).readlink() for link in ("current", "previous")}
+        engine_calls = (self.root / "docker.calls").read_bytes()
+        alternate = self.root / "empty-override"
+        alternate.mkdir()
+        for selection in (["--rollback-release"],
+                          ["--candidate-manifest", old_external, "--candidate-bundle", old_archive]):
+            refused = call([command, "update", *selection, "--config-dir", alternate], env=env)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("selected release cannot manage registered projects", refused.stderr)
+            self.assertEqual({link: (app / link).readlink() for link in activations}, activations)
+            self.assertEqual(record.read_bytes(), canary)
+            self.assertEqual((self.root / "docker.calls").read_bytes(), engine_calls)
 
     @unittest.skipUnless(sys.platform == "darwin", "legacy Mac policy replay requires native macOS")
     def test_actual_legacy_updater_intel_policy_replay_stages_but_cannot_activate_arm_bundle(self):

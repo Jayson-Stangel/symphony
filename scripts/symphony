@@ -912,13 +912,17 @@ project_registration_write() (
   mv -f "$temporary" "$record"
 )
 
-init_registered_project() {
+init_registered_project() (
   local repository=$1 slug=$2 branch=$3 branch_seen=$4 agent=${5:-} record id env_file runtime name adopted=''
   repository=$(canonical_repository "$repository") || die 'use a GitHub HTTPS or standard GitHub SSH repository URL without credentials'
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die 'use the Linear project slug from its URL'
   valid_branch "$branch" || die 'use a short Git branch name'
   id=$(repository_id "$repository")
   record="$config_home/projects/$id.remote"
+  if "$packaged_install"; then
+    package_update_lock || return
+    [ "$(package_current_home)" = "$symphony_home" ] || die 'manager changed; retry registration through the installed command'
+  fi
   runner_project_lock "$record" || return
   if [ -e "$record" ] || [ -L "$record" ]; then
     project_registration_read "$record" || return
@@ -939,11 +943,12 @@ init_registered_project() {
   fi
   env_file="$config_home/projects/$id.env"
   project_credentials_initialize "$env_file" || return
+  if "$packaged_install"; then package_note_project_registration || return; fi
   project_registration_write "$record" "$slug" "$repository" "$branch" "$adopted" || return
   printf 'Registered project: %s\nRepository: %s\nLinear project: %s\nWorkflow branch: %s\nCredentials: %s\n' \
     "$id" "$repository" "$slug" "${branch:-remote default (resolved on first run)}" "$env_file"
   init_provider_guidance "$record" "$agent"
-}
+)
 
 init() {
   local slug= agent= repository= branch= branch_seen=false
@@ -1156,6 +1161,7 @@ project_migrate() (
   [ "$apply" = "$commit" ] || die 'remote commit changed; review the new commit before applying'
   codex_config_migration_preflight "$migration_checkout" "$runtime" "$name"
   migration_prior_id=$("$runtime" inspect --format '{{.Id}}' "$name")
+  if "$packaged_install"; then package_note_project_registration || return; fi
   project_registration_write "$root" "$slug" "$repository" "$resolved" adopted
   migration_commit=$commit
   trap 'if [ ! -e "$journal" ] && [ ! -e "$journal.complete" ] &&

@@ -540,7 +540,7 @@ exec /usr/bin/curl "$@"
             package = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony-package.sh")
             current_adopted = adopted_capability in archive.extractfile(package).read().splitlines()
         prior_adopted = adopted_capability in initial_launcher.with_name("symphony-package.sh").read_bytes().splitlines()
-        incompatible_rollback = current_adopted and not prior_adopted
+        incompatible_rollback = initial_remote and current_adopted and not prior_adopted
         retired_layout = current_remote and not initial_remote
         migration = retired_layout and not manager_update_only
         if migration:

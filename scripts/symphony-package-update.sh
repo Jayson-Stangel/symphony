@@ -21,6 +21,30 @@ package_update_lock() {
   package_helper lock "$path" 8 "$mode"
 }
 
+# Keep a monotonic receipt on the already locked file. All configuration roots
+# selecting this application share the receipt without recording their paths.
+package_note_project_registration() {
+  [ -s "$package_app_home/update.lock" ] || printf '%s\n' 'registered projects' >&8
+}
+
+package_remember_project_registrations() {
+  local previous=${1:-} record
+  [ ! -s "$package_app_home/update.lock" ] || return 0
+  for record in "$config_home"/projects/*.remote; do
+    if [ -e "$record" ] || [ -L "$record" ]; then
+      package_note_project_registration
+      return
+    fi
+  done
+  # Earlier remote managers could register projects under an arbitrary root
+  # without recording that use. Preserve their ability to manage those records.
+  if [ -n "$previous" ] &&
+     grep -Fqx 'project_registration_write() (' "$previous/scripts/symphony" 2>/dev/null &&
+     ! grep -Fqx '# Manager capability: records registration use v1' "$previous/scripts/symphony-package.sh" 2>/dev/null; then
+    package_note_project_registration
+  fi
+}
+
 # This is only a locator. All selected release and recovery information lives
 # in the existing project transition directory, including with config overrides.
 package_pending_transition() {
@@ -300,11 +324,11 @@ package_update() {
       target=$(package_verified_home "$target") || return
     else target=$(package_stage_download "$requested" "$candidate_manifest" "$candidate_bundle") || return; fi
   fi
-  # Activation changes the shared manager for every configuration root.
-  # The verified package must understand the adopted registration record,
-  # including its fourth field. Early remote-aware managers do not.
-  grep -Fqx '# Manager capability: adopted project registrations v1' "$target/scripts/symphony-package.sh" 2>/dev/null ||
-    die 'selected release cannot manage registered projects with the adopted record format; select a compatible manager'
+  package_remember_project_registrations "$previous" || return
+  if [ -s "$package_app_home/update.lock" ]; then
+    grep -Fqx '# Manager capability: adopted project registrations v1' "$target/scripts/symphony-package.sh" 2>/dev/null ||
+      die 'selected release cannot manage registered projects with the adopted record format; select a compatible manager'
+  fi
   # Re-enter the exact verified manager without resolving latest a second time.
   unset SYMPHONY_RUNNER_IMAGE
   exec env SYMPHONY_HOME="$target" SYMPHONY_APP_HOME="$package_app_home" \
@@ -322,6 +346,7 @@ complete_package_update() {
   # mutate any installed manager or project. The previous verified schema1
   # manifest is the sole migration route for images without a protocol label.
   package_check_retained_images "$package_update_previous" || return
+  package_remember_project_registrations "$package_update_previous" || return
   if [ -n "$2" ]; then
     local root
     root=$(repo_root)

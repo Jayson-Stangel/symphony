@@ -614,11 +614,11 @@ For a Claude project, substitute `--agent claude` for `--agent codex` in the
 update/retry/rollback examples. Use the same provider as the retained project when
 restoring a completed release. `--rollback-release` without `--agent` restores only the shared manager;
 project image pins remain unchanged. A previous release directory is retained
-and verified before recovery. A manager that supports migrated projects
-requires that capability in the rollback target. Early managers with remote
-registration could only read newly registered projects. The manager is shared
-across configuration roots, so selecting a different root does not change
-this rule.
+and verified before recovery. An installation that only managed checkout-based
+projects can return to a checkout-based release. After registering or adopting a
+project, release selection requires a manager that understands the adopted
+registration format. This requirement applies across configuration roots
+sharing the installation.
 An unfinished transition must first be retried or
 rolled back before selecting another release. Recovery refuses unknown owners,
 altered release bytes, incompatible images and unrelated current-manager links.

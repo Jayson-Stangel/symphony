@@ -1,5 +1,6 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
 # Manager capability: adopted project registrations v1
+# Manager capability: records registration use v1
 packaged_install=true
 [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
 case "$(uname -s)/$(uname -m)" in
@@ -462,6 +463,7 @@ package_install() (
   # Another installation may share command/skill paths while using a different
   # application lock. Recheck after the long copy before any activation.
   package_preflight_links || return
+  package_remember_project_registrations || return
   package_shell_activation_write || return
   next="$package_app_home/.current-$$"
   package_helper ensure-link "releases/$package_storage_key" "$next" || return
