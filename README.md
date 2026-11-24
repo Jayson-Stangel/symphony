@@ -117,6 +117,7 @@ itself or test `dev`, use a [separate development environment](docs/development.
 | Configure trackers, workspaces, hooks, models, or concurrency | [Configuration reference](elixir/README.md#configuration) |
 | Use Claude, configure its tools, or resolve native login and quota issues | [Claude runner guide](docs/claude.md) |
 | Understand or adapt the worker's operating instructions | [Workflow template](elixir/WORKFLOW.md) |
+| Add a fresh agent review before human review | [Independent Agent Review](docs/agent-review/README.md) |
 | Develop and test Symphony in isolation | [Development guide](docs/development.md) |
 | Build or test the Elixir service | [Implementation guide](elixir/README.md) |
 | Build and qualify versioned runner and manager artifacts | [Release artifact contract](scripts/release/README.md) |
