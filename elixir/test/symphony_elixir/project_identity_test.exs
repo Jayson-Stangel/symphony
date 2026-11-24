@@ -171,13 +171,20 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     log = Path.join(ctx.runtime, "calls.jsonl")
     File.write!(log, "")
 
-    assert {message, 0} = launch(ctx, repo, command)
+    File.write!(Path.join(ctx.runtime, "fail-backup-removal-once"), "")
+    assert {message, 97} = launch(ctx, repo, command)
     assert message =~ @commit
     assert %{"running" => true, "linear-project" => "fixture", "workflow-branch" => "main"} = container(ctx, name)
     calls = File.read!(log)
     assert calls =~ "--remote-workflow-probe"
     refute calls =~ "target=/etc/symphony"
     refute File.exists?(Path.join(ctx.runtime, name <> "-before-update.json"))
+
+    # A completed cutover can settle even if the watched branch is unavailable.
+    File.write!(Path.join(ctx.runtime, "remote-probe-fail"), "")
+    assert {message, 0} = launch(ctx, repo, command)
+    assert message =~ "Previously completed runner transition recovered"
+    refute File.exists?(Path.join(ctx.root, "config/runners/#{id}.transition"))
   end
 
   defp identity(ctx, repo) do

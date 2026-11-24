@@ -36,9 +36,11 @@ class WorkflowFixture:
         def openssl(*args):
             subprocess.run(["openssl", *args], cwd=self.directory, check=True, capture_output=True)
 
-        openssl("req", "-x509", "-nodes", "-newkey", "rsa:2048", "-days", "2",
-                "-subj", "/CN=Symphony test CA", "-addext", "basicConstraints=critical,CA:TRUE",
-                "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", "ca.key", "-out", "cert.pem")
+        (self.directory / "ca.conf").write_text(
+            "[req]\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\n"
+            "[ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")
+        openssl("req", "-x509", "-nodes", "-newkey", "rsa:2048", "-days", "2", "-config", "ca.conf",
+                "-subj", "/CN=Symphony test CA", "-keyout", "ca.key", "-out", "cert.pem")
         openssl("req", "-nodes", "-newkey", "rsa:2048", "-subj", "/CN=github.com",
                 "-keyout", "key.pem", "-out", "request.pem")
         (self.directory / "extensions").write_text(

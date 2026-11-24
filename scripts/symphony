@@ -1201,14 +1201,18 @@ runner_migration_resume() {
     if data=$(runner_state_response "$runtime" "$name"); then
       # Recovery after the verified resume already opened admission. Ordinary
       # remote branch refreshes may have advanced by the time this retry runs.
-      if [ -f "$journal/migration.resume" ] && runner_admission_ready "$data"; then return; fi
+      if [ -f "$journal/migration.resume" ] && runner_admission_ready "$data"; then
+        printf 'resumed\n' >"$journal/migration.resume"
+        return
+      fi
       if printf '%s' "$data" | host_json migration-ready "$migration_commit" "$registered_branch" "$registered_linear"; then
         printf 'Verified held listener at workflow commit %s.\n' "$migration_commit"
         : >"$journal/migration.resume"
         data=$("$runtime" exec "$name" curl --fail --silent --show-error --max-time 45 --max-filesize 1048576 \
           -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
           -d "{\"expected_workflow_commit\":\"$migration_commit\"}" http://127.0.0.1:4010/api/v1/agent/resume) || return
-        runner_admission_ready "$data"
+        runner_admission_ready "$data" || return
+        printf 'resumed\n' >"$journal/migration.resume"
         return
       fi
     fi
@@ -1270,6 +1274,7 @@ runner_check_project_resources() {
   if [ "$scope" = all ]; then names+=("$storage-before-update"); fi
   for name in "${names[@]}"; do
     if labels=$("$runtime" inspect --format '{{index .Config.Labels "com.symphony.storage"}}|{{index .Config.Labels "com.symphony.linear-project"}}' "$name" 2>/dev/null); then
+      [[ "$labels" == "$storage|"* ]] || die "foreign runner storage for $name"
       [ "$labels" != "$storage|$expected" ] || continue
       checkout=${migration_checkout:-}
       if [ -n "$checkout" ] && [ "$labels" = "$storage|" ]; then
@@ -2451,7 +2456,7 @@ runner_prepare_storage() {
 }
 
 runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1 migration_completed=false
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
@@ -2480,7 +2485,13 @@ runner_transition() (
     fi
     if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
     candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
-    if [ "$agent" = codex ]; then
+    if [ -n "${migration_commit:-}" ] && [ -f "$journal/migration.resume" ] &&
+       [ "$(cat "$journal/migration.resume")" = resumed ] &&
+       ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
+      # The verified cutover was already committed. Finish metadata recovery
+      # without making a newly unavailable/changed branch an updater blocker.
+      migration_completed=true
+    elif [ "$agent" = codex ]; then
       codex_config_journal_load "$root" "$candidate" "$journal"
       runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
     elif registered_project "$root"; then
@@ -2535,7 +2546,8 @@ runner_transition() (
   candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ "$agent" = codex ]; then codex_config_journal_load "$root" "$candidate" "$journal"; fi
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
-    if [ "$(runner_status "$root")" = true ] &&
+    if { [ "$(runner_status "$root")" = true ] ||
+         { "$migration_completed" && [ "$(runner_status "$root")" = false ]; }; } &&
        ! runner_is_legacy "$runtime" "$name" &&
        runner_workflow_mount_owned "$root" "$runtime" "$name" directory &&
        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] &&
@@ -2546,7 +2558,7 @@ runner_transition() (
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       if [ "$agent" = codex ]; then codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"; fi
-      runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" || die 'candidate recovery refused'
+      "$migration_completed" || runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
       if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
       runner_finish_journal "$journal"

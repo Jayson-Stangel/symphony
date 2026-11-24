@@ -800,6 +800,9 @@ exec /usr/bin/curl "$@"
         # from the same checksummed archive before positive transition proof.
         image = current["runners"][primary_agent]["x86_64"]["image"]
         remove_local_image(run, f"localhost:5000/symphony-{primary_agent}:candidate")
+        selected_distribution = current.get("distribution", {}).get(primary_agent, {}).get("x86_64")
+        if migration and selected_distribution and selected_distribution != image:
+            remove_local_image(run, selected_distribution)
         remove_local_image(run, image)
         digest = image.split("@", 1)[1]
         request = urllib.request.Request(f"http://127.0.0.1:5000/v2/symphony-{primary_agent}/manifests/" + digest, method="DELETE")
@@ -820,6 +823,8 @@ exec /usr/bin/curl "$@"
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
             unchanged(); state(port)
             restore_component(run, graphs[("candidate", primary_agent)], registry_state)
+            if selected_distribution and selected_distribution != image:
+                restore_component(run, graphs[("candidate", primary_agent)], registry_state, destination=selected_distribution)
             preflight = client_run(migrate, cwd=repo).stdout
             assert f"Remote commit: {commits[0]}" in preflight
             assert "last accepted listener workflow" in preflight and "local-only edits" in preflight

@@ -112,6 +112,7 @@ elif cmd == 'run':
             data['running'] = False
         save(name, data)
     elif '--remote-workflow-probe' in args:
+        if (root / 'remote-probe-fail').exists(): sys.exit(1)
         branch = next(arg.split('=', 1)[1] for arg in args if arg.startswith('SYMPHONY_REMOTE_BRANCH='))
         branch = branch or (root / 'remote-default').read_text()
         if '--compare-local' in args:
@@ -147,6 +148,10 @@ elif cmd in ['stop', 'start']:
     data = read(args[-1]); data['running'] = cmd == 'start'; save(args[-1], data)
 elif cmd == 'rm':
     path(args[-1]).unlink()
+    fault = root / 'fail-backup-removal-once'
+    if args[-1].endswith('-before-update') and fault.exists():
+        fault.unlink()
+        sys.exit(97)
 elif cmd == 'rename':
     source, target = args[1:]
     read(source)

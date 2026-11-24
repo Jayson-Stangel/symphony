@@ -343,7 +343,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
     refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
     before_creation = Enum.take_while(calls, &(not String.contains?(&1, "--detach")))
-    refute Enum.any?(before_creation, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and not String.contains?(&1, "com.symphony.linear-project") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
+
+    refute Enum.any?(
+             before_creation,
+             &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and not String.contains?(&1, "com.symphony.linear-project") and
+                 String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t"))
+           )
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
@@ -576,7 +581,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
     # Exercise the ordinary transition after source handoff, without invoking the source updater.
-    script = ~s|source "$1" --help >/dev/null; runner_transition "$(repo_root)" codex false|
+    script = ~s|source "$1" --help >/dev/null; runner_transition "$(checkout_root)" codex false|
     assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
     assert message =~ "pending transition has no qualified Codex settings"
     refute File.read!(ctx.log) =~ "stop\t"
@@ -845,8 +850,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.mkdir_p!(other_repo)
     assert {_, 0} = System.cmd("git", ["init", "-q", other_repo])
     assert {_, 0} = System.cmd("git", ["-C", other_repo, "remote", "add", "origin", "https://github.com/example/other.git"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"])
+    other_runtime = [{"FIXTURE_STATE", Path.join(ctx.root, "other-auth-state")}]
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"], other_runtime)
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"], other_runtime)
 
     File.touch!(barrier <> ".release")
     # The updater invokes native readiness internally while holding the same lock.
