@@ -54,10 +54,30 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         exit ;;
       stop:*-task-limit-*) exit ;;
       rm:*-task-limit-*-observer) rm "$FIXTURE_STATE.observer-name"; exit ;;
-      rm:*-task-limit-*) rm "$FIXTURE_STATE.probe-limit" "$FIXTURE_STATE.probe-name"; exit ;;
+      rm:*-task-limit-*) rm -f "$FIXTURE_STATE.probe-limit" "$FIXTURE_STATE.probe-name" "$FIXTURE_STATE.probe-workflow"; exit ;;
+      start:*-task-limit-*) grep -qx '  kind: memory' "$FIXTURE_STATE.probe-workflow"; exit ;;
     esac
     case "$1:${2:-}" in exec:*-task-limit-*) cat "$FIXTURE_STATE.probe-limit"; exit ;; esac
     case "$1" in
+      create)
+        case "$*" in
+          *com.symphony.mode=task-limit-probe*) ;;
+          *) exit 1 ;;
+        esac
+        [[ "$*" = *type=volume,target=/etc/symphony,volume-nocopy* && "$*" != *type=bind* ]] || exit 1
+        while [ "$#" -gt 1 ]; do
+          case "$1" in
+            --pids-limit) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-limit" ;;
+            --name) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-name" ;;
+          esac
+          shift
+        done
+        [ "${FIXTURE_TASK_LIMIT_INTERRUPT:-false}" != true ] || exit 1
+        cat "$FIXTURE_STATE.probe-name" ;;
+      cp)
+        [ "$3" = "$(cat "$FIXTURE_STATE.probe-name"):/etc/symphony/WORKFLOW.md" ] || exit 1
+        cp "$2" "$FIXTURE_STATE.probe-workflow"
+        [ "${FIXTURE_TASK_LIMIT_COPY_FAIL:-false}" != true ] ;;
       context) printf 'ssh://fixture-daemon\\n' ;;
       info)
         case "${!#}" in
@@ -129,15 +149,6 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
-          *com.symphony.mode=task-limit-probe*)
-            while [ "$#" -gt 1 ]; do
-              case "$1" in
-                --pids-limit) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-limit" ;;
-                --name) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-name" ;;
-              esac
-              shift
-            done
-            [ "${FIXTURE_TASK_LIMIT_INTERRUPT:-false}" != true ] ;;
           *container:*-task-limit-*)
             while [ "$1" != --name ]; do shift; done
             printf '%s\\n' "$2" >"$FIXTURE_STATE.observer-name"
@@ -2114,7 +2125,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
       assert message =~ "listener task limit differs"
       assert {result, 0} = launch_args(ctx, update)
       assert result =~ "Runner transition complete"
-      assert File.read!(ctx.log) =~ "--pids-limit\t2048"
+      calls = File.read!(ctx.log)
+      assert calls =~ "--pids-limit\t2048"
+      assert calls =~ ~r/create[^\n]*type=volume,target=\/etc\/symphony,volume-nocopy/
+      assert calls =~ ~r/\ncp\t[^\n]*\/WORKFLOW\.md\t[^\n]*:\/etc\/symphony\/WORKFLOW\.md\t\nstart\t/
       assert File.read!(ctx.state <> ".image") == image
       assert {status, 0} = launch_args(ctx, ["runner", "status"])
       assert status =~ "desired explicit (2048); launched explicit (2048); observed cgroup pids.max 2048"
@@ -2160,6 +2174,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(ctx.log) =~ "stop\t--time\t5\tsymphony-#{ctx.namespace}-task-limit-"
     assert File.read!(ctx.log) =~ "rm\t--volumes\tsymphony-#{ctx.namespace}-task-limit-"
     refute File.exists?(ctx.state <> ".probe-name")
+    assert String.trim(File.read!(ctx.state)) == "true"
+
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_TASK_LIMIT_COPY_FAIL", "true"}])
+    calls = File.read!(ctx.log)
+    assert calls =~ ~r/\ncp\t[^\n]*:\/etc\/symphony\/WORKFLOW\.md/
+    refute calls =~ ~r/\nstart\t[^\n]*-task-limit-/
+    refute File.exists?(ctx.state <> ".probe-workflow")
     assert String.trim(File.read!(ctx.state)) == "true"
   end
 
