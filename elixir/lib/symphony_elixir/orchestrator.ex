@@ -783,7 +783,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
-          {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
+          {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:held, String.t()} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
       when is_function(issue_fetcher, 1) do
     revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
@@ -1348,10 +1348,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    with {:ok, %Issue{} = refreshed_issue} <- refresh_issue_for_dispatch(issue),
-         nil <- WorkflowStore.admission_block() do
-      do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
-    else
+    case refresh_issue_for_dispatch(issue) do
+      {:ok, %Issue{} = refreshed_issue} -> do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
       _ -> state
     end
   end
@@ -1360,6 +1358,9 @@ defmodule SymphonyElixir.Orchestrator do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         {:ok, refreshed_issue}
+
+      {:held, _reason} = held ->
+        held
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -1444,7 +1445,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
+  defp revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states) do
+    with {:ok, refreshed_issue} <- fetch_dispatch_issue(issue, issue_fetcher, terminal_states) do
+      case WorkflowStore.admission_block() do
+        nil -> {:ok, refreshed_issue}
+        reason -> {:held, reason}
+      end
+    end
+  end
+
+  defp fetch_dispatch_issue(%Issue{id: issue_id}, issue_fetcher, terminal_states)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
     case issue_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
@@ -1462,7 +1472,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
+  defp fetch_dispatch_issue(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id) do
     %{
@@ -1689,6 +1699,9 @@ defmodule SymphonyElixir.Orchestrator do
       case refresh_issue_for_dispatch(issue) do
         {:ok, %Issue{} = refreshed_issue} ->
           {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
+
+        {:held, reason} ->
+          {:noreply, schedule_issue_retry(state, issue.id, attempt, Map.put(metadata, :error, reason))}
 
         {:skip, :missing} ->
           {:noreply, release_issue_claim(state, issue.id)}

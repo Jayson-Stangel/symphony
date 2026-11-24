@@ -270,7 +270,8 @@ symphony --project PROJECT-ID runner status
 Omit `--workflow-branch` to resolve and record the remote default on the first
 run that verifies the source. Future runs continue to use the recorded branch.
 To switch, drain and stop that runner, repeat initialization with a new
-`--workflow-branch` or `--default-workflow-branch`, then run it again. If you
+`--workflow-branch` or `--default-workflow-branch`, then run it again. Use
+`runner resume` when you are ready to clear the retained drain. If you
 have one registration, you can omit `--project` from outside a checkout. With
 several registrations, use the ID for auth, preflight, run, status, logs,
 drain, stop, resume and project-scoped update. The second project needs a
@@ -281,8 +282,11 @@ The existing configuration root and runner namespace still apply. Registration
 metadata and private credentials are separate files under `projects/` and use
 the existing repository-derived ID. Workspaces and runtime state stay in
 project volumes. Codex login is shared within the installation namespace.
-Claude login stays project-scoped. A registration cannot claim a repository's
-retained checkout resources during this integration.
+Claude login stays project-scoped. For a retained checkout project, keep using
+the checkout during this integration. Its cutover needs to verify the existing
+workspace, state and Claude login volumes in place before registering the same
+repository identity. The new-project registration path refuses unlabeled
+checkout resources and volumes claimed by a different Linear project.
 
 A remote Codex workflow uses a direct `codex … app-server` command. A wrapper
 that needs a checkout at listener startup still uses the checkout path below.

@@ -8,7 +8,7 @@ defmodule SymphonyElixir.WorkflowStore do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.{RemoteWorkflow, Workflow}
+  alias SymphonyElixir.{PromptBuilder, RemoteWorkflow, Workflow}
   alias SymphonyElixirWeb.ObservabilityPubSub
 
   @poll_interval_ms 1_000
@@ -140,11 +140,10 @@ defmodule SymphonyElixir.WorkflowStore do
       nil ->
         load_local_initial()
 
-      source ->
-        case prepare_remote(source, true) do
-          {:ok, state} -> start_remote_poll(state)
-          {:error, reason} -> {:stop, reason}
-        end
+      _source ->
+        # The container entrypoint prepares and qualifies the initial workflow.
+        # Restart the listener as a unit if that boot snapshot has been lost.
+        {:stop, :missing_remote_boot_workflow}
     end
   end
 
@@ -245,7 +244,7 @@ defmodule SymphonyElixir.WorkflowStore do
 
     {pid, ref} =
       spawn_monitor(fn ->
-        send(parent, {self(), RemoteWorkflow.fetch(source, state.commit)})
+        send(parent, {self(), check_remote(state.path, source, state.commit)})
       end)
 
     {:noreply, %{state | fetch: {pid, ref}}}
@@ -273,6 +272,18 @@ defmodule SymphonyElixir.WorkflowStore do
     Process.send_after(self(), :poll, interval)
   end
 
+  defp check_remote(path, source, commit) do
+    case RemoteWorkflow.fetch(source, commit) do
+      {:ok, %{content: content} = candidate} ->
+        with {:ok, accepted} <- accept_remote(path, source, candidate, timestamp(), false) do
+          {:ok, accepted, content}
+        end
+
+      outcome ->
+        outcome
+    end
+  end
+
   defp finish_remote_poll(state, outcome) do
     schedule_poll(@remote_poll_interval_ms)
     updated = apply_remote_result(%{state | fetch: nil}, outcome, timestamp())
@@ -284,9 +295,9 @@ defmodule SymphonyElixir.WorkflowStore do
     %{state | status: "loaded", checked_at: time, source_checked_at: time, source_error: nil, source_block: nil}
   end
 
-  defp apply_remote_result(state, {:ok, candidate}, time) do
-    case accept_remote(state.path, state.source, candidate, time, true) do
-      {:ok, accepted} -> accepted
+  defp apply_remote_result(state, {:ok, accepted, content}, time) do
+    case retain_remote(state.path, content, true) do
+      :ok -> accepted
       {:error, reason} -> reject_remote(%{state | source_checked_at: time}, reason, time)
     end
   end
@@ -423,15 +434,11 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp validate_source_prompt(nil, _prompt), do: :ok
 
-  defp validate_source_prompt(_source, prompt) do
-    with {:ok, _template} <- Solid.parse(prompt), do: :ok
-  end
+  defp validate_source_prompt(_source, prompt), do: PromptBuilder.validate_template(prompt)
 
   defp codex_wrapper?(command) do
-    case OptionParser.split(command) do
-      [executable | _] -> Path.basename(executable) == "bash"
-      _ -> false
-    end
+    executable = command |> OptionParser.split() |> List.first("")
+    Path.basename(executable) == "bash"
   end
 
   defp hash_content(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)

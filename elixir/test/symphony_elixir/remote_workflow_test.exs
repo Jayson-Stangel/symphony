@@ -50,6 +50,11 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     assert {:error, :unreachable} = RemoteWorkflow.fetch(ctx.remote)
     File.rename!(object <> ".hidden", object)
 
+    assert {:error, :unreachable} = RemoteWorkflow.fetch(Map.put(ctx.remote, :scratch_root, object))
+    git!(ctx.root, ["checkout", "-q", "--detach"])
+    assert {:error, :missing_branch} = RemoteWorkflow.fetch(%{ctx.remote | branch: ""})
+    git!(ctx.root, ["switch", "-q", ctx.remote.branch])
+
     git!(ctx.root, ["branch", "team/refs/heads/main"])
     assert {:error, :missing_branch} = RemoteWorkflow.fetch(%{ctx.remote | branch: "main"})
     git!(ctx.root, ["branch", "main"])
@@ -88,6 +93,7 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     assert state.stamp == digest(ctx.bytes)
     assert File.read!(state.path) == ctx.bytes
     assert {:error, :invalid_registration} = WorkflowStore.prepare_remote(ctx.remote, true, fetch)
+    assert {:error, :invalid_registration} = WorkflowStore.prepare_remote(ctx.remote, false)
     assert {:error, :missing_branch} = WorkflowStore.prepare_remote(ctx.source, true, fn _ -> {:error, :missing_branch} end)
 
     candidates = [
@@ -95,6 +101,10 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
       {workflow("registered-linear", "wrong endpoint", "    endpoint: https://example.test/graphql\n"), :linear_endpoint_mismatch},
       {workflow("registered-linear", "wrong credential", "    api_key: another-key\n"), :linear_credential_mismatch},
       {workflow("registered-linear", "{% unclosed %}"), :invalid_workflow},
+      {workflow("registered-linear", "{{ issue.typo }}"), :invalid_workflow},
+      {workflow("registered-linear", "{% if attempt %}{{ issue.typo }}{% endif %}"), :invalid_workflow},
+      {workflow("registered-linear", "{{ issue.title | unknown_filter }}"), :invalid_workflow},
+      {workflow("registered-linear", "{% for n in (1..100000000) limit:1 %}{{ n }}{% endfor %}"), :invalid_workflow},
       {"---\ntracker: [\n---\n", :invalid_workflow}
     ]
 
@@ -123,10 +133,15 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     old = :sys.get_state(store)
     Application.put_env(:symphony_elixir, :prepared_remote_workflow, %{state | source: Map.put(ctx.remote, :scratch_root, Path.dirname(state.path))})
     assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
-    assert {:ok, store} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
     System.put_env("SYMPHONY_REMOTE_REPOSITORY", ctx.source.repository)
 
     try do
+      assert WorkflowStore.admission_block() == "workflow_source_unavailable"
+      prepared = Application.get_env(:symphony_elixir, :prepared_remote_workflow)
+      Application.delete_env(:symphony_elixir, :prepared_remote_workflow)
+      assert {:stop, :missing_remote_boot_workflow} = WorkflowStore.init([])
+      Application.put_env(:symphony_elixir, :prepared_remote_workflow, prepared)
+      assert {:ok, store} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
       assert %{commit: ctx.commit, source_block: nil} == Map.take(WorkflowStore.status(), [:commit, :source_block])
       assert WorkflowStore.admission_block() == nil
       assert {:ok, %Config.Schema{}} = WorkflowStore.settings()
@@ -166,15 +181,38 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
       assert WorkflowStore.status().sha256 == digest(next)
       assert WorkflowStore.admission_block() == nil
 
+      File.rm!(state.path)
+      File.mkdir!(state.path)
+      commit!(ctx.root, workflow(ctx.source.project, "after storage recovery"))
+      assert %{status: "rejected", commit: ^recovered, source_block: :workflow_storage_unavailable} = check_now(store)
+      File.rmdir!(state.path)
+      assert %{status: "loaded", source_block: nil} = check_now(store)
+
       git!(ctx.root, ["switch", "-qc", "elsewhere"])
       git!(ctx.root, ["branch", "-D", ctx.remote.branch])
       assert %{status: "rejected", source_block: :missing_branch} = check_now(store)
     after
       System.delete_env("SYMPHONY_REMOTE_REPOSITORY")
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+      :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
       assert {:ok, store} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
       :sys.replace_state(store, fn _ -> old end)
     end
+  end
+
+  test "a failed asynchronous source check leaves the accepted workflow stale", ctx do
+    assert {:ok, state} = WorkflowStore.prepare_remote(ctx.source, false, fn _ -> RemoteWorkflow.fetch(ctx.remote) end)
+    ref = make_ref()
+    source_check = %{state | fetch: {self(), ref}}
+    assert {:noreply, result} = WorkflowStore.handle_info({:DOWN, ref, :process, self(), :killed}, source_check)
+    assert result.status == "stale"
+    assert result.commit == ctx.commit
+    assert result.source_block == nil
+  end
+
+  test "the shipped workflow can render normal and retry prompts" do
+    path = Path.expand("../../WORKFLOW.md", __DIR__)
+    assert {:ok, workflow} = Workflow.load(path)
+    assert :ok = PromptBuilder.validate_template(workflow.prompt_template)
   end
 
   test "the Linear project probe checks the exact slug through the selected token", ctx do

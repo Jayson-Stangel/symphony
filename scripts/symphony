@@ -1721,6 +1721,9 @@ runner_start() {
         profile=$(claude_native_profile)
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")" = "$profile" ] || die 'listener native profile differs; transition through symphony update --agent'
       fi
+      if "$registered" && ! runner_confirm_remote_start "$runtime" "$name"; then
+        die "registered listener has not initialized its workflow; inspect symphony --project $id runner logs"
+      fi
       return
     fi
     die 'existing container cannot be reused; use the installed updater'
@@ -1822,8 +1825,29 @@ runner_start() {
     "$image_id" >/dev/null
   fi
   runner_write_metadata "$root" "$port" "$agent" "$image_id" "$profile"
+  if "$registered" && ! runner_confirm_remote_start "$runtime" "$name"; then
+    "$runtime" stop "$name" >/dev/null || die "could not stop unconfirmed registered runner $name; inspect Docker and runner logs"
+    die "registered listener did not initialize its remote workflow; inspect symphony --project $id runner logs and retry"
+  fi
   codex_config_cleanup "$root" "$runtime"
   printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
+}
+
+# Docker detach only confirms container creation. Verify that the named
+# container actually started its API after accepting the remote workflow.
+runner_confirm_remote_start() {
+  local runtime=$1 name=$2 state response deadline=$((SECONDS + 265))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$("$runtime" inspect --format '{{.State.Status}}' "$name") || return
+    case "$state" in exited|dead|restarting) return 1 ;; esac
+    if response=$("$runtime" exec "$name" curl --fail --silent --max-time 2 --max-filesize 1048576 \
+      http://127.0.0.1:4010/api/v1/state 2>/dev/null) &&
+      printf '%s' "$response" | host_json legacy-running; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 # The selected runtime cache is written atomically; the journal retains intent.
@@ -2643,7 +2667,7 @@ runner_doctor() {
 }
 
 runner() {
-  local command=${1:-} root agent= sandbox_only=false archive=
+  local command=${1:-} root agent= sandbox_only=false archive= runtime owner port
   if [ "$command" = import ]; then
     shift
     while [ "$#" -gt 0 ]; do
@@ -2676,8 +2700,9 @@ runner() {
       done
       runner_doctor "$root" "$agent" "$sandbox_only" ;;
     logs)
-      runner_require_identity "$root"
       runtime=$(container_runtime)
+      owner=$(runner_project_owner "$root") || return
+      runner_check_project_resources "$root" "$runtime" "$owner" || return
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)

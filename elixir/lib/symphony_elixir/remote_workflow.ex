@@ -51,18 +51,12 @@ defmodule SymphonyElixir.RemoteWorkflow do
   defp select_branch(%{branch: branch}) when branch != "", do: {:ok, branch}
 
   defp select_branch(%{repository: repository}) do
-    case git(["ls-remote", "--symref", "--exit-code", "--", repository, "HEAD"]) do
-      {output, 0} ->
-        case Regex.run(~r/^ref: refs\/heads\/([^\t\n]+)\tHEAD$/m, output, capture: :all_but_first) do
-          [branch] -> {:ok, branch}
-          _ -> {:error, :missing_branch}
-        end
-
-      {_, 2} ->
-        {:error, :missing_branch}
-
-      _ ->
-        {:error, :unreachable}
+    with {:ok, output} <- remote_refs(["--symref", "--exit-code", "--", repository, "HEAD"]),
+         [branch] <- Regex.run(~r/^ref: refs\/heads\/([^\t\n]+)\tHEAD$/m, output, capture: :all_but_first) do
+      {:ok, branch}
+    else
+      nil -> {:error, :missing_branch}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -74,87 +68,82 @@ defmodule SymphonyElixir.RemoteWorkflow do
   end
 
   defp ref_commit(repository, ref) do
-    case git(["ls-remote", "--refs", "--exit-code", "--", repository, ref]) do
-      {output, 0} ->
-        commits =
-          for line <- String.split(output, "\n"),
-              [commit, ^ref] <- [String.split(line, "\t")],
-              do: commit
+    with {:ok, output} <- remote_refs(["--refs", "--exit-code", "--", repository, ref]) do
+      commit =
+        output
+        |> String.split("\n")
+        |> Enum.find_value(&ref_value(&1, ref))
 
-        case commits do
-          [commit] -> validate_commit(commit)
-          [] -> {:error, :missing_branch}
-          _ -> {:error, :unreachable}
-        end
+      if commit, do: validate_commit(commit), else: {:error, :missing_branch}
+    end
+  end
 
-      {_, 2} ->
-        {:error, :missing_branch}
+  defp ref_value(line, ref) do
+    case String.split(line, "\t") do
+      [commit, ^ref] -> commit
+      _ -> nil
+    end
+  end
 
-      _ ->
-        {:error, :unreachable}
+  defp remote_refs(args) do
+    case git(["ls-remote" | args]) do
+      {output, 0} -> {:ok, output}
+      {_, 2} -> {:error, :missing_branch}
+      result -> git_output(result)
     end
   end
 
   defp fetch_blob(repository, branch, ref, scratch_root) do
     directory = Path.join(scratch_root, "symphony-workflow-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false))
+    git_dir = ["--git-dir", directory]
 
-    case make_scratch(scratch_root, directory) do
-      :ok ->
-        try do
-          with {_, 0} <- git(["init", "--bare", "--quiet", directory]),
-               {_, 0} <- git(["--git-dir", directory, "remote", "add", "origin", repository]),
-               {_, 0} <- git(["--git-dir", directory, "fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", ref]),
-               {raw_commit, 0} <- git(["--git-dir", directory, "rev-parse", "--verify", "FETCH_HEAD^{commit}"]),
-               {:ok, commit} <- validate_commit(String.trim(raw_commit)),
-               {:ok, content} <- read_blob(directory, commit) do
-            {:ok, %{branch: branch, commit: commit, content: content}}
-          else
-            {:error, reason} -> {:error, reason}
-            _ -> {:error, :unreachable}
-          end
-        after
-          File.rm_rf(directory)
+    with :ok <- make_scratch(scratch_root, directory) do
+      try do
+        with {:ok, _} <- command_output(["init", "--bare", "--quiet", directory]),
+             {:ok, _} <- command_output(git_dir ++ ["remote", "add", "origin", repository]),
+             {:ok, _} <- command_output(git_dir ++ ["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", ref]),
+             {:ok, raw_commit} <- command_output(git_dir ++ ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]),
+             {:ok, commit} <- validate_commit(String.trim(raw_commit)),
+             {:ok, tree} <- command_output(git_dir ++ ["ls-tree", commit, "--", "WORKFLOW.md"]),
+             {:ok, content} <- read_blob(tree, git_dir, commit <> ":WORKFLOW.md") do
+          {:ok, %{branch: branch, commit: commit, content: content}}
         end
-
-      {:error, _reason} ->
-        {:error, :unreachable}
+      after
+        File.rm_rf(directory)
+      end
     end
   end
 
   defp make_scratch(root, directory) do
     with :ok <- File.mkdir_p(root),
-         {:ok, %File.Stat{type: :directory}} <- File.lstat(root) do
-      File.mkdir(directory)
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(root),
+         :ok <- File.mkdir(directory) do
+      :ok
     else
-      _ -> {:error, :invalid_scratch}
+      _ -> {:error, :unreachable}
     end
   end
 
-  defp read_blob(directory, commit) do
-    object = commit <> ":WORKFLOW.md"
+  defp read_blob("", _git_dir, _object), do: {:error, :missing_workflow}
 
-    case git(["--git-dir", directory, "ls-tree", commit, "--", "WORKFLOW.md"]) do
-      {"", 0} ->
-        {:error, :missing_workflow}
-
-      {<<mode::binary-size(6), " blob ", _::binary>>, 0} when mode in ["100644", "100755"] ->
-        with {size, 0} <- git(["--git-dir", directory, "cat-file", "-s", object]),
-             {bytes, ""} when bytes <= @max_workflow_bytes <- Integer.parse(String.trim(size)),
-             {content, 0} <- git(["--git-dir", directory, "cat-file", "blob", object]),
-             true <- byte_size(content) == bytes and String.valid?(content) do
-          {:ok, content}
-        else
-          {_, status} when is_integer(status) -> {:error, :unreachable}
-          _ -> {:error, :invalid_workflow}
-        end
-
-      {_, 0} ->
-        {:error, :invalid_workflow}
-
-      _ ->
-        {:error, :unreachable}
+  defp read_blob(<<mode::binary-size(6), " blob ", _::binary>>, git_dir, object) when mode in ["100644", "100755"] do
+    with {:ok, size} <- command_output(git_dir ++ ["cat-file", "-s", object]),
+         {bytes, ""} when bytes <= @max_workflow_bytes <- Integer.parse(String.trim(size)),
+         {:ok, content} <- command_output(git_dir ++ ["cat-file", "blob", object]),
+         true <- byte_size(content) == bytes and String.valid?(content) do
+      {:ok, content}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_workflow}
     end
   end
+
+  defp read_blob(_tree, _git_dir, _object), do: {:error, :invalid_workflow}
+
+  defp command_output(args), do: args |> git() |> git_output()
+
+  defp git_output({value, 0}), do: {:ok, value}
+  defp git_output({_value, _status}), do: {:error, :unreachable}
 
   defp validate_commit(commit) do
     if Regex.match?(~r/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/, commit),
@@ -197,7 +186,5 @@ defmodule SymphonyElixir.RemoteWorkflow do
       env: Map.to_list(env),
       stderr_to_stdout: true
     )
-  rescue
-    ErlangError -> {"", 1}
   end
 end
