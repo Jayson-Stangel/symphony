@@ -520,7 +520,9 @@ defmodule SymphonyElixir.UpdaterTest do
     install() { fixture_pause install; }
     setup() { fixture_pause setup; }
     container_runtime() { printf false; }
-    runner_status() { printf true; }
+    runner_transition_state() {
+      case "$2" in *-before-update) printf 'missing\\n' ;; *) printf 'true\\n' ;; esac
+    }
     runner_owned() { :; }
     # This source-lock fixture models an already-qualified retained source;
     # lifecycle tests own real engine/provider/configuration preflight behavior.
