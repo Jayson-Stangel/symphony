@@ -56,9 +56,9 @@ class FirstMacInstallMixin:
             self.assertIn(str(home / '.config/symphony/runners'), output)
         project = self.root / 'new-project'; (project / '.git').mkdir(parents=True)
         (project / '.git/config').write_text('[remote "origin"]\nurl = https://github.com/fixture/first.git\n')
-        result = subprocess.run(['/bin/zsh', '-lic', 'symphony init --linear-project fixture'],
+        result = subprocess.run(['/bin/zsh', '-lic', 'symphony init --repository https://github.com/fixture/first.git --linear-project fixture'],
                                 cwd=project, env=clean, text=True, capture_output=True)
-        self.assertIn('Project: initialized', self.assertOK(result))
+        self.assertIn('Registered project:', self.assertOK(result))
         doctor = subprocess.run(['/bin/zsh', '-lic', 'symphony doctor'], env=clean, text=True, capture_output=True)
         self.assertIn('Managed zsh setup is installed', self.assertOK(doctor))
         self.assertNotIn('No shell profiles were changed', doctor.stdout)

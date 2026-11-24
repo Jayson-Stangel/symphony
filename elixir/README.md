@@ -91,10 +91,12 @@ is used. Local-remote Git proof does not establish GitHub authentication or a
 completed provider task.
 
 
-Packaged container runners can load a registered GitHub branch's root workflow.
+Managed container runners load a registered GitHub branch's root workflow.
 The runner validates each candidate with the same workflow loader and keeps its
 last accepted bytes in project state. See the
 [remote project setup](../docs/packaged-install.md#register-a-new-project-from-a-remote-workflow).
+Use `symphony project validate WORKFLOW.md` to check unpublished configuration
+and strict prompt rendering.
 
 ## Screenshot
 

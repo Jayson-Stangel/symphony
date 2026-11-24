@@ -38,9 +38,10 @@ package_usage() {
 Usage:
   symphony --version
   symphony doctor [--json]
-  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
   symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH]
   symphony --project PROJECT-ID COMMAND
+  symphony project migrate --linear-project SLUG [--workflow-branch BRANCH] [--apply REVIEWED-COMMIT]
+  symphony project validate [WORKFLOW.md]
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
@@ -52,10 +53,9 @@ Usage:
   symphony environment show [--json]
 
 This release bundle requires Docker Engine (Ubuntu) or Docker Desktop/OrbStack
-(macOS). No host build or
-agent toolchain is needed. From an existing project checkout, initialize it, edit
-the printed private credentials file, authenticate the native container login,
-and run. Runner images are pulled by immutable release digest; they never build
+(macOS). No host build or agent toolchain is needed. Register the repository and
+Linear project, edit the printed private credentials file, authenticate the
+native container login, and run by project ID. Runner images are pulled by immutable release digest; they never build
 locally. Use the installed updater for release changes and runner recovery.
 init --agent codex|claude requests setup guidance; it never switches a runner.
 Without --agent, retained state wins, then new projects default to Codex.
@@ -489,7 +489,7 @@ package_install() (
     package_shell_activation_instructions
   fi
   if [ "$package_channel" = candidate ]; then printf 'Candidate runners: provider login automatically obtains missing original loopback images using project GitHub Actions read access. Availability is checked at login; unavailable originals refuse onboarding. See the bundled candidate provisioning guide.\n'; fi
-  printf 'Next: inside your project, symphony init --linear-project SLUG, edit the printed credentials file, choose --agent codex or --agent claude during init and follow its provider-specific instructions.\n'
+  printf 'Next: register with symphony init --repository URL --linear-project SLUG and follow the printed credentials and provider instructions.\n'
   if "$first_mac"; then
     if [ -t 0 ] && [ -t 1 ] && ! "$no_shell_handoff"; then
       printf 'Opening a configured zsh login shell here. Use Symphony commands in this shell or a new Terminal window.\n'

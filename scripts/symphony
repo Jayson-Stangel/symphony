@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stable, checkout-backed command for a local Symphony runtime.
+# Installed command and source development launcher.
 set -euo pipefail
 
 die() { printf 'symphony: %s\n' "$*" >&2; exit 1; }
@@ -28,6 +28,7 @@ runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}
 resolve_runner_home() { runner_home=${SYMPHONY_RUNNER_HOME:-"$config_home/runners"}; }
 codex_auth_volume=${SYMPHONY_CODEX_AUTH_VOLUME:-$runtime_prefix-codex-auth}
 managed_skills=(commit push pull linear land)
+migration_checkout= migration_commit= migration_prior_id=
 packaged_install=false
 if [ -f "$symphony_home/release.json" ]; then
   # A legacy updater may reenter this launcher before activating a staged
@@ -111,20 +112,35 @@ checkout_root() { if "$packaged_install"; then package_helper repository-root "$
 # Checkout paths continue through their existing origin-based identity.
 registered_project() { [[ "$1" == "$config_home/projects/"*.remote ]]; }
 
+project_migration_required() {
+  die 'checkout-based operation has retired; from the existing checkout run symphony project migrate --linear-project SLUG, or select a registered project with symphony --project PROJECT-ID'
+}
+
+checkout_registration() {
+  local checkout=$1 id record
+  id=$(project_id "$checkout" 2>/dev/null) || return
+  record="$config_home/projects/$id.remote"
+  printf '%s\n' "$record"
+  [ -e "$record" ] || [ -L "$record" ]
+}
+
 project_registration_read() {
   local record=$1 extra
+  registered_adopted=
   [ ! -L "$record" ] && [ -f "$record" ] || die 'missing or unsafe project registration'
   if "$packaged_install"; then package_helper owned-file "$record" || return; fi
   {
     IFS= read -r registered_linear &&
       IFS= read -r registered_repository &&
       IFS= read -r registered_branch &&
+      { IFS= read -r registered_adopted || [ -z "$registered_adopted" ]; } &&
       ! IFS= read -r extra && [ -z "$extra" ]
   } <"$record" || die 'invalid project registration'
   [[ "$registered_linear" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] &&
     [ "$(canonical_repository "$registered_repository")" = "$registered_repository" ] &&
     [ "$(repository_id "$registered_repository")" = "$(basename "$record" .remote)" ] &&
-    valid_branch "$registered_branch" || die 'invalid project registration'
+    valid_branch "$registered_branch" &&
+    { [ -z "$registered_adopted" ] || [ "$registered_adopted" = adopted ]; } || die 'invalid project registration'
 }
 
 repo_root() {
@@ -136,7 +152,14 @@ repo_root() {
     printf '%s\n' "$record"
     return
   fi
-  if checkout=$(checkout_root 2>/dev/null); then printf '%s\n' "$checkout"; return; fi
+  if checkout=$(checkout_root 2>/dev/null) && record=$(checkout_registration "$checkout"); then
+    project_registration_read "$record" || return
+    printf '%s\n' "$record"
+    return
+  elif [ -n "${record:-}" ]; then
+    [ "$mode" != optional ] || return 0
+    project_migration_required
+  fi
   selected=
   for record in "$config_home"/projects/*.remote; do
     [ -e "$record" ] || [ -L "$record" ] || continue
@@ -145,7 +168,7 @@ repo_root() {
   done
   if [ -z "$selected" ]; then
     [ "$mode" != optional ] || return 0
-    die 'run inside an initialized Git repository or register one with symphony init --repository URL --linear-project SLUG'
+    project_migration_required
   fi
   project_registration_read "$selected" || return
   printf '%s\n' "$selected"
@@ -215,6 +238,18 @@ sys.exit(0 if owned else 1)' "$@" ;;
     prior-ready) python3 -c 'import json,sys; a=json.load(sys.stdin).get("agent",{}); sys.exit(0 if "admission" not in a and a.get("draining") is False and a.get("readiness",{}).get("ready") is True and a.get("pause","unknown") is None else 1)' "$@" ;;
     admission) python3 -c 'import json,sys; s=json.load(sys.stdin); a=s.get("agent",s); d=a.get("admission") or {}; print("operational" if a.get("draining") is False and d.get("ready") is True else "quota_paused" if a.get("draining") is False and d.get("ready") is False and d.get("reason")=="quota_exhausted" and type(d.get("retry_at")) is int else "unhealthy")' "$@" ;;
     idle) python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s.get("agent",{}).get("draining") is True and s.get("counts",{}).get("running") == 0 else 1)' "$@" ;;
+    workflow-sha) python3 -c 'import json,re,sys; v=json.load(sys.stdin).get("workflow",{}).get("sha256"); sys.exit(1) if not isinstance(v,str) or not re.fullmatch("[0-9a-f]{64}",v) else print(v)' "$@" ;;
+    migration-ready) python3 -c '
+import json,sys
+state=json.load(sys.stdin)
+workflow=state.get("workflow",{})
+agent=state.get("agent",{})
+commit,branch,project=sys.argv[1:]
+valid=(workflow.get("commit")==commit and workflow.get("branch")==branch and workflow.get("project")==project
+       and workflow.get("status")=="loaded" and workflow.get("source_block") is None and workflow.get("source_error") is None
+       and agent.get("draining") is True and agent.get("readiness",{}).get("ready") is True
+       and state.get("counts",{}).get("running")==0)
+sys.exit(0 if valid else 1)' "$@" ;;
     *) die "unknown host JSON check: $mode" ;;
   esac
 }
@@ -279,18 +314,19 @@ Usage:
   symphony install [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony setup [--install-prerequisites]
   symphony doctor [--host] [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
-  symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
+  symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH]
   symphony --project PROJECT-ID COMMAND
   symphony skill override NAME
   symphony skill migrate-local NAME
   symphony skill use-global NAME
   symphony project doctor [--json]
+  symphony project migrate --linear-project SLUG [--workflow-branch BRANCH] [--apply REVIEWED-COMMIT]
+  symphony project validate [WORKFLOW.md]
   symphony auth codex {login|check|remove}
   symphony auth claude {login|check|remove}
   symphony runner start|stop|status|doctor|logs|drain|resume|recheck
-  symphony run [--agent codex|claude] [--port PORT] [--host]
+  symphony run [--agent codex|claude] [--port PORT]
 
 Run this command from a clean, stable Symphony checkout such as ~/src/symphony.
 `install` only links the command and creates protected configuration storage.
@@ -330,8 +366,8 @@ An isolated runner logs into Codex in a Docker-managed volume with
 `symphony auth codex login`; it never mounts a host Codex login or adds one to
 a project .env file.
 
-`symphony run` starts the full listener, web UI, Codex, and Git workspaces in
-a Docker- or Podman-compatible container. Use `--host` only for local debugging.
+`symphony run` starts a registered listener, web UI, and Git workspaces in an
+isolated container. Use `symphony project validate` for unpublished workflows.
 EOF
 }
 
@@ -442,15 +478,13 @@ update() {
       --rollback-runner)
         [ -z "$transition_target" ] || die 'choose only one runner transition'
         transition_target=rollback; shift ;;
-      --migrate-project-identity)
-        [ -z "$transition_target" ] || die 'choose only one runner transition'
-        transition_target=migrate-identity; shift ;;
+      --migrate-project-identity) project_migration_required ;;
       --development-runner) development_runner=true; shift ;;
       --bin-dir|--config-dir|--skills-dir)
         [ "$#" -ge 2 ] || die "$1 requires a path"
         if [ "$1" = --bin-dir ]; then bin_dir=$2; elif [ "$1" = --config-dir ]; then config_home=$2; else skills_dir=$2; fi
         shift 2 ;;
-      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
+      --help|-h) printf 'Usage: symphony update [--development-runner] [--agent codex|claude | --rollback-runner | --pause-runner] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]\n'; return ;;
       *) die "unknown update option: $1" ;;
     esac
   done
@@ -459,9 +493,8 @@ update() {
 
   if "$development_runner"; then
     [ -n "$runner_namespace" ] || die '--development-runner requires SYMPHONY_RUNNER_NAMESPACE to isolate Docker resources'
-    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner, --rollback-runner or --migrate-project-identity'
+    [ -n "$transition_target" ] || die '--development-runner requires --agent, --pause-runner, --rollback-runner'
     case "$transition_target" in
-      migrate-identity) runner_migrate_identity "$(repo_root)" ;;
       pause) runner_pause "$(repo_root)" true ;;
       rollback) runner_rollback "$(repo_root)" ;;
       *) runner_transition "$(repo_root)" "$transition_target" true ;;
@@ -469,7 +502,6 @@ update() {
     return
   fi
 
-  if [ "$transition_target" = migrate-identity ]; then runner_migrate_identity "$(repo_root)"; return; fi
   if [ "$transition_target" = pause ]; then runner_pause "$(repo_root)" true; return; fi
   if [ "$transition_target" = rollback ]; then
     runner_rollback "$(repo_root)"
@@ -644,7 +676,9 @@ use_global_skill() {
 # Read-only onboarding advice. Provider selection remains startup/updater state;
 # init never writes runner metadata or replaces a deliberate environment image.
 init_provider_guidance() {
-  local root=$1 requested=$2 agent desired='' image='' metadata selection runtime actual='' state='' retained=false blocked=false updater='symphony update'
+  local root=$1 requested=$2 agent desired='' image='' metadata selection runtime actual='' state='' retained=false blocked=false command updater
+  command="symphony --project $(project_id "$root")"
+  updater="$command update"
   if ! "$packaged_install" && [ -n "$runner_namespace" ]; then updater="$updater --development-runner"; fi
   metadata=$(runner_env_file "$root")
   if [ -e "$metadata" ]; then
@@ -679,14 +713,13 @@ init_provider_guidance() {
   if [ "$agent" = unknown ]; then image=${image:-unknown}; fi
   printf 'Stored desired provider: %s\nStored desired image: %s\n' "${desired:-release default ($agent)}" "${image:-$(runner_image "$agent")}"
   printf 'Actual runner provider: %s (state: %s)\n' "${actual:-unobserved}" "${state:-absent or engine unavailable}"
-  printf 'Init preserves workflow, credentials, overrides and runner state. Use init --agent codex|claude to request guidance; run/update --agent chooses startup state.\n'
   if "$blocked"; then
     printf 'Next: resolve unknown retained provider/selection explicitly before authentication or startup; init did not change it.\n'
     return 1
   fi
   if [ -n "$desired" ] && [ "$desired" != "$agent" ]; then
     if "$packaged_install"; then
-      printf 'Before authentication, explicitly select a verified compatible image: symphony environment select --agent %s IMAGE\n' "$agent"
+      printf 'Before authentication, explicitly select a verified compatible image: %s environment select --agent %s IMAGE\n' "$command" "$agent"
       printf 'IMAGE must be the intended local provider-compatible release or team image. Inspect symphony environment show; init retained the existing choice.\n'
     else
       printf 'Before authentication, verify any SYMPHONY_RUNNER_IMAGE override is compatible with %s.\n' "$agent"
@@ -698,18 +731,18 @@ init_provider_guidance() {
     fi
   fi
   if "$retained"; then
-    printf 'Next: fill the printed credentials file, then symphony auth %s check\n' "$agent"
-    printf 'If native login is required, wait for idle and use %s --pause-runner before symphony auth %s login; then repeat symphony auth %s check. A dispatch drain alone does not release the native auth volume.\n' "$updater" "$agent" "$agent"
+    printf 'Next: fill the printed credentials file, then %s auth %s check\n' "$command" "$agent"
+    printf 'If native login is required, wait for idle and use %s --pause-runner before %s auth %s login. Then repeat %s auth %s check. A dispatch drain alone does not release the native auth volume.\n' "$updater" "$command" "$agent" "$command" "$agent"
   else
-    printf 'Next: fill the printed credentials file, then symphony auth %s login\n' "$agent"
-    printf 'Then: symphony auth %s check\n' "$agent"
+    printf 'Next: fill the printed credentials file, then %s auth %s login\n' "$command" "$agent"
+    printf 'Then: %s auth %s check\n' "$command" "$agent"
   fi
-  printf 'Then: symphony runner doctor --agent %s\n' "$agent"
+  printf 'Then: %s runner doctor --agent %s\n' "$command" "$agent"
   if "$retained"; then
     printf 'Existing runner: wait for idle; use %s --agent %s for the updater-owned lifecycle transition. Never start a second listener.\n' "$updater" "$agent"
-    printf 'To resume after the transition: symphony run --agent %s (and symphony runner resume if deliberately drained).\n' "$agent"
+    printf 'To resume after the transition: %s run --agent %s (and %s runner resume if deliberately drained).\n' "$command" "$agent" "$command"
   else
-    printf 'Start when ready to dispatch: symphony run --agent %s\n' "$agent"
+    printf 'Start when ready to dispatch: %s run --agent %s\n' "$command" "$agent"
   fi
 }
 
@@ -809,24 +842,6 @@ project_credentials_require() {
   fi
 }
 
-# Preserve custom literal project assignments for source/host execution too.
-# Values are data, not shell; nonempty exported environment takes precedence.
-project_environment_export() {
-  local line key value inherited=' '
-  [ -r "$credential_file" ] || return 0
-  while IFS= read -r key; do
-    [ -z "${!key:-}" ] || inherited="$inherited$key "
-  done < <(compgen -e)
-  while IFS= read -r line || [ -n "$line" ]; do
-    line=${line%$'\r'}
-    case "$line" in *=*) ;; *) continue ;; esac
-    key=${line%%=*}; value=${line#*=}
-    [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
-    case "$inherited" in *" $key "*) continue ;; esac
-    export "$key=$value"
-  done <"$credential_file"
-}
-
 project_credentials_export() {
   export LINEAR_API_KEY="$credential_linear" GH_TOKEN="$credential_git" GITHUB_TOKEN="$credential_git"
 }
@@ -873,16 +888,17 @@ valid_branch() {
 }
 
 project_registration_write() (
-  local record=$1 project=$2 repository=$3 branch=$4 temporary
+  local record=$1 project=$2 repository=$3 branch=$4 adopted=${5:-} temporary
   umask 077
   temporary=$(mktemp "$(dirname "$record")/.registration.XXXXXX") || return
   trap 'rm -f "$temporary"' EXIT
   printf '%s\n' "$project" "$repository" "$branch" >"$temporary" || return
+  if [ -n "$adopted" ]; then printf '%s\n' "$adopted" >>"$temporary" || return; fi
   mv -f "$temporary" "$record"
 )
 
 init_registered_project() {
-  local repository=$1 slug=$2 branch=$3 branch_seen=$4 agent=${5:-codex} record id env_file runtime name
+  local repository=$1 slug=$2 branch=$3 branch_seen=$4 agent=${5:-} record id env_file runtime name adopted=''
   repository=$(canonical_repository "$repository") || die 'use a GitHub HTTPS or standard GitHub SSH repository URL without credentials'
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die 'use the Linear project slug from its URL'
   valid_branch "$branch" || die 'use a short Git branch name'
@@ -893,10 +909,11 @@ init_registered_project() {
     project_registration_read "$record" || return
     [ "$registered_linear" = "$slug" ] || die "repository resource $id already belongs to Linear project $registered_linear"
     "$branch_seen" || branch=$registered_branch
+    adopted=$registered_adopted
   fi
   runtime=$(container_runtime)
   container_engine_ready "$runtime" || return
-  runner_check_project_resources "$record" "$runtime" "$slug" || return
+  runner_check_project_resources "$record" "$runtime" "$slug" "$adopted" || return
   name=$(runner_id "$record")
   if [ -e "$runner_home/$id.transition" ] || [ -e "$runner_home/$id.transition.complete" ]; then
     die 'finish the retained runner transition before changing its registration'
@@ -907,17 +924,14 @@ init_registered_project() {
   fi
   env_file="$config_home/projects/$id.env"
   project_credentials_initialize "$env_file" || return
-  project_registration_write "$record" "$slug" "$repository" "$branch" || return
+  project_registration_write "$record" "$slug" "$repository" "$branch" "$adopted" || return
   printf 'Registered project: %s\nRepository: %s\nLinear project: %s\nWorkflow branch: %s\nCredentials: %s\n' \
     "$id" "$repository" "$slug" "${branch:-remote default (resolved on first run)}" "$env_file"
-  printf 'Fill the private credentials file, then run:\n  symphony --project %s auth %s login\n  symphony --project %s runner doctor --agent %s\n  symphony --project %s run --agent %s\n' \
-    "$id" "$agent" "$id" "$agent" "$id" "$agent"
+  init_provider_guidance "$record" "$agent"
 }
 
 init() {
-  local slug='' root id remote workflow env_file skill runtime agent='' agent_seen=false repository='' branch='' branch_seen=false
-  local -a local_skills
-  local_skills=()
+  local slug= agent= repository= branch= branch_seen=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --linear-project) [ "$#" -ge 2 ] || die '--linear-project requires a slug'; slug=$2; shift 2 ;;
@@ -925,83 +939,20 @@ init() {
       --workflow-branch) [ "$#" -ge 2 ] && [ -n "$2" ] || die '--workflow-branch requires a branch'; branch=$2; branch_seen=true; shift 2 ;;
       --default-workflow-branch) branch=; branch_seen=true; shift ;;
       --agent)
-        [ "$#" -ge 2 ] || die '--agent requires codex or claude'
-        ! "$agent_seen" || die '--agent may be specified only once'
-        agent=$2; validate_agent "$agent"; agent_seen=true; shift 2 ;;
-      --local-skill) [ "$#" -ge 2 ] || die '--local-skill requires a name'; local_skills+=("$2"); shift 2 ;;
-      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--repository URL [--workflow-branch BRANCH | --default-workflow-branch]] [--agent codex|claude]\n'; return ;;
+        [ "$#" -ge 2 ] || die '--agent requires a provider'
+        [ -z "$agent" ] || die '--agent may be specified only once'
+        agent=$2; validate_agent "$agent"; shift 2 ;;
+      --local-skill) project_migration_required ;;
+      --help|-h) printf 'Usage: symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH | --default-workflow-branch] [--agent codex|claude]\n'; return ;;
       *) die "unknown init option: $1" ;;
     esac
   done
-  [ -n "$slug" ] || die 'init requires --linear-project <slug>'
+  [ -n "$repository" ] || project_migration_required
+  [ -n "$slug" ] || die 'init requires --linear-project SLUG'
   if ! global_skills_ready; then
     if "$packaged_install"; then die 'bundled skills are not installed; rerun the bundle installer'; else ensure_global_skills; fi
   fi
-  if [ -n "$repository" ]; then
-    [ "${#local_skills[@]}" -eq 0 ] || die 'remote registration uses installed skills'
-    init_registered_project "$repository" "$slug" "$branch" "$branch_seen" "$agent"
-    return
-  fi
-  ! "$branch_seen" || die 'workflow branch options require --repository'
-  root=$(checkout_root)
-  id=$(project_id "$root")
-  remote=$(repository_remote "$root" 2>/dev/null || die 'the repository needs an origin remote')
-  workflow="$root/WORKFLOW.md"
-  env_file="$config_home/projects/$id.env"
-
-  (umask 077; mkdir -p "$(dirname "$env_file")")
-  if [ ! -e "$env_file" ] && [ -e "$config_home/projects/$(legacy_project_id "$root").env" ]; then
-    # Only a matching retained runtime proves this legacy identity. Other
-    # same-basename repositories must still initialize independently.
-    if runtime=$(container_runtime 2>/dev/null); then runner_require_identity "$root"; fi
-    printf 'Legacy basename credentials preserved without reuse. Review and copy only this repository’s intended values to %s.\n' "$env_file"
-  fi
-  if [ ! -e "$env_file" ]; then project_credentials_initialize "$env_file" || return; fi
-
-  if [ ! -e "$workflow" ]; then cat >"$workflow" <<EOF
----
-tracker:
-  kind: linear
-  provider:
-    project_slug: "$slug"
-    api_key: \$LINEAR_API_KEY
-  required_labels: []
-  active_states: ["Todo", "In Progress", "Merging", "Rework"]
-  blocked_states: ["Blocked"]
-  terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
-polling:
-  interval_ms: 5000
-workspace:
-  root: ~/.local/share/symphony/workspaces/$id
-  clone_url: "$remote"
-hooks:
-  before_remove: |
-    git clean -ffdqx
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
----
-
-EOF
-    printf '\nRepository: %s\nRemote: %s\n\n' "$id" "$remote" >>"$workflow"
-    awk 'BEGIN { delimiters = 0 } /^---$/ { delimiters++; next } delimiters >= 2 { print }' "$symphony_home/elixir/WORKFLOW.md" >>"$workflow"
-  else
-    printf 'Workflow: preserved (%s)\n' "$workflow"
-  fi
-
-  if [ "${#local_skills[@]}" -gt 0 ]; then
-    for skill in "${local_skills[@]}"; do create_local_override "$root" "$skill"; done
-  fi
-  project_credentials_report "$root" || true
-  printf 'Project: initialized (%s)\nSkills: global (use --local-skill only for deliberate overrides)\nCredentials: %s\n' "$workflow" "$env_file"
-  init_provider_guidance "$root" "$agent"
+  init_registered_project "$repository" "$slug" "$branch" "$branch_seen" "$agent"
 }
 
 skill() {
@@ -1020,67 +971,249 @@ skill() {
 }
 
 project_doctor() {
-  local json=$1 root id workflow env_file legacy_manifest legacy_count=0 override_count=0 legacy_refs=false wrapper=false skill
+  local json=$1 root
   root=$(repo_root)
-  if registered_project "$root"; then
-    project_registration_read "$root" || return
-    if ! "$json"; then
-      printf 'Repository: %s\nLinear project: %s\nWorkflow branch: %s\n' \
-        "$registered_repository" "$registered_linear" "${registered_branch:-remote default (unresolved)}"
-    fi
-    project_credentials_report "$root" "$json"
-    return
+  project_registration_read "$root" || return
+  if ! "$json"; then
+    printf 'Project: %s\nRepository: %s\nLinear project: %s\nWorkflow branch: %s\n' \
+      "$(project_id "$root")" "$registered_repository" "$registered_linear" "${registered_branch:-remote default (unresolved)}"
   fi
-  id=$(project_id "$root")
-  workflow="$root/WORKFLOW.md"
-  env_file="$config_home/projects/$id.env"
-  legacy_manifest="$root/.codex/symphony-skills.yml"
-  for skill in "${managed_skills[@]}"; do
-    [ -d "$root/.codex/skills/$skill" ] && legacy_count=$((legacy_count + 1))
-    [ -d "$root/.codex/skills/$(skill_name "$skill")" ] && override_count=$((override_count + 1))
-  done
-  [ -e "$root/script/symphony" ] && wrapper=true
-  if [ -f "$workflow" ] && grep -Eq '(`(linear|commit|push|pull|land)`|\.codex/skills/(commit|push|pull|linear|land))' "$workflow"; then legacy_refs=true; fi
-
-  if "$json"; then
-    printf '{"mode":"project-doctor","workflow":%s,"credentials":%s,"global_skills":%s,"legacy_manifest":%s,"legacy_skill_count":%s,"local_override_count":%s,"legacy_workflow_references":%s,"legacy_wrapper":%s,"project_credentials":%s}\n' \
-      "$(bool "$( [ -f "$workflow" ] && printf true || printf false )")" \
-      "$(bool "$( [ -f "$env_file" ] && printf true || printf false )")" \
-      "$(bool "$( global_skills_ready && printf true || printf false )")" \
-      "$(bool "$( [ -f "$legacy_manifest" ] && printf true || printf false )")" \
-      "$legacy_count" "$override_count" "$(bool "$legacy_refs")" "$(bool "$wrapper")" \
-      "$(project_credentials_report "$root" true || true)"
-    return
-  fi
-
-  printf 'Project: %s\nWorkflow: %s\nCredentials: %s\nGlobal skills: %s\n' \
-    "$root" "$([ -f "$workflow" ] && printf present || printf missing)" \
-    "$([ -f "$env_file" ] && printf present || printf missing)" \
-    "$(global_skills_ready && printf ready || printf missing)"
-  project_credentials_report "$root" || true
-  printf 'Legacy copied skills: %s\nLocal namespaced overrides: %s\nLegacy skill manifest: %s\nLegacy wrapper: %s\nLegacy workflow references: %s\n' \
-    "$legacy_count" "$override_count" "$([ -f "$legacy_manifest" ] && printf present || printf absent)" "$wrapper" "$legacy_refs"
-  if [ "$legacy_count" -gt 0 ]; then
-    printf '\nLegacy skills are preserved and are not changed automatically. If a skill contains intentional team changes, preserve it with:\n  symphony skill migrate-local NAME\nThis creates a namespaced override and preserves the original; review cross-skill references afterward.\n'
-  fi
-  if "$legacy_refs"; then
-    printf '\nWORKFLOW.md still names legacy local-skill paths. It is preserved; review it and change only the intended references to the namespaced global skill names.\n'
-  fi
-  if "$wrapper"; then
-    printf '\nThe legacy script/symphony wrapper is redundant. Keep or remove it through the repository’s normal review process.\n'
-  fi
+  project_credentials_report "$root" "$json"
 }
 
 project() {
-  local command=${1:-} json=false
-  [ "$command" = doctor ] || { printf 'Usage: symphony project doctor [--json]\n' >&2; return 2; }
-  case "${2:-}" in
-    '') ;;
-    --json) json=true ;;
-    *) die "unknown project doctor option: $2" ;;
+  local command=${1:-}
+  shift || true
+  case "$command" in
+    doctor)
+      case "$*" in
+        '') project_doctor false ;;
+        --json) project_doctor true ;;
+        *) die 'Usage: symphony project doctor [--json]' ;;
+      esac ;;
+    migrate) project_migrate "$@" ;;
+    validate) project_validate "$@" ;;
+    *) die 'Usage: symphony project doctor|migrate|validate' ;;
   esac
-  project_doctor "$json"
 }
+
+project_validate() (
+  local workflow=${1:-WORKFLOW.md} runtime image
+  [ "$#" -le 1 ] || die 'Usage: symphony project validate [WORKFLOW.md]'
+  [ -f "$workflow" ] && [ -r "$workflow" ] || die 'local workflow file is missing or unreadable'
+  runtime=$(container_runtime)
+  container_engine_ready "$runtime" || return
+  if "$packaged_install"; then package_ensure_candidate_image codex || return; fi
+  image=$(runner_image codex)
+  if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image codex || return; fi
+  "$runtime" run --rm --interactive --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --tmpfs /tmp:rw,nosuid,nodev,size=128m --entrypoint /usr/bin/timeout "$image" --kill-after=2 30 \
+    /opt/symphony/elixir/bin/symphony --validate-local-workflow <"$workflow"
+)
+
+project_migrate() (
+  local migration_checkout migration_commit= migration_prior_id= root id runtime name journal agent repository slug= branch= apply= details resolved commit remote_sha local_sha baseline= image env_file
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --linear-project|--workflow-branch|--apply)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"
+        case "$1" in --linear-project) slug=$2 ;; --workflow-branch) branch=$2 ;; --apply) apply=$2 ;; esac
+        shift 2 ;;
+      -h|--help) printf 'Usage: symphony project migrate --linear-project SLUG [--workflow-branch BRANCH] [--apply REVIEWED-COMMIT]\n'; return ;;
+      *) die "unknown migration option: $1" ;;
+    esac
+  done
+  [ -z "${SYMPHONY_PROJECT:-}" ] || die 'run project migrate from the legacy checkout without --project'
+  [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die 'pass the existing Linear project slug with --linear-project'
+  valid_branch "$branch" || die 'use a short Git branch name'
+  [ -z "$apply" ] || valid_workflow_commit "$apply" || die '--apply requires the full reviewed remote commit'
+  migration_checkout=$(checkout_root) || return
+  [[ "$migration_checkout" != *$'\n'* ]] || die 'the checkout path must fit on one line'
+  [ -f "$migration_checkout/WORKFLOW.md" ] && [ ! -L "$migration_checkout/WORKFLOW.md" ] || die 'the legacy checkout needs a regular root WORKFLOW.md'
+  repository=$(repository_remote "$migration_checkout") || return
+  repository=$(canonical_repository "$repository") || die 'the existing origin must be a GitHub HTTPS or standard GitHub SSH URL'
+  id=$(project_id "$migration_checkout") || return
+  [ "$(repository_id "$repository")" = "$id" ] || die 'the canonical repository changes the retained project ID'
+  root="$config_home/projects/$id.remote"
+  journal="$runner_home/$id.transition"
+  if "$packaged_install"; then
+    local pending
+    package_update_lock || return
+    package_update_target=$(package_current_home) || return
+    [ "$package_update_target" = "$(cd "$symphony_home" && pwd -P)" ] || die 'invoke the installed current manager before migrating'
+    package_update_previous=$package_update_target
+    package_update_journal=$journal
+    pending=$(package_pending_transition) || return
+    [ -z "$pending" ] || [ "$pending" = "$journal" ] || [ "$pending" = "$journal.complete" ] ||
+      die 'finish or roll back the pending packaged update before migrating'
+  fi
+  runner_project_lock "$migration_checkout" || return
+  runtime=$(container_runtime)
+  container_engine_ready "$runtime" || return
+  name=$(runner_id "$root")
+  if [ -d "$journal.complete" ]; then
+    [ -f "$journal.complete/migration" ] || die 'finish recovery of the existing updater transition first'
+    [ -n "$apply" ] || die 'rerun migration with the reviewed commit to finish journal cleanup'
+    runner_read_migration "$journal.complete"
+    [ "$apply" = "$migration_commit" ] || die 'retry with the original reviewed commit'
+    project_registration_read "$root"
+    [ "$registered_linear" = "$slug" ] && { [ -z "$branch" ] || [ "$registered_branch" = "$branch" ]; } || die 'the retry must use the same Linear project and branch'
+    runner_clear_completed_journal "$journal.complete"
+    printf 'Previously completed checkout migration recovered.\n'
+    return
+  fi
+  if [ -d "$journal" ]; then
+    [ -f "$journal/migration" ] || die 'finish or roll back the existing runner transition first'
+    [ -n "$apply" ] || die 'migration is pending; retry with the reviewed commit or use symphony update --rollback-runner'
+    local checkout=$migration_checkout
+    runner_read_migration "$journal"
+    [ "$checkout" = "$migration_checkout" ] && [ "$apply" = "$migration_commit" ] || die 'retry from the original checkout with the original reviewed commit'
+    project_registration_read "$root"
+    [ "$registered_linear" = "$slug" ] && { [ -z "$branch" ] || [ "$registered_branch" = "$branch" ]; } || die 'the retry must use the same Linear project and branch'
+    runner_transition "$root" "$(cat "$journal/target")"
+    return
+  fi
+  [ ! -e "$journal" ] && [ ! -L "$journal" ] || die 'invalid runner transition storage'
+  if [ -e "$root" ] || [ -L "$root" ]; then
+    project_registration_read "$root"
+    [ "$registered_adopted" = adopted ] && [ "$registered_linear" = "$slug" ] &&
+      { [ -z "$branch" ] || [ "$registered_branch" = "$branch" ]; } || die 'existing registration differs; inspect the registered project'
+    branch=$registered_branch
+  fi
+  [ "$(runner_status "$migration_checkout")" != missing ] || die 'the retained checkout listener is missing; recover it through the prior installed manager'
+  runner_owned "$migration_checkout" "$runtime" "$name"
+  [ -z "$("$runtime" inspect --format '{{with index .Config.Labels "com.symphony.linear-project"}}{{.}}{{end}}' "$name")" ] ||
+    die 'this listener is already registered; use symphony --project PROJECT-ID'
+  if "$runtime" inspect "$name-before-update" >/dev/null 2>&1; then die 'finish the retained runner transition before migrating'; fi
+  runner_check_project_volumes "$runtime" "$name" "$slug" adopted
+  env_file=$(runner_env_file "$root")
+  [ -f "$env_file" ] && [ ! -L "$env_file" ] || die 'retained runner metadata is missing or unsafe'
+  if "$packaged_install"; then package_helper owned-file "$env_file" || return; fi
+  agent=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$env_file")
+  validate_agent "$agent"
+  local prior_image prior_port auth_mount
+  prior_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+  prior_port=$(runner_update_port "$migration_checkout" "$runtime" "$name")
+  [ "$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$env_file")" = "$prior_image" ] &&
+    [ "$(sed -n 's/^SYMPHONY_RUNNER_PORT=//p' "$env_file")" = "$prior_port" ] &&
+    [ "$("$runtime" inspect --format '{{index .Config.Labels "com.symphony.agent"}}' "$name")" = "$agent" ] ||
+    die 'retained provider, port or image differs from the runner metadata'
+  if [ "$agent" = codex ]; then auth_mount="$codex_auth_volume /root/.codex"
+  else auth_mount="$(claude_auth_volume "$root") /home/claude"; fi
+  "$runtime" inspect --format '{{range .Mounts}}{{println .Name .Destination}}{{end}}' "$name" |
+    grep -Fx -- "$auth_mount" >/dev/null || die 'retained native login mount differs'
+  if [ "$(runner_status "$migration_checkout")" = true ]; then
+    baseline=$(runner_state_response "$runtime" "$name" | host_json workflow-sha) || baseline=
+  fi
+  [ -f "$config_home/projects/$id.env" ] && [ ! -L "$config_home/projects/$id.env" ] || die 'retained project credential file is missing or unsafe'
+  project_credentials_require "$root" || return
+  project_credentials_export
+  image=$(runner_migration_image "$root" "$agent") || return
+  SYMPHONY_RUNNER_IMAGE="$image" runner_build_image "$agent"
+  details=$(runner_workflow_probe "$runtime" "$image" "$agent" "$repository" "$branch" "$slug" --compare-local <"$migration_checkout/WORKFLOW.md") || return
+  read -r resolved commit remote_sha local_sha <<<"${details%%$'\n'*}"
+  [ -n "$resolved" ] && valid_branch "$resolved" && { [ -z "$branch" ] || [ "$branch" = "$resolved" ]; } &&
+    valid_workflow_commit "$commit" && [[ "$remote_sha" =~ ^[a-f0-9]{64}$ && "$local_sha" =~ ^[a-f0-9]{64}$ ]] || die 'runner returned an invalid migration report'
+  printf 'Project: %s\nConfiguration root: %s\nRunner storage: %s\nRepository: %s\nLinear project: %s\nProvider: %s\nRetained image: %s\nSelected migration image: %s\nRetained port: %s\n' \
+    "$id" "$config_home" "$name" "$repository" "$slug" "$agent" "$prior_image" "$image" "$prior_port"
+  printf 'Workflow branch: %s\nRemote commit: %s\nReview workflow: %s/blob/%s/WORKFLOW.md\n' "$resolved" "$commit" "${repository%.git}" "$commit"
+  if [ -z "$baseline" ]; then
+    printf 'Last accepted workflow comparison is unavailable; review the current checkout against the exact remote commit.\n'
+  elif [ "$baseline" = "$remote_sha" ]; then
+    printf 'Remote workflow matches the last accepted listener workflow.\n'
+  else
+    printf 'Remote workflow differs from the last accepted listener workflow (SHA-256 %s).\n' "$baseline"
+  fi
+  if [ "$local_sha" != "$remote_sha" ]; then
+    printf 'Checkout workflow differs from the remote commit. Review and publish intended local-only edits before applying.\n'
+  else
+    printf 'Checkout workflow matches the remote commit.\n'
+  fi
+  if [[ "$details" == *$'\n'* ]]; then printf '%s\n' "${details#*$'\n'}"; fi
+  if [ -z "$apply" ]; then
+    printf 'After reviewing, run symphony project migrate --linear-project %s --workflow-branch %s --apply %s\n' "$slug" "$resolved" "$commit"
+    return
+  fi
+  [ "$apply" = "$commit" ] || die 'remote commit changed; review the new commit before applying'
+  codex_config_migration_preflight "$migration_checkout" "$runtime" "$name"
+  migration_prior_id=$("$runtime" inspect --format '{{.Id}}' "$name")
+  project_registration_write "$root" "$slug" "$repository" "$resolved" adopted
+  migration_commit=$commit
+  trap 'if [ ! -e "$journal" ] && [ ! -e "$journal.complete" ] &&
+             [ "$("$runtime" inspect --format "{{.Id}}" "$name" 2>/dev/null)" = "$migration_prior_id" ]; then
+          rm -f "$root"
+        fi' EXIT
+  runner_transition "$root" "$agent"
+)
+
+valid_workflow_commit() { [[ "$1" =~ ^[a-f0-9]{40}$|^[a-f0-9]{64}$ ]]; }
+
+runner_migration_image() {
+  local root=$1 agent=$2 image
+  if "$packaged_install"; then
+    image=$(selected_environment_image "$root" "$agent") || return
+    if [ -n "$image" ]; then printf '%s\n' "$image"; return; fi
+    package_ensure_candidate_image "$agent" || return
+    package_image "$agent"
+  else
+    runner_image "$agent"
+  fi
+}
+
+runner_read_migration() {
+  local file="$1/migration" extra
+  [ -f "$file" ] && [ ! -L "$file" ] || die 'incomplete checkout migration journal'
+  {
+    IFS= read -r migration_checkout &&
+      IFS= read -r migration_commit &&
+      IFS= read -r migration_prior_id &&
+      ! IFS= read -r extra && [ -z "$extra" ]
+  } <"$file" || die 'invalid checkout migration journal'
+  [[ "$migration_checkout" = /* ]] && valid_workflow_commit "$migration_commit" &&
+    [[ "$migration_prior_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid checkout migration journal'
+}
+
+runner_migration_prior() {
+  local root=$1 runtime=$2 name=$3 stopped=${4:-true}
+  [ "$("$runtime" inspect --format '{{.Id}}' "$name")" = "$migration_prior_id" ] ||
+    die 'original checkout runner identity differs; migration refused'
+  if "$stopped"; then
+    [ "$("$runtime" inspect --format '{{.State.Running}}:{{.State.Restarting}}' "$name")" = false:false ] ||
+      die 'checkout runner is active; finish draining and retry migration'
+  fi
+  runner_owned "$root" "$runtime" "$name"
+}
+
+runner_migration_resume() {
+  local root=$1 runtime=$2 name=$3 data deadline=$((SECONDS + 55))
+  project_registration_read "$root" || return
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if data=$(runner_state_response "$runtime" "$name"); then
+      # Recovery after the verified resume already opened admission. Ordinary
+      # remote branch refreshes may have advanced by the time this retry runs.
+      if runner_admission_ready "$data"; then return; fi
+      if printf '%s' "$data" | host_json migration-ready "$migration_commit" "$registered_branch" "$registered_linear"; then
+        printf 'Verified held listener at workflow commit %s.\n' "$migration_commit"
+        data=$("$runtime" exec "$name" curl --fail --silent --show-error --max-time 45 --max-filesize 1048576 \
+          -H 'x-symphony-control: 1' -H 'Content-Type: application/json' \
+          -d "{\"expected_workflow_commit\":\"$migration_commit\"}" http://127.0.0.1:4010/api/v1/agent/resume) || return
+        runner_admission_ready "$data"
+        return
+      fi
+    fi
+    sleep 1
+  done
+  die 'candidate remains held; check readiness and the reviewed remote commit, then retry or use symphony update --rollback-runner'
+}
+
+runner_clear_completed_journal() {
+  local journal=$1
+  if "$packaged_install"; then package_remove_transition_fields "$journal" || return; fi
+  rm -f "$journal/target" "$journal/port" "$journal/previous.env" "$journal/image" \
+    "$journal/image.next" "$journal/previous.env.next" "$journal/migration" || return
+  rmdir "$journal" || die 'unknown completed transition metadata; updater refused'
+}
+
 
 container_runtime() {
   local candidate
@@ -1111,24 +1244,33 @@ container_engine_ready() {
 
 runner_id() { printf '%s\n' "$runtime_prefix-$(project_id "$1")"; }
 runner_storage_id() { runner_id "$1"; }
-# A failed migration may leave individually renamed resources. Keep ordinary
-# commands out until its old owned container/backup names have both moved.
-# A different repository's basename-era runner is unrelated and is left alone.
-# A repository identity is shared across custom configuration roots. A
-# project label on retained resources survives container removal or replacement.
+# Docker identities are shared across configuration roots. Only the verified
+# migration may refer to an unlabeled retained container; adopted volumes keep
+# their original immutable Docker labels.
 runner_check_project_resources() {
-  local root=$1 runtime=$2 expected=$3 name storage object owner
+  local root=$1 runtime=$2 expected=$3 adopted=${4:-} name storage labels checkout
   storage=$(runner_storage_id "$root")
   for name in "$storage" "$storage-before-update"; do
-    if owner=$("$runtime" inspect --format '{{with index .Config.Labels "com.symphony.linear-project"}}project={{.}}{{end}}' "$name" 2>/dev/null); then
-      case "$owner" in project=*) owner=${owner#project=} ;; *) owner= ;; esac
-      [ "$owner" = "$expected" ] || die "repository resource $name belongs to a different Linear project or a retained checkout; use the migration procedure"
+    if labels=$("$runtime" inspect --format '{{index .Config.Labels "com.symphony.storage"}}|{{index .Config.Labels "com.symphony.linear-project"}}' "$name" 2>/dev/null); then
+      [ "$labels" != "$storage|$expected" ] || continue
+      checkout=${migration_checkout:-}
+      if [ -n "$checkout" ] && [ "$labels" = "$storage|" ]; then
+        runner_owned "$checkout" "$runtime" "$name" || return
+        continue
+      fi
+      die "repository resource $name belongs to a different Linear project or a retained checkout; use symphony project migrate"
     fi
   done
+  runner_check_project_volumes "$runtime" "$storage" "$expected" "$adopted"
+}
+
+runner_check_project_volumes() {
+  local runtime=$1 storage=$2 expected=$3 adopted=$4 object labels
   for object in "$storage-workspaces" "$storage-state" "$storage-claude-auth"; do
-    if owner=$("$runtime" volume inspect --format '{{with index .Labels "com.symphony.linear-project"}}project={{.}}{{end}}' "$object" 2>/dev/null); then
-      case "$owner" in project=*) owner=${owner#project=} ;; *) owner= ;; esac
-      [ "$owner" = "$expected" ] || die "repository resource $object belongs to a different Linear project or a retained checkout; use the migration procedure"
+    if labels=$("$runtime" volume inspect --format '{{index .Labels "com.symphony.storage"}}|{{index .Labels "com.symphony.linear-project"}}' "$object" 2>/dev/null); then
+      [ "$labels" = "$storage|$expected" ] ||
+        { [ "$adopted" = adopted ] && [ "$labels" = "$storage|" ]; } ||
+        die "repository volume $object has foreign ownership or needs verified checkout migration"
     fi
   done
 }
@@ -1138,6 +1280,12 @@ runner_project_owner() {
     project_registration_read "$1" || return
     printf '%s\n' "$registered_linear"
   fi
+}
+
+runner_pending_migration() {
+  local journal="$runner_home/$(project_id "$1").transition"
+  [ ! -e "$journal/migration" ] && [ ! -e "$journal.complete/migration" ] ||
+    die 'checkout migration is pending; retry symphony project migrate or use symphony update --rollback-runner'
 }
 
 runner_create_project_volume() {
@@ -1150,35 +1298,43 @@ runner_create_project_volume() {
 }
 
 runner_remote_probe() {
-  local root=$1 runtime=$2 image=$3 agent=$4 resolved
+  local root=$1 runtime=$2 image=$3 agent=$4
   project_registration_read "$root" || return
-  if ! resolved=$(SYMPHONY_GIT_TOKEN="$credential_git" "$runtime" run --rm \
+  remote_resolved_branch=$(runner_workflow_probe "$runtime" "$image" "$agent" "$registered_repository" "$registered_branch" "$registered_linear") || return
+  [ -n "$remote_resolved_branch" ] && valid_branch "$remote_resolved_branch" || die 'runner returned an invalid workflow branch'
+  if [ -n "$registered_branch" ]; then
+    [ "$registered_branch" = "$remote_resolved_branch" ] || die 'runner returned a different workflow branch'
+  fi
+}
+
+runner_workflow_probe() {
+  local runtime=$1 image=$2 agent=$3 repository=$4 branch=$5 slug=$6
+  shift 6
+  if ! SYMPHONY_GIT_TOKEN="$credential_git" "$runtime" run --rm --interactive \
       --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m \
       --env SYMPHONY_CONTAINERIZED=1 --env LINEAR_API_KEY --env SYMPHONY_GIT_TOKEN \
-      --env "SYMPHONY_REMOTE_REPOSITORY=$registered_repository" \
-      --env "SYMPHONY_REMOTE_BRANCH=$registered_branch" \
-      --env "SYMPHONY_REMOTE_LINEAR_PROJECT=$registered_linear" \
-      --entrypoint /usr/bin/timeout "$image" --kill-after=2 100 \
-      /opt/symphony/elixir/bin/symphony --remote-workflow-probe "$agent"); then
+      --env "SYMPHONY_REMOTE_REPOSITORY=$repository" --env "SYMPHONY_REMOTE_BRANCH=$branch" \
+      --env "SYMPHONY_REMOTE_LINEAR_PROJECT=$slug" --entrypoint /usr/bin/timeout "$image" --kill-after=2 100 \
+      /opt/symphony/elixir/bin/symphony --remote-workflow-probe "$agent" "$@"; then
     printf '%s\n' 'Remote workflow preflight failed. Check project credentials, branch and workflow, and use a runner image that supports registered projects.' >&2
     return 1
   fi
-  [ -n "$resolved" ] && valid_branch "$resolved" || die 'runner returned an invalid workflow branch'
-  if [ -n "$registered_branch" ]; then
-    [ "$registered_branch" = "$resolved" ] || die 'runner returned a different workflow branch'
-  fi
-  remote_resolved_branch=$resolved
 }
 
 runner_require_identity() {
   local root=$1 runtime old storage suffix owner
   runtime=$(container_runtime); old="$runtime_prefix-$(legacy_project_id "$root")"
   storage=$(runner_storage_id "$root")
-  owner=$(runner_project_owner "$root") || return
-  runner_check_project_resources "$root" "$runtime" "$owner" || return
+  owner=
+  local adopted=
+  if registered_project "$root"; then
+    project_registration_read "$root" || return
+    owner=$registered_linear; adopted=$registered_adopted
+  fi
+  runner_check_project_resources "$root" "$runtime" "$owner" "$adopted" || return
   for suffix in '' '-before-update'; do
     if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$old$suffix" 2>/dev/null || true)" = "$storage" ]; then
-      die 'legacy repository resource identity retained; run symphony update --migrate-project-identity before operating this runner'
+      die 'legacy basename resource retained; use symphony update --migrate-project-identity with the prior manager before migrating'
     fi
   done
 }
@@ -1242,7 +1398,7 @@ ensure_claude_auth_volume() {
   local root=$1 runtime=$2 volume=$3 storage owner linear
   storage=$(runner_storage_id "$root")
   linear=$(runner_project_owner "$root") || return
-  runner_check_project_resources "$root" "$runtime" "$linear" || return
+  runner_require_identity "$root" || return
   if "$runtime" volume inspect "$volume" >/dev/null 2>&1; then
     owner=$("$runtime" volume inspect --format '{{ index .Labels "com.symphony.storage" }}' "$volume")
     [ "$owner" = "$storage" ] || die 'refusing a foreign or unqualified Claude auth volume'
@@ -1654,6 +1810,7 @@ runner_start() {
   local registered=false remote_resolved_branch owner=
   local -a project_args codex_project_mount
   runner_project_lock "$root" || return
+  if [ "$authority" != update ]; then runner_pending_migration "$root" || return; fi
   runner_require_identity "$root"
   if registered_project "$root"; then
     registered=true
@@ -1764,7 +1921,7 @@ runner_start() {
     runner_remote_probe "$root" "$runtime" "$image_id" "$agent" || return
     if [ -z "$registered_branch" ]; then
       registered_branch=$remote_resolved_branch
-      project_registration_write "$root" "$registered_linear" "$registered_repository" "$registered_branch" || return
+      project_registration_write "$root" "$registered_linear" "$registered_repository" "$registered_branch" "$registered_adopted" || return
     fi
     project_args=(
       --label "com.symphony.linear-project=$registered_linear"
@@ -1847,8 +2004,7 @@ runner_confirm_remote_start() {
   while [ "$SECONDS" -lt "$deadline" ]; do
     state=$("$runtime" inspect --format '{{.State.Status}}' "$name") || return
     case "$state" in exited|dead|restarting) return 1 ;; esac
-    if response=$("$runtime" exec "$name" curl --fail --silent --max-time 2 --max-filesize 1048576 \
-      http://127.0.0.1:4010/api/v1/state 2>/dev/null) &&
+    if response=$(runner_state_response "$runtime" "$name") &&
       printf '%s' "$response" | host_json legacy-running; then
       return 0
     fi
@@ -1858,6 +2014,10 @@ runner_confirm_remote_start() {
 }
 
 # The selected runtime cache is written atomically; the journal retains intent.
+runner_state_response() {
+  "$1" exec "$2" curl --fail --silent --max-time 3 --max-filesize 1048576 http://127.0.0.1:4010/api/v1/state 2>/dev/null
+}
+
 runner_write_metadata() (
   local root=$1 port=$2 agent=$3 image_id=$4 profile=$5 metadata_tmp
   umask 077
@@ -1900,7 +2060,7 @@ runner_workflow_mount_owned() {
     project_registration_read "$root" || return
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.linear-project" }}' "$name")" = "$registered_linear" ] || return
     mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$name") || return
-    ! printf '%s\n' "$mounts" | grep -Eq '^(/etc/symphony|/opt/symphony/project)(/|$)'
+    ! printf '%s\n' "$mounts" | grep -Eq '^(/|/etc|/opt|/opt/symphony)$|^(/etc/symphony|/opt/symphony/project)(/|$)'
     return
   fi
   mounts=$("$runtime" inspect --format '{{json .Mounts}}' "$name") || return
@@ -2164,10 +2324,7 @@ runner_finish_journal() {
   if [ "$(cat "$journal/target")" = codex ]; then codex_config_selection_settle "$journal"; fi
   if "$packaged_install"; then package_finish_transition "$journal" || return; fi
   mv "$journal" "$journal.complete" || return
-  if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
-  rm -f "$journal.complete/image.next" "$journal.complete/previous.env.next" || return
-  rm "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" || return
-  rmdir "$journal.complete"
+  runner_clear_completed_journal "$journal.complete"
 }
 
 # Development retries follow the current checkout rather than a journal's old image.
@@ -2257,6 +2414,13 @@ runner_prepare_storage() {
     users=$("$runtime" ps --filter "volume=$volume" --format '{{.ID}}')
     [ -z "$users" ] || die 'retained volume is in use by another container; updater refused'
   done
+  if [ "$new_candidate" = true ] && [ -n "${migration_commit:-}" ]; then
+    "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --user "$uid:$uid" --entrypoint sh --volume "$storage-state:/state" "$image" \
+      -ceu 'printf "migration:%s\n" "$1" > /state/agent-draining
+        printf "unresumed\n" > /state/agent-upgrade-unresumed' sh "$migration_commit"
+    return
+  fi
   "$runtime" run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
     --security-opt no-new-privileges --user 0:0 --entrypoint sh \
     --volume "$storage-workspaces:/workspaces" --volume "$storage-state:/state" "$image" \
@@ -2267,96 +2431,8 @@ runner_prepare_storage() {
       chown -hR "$3:$3" /workspaces /state' sh "$agent" "$new_candidate" "$uid"
 }
 
-# A deliberate updater operation, never an init-time basename credential lookup.
-# File and container renames are individually atomic and retriable after any
-# interruption. Storage/auth volumes and WORKFLOW.md are never moved or rewritten.
-runner_migrate_identity() (
-  ! registered_project "$1" || die 'repository identity migration applies to retained checkout runners'
-  local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target old_lock new_lock
-  runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
-  name=$(runner_id "$root"); previous="$runtime_prefix-$old"
-  runner_prepare_home || return
-  # Resource ownership is independent of configuration overrides. Acquire old
-  # then new (the old name is a strict prefix); reserve FD 8 for source ownership.
-  old_lock=$(runner_resource_lock_path "$previous")
-  new_lock=$(runner_resource_lock_path "$name")
-  [ ! -L "$old_lock" ] && [ ! -L "$new_lock" ] || die 'unsafe runner lock'
-  [ ! -e "$old_lock" ] || [ -f "$old_lock" ] || die 'unsafe runner lock'
-  [ ! -e "$new_lock" ] || [ -f "$new_lock" ] || die 'unsafe runner lock'
-  exec 5>>"$old_lock"
-  updater_file_lock "$old_lock" 5
-  exec 6>>"$new_lock"
-  updater_file_lock "$new_lock" 6
-  # Preserve both configuration-local locks used by older updaters.
-  runner_transition_lock "$runner_home/$old.transition.lock"
-  exec 7>&9
-  exec 9>&-
-  unset runner_lock_path
-  runner_transition_lock "$runner_home/$id.transition.lock"
-
-  # Validate all filesystem inputs before any rename. No shell credential/cache
-  # content is evaluated, and mixed old/new state is never silently combined.
-  if "$packaged_install"; then package_helper identity-migration; return; fi
-  python3 - "$config_home/projects" "$runner_home" "$old" "$id" <<'PYIDENTITY'
-import os, stat, sys
-projects, runners, old, new = sys.argv[1:]
-def validate(path, directory=False):
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    if (info.st_uid != os.geteuid() or stat.S_ISLNK(info.st_mode)
-            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
-            or (not directory and info.st_nlink != 1)):
-        sys.exit('symphony: unsafe or foreign identity migration metadata: ' + path)
-    if directory:
-        known = {'target', 'port', 'previous.env', 'image', 'image.next', 'previous.env.next'}
-        if not set(os.listdir(path)) <= known:
-            sys.exit('symphony: unknown transition metadata; identity migration refused')
-        for entry in os.listdir(path):
-            validate(os.path.join(path, entry))
-    return True
-for base, suffix, directory in [(projects, '.env', False), (runners, '.env', False),
-                                (runners, '.transition', True), (runners, '.transition.complete', True)]:
-    source = validate(os.path.join(base, old + suffix), directory)
-    target = validate(os.path.join(base, new + suffix), directory)
-    if source and target:
-        sys.exit('symphony: mixed legacy and repository identity metadata; migration refused')
-PYIDENTITY
-  metadata="$runner_home/$old.env"
-  if [ ! -f "$metadata" ]; then metadata=$(runner_env_file "$root"); fi
-  for suffix in '' '-before-update'; do
-    source="$previous$suffix"; target="$name$suffix"
-    if "$runtime" inspect "$source" >/dev/null 2>&1; then
-      ! "$runtime" inspect "$target" >/dev/null 2>&1 || die 'both legacy and repository identity containers exist; migration refused'
-      runner_owned "$root" "$runtime" "$source" "$metadata"
-      runner_workflow_mount_owned "$root" "$runtime" "$source" || die 'workflow mount differs; identity migration refused'
-      anchor=true
-      if [ -z "$suffix" ]; then move_runner=true; else move_backup=true; fi
-    elif "$runtime" inspect "$target" >/dev/null 2>&1; then
-      runner_owned "$root" "$runtime" "$target" "$metadata"
-      runner_workflow_mount_owned "$root" "$runtime" "$target" || die 'workflow mount differs; identity migration refused'
-      anchor=true
-    fi
-  done
-  "$anchor" || die 'no owned retained runner proves the legacy credential identity; review and copy credentials to the new project path explicitly'
-  printf 'Migrating repository identity: %s -> %s. Credentials and pending recovery metadata are retained byte-for-byte.\n' "$old" "$id"
-  if [ -f "$config_home/projects/$old.env" ]; then
-    mv "$config_home/projects/$old.env" "$config_home/projects/$id.env"
-  fi
-  for suffix in '.env' '.transition' '.transition.complete'; do
-    source="$runner_home/$old$suffix"; target="$runner_home/$id$suffix"
-    if [ -e "$source" ]; then mv "$source" "$target"; fi
-  done
-  # Only names qualified during preflight may move. A failed inspect must not
-  # let a later-visible foreign resource enter this repository's identity.
-  if "$move_runner"; then "$runtime" rename "$previous" "$name"; fi
-  if "$move_backup"; then "$runtime" rename "$previous-before-update" "$name-before-update"; fi
-  printf 'Repository identity migrated. Runner state, workspaces, login volumes and pending update/rollback are preserved.\n'
-)
-
 runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 state old_agent expected_runtime=none
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
@@ -2364,19 +2440,21 @@ runner_transition() (
   runner_prepare_home || return
   journal="$runner_home/$id.transition"; backup="$name-before-update"; env_file=$(runner_env_file "$root")
   runner_project_lock "$root" || return
+  if [ -z "${migration_commit:-}" ]; then runner_pending_migration "$root" || return
+  else prior=$migration_checkout; fi
   runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
-    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
-      "$journal.complete/image.next" "$journal.complete/previous.env.next"
-    rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
+    runner_clear_completed_journal "$journal.complete" || return
   fi
-  if "$packaged_install"; then candidate=$(package_transition_image "$root" "$agent")
+  if [ -n "${migration_commit:-}" ]; then
+    if [ -d "$journal" ]; then candidate=$(runner_transition_image "$journal")
+    else candidate=$(runner_migration_image "$root" "$agent") || return; fi
+  elif "$packaged_install"; then candidate=$(package_transition_image "$root" "$agent")
   else candidate="$runtime_prefix-runner-$agent:$(source_revision)"; fi
   export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ -d "$journal" ]; then
     [ "$(cat "$journal/target")" = "$agent" ] || die 'a different transition is pending; finish it or use symphony update --rollback-runner'
-    if "$packaged_install"; then
+    if "$packaged_install" && [ -z "${migration_commit:-}" ]; then
       [ "$(cat "$journal/package.revision")" = "$(source_revision)" ] || die 'pending packaged release revision differs; updater refused'
       package_transition_image_compatible "$runtime" "$candidate" "$agent" "$(source_revision)"
       [ "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" = "$(runner_transition_image "$journal")" ] || die 'pending packaged image differs from selected release; updater refused'
@@ -2392,12 +2470,15 @@ runner_transition() (
   else
     [ ! -e "$journal" ] || die 'invalid transition state; updater refused'
     [ "$(runner_status "$root")" != missing ] || die 'start a fresh project with symphony run --agent; no existing runner to transition'
-    runner_owned "$root" "$runtime" "$name"
-    # Every transition needs a compatible retained rollback source, including
-    # Codex to Claude; never stop an older Codex runner we cannot restore.
-    codex_config_migration_preflight "$root" "$runtime" "$name"
-    if runner_is_legacy "$runtime" "$name" && [ "$(runner_status "$root")" = true ]; then
-      die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
+    if [ -n "${migration_commit:-}" ]; then
+      runner_migration_prior "$prior" "$runtime" "$name" false
+    else
+      runner_owned "$root" "$runtime" "$name"
+      # A transition always needs a prior listener that can be restored.
+      codex_config_migration_preflight "$root" "$runtime" "$name"
+      if runner_is_legacy "$runtime" "$name" && [ "$(runner_status "$root")" = true ]; then
+        die 'legacy listener has no drain API; finish active work, then use symphony update --pause-runner before retrying --agent'
+      fi
     fi
     "$runtime" inspect "$backup" >/dev/null 2>&1 && die 'a retained prior runner exists; inspect it before another transition'
     [ -r "$env_file" ] || die 'runner metadata is missing; updater refused'
@@ -2420,6 +2501,9 @@ runner_transition() (
     printf '%s\n' "$port" >"$journal_tmp/port"
     if [ "$agent" = codex ]; then codex_config_journal_write "$root" "$candidate" "$journal_tmp"
     else printf '%s\n' "$candidate" >"$journal_tmp/image"; fi
+    if [ -n "${migration_commit:-}" ]; then
+      printf '%s\n' "$migration_checkout" "$migration_commit" "$migration_prior_id" >"$journal_tmp/migration"
+    fi
     if "$packaged_install"; then package_write_transition "$journal_tmp" || return; fi
     mv "$journal_tmp" "$journal"
   fi
@@ -2438,21 +2522,32 @@ runner_transition() (
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       if [ "$agent" = codex ]; then codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"; fi
-      runner_resume_when_ready "$port" false false "$root" || die 'candidate recovery refused'
+      runner_transition_resume "$root" "$runtime" "$name" "$port" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
       if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
       runner_finish_journal "$journal"
       printf 'Previously completed runner transition recovered.\n'
       return
     fi
-    runner_pause "$root"
+    if [ -n "${migration_commit:-}" ]; then
+      runner_migration_prior "$prior" "$runtime" "$name" false
+      runner_pause "$prior"
+      runner_migration_prior "$prior" "$runtime" "$name"
+      runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true
+    else
+      runner_pause "$root"
+    fi
     "$runtime" rename "$name" "$backup"
   fi
-  runner_owned "$root" "$runtime" "$backup"
-  [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
+  if [ -n "${migration_commit:-}" ]; then
+    runner_migration_prior "$prior" "$runtime" "$backup"
+  else
+    runner_owned "$root" "$runtime" "$backup"
+    [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
+  fi
   if [ "$(runner_status "$root")" = missing ]; then
     # Keep a newly created candidate idle until readiness has been verified.
-    runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true
+    if [ -z "${migration_commit:-}" ]; then runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true; fi
     runner_start "$root" "$port" "$agent" update
   else
     runner_owned "$root" "$runtime" "$name"
@@ -2473,12 +2568,12 @@ runner_transition() (
       local previous_image
       previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
       [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$backup")" = "$previous_image" ] || die 'prior image differs; updater refused'
-      [ "$(runner_update_port "$root" "$runtime" "$backup")" = "$port" ] || die 'prior port differs; updater refused'
-      runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" false
+      [ "$(runner_update_port "$prior" "$runtime" "$backup")" = "$port" ] || die 'prior port differs; updater refused'
+      if [ -z "${migration_commit:-}" ]; then runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" false; fi
       "$runtime" start "$name" >/dev/null
     fi
   fi
-  runner_resume_when_ready "$port" false false "$root" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  runner_transition_resume "$root" "$runtime" "$name" "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
   # Validate selection staging before package activation or backup deletion.
@@ -2493,18 +2588,63 @@ runner_transition() (
   printf 'Runner transition complete: %s. Workspaces and logs retained.\n' "$agent"
 )
 
+runner_transition_resume() {
+  if [ -n "${migration_commit:-}" ]; then runner_migration_resume "$1" "$2" "$3"
+  else runner_resume_when_ready "$4" false false "$1"; fi
+}
+
+runner_rollback_migration() {
+  local root=$1 runtime=$2 name=$3 backup=$4 journal=$5 current_image previous_image temporary
+  local migration_checkout migration_commit migration_prior_id
+  runner_read_migration "$journal"
+  runner_require_identity "$root"
+  previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
+  [ -n "$previous_image" ] || die 'prior checkout image is missing from rollback metadata'
+  if "$runtime" inspect "$backup" >/dev/null 2>&1; then
+    runner_migration_prior "$migration_checkout" "$runtime" "$backup"
+    [ "$("$runtime" inspect --format '{{.Image}}' "$backup")" = "$previous_image" ] || die 'prior checkout image differs; rollback refused'
+    if [ "$(runner_status "$root")" != missing ]; then
+      runner_owned "$root" "$runtime" "$name"
+      current_image=$("$runtime" inspect --format '{{.Image}}' "$name")
+      [ "$current_image" = "$(runner_transition_image "$journal")" ] || die 'migration candidate image differs; rollback refused'
+      [ "$("$runtime" inspect --format '{{index .Config.Labels "com.symphony.agent"}}' "$name")" = "$(cat "$journal/target")" ] ||
+        die 'migration candidate provider differs; rollback refused'
+      if [ "$(runner_status "$root")" = true ] &&
+         "$runtime" exec "$name" sh -ceu 'grep -Fx "migration:$1" /var/lib/symphony/agent-draining >/dev/null' sh "$migration_commit"; then
+        "$runtime" stop --time 30 "$name" >/dev/null
+      elif [ "$(runner_status "$root")" = true ]; then
+        runner_pause "$root"
+      fi
+      "$runtime" rm "$name" >/dev/null
+    fi
+    "$runtime" rename "$backup" "$name"
+  fi
+  runner_migration_prior "$migration_checkout" "$runtime" "$name"
+  [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior checkout image differs; rollback refused'
+  temporary=$(mktemp "$runner_home/.runner.XXXXXX")
+  cp -p "$journal/previous.env" "$temporary"
+  mv -f "$temporary" "$(runner_env_file "$root")"
+  # The prior installed manager can resume it explicitly after release rollback.
+  # Keep the original stopped state and shared hold instead of starting a checkout.
+  runner_finish_journal "$journal"
+  rm -f "$root"
+  codex_config_cleanup "$migration_checkout" "$runtime"
+  printf 'Prior checkout runner restored stopped. Retry migration or use the prior installed release to resume it.\n'
+}
+
 runner_rollback() (
   local root=$1 runtime name backup id journal port previous_agent previous_image state
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
   runner_project_lock "$root" || return
-  runner_require_identity "$root"
   [ -d "$journal" ] && [ -f "$journal/previous.env" ] || die 'no retained transition to roll back'
+  if [ -e "$journal/migration" ] || [ -L "$journal/migration" ]; then
+    runner_rollback_migration "$root" "$runtime" "$name" "$backup" "$journal"
+    return
+  fi
+  runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
-    if "$packaged_install"; then package_remove_transition_fields "$journal.complete" || return; fi
-    rm -f "$journal.complete/target" "$journal.complete/port" "$journal.complete/previous.env" "$journal.complete/image" \
-      "$journal.complete/image.next" "$journal.complete/previous.env.next"
-    rmdir "$journal.complete" || die 'unknown completed transition metadata; updater refused'
+    runner_clear_completed_journal "$journal.complete" || return
   fi
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
@@ -2674,7 +2814,7 @@ runner_doctor() {
 }
 
 runner() {
-  local command=${1:-} root agent= sandbox_only=false archive= runtime owner port
+  local command=${1:-} root agent= sandbox_only=false archive= runtime port
   if [ "$command" = import ]; then
     shift
     while [ "$#" -gt 0 ]; do
@@ -2708,12 +2848,12 @@ runner() {
       runner_doctor "$root" "$agent" "$sandbox_only" ;;
     logs)
       runtime=$(container_runtime)
-      owner=$(runner_project_owner "$root") || return
-      runner_check_project_resources "$root" "$runtime" "$owner" || return
+      runner_require_identity "$root" || return
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
       runner_project_lock "$root" || return
+      if [ "$command" != drain ]; then runner_pending_migration "$root" || return; fi
       runner_require_identity "$root"
       runtime=$(container_runtime)
       runner_owned "$root" "$runtime" "$(runner_id "$root")"
@@ -2725,7 +2865,7 @@ runner() {
 }
 
 run() {
-  local root id env_file workflow runtime host=false port= agent= agent_seen=false
+  local root host=false port= agent= agent_seen=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host=true; shift ;;
@@ -2740,27 +2880,11 @@ run() {
   done
   case "$port" in *[!0-9]*) die '--port requires an integer' ;; esac
   [ "${port:-4010}" -le 65535 ] || die 'port must not exceed 65535'
-  if "$packaged_install" && "$host"; then die 'packaged installs require isolated container execution'; fi
-  if "$host" && [ "$agent" = claude ]; then die 'Claude host/SSH execution is unsupported; use the isolated runner'; fi
-  root=$(repo_root); id=$(project_id "$root")
-  env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
-  if registered_project "$root"; then
-    ! "$host" || die 'registered projects use the isolated runner'
-  else
-    [ -f "$workflow" ] || die "missing workflow: $workflow"
-  fi
-  if ! "$host"; then
-    runner_start "$root" "$port" "$agent"
-    runner_report "$root"
-    return
-  fi
-  project_credentials_read "$root" || return
-  runtime_ready || die 'host runtime is not ready; run symphony setup'
-  project_environment_export
-  project_credentials_export
-  runtime="$symphony_home/elixir/bin/symphony"
-  exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
-    --i-understand-that-this-will-be-running-without-the-usual-guardrails --agent codex --port "${port:-4010}" "$workflow" "$@"
+  ! "$host" || die 'use symphony project validate for local workflow checks, or symphony --project PROJECT-ID run for a listener'
+  root=$(repo_root)
+  runner_start "$root" "$port" "$agent"
+  runner_report "$root"
+
 }
 
 if [ "${1:-}" = --project ]; then

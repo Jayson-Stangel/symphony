@@ -80,13 +80,10 @@ project_credentials_export
                 self.assertNotIn(linear, result.stdout)
                 self.assertNotIn(git, result.stdout)
 
-    def test_custom_tracker_and_host_environment_remain_supported(self):
+    def test_legacy_custom_tracker_diagnostics_remain_available(self):
         result = self.shell('''printf '%s\\n' '---' 'tracker:' '  kind: linear' '  provider:' '    api_key: $CUSTOM_LINEAR_KEY' '---' 'Example:' '    api_key: $LINEAR_API_KEY' > WORKFLOW.md
 project_credentials_report "$root" true
-project_environment_export
 project_credentials_export
-[ "$CUSTOM_LINEAR_KEY" = custom-linear-canary ]
-[ "$CUSTOM_TOOL_TOKEN" = custom-tool-canary ]
 [ "$GH_TOKEN" = git-canary ]
 ''', 'CUSTOM_LINEAR_KEY=custom-linear-canary\nCUSTOM_TOOL_TOKEN=old-canary\nCUSTOM_TOOL_TOKEN=custom-tool-canary\nGH_TOKEN=git-canary\n')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -104,29 +101,33 @@ project_credentials_export
         self.assertNotIn('touch EXECUTED', result.stdout + result.stderr)
 
     def test_init_private_template_and_reinitialization_preserve_file_and_workflow(self):
-        result = self.shell('''init --linear-project fixture
+        result = self.shell('''container_runtime() { printf '%s\\n' false; }
+container_engine_ready() { :; }
+init --repository https://github.com/example/credential-fixture.git --linear-project fixture
 [ -f "$file" ] && [ ! -L "$file" ]
 [ "$(ls -l "$file" | cut -c 1-10)" = '-rw-------' ]
 printf 'LINEAR_API_KEY=linear-canary\nGITHUB_TOKEN=git-canary\n' > "$file"
 cp "$file" "$root/before"
-init --linear-project fixture
+init --repository https://github.com/example/credential-fixture.git --linear-project fixture
 cmp "$file" "$root/before"
 grep -q '^preserved workflow$' WORKFLOW.md
 ''', file=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Missing required credentials: LINEAR_API_KEY, GH_TOKEN or GITHUB_TOKEN', result.stdout)
+        self.assertIn('Registered project:', result.stdout)
         self.assertNotIn('canary', result.stdout + result.stderr)
 
     def test_project_doctor_json_escapes_path_and_reports_missing_not_just_file(self):
-        result = self.shell('''config_home="$config_home/quoted\\\"path"
+        result = self.shell(r'''config_home="$config_home/quoted\"path"
+record="$config_home/projects/$(project_id "$root").remote"
+(umask 077; mkdir -p "$(dirname "$record")")
+project_registration_write "$record" fixture https://github.com/example/credential-fixture.git main
 project doctor --json
 ''')
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         data = json.loads(result.stdout)
-        self.assertFalse(data['credentials'])
-        self.assertFalse(data['project_credentials']['ready'])
-        self.assertIn('LINEAR_API_KEY', data['project_credentials']['missing'])
-        self.assertIn('quoted"path', data['project_credentials']['file'])
+        self.assertFalse(data['ready'])
+        self.assertIn('LINEAR_API_KEY', data['missing'])
+        self.assertIn('quoted"path', data['file'])
 
     def test_missing_stops_both_providers_before_auth_engine_or_image(self):
         for provider in ('codex', 'claude'):

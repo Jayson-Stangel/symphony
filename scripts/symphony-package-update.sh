@@ -60,10 +60,7 @@ package_recover_completed_transition() {
   elif [ -f "$complete/package.target" ]; then
     die 'completed packaged transition has no verified committed manager; recovery refused'
   fi
-  package_remove_transition_fields "$complete" || return
-  rm -f "$complete/target" "$complete/port" "$complete/previous.env" "$complete/image" \
-    "$complete/image.next" "$complete/previous.env.next" || return
-  rmdir "$complete" || die 'unknown completed packaged transition metadata; recovery refused'
+  runner_clear_completed_journal "$complete" || return
   printf 'Previously completed packaged transition recovered; no newer release selected.\n'
 }
 
@@ -242,7 +239,8 @@ package_update() {
         [ "$#" -ge 2 ] || die '--agent requires codex or claude'
         [ -z "$transition" ] || die 'choose only one runner transition'
         validate_agent "$2"; transition=$2; shift 2 ;;
-      --rollback-runner|--pause-runner|--migrate-project-identity)
+      --migrate-project-identity) project_migration_required ;;
+      --rollback-runner|--pause-runner)
         [ -z "$transition" ] || die 'choose only one runner transition'
         transition=${1#--}; shift ;;
       --rollback-release) rollback_release=true; shift ;;
@@ -251,7 +249,7 @@ package_update() {
         case "$1" in --bin-dir) bin_dir=$2 ;; --config-dir) config_home=$2 ;; --skills-dir) skills_dir=$2 ;; esac
         shift 2 ;;
       --help|-h)
-        printf 'Usage: symphony update [--release VERSION | --rollback-release] [--agent codex|claude | --rollback-runner | --pause-runner | --migrate-project-identity]\n'
+        printf 'Usage: symphony update [--release VERSION | --rollback-release] [--agent codex|claude | --rollback-runner | --pause-runner]\n'
         printf 'Isolated candidate validation: --candidate-manifest FILE --candidate-bundle FILE\n'; return ;;
       *) die "unknown packaged update option: $1" ;;
     esac
@@ -277,15 +275,15 @@ package_update() {
     fi
     [ -z "$pending" ] || [ "$pending" = "$journal" ] || die 'another project has an unfinished packaged update; finish or roll it back first'
     case "$transition" in
-      pause-runner|migrate-project-identity|rollback-runner)
+      pause-runner|rollback-runner)
         [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'release selection cannot be combined with this runner control'
         case "$transition" in
           pause-runner) runner_pause "$root" true; return ;;
-          migrate-project-identity) [ -z "$pending" ] || die 'finish or roll back the packaged update before migrating project identity'; runner_migrate_identity "$root"; return ;;
           rollback-runner) package_update_rollback=true; runner_rollback "$root"; return ;;
         esac ;;
     esac
     if [ -d "$journal" ]; then
+      runner_pending_migration "$root" || return
       [ -f "$journal/package.target" ] || die 'pending transition has no packaged release identity; use --rollback-runner'
       [ -z "$requested$candidate_manifest" ] && ! "$rollback_release" || die 'a packaged transition is pending; retry without changing its selected release or use --rollback-runner'
       target=$(package_verified_home "$(cat "$journal/package.target")") || return

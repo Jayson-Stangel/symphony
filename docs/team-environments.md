@@ -5,15 +5,15 @@ compatible locally available environment for each project. It pins the actual
 immutable image configuration ID, so moving a tag cannot change that selection.
 The host manager and the embedded runtime retain their own source identities.
 
-From a project checkout with the installed command:
+Use the project ID from registration with each command:
 
 ```bash
-symphony environment select --agent codex team/project:reviewed
-symphony environment show
-symphony environment show --json
-symphony auth codex check
-symphony runner doctor
-symphony run --agent codex
+symphony --project PROJECT-ID environment select --agent codex team/project:reviewed
+symphony --project PROJECT-ID environment show
+symphony --project PROJECT-ID environment show --json
+symphony --project PROJECT-ID auth codex check
+symphony --project PROJECT-ID runner doctor
+symphony --project PROJECT-ID run --agent codex
 ```
 
 Obtain or build the image first using your team's normal tools. Selection never
