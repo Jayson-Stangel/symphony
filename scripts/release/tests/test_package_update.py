@@ -325,12 +325,12 @@ class PackageUpdateTest(unittest.TestCase):
     def test_registered_projects_require_compatible_manager_before_release_rollback(self):
         self.assertEqual(self.candidate().returncode, 0)
         current = self.current()
-        legacy = self.bundle("0.0.0", "0" * 40, registration="checkout")[2]
-        legacy_release = self.app / "releases" / legacy.name
-        shutil.copytree(legacy, legacy_release)
-        early = self.bundle("0.0.1-early", "e" * 40, registration="selector-only")[2]
-        early_release = self.app / "releases" / early.name
-        shutil.copytree(early, early_release)
+        legacy = self.bundle("0.0.0", "0" * 40, registration="checkout")
+        legacy_release = self.app / "releases" / legacy[2].name
+        shutil.copytree(legacy[2], legacy_release)
+        early = self.bundle("0.0.1-early", "e" * 40, registration="selector-only")
+        early_release = self.app / "releases" / early[2].name
+        shutil.copytree(early[2], early_release)
         compatible = self.bundle("0.0.3", "c" * 40)[2]
         retained = self.app / "releases" / compatible.name
         shutil.copytree(compatible, retained)
