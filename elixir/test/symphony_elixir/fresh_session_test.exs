@@ -334,7 +334,7 @@ defmodule SymphonyElixir.FreshSessionTest do
     const readline = require('node:readline');
     const pid = process.pid;
     const thread = 'thread-' + pid;
-    const emit = message => process.stdout.write(JSON.stringify(message) + '\\n');
+    const emit = (message, onWrite) => process.stdout.write(JSON.stringify(message) + '\\n', onWrite);
     const input = readline.createInterface({ input: process.stdin });
     let turn = 0;
     let turnTimer;
@@ -368,8 +368,7 @@ defmodule SymphonyElixir.FreshSessionTest do
           const prior = fs.existsSync('turns') ? JSON.parse(fs.readFileSync('turns', 'utf8').trim().split('\\n').at(-1)) : null;
           const priorPid = prior?.pid ?? (fs.existsSync('initialize-first') ? fs.readFileSync('initialize-first', 'utf8') : null);
           const prior_exit = priorPid !== null && fs.existsSync('exited-' + priorPid);
-          fs.appendFileSync('turns', JSON.stringify({ pid, thread, turn: ++turn, cwd: process.cwd(), prompt, prior_exit }) + '\\n');
-          emit({ id: request.id, result: { turn: { id: 'turn-' + turn } } });
+          const record = JSON.stringify({ pid, thread, turn: ++turn, cwd: process.cwd(), prompt, prior_exit });
           turnTimer = setInterval(() => {
             const finish = 'finish-' + pid;
             if (!fs.existsSync(finish)) return;
@@ -377,6 +376,11 @@ defmodule SymphonyElixir.FreshSessionTest do
             clearInterval(turnTimer);
             emit({ method: 'turn/completed' });
           }, 10);
+          // Tests can close the port as soon as the turn becomes visible.
+          emit({ id: request.id, result: { turn: { id: 'turn-' + turn } } }, error => {
+            if (error) throw error;
+            fs.appendFileSync('turns', record + '\\n');
+          });
           break;
         }
       }
