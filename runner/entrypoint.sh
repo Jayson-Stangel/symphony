@@ -1,8 +1,12 @@
 #!/bin/sh
 set -eu
 
-workflow=/etc/symphony/WORKFLOW.md
-[ -r "$workflow" ] || { echo "missing workflow at $workflow" >&2; exit 1; }
+if [ -n "${SYMPHONY_REMOTE_REPOSITORY:-}" ]; then
+  workflow=/var/lib/symphony/remote-workflow/WORKFLOW.md
+else
+  workflow=/etc/symphony/WORKFLOW.md
+  [ -r "$workflow" ] || { echo "missing workflow at $workflow" >&2; exit 1; }
+fi
 install -d -m 700 /root/.codex /workspaces /var/lib/symphony
 python3 /usr/local/lib/symphony/node-headers.py --prepare-home /root
 install -d -m 700 /root/.codex/skills

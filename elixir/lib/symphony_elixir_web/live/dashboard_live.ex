@@ -57,16 +57,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
             <%= if agent = Map.get(@payload, :agent) do %>
+              <% source_rejected = get_in(agent, [:admission, :reason]) == "workflow_source_rejected" %>
+              <% admitting = agent.readiness[:ready] && !agent.draining && !agent.pause && !source_rejected %>
               <div id="runner-identity" class="runner-identity" role="group" aria-label="Runner identity">
                 <div class="runner-agent"><span class="runner-label">Agent:</span> <strong><%= if agent.provider in [:claude, "claude"], do: "Claude Code", else: "Codex" %></strong></div>
                 <div class="runner-model"><span class="runner-label">Model:</span> <strong><%= agent[:model] || "Not yet reported" %></strong><%= if agent[:model_source] == "last_session" and agent[:model] do %><span class="runner-source">last session</span><% end %></div>
                 <div class="runner-model runner-effort"><span class="runner-label">Reasoning:</span> <strong><%= agent[:effort] || if(agent.provider in [:claude, "claude"], do: "Model default", else: "Runner default") %></strong><span class="runner-source">configured</span></div>
-                <span class="runner-state runner-state-current" data-ready={if agent.readiness[:ready] && !agent.draining && !agent.pause, do: "true", else: "false"}>
+                <span class="runner-state runner-state-current" data-ready={if admitting, do: "true", else: "false"}>
                   <span class="runner-state-dot" aria-hidden="true"></span>
                   <%= cond do %>
                     <% agent.draining -> %>Draining
+                    <% source_rejected -> %>Workflow rejected
                     <% agent.pause -> %><%= agent.pause["kind"] %>
-                    <% agent.readiness[:ready] -> %>Ready
+                    <% admitting -> %>Ready
                     <% true -> %>Blocked
                   <% end %>
                 </span>
@@ -75,6 +78,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <% end %>
         </div>
       </header>
+
+      <%= if workflow = @payload[:workflow] do %>
+        <%= if workflow[:branch] do %>
+          <section class="panel" aria-label="Workflow source">
+            <h2>Workflow source</h2>
+            <p><strong><%= workflow.project %></strong> · <%= workflow.branch %> · <%= workflow.status %></p>
+            <dl>
+              <dt>Accepted commit</dt><dd><code><%= workflow.commit %></code></dd>
+              <dt>Workflow SHA-256</dt><dd><code><%= workflow.sha256 %></code></dd>
+              <dt>Last successful source check</dt><dd><%= workflow.last_successful_source_check_at %></dd>
+              <%= if workflow.source_error do %>
+                <dt>Latest source error</dt><dd><%= workflow.source_error %></dd>
+              <% end %>
+            </dl>
+          </section>
+        <% end %>
+      <% end %>
 
       <%= if @payload[:error] do %>
         <section class="error-card">

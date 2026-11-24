@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Codex.SandboxReadiness
   alias SymphonyElixir.Tracker.Issue
+  alias SymphonyElixir.WorkflowStore
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -658,9 +659,14 @@ defmodule SymphonyElixir.Orchestrator do
       retry_at: nil
     }
 
+    source_block = WorkflowStore.admission_block()
+
     cond do
       state.draining ->
         %{admission | reason: "draining"}
+
+      source_block ->
+        %{admission | reason: source_block}
 
       not Map.get(readiness, :ready, false) ->
         %{admission | reason: readiness[:code] || "native_not_ready"}
@@ -1342,15 +1348,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case refresh_issue_for_dispatch(issue) do
-      {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
-
-      {:skip, _reason} ->
-        state
-
-      {:error, _reason} ->
-        state
+    with {:ok, %Issue{} = refreshed_issue} <- refresh_issue_for_dispatch(issue),
+         nil <- WorkflowStore.admission_block() do
+      do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+    else
+      _ -> state
     end
   end
 

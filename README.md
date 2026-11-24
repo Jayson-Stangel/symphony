@@ -23,7 +23,12 @@ unattended workers. This fork adds the operational layer we need around that mod
 installation, container execution, retained workspaces, authentication, controlled
 updates, and a choice of Codex or Claude.
 
-### What is different
+For new projects, an installed Symphony manager can read the root workflow
+from a registered GitHub branch and reload it as commits land. Multiple
+registrations can run independently on one host. See the
+[remote project setup](docs/packaged-install.md#register-a-new-project-from-a-remote-workflow).
+
+## What is different
 
 | Area | This fork adds |
 | --- | --- |
@@ -76,10 +81,10 @@ separately. Then follow the
 bundle. The manager uses prebuilt runner images; it needs no Symphony checkout,
 host Git, mise, Python, Node, agent CLI, or build toolchain.
 
-You also need an existing project checkout with an explicit `origin`, tracker
-credentials, a repository-scoped GitHub credential, and a native agent login.
-Preparing the target checkout is separate from installing Symphony. Codex is the
-default; Claude uses native sign-in in its isolated runner.
+You also need a GitHub repository, tracker credentials, a repository-scoped
+GitHub credential, and a native agent login. Register a remote workflow for a new
+project or use its existing checkout with an explicit `origin`. Codex is the
+default. Claude uses native sign-in in its isolated runner.
 
 The [getting started guide](docs/getting-started.md) covers project initialization,
 credentials, authentication, and one disposable issue-to-PR pilot for either

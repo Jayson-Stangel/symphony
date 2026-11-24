@@ -39,6 +39,8 @@ Usage:
   symphony --version
   symphony doctor [--json]
   symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
+  symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH]
+  symphony --project PROJECT-ID COMMAND
   symphony auth codex|claude login|check|remove
   symphony run [--agent codex|claude] [--port PORT]
   symphony runner doctor [--agent codex|claude] [--sandbox-only]
