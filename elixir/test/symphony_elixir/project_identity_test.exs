@@ -156,6 +156,18 @@ defmodule SymphonyElixir.ProjectIdentityTest do
     assert message =~ "project migrate"
     assert {status, 0} = launch(ctx, unrelated, ["--project", id, "runner", "status"])
     assert status =~ "Isolated Symphony: running"
+
+    File.rm!(legacy)
+    basename_metadata = Path.join(ctx.root, "config/runners/service.env")
+    File.write!(basename_metadata, "SYMPHONY_RUNNER_AGENT=claude\n")
+    basename_fixture = Path.join(ctx.runtime, ctx.prefix <> "-service.json")
+    File.write!(basename_fixture, Jason.encode!(%{"storage" => "#{ctx.prefix}-foreign-000000000000"}))
+    assert {status, 0} = launch(ctx, unrelated, ["runner", "status"])
+    assert status =~ "Isolated Symphony: running"
+
+    File.write!(basename_fixture, Jason.encode!(%{"storage" => "#{ctx.prefix}-#{identity(ctx, unrelated)}"}))
+    assert {message, 1} = launch(ctx, unrelated, ["runner", "status"])
+    assert message =~ "--migrate-project-identity"
   end
 
   test "unlabeled retained volumes cannot be claimed by a fresh registration", ctx do

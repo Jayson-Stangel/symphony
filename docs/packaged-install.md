@@ -341,11 +341,9 @@ Use the project ID from the preflight to restore the prior container stopped:
 symphony --project PROJECT-ID update --rollback-runner
 ```
 
-To return to checkout operation after that rollback, use
-`symphony update --rollback-release` if the prior checkout-capable installed
-manager is the retained previous release. Start the original runner from the
-checkout and explicitly resume its drain after checking readiness. Retain the
-checkout until migration succeeds. After success, use
+The rollback retains the stopped checkout listener as the migration source.
+Resolve the failure and review and apply a new cutover from the original
+checkout. Retain the checkout until migration succeeds. After success, use
 `symphony --project PROJECT-ID` for restart, status, drain, resume, update and
 rollback.
 
@@ -616,9 +614,11 @@ For a Claude project, substitute `--agent claude` for `--agent codex` in the
 update/retry/rollback examples. Use the same provider as the retained project when
 restoring a completed release. `--rollback-release` without `--agent` restores only the shared manager;
 project image pins remain unchanged. A previous release directory is retained
-and verified before recovery. Once the selected configuration has a registered
-project, both forms of release rollback require a manager that supports remote
-project registration. This preserves checkout-free controls after migration.
+and verified before recovery. A manager that supports migrated projects
+requires that capability in the rollback target. Early managers with remote
+registration could only read newly registered projects. The manager is shared
+across configuration roots, so selecting a different root does not change
+this rule.
 An unfinished transition must first be retried or
 rolled back before selecting another release. Recovery refuses unknown owners,
 altered release bytes, incompatible images and unrelated current-manager links.

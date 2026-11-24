@@ -1,4 +1,5 @@
 # Sourced only by a release bundle. Lifecycle state continues to belong to the launcher.
+# Manager capability: adopted project registrations v1
 packaged_install=true
 [ -z "${SYMPHONY_RUNNER_IMAGE:-}" ] || die 'packaged runner images are selected by the release and installed updater; remove SYMPHONY_RUNNER_IMAGE'
 case "$(uname -s)/$(uname -m)" in

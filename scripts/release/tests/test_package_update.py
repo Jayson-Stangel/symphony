@@ -207,14 +207,17 @@ class PackageUpdateTest(unittest.TestCase):
         (self.app / "current").symlink_to(self.initial)
         self.command = self.app / "current/scripts/symphony"
 
-    def bundle(self, version, revision, channel="candidate", registered=False):
+    def bundle(self, version, revision, channel="candidate", registration="adopted"):
         directory = self.root / f"{version}-{revision}"
         (directory / "scripts").mkdir(parents=True)
         (directory / "libexec").mkdir()
         (directory / "scripts/symphony").write_text(LAUNCHER)
         (directory / "scripts/symphony").chmod(0o755)
-        if registered:
-            shutil.copyfile(REPOSITORY / "scripts/symphony-package.sh", directory / "scripts/symphony-package.sh")
+        if registration != "checkout":
+            package = (REPOSITORY / "scripts/symphony-package.sh").read_text()
+            if registration == "selector-only":
+                package = package.replace("# Manager capability: adopted project registrations v1\n", "")
+            (directory / "scripts/symphony-package.sh").write_text(package)
         shutil.copyfile(UPDATER, directory / "scripts/symphony-package-update.sh")
         (directory / "libexec/symphony-host").write_text(HELPER.replace("__FIXTURE_BUILD_REVISION__", revision))
         (directory / "libexec/symphony-host").chmod(0o755)
@@ -301,7 +304,13 @@ class PackageUpdateTest(unittest.TestCase):
     def test_registered_projects_require_compatible_manager_before_release_rollback(self):
         self.assertEqual(self.candidate().returncode, 0)
         current = self.current()
-        compatible = self.bundle("0.0.3", "c" * 40, registered=True)[2]
+        legacy = self.bundle("0.0.0", "0" * 40, registration="checkout")[2]
+        legacy_release = self.app / "releases" / legacy.name
+        shutil.copytree(legacy, legacy_release)
+        early = self.bundle("0.0.1-early", "e" * 40, registration="selector-only")[2]
+        early_release = self.app / "releases" / early.name
+        shutil.copytree(early, early_release)
+        compatible = self.bundle("0.0.3", "c" * 40)[2]
         retained = self.app / "releases" / compatible.name
         shutil.copytree(compatible, retained)
         projects = self.config / "projects"
@@ -309,17 +318,22 @@ class PackageUpdateTest(unittest.TestCase):
         registration = projects / "project-one-a655f1ffd4d3.remote"
         registration.write_text("fixture\nhttps://github.com/one/project-one.git\nmain\nadopted\n")
         previous = self.app / "previous"
+        other = self.root / "empty-config"
+        other.mkdir()
 
-        for transition in ([], ["--agent", "codex"]):
-            with self.subTest(transition=transition):
-                result = self.run_update("--rollback-release", *transition)
-                self.assertEqual(result.returncode, 1, result.stdout)
-                self.assertIn("selected release cannot manage registered projects", result.stdout)
-                self.assertEqual(self.current(), current)
-                self.assertEqual(previous.resolve(), self.initial)
-                self.assertFalse((self.app / "pending-transition").exists())
-                self.assertFalse((self.config / "runners/project-one.image").exists())
-                self.assertTrue(registration.is_file())
+        for incompatible in (legacy_release, early_release):
+            previous.unlink()
+            previous.symlink_to(incompatible)
+            for transition in ([], ["--agent", "codex"], ["--config-dir", str(other)]):
+                with self.subTest(incompatible=incompatible, transition=transition):
+                    result = self.run_update("--rollback-release", *transition)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("selected release cannot manage registered projects", result.stdout)
+                    self.assertEqual(self.current(), current)
+                    self.assertEqual(previous.resolve(), incompatible)
+                    self.assertFalse((self.app / "pending-transition").exists())
+                    self.assertFalse((self.config / "runners/project-one.image").exists())
+                    self.assertTrue(registration.is_file())
 
         previous.unlink()
         previous.symlink_to(retained)

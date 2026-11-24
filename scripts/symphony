@@ -157,10 +157,16 @@ repo_root() {
     printf '%s\n' "$record"
     return
   elif [ -n "${record:-}" ]; then
-    local legacy="$runner_home/$(basename "$record" .remote).env"
+    local legacy="$runner_home/$(basename "$record" .remote).env" basename_metadata runtime
     if [ -e "$legacy" ] || [ -L "$legacy" ]; then
       [ "$mode" != optional ] || return 0
       project_migration_required
+    fi
+    basename_metadata="$runner_home/$(legacy_project_id "$checkout").env"
+    if { [ -e "$basename_metadata" ] || [ -L "$basename_metadata" ]; } &&
+       runtime=$(container_runtime 2>/dev/null) && runner_retains_basename "$checkout" "$runtime"; then
+      [ "$mode" != optional ] || return 0
+      die 'legacy basename resource retained; use symphony update --migrate-project-identity with the prior manager before symphony project migrate'
     fi
   fi
   selected=
@@ -1347,22 +1353,29 @@ runner_workflow_probe() {
   fi
 }
 
-runner_require_identity() {
-  local root=$1 scope=${2:-all} runtime old storage suffix owner
-  runtime=$(container_runtime); old="$runtime_prefix-$(legacy_project_id "$root")"
+runner_retains_basename() {
+  local root=$1 runtime=$2 old storage suffix
+  old="$runtime_prefix-$(legacy_project_id "$root")"
   storage=$(runner_storage_id "$root")
-  owner=
-  local adopted=
+  for suffix in '' '-before-update'; do
+    if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$old$suffix" 2>/dev/null || true)" = "$storage" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+runner_require_identity() {
+  local root=$1 scope=${2:-all} runtime owner= adopted=
+  runtime=$(container_runtime)
   if registered_project "$root"; then
     project_registration_read "$root" || return
     owner=$registered_linear; adopted=$registered_adopted
   fi
   runner_check_project_resources "$root" "$runtime" "$owner" "$adopted" "$scope" || return
-  for suffix in '' '-before-update'; do
-    if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$old$suffix" 2>/dev/null || true)" = "$storage" ]; then
-      die 'legacy basename resource retained; use symphony update --migrate-project-identity with the prior manager before migrating'
-    fi
-  done
+  if runner_retains_basename "$root" "$runtime"; then
+    die 'legacy basename resource retained; use symphony update --migrate-project-identity with the prior manager before migrating'
+  fi
 }
 
 runner_env_file() { printf '%s/%s.env\n' "$runner_home" "$(project_id "$1")"; }

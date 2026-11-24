@@ -93,6 +93,10 @@ if [[ -n "${PROOF_WORKFLOW_NETWORK:-}" && "$1" = run ]] &&
   args=(run --network "$PROOF_WORKFLOW_NETWORK"
     --mount "type=bind,source=$PROOF_WORKFLOW_CA,target=/etc/ssl/certs/ca-certificates.crt,readonly" "${@:2}")
 fi
+if [ "$1" = rm ] && [ "$#" -eq 2 ] && [[ "$2" == *-before-update ]] &&
+   [ -f "$PROOF_ROOT/fault" ] && [ "$(cat "$PROOF_ROOT/fault")" = before-backup-remove ]; then
+  rm "$PROOF_ROOT/fault"; echo 'FAULT before actual Docker backup removal' >&2; exit 97
+fi
 ''' + shlex.quote(docker) + ''' "${args[@]}"
 if [ -f "$PROOF_ROOT/fault" ]; then
   mode=$(cat "$PROOF_ROOT/fault")
@@ -529,10 +533,16 @@ exec /usr/bin/curl "$@"
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
         initial_launcher = root / "app" / os.readlink(root / "app/current") / "scripts/symphony"
         initial_remote = "project migrate" in client_run([str(command), "--help"]).stdout
+        adopted_capability = b"# Manager capability: adopted project registrations v1"
         with tarfile.open(second_archive, "r:gz") as archive:
             payload = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony")
             current_remote = b"project migrate --linear-project" in archive.extractfile(payload).read()
-        migration = current_remote and not initial_remote and not manager_update_only
+            package = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony-package.sh")
+            current_adopted = adopted_capability in archive.extractfile(package).read().splitlines()
+        prior_adopted = adopted_capability in initial_launcher.with_name("symphony-package.sh").read_bytes().splitlines()
+        incompatible_rollback = current_adopted and not prior_adopted
+        retired_layout = current_remote and not initial_remote
+        migration = retired_layout and not manager_update_only
         if migration:
             primary_agent, project_agents = "codex", ("codex", "claude")
             result["project_agents"] = list(project_agents)
@@ -740,20 +750,22 @@ exec /usr/bin/curl "$@"
             client_run([str(command), "update", *update_args], cwd=repo)
             assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == current['source_revision']
             retained()
-            client_run([str(command), "update", "--rollback-release"], cwd=repo)
-            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == previous['source_revision']
+            rollback = client_run([str(command), "update", "--rollback-release"], cwd=repo, expected=int(incompatible_rollback))
+            if incompatible_rollback:
+                assert "selected release cannot manage registered projects" in rollback.stdout
+            retained_revision = current['source_revision'] if incompatible_rollback else previous['source_revision']
+            assert json.loads(client_run([str(command), "--version"]).stdout)['source_revision'] == retained_revision
             retained()
             corrupted = json.loads(second_manifest.read_text())
             corrupted['bundles']['linux_x86_64']['sha256'] = '0'*64
             invalid = stage_candidate_descriptor(second_manifest, corrupted, root/'manager-only-corrupt')
             failed = client_run([str(command), 'update', '--candidate-manifest', str(invalid), '--candidate-bundle', str(second_archive)], cwd=repo, expected=1)
             assert 'release bundle checksum mismatch' in failed.stdout
-            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == previous['source_revision']
+            assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == retained_revision
             retained()
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
             retained()
-            retired_layout = current_remote and not initial_remote
             historical_command = initial_launcher if retired_layout else command
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
                 if retired_layout:
@@ -777,7 +789,7 @@ exec /usr/bin/curl "$@"
                 assert inspect(selected_name, '{{.State.Running}}') == 'false'
             unchanged()
             result['passed'] = True
-            record('actual old90 to strict schema1 bridge to schema2 manager, rollback to bridge, checksum refusal, retry and layout-appropriate restart/refusal preserve both unlabeled legacy projects and all canaries' if legacy_chain else 'two actual manager sources with exact unchanged runners: activation, rollback, checksum refusal, retry and layout-appropriate restart/refusal preserve both projects and all canaries; legacy three-source chain not requested')
+            record("manager activation, checked release rollback compatibility, checksum refusal, retry and layout-appropriate restart preserve both projects and their canaries")
             return
         client_run([str(command), "runner", "stop"], cwd=repo)
         stopped_id = inspect(name, "{{.Id}}")
@@ -789,12 +801,16 @@ exec /usr/bin/curl "$@"
             client_run([str(command), "runner", "doctor", "--agent", "codex"], cwd=repo)
             result["current_packaged_protected_execution"] = True
         assert inspect(names[1], "{{.Image}}") == second_image and metadata[1].read_bytes() == second_metadata
-        client_run([str(command), "update", "--rollback-release"], cwd=repo)
-        assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
+        rollback = client_run([str(command), "update", "--rollback-release"], cwd=repo, expected=int(incompatible_rollback))
+        if incompatible_rollback:
+            assert "selected release cannot manage registered projects" in rollback.stdout
+        retained_revision = current["source_revision"] if incompatible_rollback else previous["source_revision"]
+        assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == retained_revision
         assert inspect(name, "{{.State.Running}}") == "false" and inspect(name, "{{.Id}}") == stopped_id
         unchanged()
-        client_run([str(command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
-        record("two real package revisions: manager-only activation and updater-controlled rollback retain stopped runner until explicit run, preserving both selected images")
+        historical_command = initial_launcher if retired_layout else command
+        client_run([str(historical_command), "run", "--agent", primary_agent, "--port", str(port)], cwd=repo); state(port)
+        record("two real package revisions: manager-only activation and checked rollback compatibility retain stopped runner until explicit run, preserving both selected images")
         # Remove only the unselected new candidate image from this disposable
         # daemon/registry and prove a real immutable-digest pull failure. Restore
         # from the same checksummed archive before positive transition proof.
@@ -865,8 +881,24 @@ exec /usr/bin/curl "$@"
             # Undoing a pending migration restores the deliberately stopped prior.
             # Retry from that stopped source without needing to restart old code.
             interrupt_migration()
-            client_run(apply, cwd=repo)
+            (root / "fault").write_text("before-backup-remove")
+            client_run(apply, cwd=repo, expected=97)
+            assert (journal / "migration.resume").read_text().strip() == "resumed"
+            assert (journal / "package.committed").read_text().strip() == os.readlink(root / "app/current")
+            assert inspect(name + "-before-update", "{{.Id}}") == baseline_container
+            assert inspect(name + "-before-update", "{{.State.Running}}") == "false"
+            bare = workflow_fixture.directory / "git/fixture-0/service.git"
+            run(["git", "-C", str(bare), "update-ref", "-d", "refs/heads/main", commits[0]], env=git_env)
+            try:
+                client_run(apply, cwd=repo)
+            finally:
+                run(["git", "-C", str(bare), "update-ref", "refs/heads/main", commits[0]], env=git_env)
+            record("committed, resumed checkout migration settles a verified stopped backup without access to the workflow branch")
             observed = state(port)
+            deadline = time.monotonic() + 30
+            while observed["agent"]["admission"]["ready"] is not True and time.monotonic() < deadline:
+                time.sleep(1)
+                observed = state(port)
             assert observed["workflow"]["commit"] == commits[0] and observed["agent"]["admission"]["ready"] is True
             assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
             assert not journal.exists()
@@ -940,8 +972,11 @@ exec /usr/bin/curl "$@"
             try:
                 activation_links = {path: os.readlink(root / "app" / path) for path in ("current", "previous")}
                 engine_calls = (root / "docker-calls.log").read_bytes()
+                alternate = root / "empty-rollback-config"
+                alternate.mkdir(mode=0o700)
                 for rollback in ([str(command), "update", "--rollback-release"],
-                                 [*project, "update", "--rollback-release", "--agent", primary_agent]):
+                                 [*project, "update", "--rollback-release", "--agent", primary_agent],
+                                 [str(command), "update", "--rollback-release", "--config-dir", str(alternate)]):
                     refused = client_run(rollback, expected=1)
                     assert "selected release cannot manage registered projects" in refused.stdout
                     assert {path: os.readlink(root / "app" / path) for path in activation_links} == activation_links

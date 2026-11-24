@@ -300,15 +300,11 @@ package_update() {
       target=$(package_verified_home "$target") || return
     else target=$(package_stage_download "$requested" "$candidate_manifest" "$candidate_bundle") || return; fi
   fi
-  local registration
-  for registration in "$config_home"/projects/*.remote; do
-    [ -e "$registration" ] || [ -L "$registration" ] || continue
-    # Verified packaged help advertises the project selector in managers
-    # that can operate a registered project, including earlier candidates.
-    grep -Fqx '  symphony --project PROJECT-ID COMMAND' "$target/scripts/symphony-package.sh" 2>/dev/null ||
-      die 'selected release cannot manage registered projects; keep the current manager or select a release that supports --project'
-    break
-  done
+  # Activation changes the shared manager for every configuration root.
+  # The verified package must understand the adopted registration record,
+  # including its fourth field. Early remote-aware managers do not.
+  grep -Fqx '# Manager capability: adopted project registrations v1' "$target/scripts/symphony-package.sh" 2>/dev/null ||
+    die 'selected release cannot manage registered projects with the adopted record format; select a compatible manager'
   # Re-enter the exact verified manager without resolving latest a second time.
   unset SYMPHONY_RUNNER_IMAGE
   exec env SYMPHONY_HOME="$target" SYMPHONY_APP_HOME="$package_app_home" \
