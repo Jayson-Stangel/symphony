@@ -414,8 +414,9 @@ Notes:
   conversation in the same workspace. It reads the current issue again before the
   first turn and uses the current workflow. The branch, PR and untracked files stay
   available in the workspace. If shutdown is unconfirmed, Symphony keeps the claim
-  and retries confirmation on subsequent polls when it has a captured session.
-  A pending startup with neither a captured session nor closure evidence keeps
+  and retries confirmation on subsequent polls when it has captured shutdown
+  information. That includes a native process identified during startup.
+  A pending startup without shutdown information or closure evidence keeps
   the claim. A failed tracker refresh delays replacement until a successful
   current read. Pending stops survive a scheduler child restart within the
   running manager. Before restarting the manager itself after an unconfirmed

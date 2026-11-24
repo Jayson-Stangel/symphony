@@ -45,9 +45,9 @@ defmodule SymphonyElixir.CodingAgent do
   end
 
   @doc false
-  @spec report_startup_closed(keyword()) :: :ok
-  def report_startup_closed(opts) do
-    if callback = opts[:on_startup_closed], do: callback.()
+  @spec report_startup_cleanup(keyword(), :closed | (-> :ok | {:error, term()})) :: :ok
+  def report_startup_cleanup(opts, update) do
+    if callback = opts[:on_startup_cleanup], do: callback.(update)
     :ok
   end
 

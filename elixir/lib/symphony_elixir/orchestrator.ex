@@ -228,10 +228,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:worker_startup_closed, issue_id, pid}, state) do
+  def handle_info({:worker_startup_cleanup, issue_id, pid, update}, state)
+      when update == :closed or is_function(update, 0) do
     case state.running[issue_id] do
-      %{pid: ^pid} = entry ->
-        entry = %{entry | session_starting: false}
+      %{pid: ^pid, session_starting: true} = entry when not is_map_key(entry, :agent_session) ->
+        entry =
+          if update == :closed,
+            do: entry |> Map.put(:session_starting, false) |> Map.delete(:startup_cleanup),
+            else: Map.put(entry, :startup_cleanup, update)
 
         state =
           if entry[:tracker_stop],
@@ -443,7 +447,9 @@ defmodule SymphonyElixir.Orchestrator do
     finish_agent_down(state, issue_id, Map.put(entry, :replacement_stop, entry.tracker_stop), reason)
   end
 
-  defp finish_pending_startup(state, issue_id, entry, _reason), do: retain_unconfirmed_tracker_stop(state, issue_id, entry)
+  defp finish_pending_startup(state, issue_id, entry, reason) do
+    retain_unconfirmed_tracker_stop(state, issue_id, Map.put(entry, :cleanup_action, {:down, reason}))
+  end
 
   defp remember_tracker_stop(state, issue_id, entry) do
     if table = state.tracker_stop_claims do
@@ -477,7 +483,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_unconfirmed_tracker_stops(state) do
     Enum.reduce(state.running, state, fn
       {issue_id, %{tracker_stop: _, ref: nil} = entry}, state
-      when is_map_key(entry, :agent_session) or :erlang.map_get(:session_starting, entry) == false ->
+      when is_map_key(entry, :agent_session) or is_map_key(entry, :startup_cleanup) or
+             :erlang.map_get(:session_starting, entry) == false ->
         begin_tracker_stop(state, issue_id, entry)
 
       _, state ->
@@ -1000,7 +1007,7 @@ defmodule SymphonyElixir.Orchestrator do
             remember_tracker_stop(state, issue.id, entry)
 
           entry[:session_starting] == true and not Map.has_key?(entry, :agent_session) ->
-            # Wait for initialization to publish the captured native handle.
+            # Startup owns cleanup until the worker exits or registers a ready session.
             remember_tracker_stop(state, issue.id, entry)
 
           true ->
@@ -1336,12 +1343,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp stop_running_task(issue_id, entry, task_supervisor, reason \\ :scheduler_stop) do
     pid = Map.get(entry, :pid)
     ref = Map.get(entry, :ref)
-    session = Map.get(entry, :agent_session)
 
     result =
       try do
-        case session do
-          %{adapter: _, native: _} -> CodingAgent.interrupt(session, reason)
+        case entry do
+          %{agent_session: %{adapter: _, native: _} = session} -> CodingAgent.interrupt(session, reason)
+          %{tracker_stop: _, startup_cleanup: cleanup} -> cleanup.()
           _ -> :ok
         end
       catch
@@ -2389,7 +2396,8 @@ defmodule SymphonyElixir.Orchestrator do
     model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
     notify_dashboard()
 
-    %{state | agent_model: model, running: Map.put(state.running, issue_id, Map.put(entry, :agent_session, session))}
+    entry = entry |> Map.delete(:startup_cleanup) |> Map.put(:agent_session, session)
+    %{state | agent_model: model, running: Map.put(state.running, issue_id, entry)}
   end
 
   defp update_running_entry(state, issue_id, update), do: update_in(state.running[issue_id], update)

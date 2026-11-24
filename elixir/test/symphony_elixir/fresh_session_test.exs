@@ -214,6 +214,49 @@ defmodule SymphonyElixir.FreshSessionTest do
     assert first["pid"] != String.to_integer(File.read!(Path.join(ctx.workspace, "initialize-first")))
   end
 
+  test "an unconfirmed startup stop recovers after scheduler restart and native exit", ctx do
+    File.touch!(Path.join(ctx.workspace, "hold-initialize"))
+    fixture = start_runner(ctx, fresh_session_on_enter: ["Agent Review"], max_retry_backoff_ms: 500)
+    marker = Path.join(ctx.workspace, "initialize-first")
+    await(fn -> File.exists?(marker) end)
+    pid = File.read!(marker)
+    hold = Path.join(ctx.workspace, "hold-exit-#{pid}")
+    exited = Path.join(ctx.workspace, "exited-#{pid}")
+    File.touch!(hold)
+
+    move(fixture, "Agent Review")
+    assert running(fixture).session_starting
+    assert running(fixture).tracker_stop.reason == :fresh_session
+    File.touch!(Path.join(ctx.workspace, "fail-initialize"))
+    File.rm!(Path.join(ctx.workspace, "hold-initialize"))
+
+    await(fn -> match?(%{ref: nil}, running(fixture)) end)
+    assert claimed?(fixture)
+    refute Map.has_key?(running(fixture), :agent_session)
+    refute File.exists?(exited)
+    assert turns(ctx) == []
+
+    set_issue(ctx, "Retest")
+    scheduler = Process.whereis(fixture.server)
+    Process.exit(scheduler, :kill)
+    await(fn -> is_pid(Process.whereis(fixture.server)) and Process.whereis(fixture.server) != scheduler end)
+    assert claimed?(fixture)
+    refute Map.has_key?(running(fixture), :agent_session)
+    assert turns(ctx) == []
+
+    File.rm!(hold)
+    await(fn -> File.exists?(exited) end)
+    move(fixture, "Retest")
+    retry = await(fn -> :sys.get_state(fixture.server).retry_attempts[ctx.issue.id] end)
+    assert retry.error =~ "fixture startup failure"
+
+    replacement = await_turn(ctx, 1)
+    assert replacement["prior_exit"]
+    assert replacement["pid"] != String.to_integer(pid)
+    assert replacement["prompt"] =~ "is Retest"
+    assert File.read!(Path.join(ctx.workspace, "untracked-notes")) == "retain me"
+  end
+
   test "scheduler restart preserves an unconfirmed captured stop", ctx do
     fixture = start_runner(ctx, fresh_session_on_enter: ["Agent Review"])
     first = await_turn(ctx, 1)
@@ -323,7 +366,8 @@ defmodule SymphonyElixir.FreshSessionTest do
         case 'turn/start': {
           const prompt = request.params.input[0].text;
           const prior = fs.existsSync('turns') ? JSON.parse(fs.readFileSync('turns', 'utf8').trim().split('\\n').at(-1)) : null;
-          const prior_exit = prior !== null && fs.existsSync('exited-' + prior.pid);
+          const priorPid = prior?.pid ?? (fs.existsSync('initialize-first') ? fs.readFileSync('initialize-first', 'utf8') : null);
+          const prior_exit = priorPid !== null && fs.existsSync('exited-' + priorPid);
           fs.appendFileSync('turns', JSON.stringify({ pid, thread, turn: ++turn, cwd: process.cwd(), prompt, prior_exit }) + '\\n');
           emit({ id: request.id, result: { turn: { id: 'turn-' + turn } } });
           turnTimer = setInterval(() => {
