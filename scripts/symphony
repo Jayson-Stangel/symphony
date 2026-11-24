@@ -2047,7 +2047,12 @@ runner_start() {
   local registered=false remote_resolved_branch owner=
   local -a project_args codex_project_mount
   runner_project_lock "$root" || return
-  if [ "$authority" != update ]; then runner_pending_migration "$root" || return; fi
+  if [ "$authority" != update ]; then
+    runner_pending_migration "$root" || return
+    if runner_transition_has_container_ids "$runner_home/$(project_id "$root").transition"; then
+      die 'runner update is pending; retry symphony update --agent or use symphony update --rollback-runner'
+    fi
+  fi
   runner_require_identity "$root"
   if registered_project "$root"; then
     registered=true
@@ -2576,11 +2581,14 @@ runner_finish_journal() {
   runner_clear_completed_journal "$journal.complete"
 }
 
-runner_write_transition_task_limits() {
-  local limit
+runner_write_transition_prior() {
+  local limit container_id
   limit=$(runner_task_limit_applied "$1" "$2") || die 'prior runner task limit is unknown; updater refused'
-  # Keep both values in an existing journal file so prior installed launchers
+  container_id=$("$1" inspect --format '{{.Id}}' "$2") || return
+  [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'prior container ID is invalid; updater refused'
+  # Keep the fields in an existing journal file so prior installed launchers
   # can still restore the retained container and remove the completed journal.
+  printf 'SYMPHONY_TRANSITION_PRIOR_CONTAINER_ID=%s\n' "$container_id" >>"$3" || return
   printf 'SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=%s\nSYMPHONY_TRANSITION_PIDS_LIMIT=%s\n' "$limit" "$4" >>"$3"
 }
 
@@ -2595,12 +2603,41 @@ runner_read_transition_task_limit() {
   printf '%s\n' "$limit"
 }
 
-runner_check_prior_task_limit() {
-  local limit
+runner_check_transition_prior() {
+  local limit container_id
   [ -e "$3" ] || return 0
+  container_id=$(sed -n 's/^SYMPHONY_TRANSITION_PRIOR_CONTAINER_ID=//p' "$3") || return
+  [ -z "$container_id" ] || [ "$container_id" = "$("$1" inspect --format '{{.Id}}' "$2")" ] ||
+    die 'prior container differs from the journal; recovery refused'
   limit=$(sed -n 's/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=//p' "$3")
   [ -z "$limit" ] || [ "$(runner_task_limit_applied "$1" "$2")" = "$limit" ] ||
     die 'prior runner task limit differs from the journal; recovery refused'
+}
+
+runner_write_resumed_candidate() {
+  local journal=$1 container_id=${2:-}
+  sed '/^SYMPHONY_TRANSITION_RESUMED_CONTAINER_ID=/d' "$journal/previous.env" >"$journal/previous.env.next" || return
+  if [ -n "$container_id" ]; then
+    printf 'SYMPHONY_TRANSITION_RESUMED_CONTAINER_ID=%s\n' "$container_id" >>"$journal/previous.env.next" || return
+  fi
+  mv "$journal/previous.env.next" "$journal/previous.env"
+}
+
+runner_transition_resume_recorded() {
+  [ -f "$1/previous.env" ] && grep -q '^SYMPHONY_TRANSITION_RESUMED_CONTAINER_ID=' "$1/previous.env"
+}
+
+runner_transition_was_resumed() {
+  local container_id
+  [ -f "$3/previous.env" ] || return 1
+  container_id=$(sed -n 's/^SYMPHONY_TRANSITION_RESUMED_CONTAINER_ID=//p' "$3/previous.env") || return
+  [ -n "$container_id" ] &&
+    [ "$container_id" = "$("$1" inspect --format '{{.Id}}' "$2" 2>/dev/null)" ]
+}
+
+runner_transition_has_container_ids() {
+  [ -f "$1/previous.env" ] &&
+    grep -Eq '^SYMPHONY_TRANSITION_(PRIOR|RESUMED)_CONTAINER_ID=' "$1/previous.env"
 }
 
 # The candidate's own cgroup may have no task slot for exec. After the caller
@@ -2624,7 +2661,7 @@ runner_candidate_unresumed() {
 # Commit the replacement image only after removing the verified old candidate.
 # A crash before that commit is retryable: the retained backup is never removed.
 runner_refresh_pending() {
-  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 task_limit=$6 runtime name old replacement state previous current_limit previous_limit selected_sha selected_owner stage_record stage_marker stage_image stage_sha stage_owner
+  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 task_limit=$6 runtime name old replacement state previous current_limit previous_limit selected_sha selected_owner stage_record stage_marker stage_image stage_sha stage_owner remaining
   runtime=$(container_runtime); name=$(runner_id "$root"); old=$(runner_transition_image "$journal")
   if [ "$(runner_status "$root")" = true ] && ! "$runtime" inspect "$backup" >/dev/null 2>&1 &&
      runner_is_legacy "$runtime" "$name"; then
@@ -2663,8 +2700,12 @@ runner_refresh_pending() {
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
+    runner_check_transition_prior "$runtime" "$backup" "$journal/previous.env"
     if [ "$state" != missing ]; then
       runner_owned "$root" "$runtime" "$name"
+      if runner_transition_resume_recorded "$journal"; then
+        runner_transition_was_resumed "$runtime" "$name" "$journal" || die 'resumed candidate differs from the journal; recovery refused'
+      fi
       runner_workflow_mount_owned "$root" "$runtime" "$name" directory || die 'candidate workflow layout differs; roll back through symphony update --rollback-runner'
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$old" ] || die 'candidate image differs; updater refused'
@@ -2675,6 +2716,14 @@ runner_refresh_pending() {
         runner_pause "$root"
       fi
       "$runtime" rm "$name" >/dev/null
+    elif runner_transition_resume_recorded "$journal"; then
+      # An inspection error can also report a missing state. Check the
+      # container inventory before discarding a verified resume record.
+      remaining=$("$runtime" ps --all --quiet --no-trunc --filter "name=^${name}$") || return
+      [ -z "$remaining" ] || die 'resumed candidate differs from the journal; recovery refused'
+    fi
+    if runner_transition_resume_recorded "$journal"; then
+      runner_write_resumed_candidate "$journal" || return
     fi
   else
     # Before the first rename, or after the previous candidate already committed,
@@ -2686,11 +2735,13 @@ runner_refresh_pending() {
     state=$("$runtime" inspect --format '{{.Image}}' "$name")
     [ "$state" = "$old" ] || [ "$state" = "$previous" ] || die 'pending source image differs; updater refused'
     if [ "$state" = "$old" ] &&
-       { [ "$state" != "$previous" ] ||
-         { [ -n "$previous_limit" ] && [ "$current_limit" != "$previous_limit" ] && [ "$current_limit" = "$task_limit" ]; }; }; then
+       { runner_transition_was_resumed "$runtime" "$name" "$journal" ||
+         { ! runner_transition_has_container_ids "$journal" &&
+           { [ "$state" != "$previous" ] ||
+             { [ -n "$previous_limit" ] && [ "$current_limit" != "$previous_limit" ] && [ "$current_limit" = "$task_limit" ]; }; }; }; }; then
       runner_record_observed_metadata "$root" "$runtime" "$name"
       cp "$(runner_env_file "$root")" "$journal/previous.env.next"
-      runner_write_transition_task_limits "$runtime" "$name" "$journal/previous.env.next" "$task_limit"
+      runner_write_transition_prior "$runtime" "$name" "$journal/previous.env.next" "$task_limit"
       mv "$journal/previous.env.next" "$journal/previous.env"
     fi
   fi
@@ -2731,7 +2782,7 @@ runner_prepare_storage() {
 }
 
 runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1 migration_completed=false task_limit
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1 migration_completed=false resumed_candidate=false recovering_transition=false task_limit
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
@@ -2758,6 +2809,7 @@ runner_transition() (
   else candidate="$runtime_prefix-runner-$agent:$(source_revision)"; fi
   export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ -d "$journal" ]; then
+    recovering_transition=true
     [ "$(cat "$journal/target")" = "$agent" ] || die 'a different transition is pending; finish it or use symphony update --rollback-runner'
     if "$packaged_install" && [ -z "${migration_commit:-}" ]; then
       [ "$(cat "$journal/package.revision")" = "$(source_revision)" ] || die 'pending packaged release revision differs; updater refused'
@@ -2780,9 +2832,12 @@ runner_transition() (
         migration_completed=true
       fi
     fi
-    # After verified resume and package activation, the journal only needs
-    # settlement. A changed or unavailable workflow is handled by the listener.
-    if ! "$migration_completed"; then
+    if [ -z "${migration_commit:-}" ] && runner_transition_was_resumed "$runtime" "$name" "$journal"; then
+      resumed_candidate=true
+    fi
+    # After verified resume, settle the journal without reopening admission.
+    # The listener owns admission if the workflow changes again.
+    if ! "$migration_completed" && ! "$resumed_candidate"; then
       if ! "$development"; then runner_task_limit_preflight "$runtime" "$candidate" "$task_limit" "$agent"; fi
       if [ "$agent" = codex ]; then
         codex_config_journal_load "$root" "$candidate" "$journal"
@@ -2833,7 +2888,7 @@ runner_transition() (
       sed '/^SYMPHONY_RUNNER_IMAGE_ID=/d' "$env_file" >"$journal_tmp/previous.env"
       printf 'SYMPHONY_RUNNER_IMAGE_ID=%s\n' "$("$runtime" inspect --format '{{.Image}}' "$name")" >>"$journal_tmp/previous.env"
     fi
-    runner_write_transition_task_limits "$runtime" "$name" "$journal_tmp/previous.env" "$task_limit"
+    runner_write_transition_prior "$runtime" "$name" "$journal_tmp/previous.env" "$task_limit"
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
     if [ "$agent" = codex ]; then codex_config_journal_write "$root" "$candidate" "$journal_tmp"
@@ -2848,8 +2903,16 @@ runner_transition() (
   candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
   if [ "$agent" = codex ]; then codex_config_journal_load "$root" "$candidate" "$journal"; fi
   if ! "$runtime" inspect "$backup" >/dev/null 2>&1; then
-    if { [ "$(runner_status "$root")" = true ] ||
-         { "$migration_completed" && [ "$(runner_status "$root")" = false ]; }; } &&
+    local previous_image=
+    if [ -f "$journal/previous.env" ]; then
+      previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env") || return
+    fi
+    # Older journals can prove a replacement by a different immutable image.
+    # A matching image alone never proves that a same-image update ran.
+    if { "$resumed_candidate" || "$migration_completed" ||
+         { "$recovering_transition" && [ "$(runner_status "$root")" = true ] &&
+           ! runner_transition_has_container_ids "$journal" &&
+           [ -n "$previous_image" ] && [ "$candidate" != "$previous_image" ]; }; } &&
        ! runner_is_legacy "$runtime" "$name" &&
        runner_workflow_mount_owned "$root" "$runtime" "$name" directory &&
        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] &&
@@ -2861,7 +2924,8 @@ runner_transition() (
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       if [ "$agent" = codex ]; then codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"; fi
-      "$migration_completed" || runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" || die 'candidate recovery refused'
+      "$migration_completed" || "$resumed_candidate" ||
+        runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
       if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
       runner_finish_journal "$journal"
@@ -2869,7 +2933,8 @@ runner_transition() (
       return
     fi
     ! "$migration_completed" || die 'committed migration candidate differs; recovery refused'
-    runner_check_prior_task_limit "$runtime" "$name" "$journal/previous.env"
+    ! "$resumed_candidate" || die 'completed candidate differs; recovery refused'
+    runner_check_transition_prior "$runtime" "$name" "$journal/previous.env"
     if [ -n "${migration_commit:-}" ]; then
       runner_migration_prior "$prior" "$runtime" "$name" false
       runner_pause "$prior"
@@ -2879,6 +2944,8 @@ runner_transition() (
       runner_pause "$root"
     fi
     "$runtime" rename "$name" "$backup"
+  elif ! "$resumed_candidate" && runner_transition_resume_recorded "$journal"; then
+    die 'resumed candidate differs from the journal; recovery refused'
   fi
   if [ -n "${migration_commit:-}" ]; then
     runner_migration_prior "$prior" "$runtime" "$backup"
@@ -2886,9 +2953,10 @@ runner_transition() (
     runner_owned "$root" "$runtime" "$backup"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
   fi
-  runner_check_prior_task_limit "$runtime" "$backup" "$journal/previous.env"
+  runner_check_transition_prior "$runtime" "$backup" "$journal/previous.env"
   if [ "$(runner_status "$root")" = missing ]; then
     ! "$migration_completed" || die 'committed migration candidate is missing; recovery refused'
+    ! "$resumed_candidate" || die 'resumed candidate is unavailable; recovery refused'
     # Keep a newly created candidate idle until readiness has been verified.
     if [ -z "${migration_commit:-}" ]; then runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true; fi
     runner_start "$root" "$port" "$agent" update "$task_limit"
@@ -2907,7 +2975,7 @@ runner_transition() (
     if [ "$agent" = claude ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Claude runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
     fi
-    if ! "$migration_completed" && [ "$(runner_status "$root")" = false ]; then
+    if ! "$migration_completed" && ! "$resumed_candidate" && [ "$(runner_status "$root")" = false ]; then
       # The retained container already has the chosen immutable image, mounts and
       # persistent drain markers. Restart it without recreating or rewriting them.
       local previous_image
@@ -2918,7 +2986,7 @@ runner_transition() (
       "$runtime" start "$name" >/dev/null
     fi
   fi
-  "$migration_completed" || runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" ||
+  "$migration_completed" || "$resumed_candidate" || runner_transition_resume "$root" "$runtime" "$name" "$port" "$journal" ||
     die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
@@ -2928,6 +2996,14 @@ runner_transition() (
   # Keep the qualified prior container until packaged manager activation has
   # succeeded. A failed atomic link must remain eligible for retained rollback.
   if "$packaged_install"; then package_finish_transition "$journal" || return; fi
+  if [ -z "${migration_commit:-}" ] && ! "$resumed_candidate"; then
+    local resumed_id
+    resumed_id=$("$runtime" inspect --format '{{.Id}}' "$name") || return
+    [[ "$resumed_id" =~ ^[a-f0-9]{64}$ ]] || die 'candidate container ID is invalid; updater refused'
+    # Keep this proof in an existing journal file for compatibility with older
+    # launchers. Publish it before deleting the retained rollback source.
+    runner_write_resumed_candidate "$journal" "$resumed_id" || return
+  fi
   "$runtime" rm "$backup" >/dev/null
   runner_finish_journal "$journal"
   codex_config_cleanup "$root" "$runtime"
@@ -2996,7 +3072,7 @@ runner_rollback() (
   fi
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
-    runner_check_prior_task_limit "$runtime" "$backup" "$journal/previous.env"
+    runner_check_transition_prior "$runtime" "$backup" "$journal/previous.env"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
     codex_config_rollback_preflight "$root" "$runtime" "$backup"
     if [ "$(runner_status "$root")" != missing ]; then
@@ -3015,9 +3091,10 @@ runner_rollback() (
     "$runtime" rename "$backup" "$name"
   else
     runner_owned "$root" "$runtime" "$name"
+    ! runner_transition_was_resumed "$runtime" "$name" "$journal" || die 'prior container is no longer retained; retry the update to finish recovery'
     previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
     [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
-    runner_check_prior_task_limit "$runtime" "$name" "$journal/previous.env"
+    runner_check_transition_prior "$runtime" "$name" "$journal/previous.env"
     codex_config_rollback_preflight "$root" "$runtime" "$name"
   fi
   previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
