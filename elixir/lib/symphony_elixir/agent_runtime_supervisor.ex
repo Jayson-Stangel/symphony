@@ -18,13 +18,23 @@ defmodule SymphonyElixir.AgentRuntimeSupervisor do
 
     orchestrator_name = Keyword.get(opts, :orchestrator_name, SymphonyElixir.Orchestrator)
 
+    # The scheduler and task supervisor restart together. A native process can
+    # survive that restart, so retain only pending tracker stop ownership here.
+    tracker_stop_claims = :ets.new(:tracker_stop_claims, [:set, :public])
+
+    orchestrator_opts = [
+      name: orchestrator_name,
+      task_supervisor: task_supervisor_name,
+      tracker_stop_claims: tracker_stop_claims
+    ]
+
     children = [
       Supervisor.child_spec(
         {Task.Supervisor, name: task_supervisor_name},
         id: task_supervisor_name
       ),
       Supervisor.child_spec(
-        {SymphonyElixir.Orchestrator, name: orchestrator_name, task_supervisor: task_supervisor_name},
+        {SymphonyElixir.Orchestrator, orchestrator_opts},
         id: orchestrator_name
       )
     ]

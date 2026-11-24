@@ -35,6 +35,7 @@ registrations can run independently on one host. See the
 | Installation and operation | A global `symphony` command for setup, project initialization, diagnostics, and stable updates across multiple repositories. |
 | Execution | Project-specific Docker/Podman runners with retained workspace and log volumes, separate agent logins, and bundled Git and browser tools. |
 | Agent choice | Claude Code/Agent SDK workers alongside the default Codex app-server, using the same scheduler and concurrency controls. |
+| Fresh conversations | Projects can start a fresh Codex or Claude session on entry into selected statuses while retaining the issue workspace. |
 | Project policy and review | Namespaced shared skills with deliberate local overrides, durable tracker blockers, and a workflow that releases workers at human review. |
 | Runtime changes | Drain/resume controls, runner update and rollback procedures, and separate development environments and production approval boundaries. |
 
@@ -122,6 +123,7 @@ itself or test `dev`, use a [separate development environment](docs/development.
 | Configure trackers, workspaces, hooks, models, or concurrency | [Configuration reference](elixir/README.md#configuration) |
 | Use Claude, configure its tools, or resolve native login and quota issues | [Claude runner guide](docs/claude.md) |
 | Understand or adapt the worker's operating instructions | [Workflow template](elixir/WORKFLOW.md) |
+| Add a fresh agent review before human review | [Independent Agent Review](docs/agent-review/README.md) |
 | Develop and test Symphony in isolation | [Development guide](docs/development.md) |
 | Build or test the Elixir service | [Implementation guide](elixir/README.md) |
 | Build and qualify versioned runner and manager artifacts | [Release artifact contract](scripts/release/README.md) |

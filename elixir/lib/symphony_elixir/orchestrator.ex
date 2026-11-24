@@ -7,10 +7,18 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.AgentPause
+  alias SymphonyElixir.AgentReadiness
+  alias SymphonyElixir.AgentRunner
   alias SymphonyElixir.Codex.SandboxReadiness
+  alias SymphonyElixir.CodingAgent
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.StatusDashboard
+  alias SymphonyElixir.Tracker
   alias SymphonyElixir.Tracker.Issue
   alias SymphonyElixir.WorkflowStore
+  alias SymphonyElixir.Workspace
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -39,6 +47,7 @@ defmodule SymphonyElixir.Orchestrator do
       :readiness,
       :expected_profile,
       :agent_model,
+      :tracker_stop_claims,
       readiness_opts: [],
       startup_cleanup_pending: true,
       readiness_task: nil,
@@ -77,7 +86,13 @@ defmodule SymphonyElixir.Orchestrator do
             do: AgentReadiness.check(readiness_opts),
             else: %{ready: false, provider: "claude", code: "checking"}
 
+        tracker_stop_claims = opts[:tracker_stop_claims]
+        running = if tracker_stop_claims, do: Map.new(:ets.tab2list(tracker_stop_claims)), else: %{}
+
         state = %State{
+          tracker_stop_claims: tracker_stop_claims,
+          running: running,
+          claimed: MapSet.new(Map.keys(running)),
           poll_interval_ms: config.polling.interval_ms,
           max_concurrent_agents: Config.max_concurrent_agents(),
           next_poll_due_at_ms: now_ms,
@@ -173,6 +188,13 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, finish_readiness_check(state, %{ready: false, provider: "claude", code: "runtime_unavailable"})}
   end
 
+  def handle_info({ref, {:tracker_stop_result, result}}, state) when is_reference(ref) do
+    case find_issue_id_for_ref(state.running, ref) do
+      nil -> {:noreply, state}
+      issue_id -> {:noreply, update_running_entry(state, issue_id, &Map.put(&1, :cleanup_result, result))}
+    end
+  end
+
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
@@ -190,6 +212,9 @@ defmodule SymphonyElixir.Orchestrator do
               {_entry, state} = pop_running_entry(state, issue_id)
               finish_session_cleanup(state, issue_id, entry, reason)
 
+            Map.has_key?(entry, :tracker_stop) ->
+              finish_pending_startup(state, issue_id, entry, reason)
+
             lost_owner_cleanup?(reason, entry) ->
               begin_owner_loss_cleanup(state, issue_id, entry, reason)
 
@@ -204,6 +229,27 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:worker_startup_cleanup, issue_id, pid, update}, state)
+      when update == :closed or is_function(update, 0) do
+    case state.running[issue_id] do
+      %{pid: ^pid, session_starting: true} = entry when not is_map_key(entry, :agent_session) ->
+        entry =
+          if update == :closed,
+            do: entry |> Map.put(:session_starting, false) |> Map.delete(:startup_cleanup),
+            else: Map.put(entry, :startup_cleanup, update)
+
+        state =
+          if entry[:tracker_stop],
+            do: remember_tracker_stop(state, issue_id, entry),
+            else: put_in(state.running[issue_id], entry)
+
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:worker_agent_session, issue_id, session}, %{running: running} = state) do
     case Map.get(running, issue_id) do
       nil ->
@@ -213,15 +259,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       entry ->
-        model =
-          case session do
-            %{native: %{model: model}} -> model
-            _ -> nil
-          end
-
-        model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
-        notify_dashboard()
-        {:noreply, %{state | agent_model: model, running: Map.put(running, issue_id, Map.put(entry, :agent_session, session))}}
+        {:noreply, capture_worker_session(state, issue_id, entry, session)}
     end
   end
 
@@ -291,6 +329,9 @@ defmodule SymphonyElixir.Orchestrator do
       case pop_retry_attempt_state(state, issue_id, retry_token) do
         {:ok, attempt, metadata, state} ->
           cond do
+            metadata[:tracker_stop] ->
+              handle_retry_issue(state, issue_id, attempt, metadata)
+
             agent_dispatch_ready?(state) and quota_retry_delay(state, metadata) == 0 ->
               handle_retry_issue(state, issue_id, attempt, metadata)
 
@@ -331,6 +372,47 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp begin_tracker_stop(state, issue_id, entry) do
+    state = remember_tracker_stop(state, issue_id, Map.delete(entry, :cleanup_result))
+
+    begin_session_cleanup(state, issue_id, state.running[issue_id], entry[:cleanup_action] || :tracker_stop, fn ->
+      {:tracker_stop_result, stop_running_task(issue_id, entry, state.task_supervisor, entry.tracker_stop.reason)}
+    end)
+  end
+
+  defp finish_session_cleanup(state, issue_id, %{tracker_stop: stop} = entry, cleanup_reason) do
+    if cleanup_reason == :normal and entry[:cleanup_result] == :ok do
+      Logger.info(
+        "Tracker transition stop confirmed: issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} reason=#{stop.reason} elapsed_ms=#{transition_elapsed_ms(stop)}"
+      )
+
+      state = state |> forget_tracker_stop(issue_id) |> record_session_completion_totals(entry)
+      replacement = %{worker_host: entry[:worker_host], workspace_path: entry[:workspace_path], tracker_stop: stop}
+
+      case entry.cleanup_action do
+        {:down, reason} ->
+          finish_agent_down(state, issue_id, Map.put(entry, :replacement_stop, stop), reason)
+
+        {:block, error} ->
+          block_issue_from_entry(state, issue_id, entry, error)
+
+        {:retry, attempt, metadata} ->
+          schedule_issue_retry(state, issue_id, attempt, Map.merge(metadata, replacement))
+
+        _ ->
+          schedule_issue_retry(
+            state,
+            issue_id,
+            max(entry[:retry_attempt] || 0, 1),
+            Map.merge(replacement, %{identifier: entry.identifier, issue_url: entry.issue.url, delay_type: :continuation})
+          )
+      end
+    else
+      terminate_task(entry.cleanup_owner_pid, state.task_supervisor)
+      retain_unconfirmed_tracker_stop(state, issue_id, entry)
+    end
+  end
+
   defp finish_session_cleanup(state, issue_id, entry, cleanup_reason) do
     if cleanup_reason != :normal do
       Logger.warning("Agent cleanup task exited issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} cleanup=cleanup_unconfirmed; retiring task")
@@ -359,6 +441,60 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp finish_pending_startup(state, issue_id, %{session_starting: false} = entry, reason) do
+    {_entry, state} = pop_running_entry(state, issue_id)
+    state = state |> forget_tracker_stop(issue_id) |> record_session_completion_totals(entry)
+    Logger.info("Tracker transition startup closed: #{issue_context(entry.issue)} session_id=n/a elapsed_ms=#{transition_elapsed_ms(entry.tracker_stop)}")
+    finish_agent_down(state, issue_id, Map.put(entry, :replacement_stop, entry.tracker_stop), reason)
+  end
+
+  defp finish_pending_startup(state, issue_id, entry, reason) do
+    retain_unconfirmed_tracker_stop(state, issue_id, Map.put(entry, :cleanup_action, {:down, reason}))
+  end
+
+  defp remember_tracker_stop(state, issue_id, entry) do
+    if table = state.tracker_stop_claims do
+      retained =
+        entry
+        |> Map.put(:pid, nil)
+        |> Map.put(:ref, nil)
+        |> Map.put(:cleanup_owner_pid, nil)
+        |> Map.put_new(:cleanup_action, :tracker_stop)
+
+      :ets.insert(table, {issue_id, retained})
+    end
+
+    put_in(state.running[issue_id], entry)
+  end
+
+  defp forget_tracker_stop(state, issue_id) do
+    if table = state.tracker_stop_claims, do: :ets.delete(table, issue_id)
+    state
+  end
+
+  defp retain_unconfirmed_tracker_stop(state, issue_id, entry) do
+    Logger.warning(
+      "Tracker transition stop unconfirmed: issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} reason=#{entry.tracker_stop.reason} elapsed_ms=#{transition_elapsed_ms(entry.tracker_stop)}; retaining claim"
+    )
+
+    entry = entry |> Map.put(:pid, nil) |> Map.put(:ref, nil) |> Map.put_new(:cleanup_action, :tracker_stop)
+    remember_tracker_stop(state, issue_id, entry)
+  end
+
+  defp retry_unconfirmed_tracker_stops(state) do
+    Enum.reduce(state.running, state, fn
+      {issue_id, %{tracker_stop: _, ref: nil} = entry}, state
+      when is_map_key(entry, :agent_session) or is_map_key(entry, :startup_cleanup) or
+             :erlang.map_get(:session_starting, entry) == false ->
+        begin_tracker_stop(state, issue_id, entry)
+
+      _, state ->
+        state
+    end)
+  end
+
+  defp transition_elapsed_ms(stop), do: System.monotonic_time(:millisecond) - stop.observed_at_ms
+
   defp finish_agent_down(state, issue_id, entry, reason) do
     session_id = running_entry_session_id(entry)
     state = handle_agent_down(reason, state, issue_id, entry, session_id)
@@ -377,7 +513,7 @@ defmodule SymphonyElixir.Orchestrator do
        when reason in [:killed, :shutdown, :epipe] or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
     result =
       try do
-        SymphonyElixir.CodingAgent.interrupt(session, :worker_owner_lost)
+        CodingAgent.interrupt(session, :worker_owner_lost)
       catch
         _, _ -> {:error, :cleanup_unconfirmed}
       end
@@ -406,7 +542,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         delay_type: :continuation,
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
+        workspace_path: Map.get(running_entry, :workspace_path),
+        tracker_stop: running_entry[:replacement_stop]
       })
     end
   end
@@ -490,7 +627,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         error: "agent exited: #{inspect(reason)}",
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
+        workspace_path: Map.get(running_entry, :workspace_path),
+        tracker_stop: running_entry[:replacement_stop]
       })
     )
   end
@@ -702,7 +840,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_running_issues(%State{} = state) do
-    state = reconcile_stalled_running_issues(state)
+    state = state |> retry_unconfirmed_tracker_stops() |> reconcile_stalled_running_issues()
     running_ids = Map.keys(state.running)
 
     if running_ids == [] do
@@ -711,16 +849,11 @@ defmodule SymphonyElixir.Orchestrator do
       case Tracker.fetch_issues_by_ids(running_ids) do
         {:ok, issues} ->
           issues
-          |> reconcile_running_issue_states(
-            state,
-            active_state_set(),
-            terminal_state_set()
-          )
+          |> reconcile_running_issue_states(state, active_state_set(), terminal_state_set())
           |> reconcile_missing_running_issue_ids(running_ids, issues)
 
         {:error, reason} ->
           Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
-
           state
       end
     end
@@ -814,6 +947,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
     cond do
+      match?(%{tracker_stop: _}, state.running[issue.id]) ->
+        refresh_running_issue_state(state, issue)
+
+      tracker_blocked_state?(issue.state) ->
+        request_tracker_stop(state, issue, :tracker_blocked)
+
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
@@ -825,7 +964,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, false, :issue_state_change)
 
       active_issue_state?(issue.state, active_states) ->
-        refresh_running_issue_state(state, issue)
+        observe_active_issue(state, issue)
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
@@ -835,6 +974,53 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp tracker_blocked_state?(status) when is_binary(status) do
+    Enum.any?(Config.settings!().tracker.blocked_states, &(normalize_issue_state(&1) == normalize_issue_state(status)))
+  end
+
+  defp tracker_blocked_state?(_status), do: false
+
+  defp observe_active_issue(state, issue) do
+    case state.running[issue.id] do
+      %{issue: %Issue{state: previous}} when is_binary(previous) ->
+        current = normalize_issue_state(issue.state)
+
+        if current != normalize_issue_state(previous) and current in Config.settings!().agent.fresh_session_on_enter do
+          request_tracker_stop(state, issue, :fresh_session)
+        else
+          refresh_running_issue_state(state, issue)
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp request_tracker_stop(state, issue, reason) do
+    case state.running[issue.id] do
+      nil ->
+        state
+
+      entry ->
+        Logger.info("Tracker transition observed: #{issue_context(issue)} session_id=#{running_entry_session_id(entry)} from=#{inspect(entry.issue.state)} to=#{inspect(issue.state)} reason=#{reason}")
+
+        stop = %{reason: reason, observed_at_ms: System.monotonic_time(:millisecond)}
+        entry = entry |> Map.put(:tracker_stop, stop) |> Map.put(:issue, issue)
+
+        cond do
+          Map.has_key?(entry, :cleanup_action) ->
+            remember_tracker_stop(state, issue.id, entry)
+
+          entry[:session_starting] == true and not Map.has_key?(entry, :agent_session) ->
+            # Startup owns cleanup until the worker exits or registers a ready session.
+            remember_tracker_stop(state, issue.id, entry)
+
+          true ->
+            begin_tracker_stop(state, issue.id, entry)
+        end
+    end
+  end
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -955,6 +1141,9 @@ defmodule SymphonyElixir.Orchestrator do
       nil ->
         release_issue_claim(state, issue_id)
 
+      %{tracker_stop: _} ->
+        state
+
       %{cleanup_action: action} = entry ->
         remove_workspace = cleanup_workspace or action == {:cancel, true}
         entry = Map.put(entry, :cleanup_action, {:cancel, remove_workspace})
@@ -996,8 +1185,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp maybe_restart_stalled_issue(state, _issue_id, %{session_starting: true} = entry, _now, _timeout_ms)
+       when not is_map_key(entry, :agent_session), do: state
+
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :cleanup_action) do
+    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :cleanup_action) or
+         Map.has_key?(running_entry, :tracker_stop) do
       state
     else
       restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
@@ -1156,12 +1349,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp stop_running_task(issue_id, entry, task_supervisor, reason \\ :scheduler_stop) do
     pid = Map.get(entry, :pid)
     ref = Map.get(entry, :ref)
-    session = Map.get(entry, :agent_session)
 
     result =
       try do
-        case session do
-          %{adapter: _, native: _} -> SymphonyElixir.CodingAgent.interrupt(session, reason)
+        case entry do
+          %{agent_session: %{adapter: _, native: _} = session} -> CodingAgent.interrupt(session, reason)
+          %{tracker_stop: _, startup_cleanup: cleanup} -> cleanup.()
           _ -> :ok
         end
       catch
@@ -1176,7 +1369,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     if is_pid(pid), do: terminate_task(pid, task_supervisor)
     if is_reference(ref), do: Process.demonitor(ref, [:flush])
-    :ok
+    result
   end
 
   defp stop_and_block_issue(%State{} = state, issue_id, running_entry, error) do
@@ -1307,7 +1500,8 @@ defmodule SymphonyElixir.Orchestrator do
     Enum.all?([id, identifier, title, state_name], &present_string?/1) and
       issue_routable?(issue) and
       active_issue_state?(state_name, active_states) and
-      !terminal_issue_state?(state_name, terminal_states)
+      !terminal_issue_state?(state_name, terminal_states) and
+      !tracker_blocked_state?(state_name)
   end
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
@@ -1330,7 +1524,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
-    String.downcase(String.trim(state_name))
+    Schema.normalize_issue_state(state_name)
   end
 
   defp terminal_state_set do
@@ -1390,11 +1584,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, replacement \\ %{}) do
     expected_profile = state.expected_profile
 
     case Task.Supervisor.start_child(state.task_supervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, expected_profile: expected_profile)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             expected_profile: expected_profile,
+             orchestrator: recipient,
+             replacement: not is_nil(replacement[:tracker_stop]),
+             replacement_workspace: replacement[:workspace_path]
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1408,7 +1609,9 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: issue.identifier,
             issue: issue,
             worker_host: worker_host,
-            workspace_path: nil,
+            workspace_path: replacement[:workspace_path],
+            replacement_stop: replacement[:tracker_stop],
+            session_starting: false,
             session_id: nil,
             last_codex_message: nil,
             last_codex_timestamp: nil,
@@ -1440,7 +1643,9 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
+          worker_host: worker_host,
+          workspace_path: replacement[:workspace_path],
+          tracker_stop: replacement[:tracker_stop]
         })
     end
   end
@@ -1532,7 +1737,8 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
-            quota_reset_at: metadata[:quota_reset_at]
+            quota_reset_at: metadata[:quota_reset_at],
+            tracker_stop: metadata[:tracker_stop]
           })
     }
   end
@@ -1583,7 +1789,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
-          quota_reset_at: Map.get(retry_entry, :quota_reset_at)
+          quota_reset_at: Map.get(retry_entry, :quota_reset_at),
+          tracker_stop: Map.get(retry_entry, :tracker_stop)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1690,6 +1897,26 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
+  end
+
+  defp handle_active_retry(state, issue, attempt, %{tracker_stop: %{} = _stop} = metadata) do
+    worker_host = metadata.worker_host
+
+    # This issue already passed an ID refresh after the confirmed stop. Keep
+    # the captured workspace and wait if its host or the new status is full.
+    quota_delay = quota_retry_delay(state, metadata)
+
+    cond do
+      state.draining and quota_delay == 0 ->
+        {:noreply, release_issue_claim(state, issue.id)}
+
+      quota_delay == 0 and dispatch_slots_available?(issue, state) and
+        select_worker_host(state, worker_host) == worker_host and dispatch_admission_open?(state) ->
+        {:noreply, spawn_issue_on_worker_host(state, issue, attempt, self(), worker_host, metadata)}
+
+      true ->
+        {:noreply, schedule_issue_retry(state, issue.id, attempt, metadata)}
+    end
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
@@ -1877,6 +2104,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_entry_session_id(%{session_id: session_id}) when is_binary(session_id),
     do: session_id
 
+  defp running_entry_session_id(%{agent_session: session}), do: CodingAgent.session_identity(session)
   defp running_entry_session_id(_running_entry), do: "n/a"
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
@@ -1923,6 +2151,56 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_call({:worker_starting_session, issue_id}, {pid, _}, state) do
+    case state.running[issue_id] do
+      %{pid: ^pid} = entry ->
+        if entry[:replacement_stop] && not replacement_admitted?(state, issue_id, entry.issue) do
+          {:reply, :defer, state}
+        else
+          {:reply, :ok, update_running_entry(state, issue_id, &Map.put(&1, :session_starting, true))}
+        end
+
+      _ ->
+        {:reply, {:error, :worker_no_longer_claimed}, state}
+    end
+  end
+
+  def handle_call({:worker_register_session, issue_id, session}, {pid, _}, state) do
+    case state.running[issue_id] do
+      %{pid: ^pid} = entry ->
+        state = capture_worker_session(state, issue_id, entry, session)
+
+        cond do
+          entry[:tracker_stop] ->
+            # The cleanup task owns interruption. Park the worker until it is
+            # retired so neither a first turn nor duplicate stop can race it.
+            {:noreply, begin_tracker_stop(state, issue_id, state.running[issue_id])}
+
+          entry[:replacement_stop] ->
+            authorize_replacement_turn(state, issue_id)
+
+          true ->
+            {:reply, {:ok, entry.issue}, state}
+        end
+
+      _ ->
+        {:reply, {:error, :worker_no_longer_claimed}, state}
+    end
+  end
+
+  def handle_call({:worker_refresh_issue, issue_id}, {pid, _}, state) do
+    case state.running[issue_id] do
+      %{cleanup_owner_pid: ^pid} ->
+        {:noreply, state}
+
+      %{pid: ^pid} ->
+        refresh_issue_between_turns(state, issue_id)
+
+      _ ->
+        {:reply, {:ok, []}, state}
+    end
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
@@ -2065,6 +2343,79 @@ defmodule SymphonyElixir.Orchestrator do
        operations: ["poll", "reconcile"]
      }, state}
   end
+
+  defp replacement_admitted?(state, issue_id, issue) do
+    entry = state.running[issue_id]
+    other_workers = %{state | running: Map.delete(state.running, issue_id)}
+
+    dispatch_admission_open?(state) and
+      state_slots_available?(issue, other_workers.running) and
+      select_worker_host(other_workers, entry.worker_host) == entry.worker_host
+  end
+
+  defp dispatch_admission_open?(state), do: Config.validate!() == :ok and agent_dispatch_ready?(state)
+
+  defp authorize_replacement_turn(state, issue_id) do
+    entry = state.running[issue_id]
+    stop = entry.replacement_stop
+
+    with :ok <- Config.validate!(),
+         {:ok, issues} <- Tracker.fetch_issues_by_ids([issue_id]),
+         %Issue{} = issue <- find_issue_by_id(issues, issue_id),
+         true <- retry_candidate_issue?(issue, terminal_state_set()),
+         true <- replacement_admitted?(state, issue_id, issue) do
+      Logger.info(
+        "Tracker transition replacement session started: #{issue_context(issue)} session_id=#{CodingAgent.session_identity(entry.agent_session)} reason=#{stop.reason} elapsed_ms=#{transition_elapsed_ms(stop)}"
+      )
+
+      state = update_running_entry(state, issue_id, &%{&1 | issue: issue, replacement_stop: nil})
+      {:reply, {:ok, issue}, state}
+    else
+      _ ->
+        Logger.info("Tracker transition replacement deferred before first turn: #{issue_context(entry.issue)} session_id=#{running_entry_session_id(entry)}")
+        {:noreply, begin_tracker_stop(state, issue_id, Map.put(entry, :tracker_stop, stop))}
+    end
+  end
+
+  defp refresh_issue_between_turns(state, issue_id) do
+    # Put the two tracker reads in the same scheduler order. Returning an
+    # observation to a worker cannot race a newer poll processed by this owner.
+    case Tracker.fetch_issues_by_ids([issue_id]) do
+      {:ok, [%Issue{} = issue | _]} = result ->
+        state =
+          cond do
+            tracker_blocked_state?(issue.state) ->
+              request_tracker_stop(state, issue, :tracker_blocked)
+
+            retry_candidate_issue?(issue, terminal_state_set()) ->
+              observe_active_issue(state, issue)
+
+            true ->
+              refresh_running_issue_state(state, issue)
+          end
+
+        if Map.has_key?(state.running[issue_id], :tracker_stop), do: {:noreply, state}, else: {:reply, result, state}
+
+      result ->
+        {:reply, result, state}
+    end
+  end
+
+  defp capture_worker_session(state, issue_id, entry, session) do
+    model =
+      case session do
+        %{native: %{model: model}} -> model
+        _ -> nil
+      end
+
+    model = if is_binary(model) and String.trim(model) != "", do: model, else: nil
+    notify_dashboard()
+
+    entry = entry |> Map.delete(:startup_cleanup) |> Map.put(:agent_session, session)
+    %{state | agent_model: model, running: Map.put(state.running, issue_id, entry)}
+  end
+
+  defp update_running_entry(state, issue_id, update), do: update_in(state.running[issue_id], update)
 
   defp request_agent_resume(%{running: running} = state, _action, _reconcile, _from) when map_size(running) != 0,
     do: {:reply, {:error, :workers_active}, state}

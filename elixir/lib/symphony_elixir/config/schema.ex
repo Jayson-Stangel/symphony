@@ -178,6 +178,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:fresh_session_on_enter, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -185,7 +186,13 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :fresh_session_on_enter
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -193,6 +200,24 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> normalize_fresh_session_states()
+    end
+
+    defp normalize_fresh_session_states(changeset) do
+      case fetch_change(changeset, :fresh_session_on_enter) do
+        {:ok, states} when is_list(states) ->
+          if Enum.all?(states, &(is_binary(&1) and String.trim(&1) != "")) do
+            put_change(changeset, :fresh_session_on_enter, Enum.uniq(Enum.map(states, &Schema.normalize_issue_state/1)))
+          else
+            add_error(changeset, :fresh_session_on_enter, "must contain only nonblank status names")
+          end
+
+        {:ok, nil} ->
+          add_error(changeset, :fresh_session_on_enter, "must be a list of status names")
+
+        :error ->
+          changeset
+      end
     end
   end
 
@@ -651,7 +676,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp drop_nil_values(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->
       case drop_nil_values(nested) do
-        nil -> acc
+        nil when key != "fresh_session_on_enter" -> acc
         normalized -> Map.put(acc, key, normalized)
       end
     end)
