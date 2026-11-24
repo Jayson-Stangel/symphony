@@ -15,6 +15,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   @remote_pid_marker "__SYMPHONY_CODEX_PID__="
   @exit_proof_marker "__SYMPHONY_CODEX_EXITED__"
   @exit_check_timeout_ms 9_000
+  @typep shutdown_identity :: {pos_integer(), String.t() | nil}
+  @typep shutdown_target :: %{
+           required(:port) => port(),
+           required(:worker_host) => String.t() | nil,
+           required(:shutdown_identity) => shutdown_identity(),
+           optional(atom()) => term()
+         }
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -26,7 +33,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           model: String.t() | nil,
           workspace: Path.t(),
           worker_host: String.t() | nil,
-          shutdown_identity: {pos_integer(), String.t() | nil},
+          shutdown_identity: shutdown_identity(),
           dynamic_tool_binding: map()
         }
 
@@ -247,7 +254,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
-  @spec interrupt_and_confirm_exit(session()) :: :ok | {:error, :cleanup_unconfirmed}
+  @spec interrupt_and_confirm_exit(shutdown_target()) :: :ok | {:error, :cleanup_unconfirmed}
   def interrupt_and_confirm_exit(%{port: port, worker_host: worker_host, shutdown_identity: {pid, host_identity}}) do
     :ok = stop_port(port)
 
