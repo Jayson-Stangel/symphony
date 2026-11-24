@@ -385,9 +385,9 @@ defmodule SymphonyElixir.FreshSessionTest do
     input.on('close', () => {
       clearInterval(turnTimer);
       fs.writeFileSync('stopped-' + pid, '');
-      const started = Date.now();
+      // TestSupport removes the workspace and any hold marker on test exit.
       const hold = setInterval(() => {
-        if (Date.now() - started >= 15000 || !fs.existsSync('hold-exit-' + pid)) clearInterval(hold);
+        if (!fs.existsSync('hold-exit-' + pid)) clearInterval(hold);
       }, 10);
     });
     """)
