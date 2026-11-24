@@ -74,7 +74,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+    send(recipient, {:codex_worker_update, issue_id, Map.put(message, :worker_pid, self())})
     :ok
   end
 
