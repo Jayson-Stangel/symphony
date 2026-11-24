@@ -186,9 +186,11 @@ the line or leave its value empty to inherit the engine default again.
 Follow the [idle update procedure](#idle-update-procedure) and run
 `symphony update --agent claude` or `symphony update --agent codex` for the
 selected project. The packaged updater can apply this change with the same
-selected image. The first such transition also lets an older Claude listener
-adopt Docker's default unless a cap is set. Before draining a healthy listener,
-the updater checks that the selected image can boot with the explicit cap.
+selected image. When the project has no override, upgrading an existing Claude
+runner drops Symphony's former 512-task cap and the replacement inherits Docker's
+default. The checkout migration applies the same rule. Before draining a healthy
+listener, the updater checks that the selected image can boot with an explicit
+cap.
 `symphony runner status` shows the desired setting, the launch setting, and
 the running container's observed `pids.max` when the engine can read it.
 
