@@ -871,6 +871,8 @@ project_credentials_initialize() {
   cat >"$env_file" <<'EOF'
 # Automatically loaded literal KEY=value; do not use shell commands or quotes.
 # Nonempty exported credentials take precedence. Keep this file private.
+# Optional managed runner task cap. Leave blank to inherit Docker's default.
+SYMPHONY_RUNNER_PIDS_LIMIT=
 # Linear: Settings → Security & access → Personal API keys
 LINEAR_API_KEY=
 # GitHub: repository-scoped Contents/Pull requests read/write.
@@ -1131,7 +1133,7 @@ project_migrate() (
   project_credentials_export
   image=$(runner_migration_image "$root" "$agent") || return
   SYMPHONY_RUNNER_IMAGE="$image" runner_build_image "$agent"
-  details=$(runner_workflow_probe "$runtime" "$image" "$agent" "$repository" "$branch" "$slug" --compare-local <"$migration_checkout/WORKFLOW.md") || return
+  details=$(runner_workflow_probe "$runtime" "$image" "$agent" "$repository" "$branch" "$slug" inherited --compare-local <"$migration_checkout/WORKFLOW.md") || return
   read -r resolved commit remote_sha local_sha <<<"${details%%$'\n'*}"
   [ -n "$resolved" ] && valid_branch "$resolved" && { [ -z "$branch" ] || [ "$branch" = "$resolved" ]; } &&
     valid_workflow_commit "$commit" && [[ "$remote_sha" =~ ^[a-f0-9]{64}$ && "$local_sha" =~ ^[a-f0-9]{64}$ ]] || die 'runner returned an invalid migration report'
@@ -1336,9 +1338,9 @@ runner_create_project_volume() {
 }
 
 runner_remote_probe() {
-  local root=$1 runtime=$2 image=$3 agent=$4
+  local root=$1 runtime=$2 image=$3 agent=$4 limit=${5:-inherited}
   project_registration_read "$root" || return
-  remote_resolved_branch=$(runner_workflow_probe "$runtime" "$image" "$agent" "$registered_repository" "$registered_branch" "$registered_linear") || return
+  remote_resolved_branch=$(runner_workflow_probe "$runtime" "$image" "$agent" "$registered_repository" "$registered_branch" "$registered_linear" "$limit") || return
   [ -n "$remote_resolved_branch" ] && valid_branch "$remote_resolved_branch" || die 'runner returned an invalid workflow branch'
   if [ -n "$registered_branch" ]; then
     [ "$registered_branch" = "$remote_resolved_branch" ] || die 'runner returned a different workflow branch'
@@ -1346,9 +1348,11 @@ runner_remote_probe() {
 }
 
 runner_workflow_probe() {
-  local runtime=$1 image=$2 agent=$3 repository=$4 branch=$5 slug=$6
-  shift 6
-  if ! SYMPHONY_GIT_TOKEN="$credential_git" "$runtime" run --rm --interactive \
+  local runtime=$1 image=$2 agent=$3 repository=$4 branch=$5 slug=$6 limit=$7
+  shift 7
+  local -a options=(--rm --interactive)
+  if [ "$limit" != inherited ]; then options+=(--pids-limit "$limit"); fi
+  if ! SYMPHONY_GIT_TOKEN="$credential_git" "$runtime" run "${options[@]}" \
       --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m \
       --env SYMPHONY_CONTAINERIZED=1 --env LINEAR_API_KEY --env SYMPHONY_GIT_TOKEN \
       --env "SYMPHONY_REMOTE_REPOSITORY=$repository" --env "SYMPHONY_REMOTE_BRANCH=$branch" \
@@ -1482,17 +1486,17 @@ claude_auth() {
     [ -z "$users" ] || die 'Claude profile is in use; drain it through symphony update before changing its native login'
   fi
   if [ "$action" = login ]; then
-    runner_claude_run "$runtime" --rm --interactive --tty --name "$(runner_storage_id "$root")-claude-auth" \
+    runner_claude_run "$runtime" --pids-limit 512 --rm --interactive --tty --name "$(runner_storage_id "$root")-claude-auth" \
       --label "com.symphony.storage=$(runner_storage_id "$root")" \
       --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs login
     printf 'Native login retained.\n'
   elif [ "$action" = check ]; then
-    runner_claude_run "$runtime" --rm --name "$(runner_storage_id "$root")-claude-auth" \
+    runner_claude_run "$runtime" --pids-limit 512 --rm --name "$(runner_storage_id "$root")-claude-auth" \
       --label "com.symphony.storage=$(runner_storage_id "$root")" \
       --volume "$volume:/home/claude" \
       --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs check
   else
-    runner_claude_run "$runtime" --rm --name "$(runner_storage_id "$root")-claude-auth" \
+    runner_claude_run "$runtime" --pids-limit 512 --rm --name "$(runner_storage_id "$root")-claude-auth" \
       --label "com.symphony.storage=$(runner_storage_id "$root")" \
       --volume "$volume:/home/claude" --entrypoint /usr/local/bin/node "$image" /opt/symphony/claude/auth.mjs logout
     "$runtime" volume rm "$volume" >/dev/null
@@ -1573,14 +1577,23 @@ runner_report() {
   local root=$1 state name storage_id runtime agent port image
   runner_require_identity "$root" primary
   runtime=$(container_runtime); state=$(runner_status "$root"); name=$(runner_id "$root")
-  if [ "$state" = missing ]; then printf 'Isolated worker: not running\n'; return; fi
+  if [ "$state" = missing ]; then
+    printf 'Isolated worker: not running\n'
+    runner_task_limit_report "$root" "$runtime"
+    return
+  fi
   storage_id=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")
   [ "$storage_id" = "$(runner_storage_id "$root")" ] || die "container $name has unknown or foreign repository storage"
   if [ "$("$runtime" inspect --format '{{.State.Restarting}}' "$name")" = true ]; then
     printf 'Isolated worker: restarting; inspect runner logs for the startup error.\n'
+    runner_task_limit_report "$root" "$runtime" "$name"
     return
   fi
-  if [ "$state" != true ]; then printf 'Isolated worker: stopped (%s)\n' "$state"; return; fi
+  if [ "$state" != true ]; then
+    printf 'Isolated worker: stopped (%s)\n' "$state"
+    runner_task_limit_report "$root" "$runtime" "$name"
+    return
+  fi
   agent=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")
   validate_agent "$agent"
   port=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.port" }}' "$name")
@@ -1591,6 +1604,7 @@ runner_report() {
     project_registration_read "$root" || return
     printf 'Linear project: %s\nWorkflow branch: %s\nWorkflow state: http://127.0.0.1:%s/api/v1/state\n' "$registered_linear" "$registered_branch" "$port"
   fi
+  runner_task_limit_report "$root" "$runtime" "$name" true
   if [ "$agent" = claude ]; then
     printf 'Claude native login: project-scoped volume %s\n' "$(claude_auth_volume "$root")"
   else
@@ -1828,26 +1842,204 @@ codex_verify_profile() {
 # Host preparation is a separate, explicitly authorized administrator command.
 runner_codex_run() {
   local runtime=$1; shift
+  runner_codex_container "$runtime" run "$@"
+}
+
+runner_codex_container() {
+  local runtime=$1 command=$2; shift 2
   local profile="$symphony_home/scripts/codex-seccomp.json" apparmor
   codex_verify_profile "$profile" "$(codex_seccomp_id)"
   apparmor=$(codex_apparmor_profile "$runtime") || return
   if [ "$apparmor" != none ]; then
     codex_verify_profile "$symphony_home/scripts/codex-apparmor.profile" "$(codex_apparmor_id)"
-    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges --security-opt "apparmor=$apparmor" "$@"
+    "$runtime" "$command" --security-opt "seccomp=$profile" --security-opt no-new-privileges --security-opt "apparmor=$apparmor" "$@"
   else
-    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
+    "$runtime" "$command" --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
   fi
 }
 
 # Claude builds need executable temporary files without making /tmp executable.
 # Keep a finite per-container scratch filesystem separate from native auth/storage.
-claude_runtime_profile_id() { printf '%s' 'cpu4-pid512-build1g-v1'; }
+claude_runtime_profile_id() { printf '%s' 'cpu4-build1g-v2'; }
 runner_claude_run() {
   local runtime=$1; shift
-  "$runtime" run --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --pids-limit 512 --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+  runner_claude_container "$runtime" run "$@"
+}
+
+runner_claude_container() {
+  local runtime=$1 command=$2; shift 2
+  "$runtime" "$command" --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m \
     --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g \
     "$@"
+}
+
+runner_task_limit_positive() {
+  local LC_ALL=C
+  [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]] &&
+    { [ "${#1}" -lt 19 ] || [[ "$1" < 9223372036854775808 ]]; }
+}
+
+# This setting belongs to the selected project's existing setup file.
+runner_task_limit_read() {
+  local file="$config_home/projects/$(project_id "$1").env" line value= seen=false
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    [ -f "$file" ] && [ -r "$file" ] || die 'project setup file is unreadable'
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in SYMPHONY_RUNNER_PIDS_LIMIT=*)
+        ! "$seen" || die 'set SYMPHONY_RUNNER_PIDS_LIMIT only once in the project setup file'
+        value=${line#*=}; value=${value%$'\r'}; seen=true ;;
+      esac
+    done <"$file"
+  fi
+  [ -z "$value" ] || runner_task_limit_positive "$value" ||
+    die 'SYMPHONY_RUNNER_PIDS_LIMIT must be empty or a positive decimal integer without leading zeros'
+  printf '%s\n' "${value:-inherited}"
+}
+
+runner_task_limit_cgroup='
+  limit=
+  for path in /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids/pids.max; do
+    if [ -r "$path" ]; then
+      IFS= read -r limit <"$path"
+      break
+    fi
+  done
+  test -n "$limit"
+  printf "%s\n" "$limit"
+'
+
+runner_remove_task_limit_probe() {
+  local runtime=$1 name=$2 id owner attempt absent=false
+  # An inspect error alone cannot distinguish an absent container from an
+  # unreachable daemon. Reconcile by exact name, then act only on its owned ID.
+  for attempt in 1 2 3 4 5; do
+    if ! id=$("$runtime" ps --all --quiet --no-trunc --filter "name=^${name}$"); then
+      absent=false
+    elif [ -z "$id" ]; then
+      if "$absent"; then return 0; fi
+      absent=true
+    else
+      absent=false
+      if owner=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.task-limit-probe" }}' "$id"); then
+        [ "$owner" = "$name" ] || return 1
+        "$runtime" stop --time 5 "$id" >/dev/null 2>&1 || true
+        "$runtime" rm --volumes "$id" >/dev/null 2>&1 || true
+      fi
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+runner_task_limit_preflight() (
+  local runtime=$1 image=$2 limit=$3 agent=$4 fixture probe probe_id observer resource uid=0 probe_home=/root cleanup_failed=false
+  local -a launch
+  [ "$limit" != inherited ] || return 0
+  if [ "$agent" = claude ]; then
+    launch=(runner_claude_container "$runtime" create --pids-limit "$limit")
+    uid=11001; probe_home=/home/claude
+  else
+    launch=(runner_codex_container "$runtime" create --pids-limit "$limit" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m)
+  fi
+
+  # Copy the empty tracker workflow into the stopped probe's anonymous volume.
+  # Docker streams it from this client even when the daemon is on another host.
+  # Then boot the real entrypoint and observe it from outside the capped cgroup.
+  fixture=$(mktemp -d "${TMPDIR:-/tmp}/symphony-task-limit.XXXXXX") || return
+  probe="$runtime_prefix-task-limit-${fixture##*.}"
+  observer="$probe-observer"
+  trap '
+    for resource in "$observer" "$probe"; do
+      if ! runner_remove_task_limit_probe "$runtime" "$resource"; then
+        printf "symphony: could not verify removal of task-limit preflight container %s\n" "$resource" >&2
+        cleanup_failed=true
+      fi
+    done
+    rm -f "$fixture/WORKFLOW.md" && rmdir "$fixture" || cleanup_failed=true
+    if "$cleanup_failed"; then exit 1; fi
+  ' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  cat >"$fixture/WORKFLOW.md" <<'WORKFLOW' || return
+---
+tracker:
+  kind: memory
+workspace:
+  root: /workspaces
+observability:
+  dashboard_enabled: false
+---
+Credential-free task limit preflight.
+WORKFLOW
+  chmod 644 "$fixture/WORKFLOW.md" || return
+  if ! probe_id=$("${launch[@]}" --name "$probe" --network none \
+    --label com.symphony.mode=task-limit-probe --label "com.symphony.task-limit-probe=$probe" \
+    --tmpfs "$probe_home:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
+    --tmpfs "/var/lib/symphony:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
+    --tmpfs "/workspaces:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
+    --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 --env ERL_CRASH_DUMP_SECONDS=0 \
+    --env SYMPHONY_GIT_TOKEN=credential-free-task-limit-probe \
+    --mount type=volume,target=/etc/symphony,volume-nocopy "$image") ||
+    [ -z "$probe_id" ] ||
+    ! "$runtime" cp "$fixture/WORKFLOW.md" "$probe_id:/etc/symphony/WORKFLOW.md" ||
+    ! "$runtime" start "$probe_id" >/dev/null ||
+    [ "$("$runtime" inspect --format '{{json .HostConfig.PidsLimit}}' "$probe_id")" != "$limit" ] ||
+    ! "$runtime" run --name "$observer" --label "com.symphony.task-limit-probe=$observer" \
+      --network "container:$probe_id" --read-only --cap-drop ALL \
+      --security-opt no-new-privileges --entrypoint python3 "$image" -c '
+import json, sys, time, urllib.request
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    try:
+        with opener.open("http://127.0.0.1:4010/api/v1/state", timeout=1) as response:
+            state = json.load(response)
+        agent = state["agent"]
+        readiness = agent["readiness"]
+        if agent["provider"] == sys.argv[1] and state["counts"]["running"] == 0:
+            if readiness["ready"] or (sys.argv[1] == "claude" and readiness.get("code") == "auth_required"):
+                sys.exit(0)
+            if readiness.get("code") != "checking":
+                break
+    except (OSError, ValueError, KeyError):
+        pass
+    time.sleep(0.25)
+sys.exit(1)
+' "$agent" ||
+    [ "$("$runtime" exec "$probe_id" /bin/sh -ceu "$runner_task_limit_cgroup")" != "$limit" ]; then
+    die "container engine could not apply SYMPHONY_RUNNER_PIDS_LIMIT=$limit and boot the selected runner"
+  fi
+)
+
+runner_task_limit_applied() {
+  local runtime=$1 name=$2 limit profile
+  limit=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.pids-limit" }}' "$name") || return
+  case "$limit" in
+    ''|'<no value>')
+      profile=$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name") || return
+      if [ "$profile" = cpu4-pid512-build1g-v1 ]; then
+        printf '512\n'
+      else printf 'inherited\n'; fi ;;
+    inherited) printf '%s\n' "$limit" ;;
+    *) runner_task_limit_positive "$limit" && printf '%s\n' "$limit" ;;
+  esac
+}
+
+runner_task_limit_report() {
+  local root=$1 runtime=$2 name=${3:-} running=${4:-false} desired applied=unavailable observed=unavailable
+  desired=$(runner_task_limit_read "$root" 2>/dev/null) || desired='invalid project setting'
+  if [ -n "$name" ]; then
+    applied=$(runner_task_limit_applied "$runtime" "$name" 2>/dev/null) || applied=unavailable
+    if "$running"; then
+      observed=$("$runtime" exec "$name" /bin/sh -ceu "$runner_task_limit_cgroup" 2>/dev/null) || observed=unavailable
+      if [ "$observed" != max ] && ! runner_task_limit_positive "$observed"; then observed=unavailable; fi
+    fi
+  fi
+  if runner_task_limit_positive "$desired"; then desired="explicit ($desired)"; fi
+  if runner_task_limit_positive "$applied"; then applied="explicit ($applied)"; fi
+  printf 'Runner task limit: desired %s; launched %s; observed cgroup pids.max %s\n' "$desired" "$applied" "$observed"
 }
 
 runner_start() {
@@ -1870,6 +2062,12 @@ runner_start() {
   port=${port:-4010}
   agent=${agent:-codex}
   validate_agent "$agent"
+  local task_limit
+  local -a task_args
+  if [ "$authority" = update ]; then task_limit=${5:?missing transition task limit}
+  else task_limit=$(runner_task_limit_read "$root") || return; fi
+  task_args=(--label "com.symphony.pids-limit=$task_limit")
+  if [ "$task_limit" != inherited ]; then task_args=(--pids-limit "$task_limit" "${task_args[@]}"); fi
   project_credentials_require "$root" || return
   project_credentials_export
   if "$packaged_install" && [ "$authority" != update ]; then package_use_project_image "$root" "$agent"; fi
@@ -1904,6 +2102,10 @@ runner_start() {
   if [ "$state" != missing ] && [ "$agent" = claude ] && [ "$authority" != update ]; then
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = claude ] || die 'listener agent differs; transition through symphony update --agent'
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Claude runtime profile differs; transition through symphony update --agent'
+  fi
+  if [ "$state" != missing ] && [ "$authority" != update ]; then
+    [ "$(runner_task_limit_applied "$runtime" "$name")" = "$task_limit" ] ||
+      die 'listener task limit differs; transition through symphony update --agent'
   fi
   if [ "$state" = true ]; then
     if "$registered"; then
@@ -1947,6 +2149,7 @@ runner_start() {
   if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then runner_build_image "$agent"; fi
   image_id=$("$runtime" image inspect --format '{{.Id}}' "$image")
   [ -n "$image_id" ] || die 'runner image identity is unavailable'
+  if [ "$authority" != update ]; then runner_task_limit_preflight "$runtime" "$image_id" "$task_limit" "$agent"; fi
   if [ -r "$env_file" ] && [ "$authority" != update ]; then
     (
       . "$env_file"
@@ -1964,7 +2167,7 @@ runner_start() {
   codex_project_mount=(--env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project)
   if "$registered"; then
     codex_project_mount=(--env SYMPHONY_LAUNCH_ROOT=/opt/symphony/elixir)
-    runner_remote_probe "$root" "$runtime" "$image_id" "$agent" || return
+    runner_remote_probe "$root" "$runtime" "$image_id" "$agent" "$task_limit" || return
     if [ -z "$registered_branch" ]; then
       registered_branch=$remote_resolved_branch
       project_registration_write "$root" "$registered_linear" "$registered_repository" "$registered_branch" "$registered_adopted" || return
@@ -2002,7 +2205,7 @@ runner_start() {
   runner_prepare_home || return
   if [ "$agent" = claude ]; then
     export SYMPHONY_GIT_TOKEN="$git_token"
-    runner_claude_run "$runtime" --detach --restart unless-stopped --name "$name" \
+    runner_claude_run "$runtime" "${task_args[@]}" --detach --restart unless-stopped --name "$name" \
       --label "com.symphony.claude.runtime=$expected_runtime" \
       --label com.symphony.mode=listener --label "com.symphony.storage=$storage_id" \
       --label com.symphony.agent=claude --label "com.symphony.profile=$profile" \
@@ -2014,7 +2217,7 @@ runner_start() {
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
     unset SYMPHONY_GIT_TOKEN
   else
-  runner_codex_run "$runtime" --detach --restart unless-stopped --name "$name" \
+  runner_codex_run "$runtime" --detach --restart unless-stopped --name "$name" "${task_args[@]}" \
     --label com.symphony.mode=listener \
     --label "com.symphony.storage=$storage_id" \
     --label "com.symphony.codex.runtime=$expected_runtime" \
@@ -2373,11 +2576,55 @@ runner_finish_journal() {
   runner_clear_completed_journal "$journal.complete"
 }
 
+runner_write_transition_task_limits() {
+  local limit
+  limit=$(runner_task_limit_applied "$1" "$2") || die 'prior runner task limit is unknown; updater refused'
+  # Keep both values in an existing journal file so prior installed launchers
+  # can still restore the retained container and remove the completed journal.
+  printf 'SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=%s\nSYMPHONY_TRANSITION_PIDS_LIMIT=%s\n' "$limit" "$4" >>"$3"
+}
+
+runner_read_transition_task_limit() {
+  local record limit
+  if [ ! -e "$1/previous.env" ]; then printf 'inherited\n'; return; fi
+  record=$(sed -n '/^SYMPHONY_TRANSITION_PIDS_LIMIT=/p' "$1/previous.env") || return
+  if [ -z "$record" ]; then printf 'inherited\n'; return; fi
+  limit=${record#*=}
+  [ "$limit" = inherited ] || runner_task_limit_positive "$limit" ||
+    die 'pending runner task limit is invalid; use symphony update --rollback-runner'
+  printf '%s\n' "$limit"
+}
+
+runner_check_prior_task_limit() {
+  local limit
+  [ -e "$3" ] || return 0
+  limit=$(sed -n 's/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=//p' "$3")
+  [ -z "$limit" ] || [ "$(runner_task_limit_applied "$1" "$2")" = "$limit" ] ||
+    die 'prior runner task limit differs from the journal; recovery refused'
+}
+
+# The candidate's own cgroup may have no task slot for exec. After the caller
+# verifies the state mount, the updater can read the same hold markers outside it.
+runner_candidate_hold() {
+  local root=$1 runtime=$2 name=$3 image=$4 check=$5 limit
+  shift 5
+  if "$runtime" exec "$name" sh -ceu "$check" sh "$@"; then return; fi
+  limit=$(runner_task_limit_applied "$runtime" "$name") || return
+  runner_task_limit_positive "$limit" || return
+  "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --mount "type=volume,source=$(runner_storage_id "$root")-state,target=/var/lib/symphony,readonly" \
+    --entrypoint /bin/sh "$image" -ceu "$check" sh "$@"
+}
+
+runner_candidate_unresumed() {
+  runner_candidate_hold "$@" 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'
+}
+
 # Development retries follow the current checkout rather than a journal's old image.
 # Commit the replacement image only after removing the verified old candidate.
 # A crash before that commit is retryable: the retained backup is never removed.
 runner_refresh_pending() {
-  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 runtime name old replacement state previous selected_sha selected_owner stage_record stage_marker stage_image stage_sha stage_owner
+  local root=$1 agent=$2 journal=$3 backup=$4 desired=$5 task_limit=$6 runtime name old replacement state previous current_limit previous_limit selected_sha selected_owner stage_record stage_marker stage_image stage_sha stage_owner
   runtime=$(container_runtime); name=$(runner_id "$root"); old=$(runner_transition_image "$journal")
   if [ "$(runner_status "$root")" = true ] && ! "$runtime" inspect "$backup" >/dev/null 2>&1 &&
      runner_is_legacy "$runtime" "$name"; then
@@ -2386,6 +2633,8 @@ runner_refresh_pending() {
   export SYMPHONY_RUNNER_IMAGE="$desired"
   runner_build_image "$agent"
   replacement=$("$runtime" image inspect --format '{{.Id}}' "$desired")
+  [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
+  runner_task_limit_preflight "$runtime" "$replacement" "$task_limit" "$agent"
   export SYMPHONY_RUNNER_IMAGE="$replacement"
   if [ "$agent" = codex ]; then
     if [ "$replacement" = "$old" ]; then
@@ -2400,8 +2649,7 @@ runner_refresh_pending() {
       else codex_config_select "$root" "$runtime" "$replacement" || return; fi
     else codex_config_select "$root" "$runtime" "$replacement" || return; fi
   fi
-  runner_doctor "$root" "$agent"
-  [ -n "$replacement" ] || die 'development candidate has no image identity; updater refused'
+  runner_doctor "$root" "$agent" false "$task_limit"
   if [ "$replacement" = "$old" ]; then return; fi
   if [ "$agent" = codex ]; then
     selected_sha=$codex_config_sha; selected_owner=$codex_config_owner
@@ -2421,7 +2669,7 @@ runner_refresh_pending() {
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
       [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$old" ] || die 'candidate image differs; updater refused'
       if [ "$state" = true ] &&
-         "$runtime" exec "$name" sh -ceu 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'; then
+         runner_candidate_unresumed "$root" "$runtime" "$name" "$old"; then
         "$runtime" stop --time 30 "$name" >/dev/null
       else
         runner_pause "$root"
@@ -2433,11 +2681,16 @@ runner_refresh_pending() {
     # the current qualified container becomes the rollback source for this image.
     runner_owned "$root" "$runtime" "$name"
     previous=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
+    previous_limit=$(sed -n 's/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=//p' "$journal/previous.env")
+    current_limit=$(runner_task_limit_applied "$runtime" "$name")
     state=$("$runtime" inspect --format '{{.Image}}' "$name")
     [ "$state" = "$old" ] || [ "$state" = "$previous" ] || die 'pending source image differs; updater refused'
-    if [ "$state" = "$old" ] && [ "$state" != "$previous" ]; then
+    if [ "$state" = "$old" ] &&
+       { [ "$state" != "$previous" ] ||
+         { [ -n "$previous_limit" ] && [ "$current_limit" != "$previous_limit" ] && [ "$current_limit" = "$task_limit" ]; }; }; then
       runner_record_observed_metadata "$root" "$runtime" "$name"
       cp "$(runner_env_file "$root")" "$journal/previous.env.next"
+      runner_write_transition_task_limits "$runtime" "$name" "$journal/previous.env.next" "$task_limit"
       mv "$journal/previous.env.next" "$journal/previous.env"
     fi
   fi
@@ -2478,7 +2731,7 @@ runner_prepare_storage() {
 }
 
 runner_transition() (
-  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1 migration_completed=false
+  local root=$1 agent=$2 development=${3:-false} runtime name id env_file journal backup candidate port=4010 expected_runtime=none prior=$1 migration_completed=false task_limit
   validate_agent "$agent"
   runtime=$(container_runtime); name=$(runner_id "$root"); id=$(project_id "$root")
   if [ "$agent" = codex ]; then expected_runtime=$(codex_runtime_profile_id "$runtime") || return
@@ -2491,6 +2744,12 @@ runner_transition() (
   runner_require_identity "$root"
   if [ -d "$journal.complete" ] && [ ! -L "$journal.complete" ]; then
     runner_clear_completed_journal "$journal.complete" || return
+  fi
+  if [ -d "$journal" ]; then
+    # An older transition had no override and must finish with its pinned intent.
+    task_limit=$(runner_read_transition_task_limit "$journal") || return
+  else
+    task_limit=$(runner_task_limit_read "$root") || return
   fi
   if [ -n "${migration_commit:-}" ]; then
     if [ -d "$journal" ]; then candidate=$(runner_transition_image "$journal")
@@ -2505,7 +2764,7 @@ runner_transition() (
       package_transition_image_compatible "$runtime" "$candidate" "$agent" "$(source_revision)"
       [ "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" = "$(runner_transition_image "$journal")" ] || die 'pending packaged image differs from selected release; updater refused'
     fi
-    if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate"; fi
+    if "$development"; then runner_refresh_pending "$root" "$agent" "$journal" "$backup" "$candidate" "$task_limit"; fi
     candidate=$(runner_transition_image "$journal"); export SYMPHONY_RUNNER_IMAGE="$candidate"
     if [ -n "${migration_commit:-}" ] && [ -f "$journal/migration.resume" ] &&
        [ "$(cat "$journal/migration.resume")" = resumed ]; then
@@ -2524,14 +2783,21 @@ runner_transition() (
     # After verified resume and package activation, the journal only needs
     # settlement. A changed or unavailable workflow is handled by the listener.
     if ! "$migration_completed"; then
+      if ! "$development"; then runner_task_limit_preflight "$runtime" "$candidate" "$task_limit" "$agent"; fi
       if [ "$agent" = codex ]; then
         codex_config_journal_load "$root" "$candidate" "$journal"
         runner_codex_sandbox_ready "$root" "$runtime" "$candidate"
+        if [ "$task_limit" != inherited ] && registered_project "$root"; then
+          local remote_resolved_branch
+          project_credentials_require "$root" || return
+          project_credentials_export
+          runner_remote_probe "$root" "$runtime" "$candidate" codex "$task_limit" || return
+        fi
       elif registered_project "$root"; then
         local remote_resolved_branch
         project_credentials_require "$root" || return
         project_credentials_export
-        runner_remote_probe "$root" "$runtime" "$candidate" claude || return
+        runner_remote_probe "$root" "$runtime" "$candidate" claude "$task_limit" || return
       else
         runner_claude_workflow_ready "$root" "$runtime" "$candidate" || return
       fi
@@ -2555,10 +2821,11 @@ runner_transition() (
     runner_build_image "$agent"
     candidate=$("$runtime" image inspect --format '{{.Id}}' "$candidate")
     export SYMPHONY_RUNNER_IMAGE="$candidate"
+    runner_task_limit_preflight "$runtime" "$candidate" "$task_limit" "$agent"
     # A new update intent captures current native trust even when image stays
     # unchanged. Pending intents instead retain their exact journal tuple.
     if [ "$agent" = codex ]; then codex_config_select "$root" "$runtime" "$candidate" || return; fi
-    runner_doctor "$root" "$agent"
+    runner_doctor "$root" "$agent" false "$task_limit"
     local journal_tmp
     journal_tmp=$(mktemp -d "$runner_home/.transition.XXXXXX")
     cp "$env_file" "$journal_tmp/previous.env"
@@ -2566,6 +2833,7 @@ runner_transition() (
       sed '/^SYMPHONY_RUNNER_IMAGE_ID=/d' "$env_file" >"$journal_tmp/previous.env"
       printf 'SYMPHONY_RUNNER_IMAGE_ID=%s\n' "$("$runtime" inspect --format '{{.Image}}' "$name")" >>"$journal_tmp/previous.env"
     fi
+    runner_write_transition_task_limits "$runtime" "$name" "$journal_tmp/previous.env" "$task_limit"
     printf '%s\n' "$agent" >"$journal_tmp/target"
     printf '%s\n' "$port" >"$journal_tmp/port"
     if [ "$agent" = codex ]; then codex_config_journal_write "$root" "$candidate" "$journal_tmp"
@@ -2587,6 +2855,7 @@ runner_transition() (
        [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] &&
        [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] &&
        [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] &&
+       [ "$(runner_task_limit_applied "$runtime" "$name")" = "$task_limit" ] &&
        { [ "$agent" != codex ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ]; } &&
        { [ "$agent" != codex ] || { [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.sha256" }}' "$name")" = "$codex_config_sha" ] && [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.config.owner" }}' "$name")" = "$codex_config_owner" ]; }; } &&
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
@@ -2600,6 +2869,7 @@ runner_transition() (
       return
     fi
     ! "$migration_completed" || die 'committed migration candidate differs; recovery refused'
+    runner_check_prior_task_limit "$runtime" "$name" "$journal/previous.env"
     if [ -n "${migration_commit:-}" ]; then
       runner_migration_prior "$prior" "$runtime" "$name" false
       runner_pause "$prior"
@@ -2616,17 +2886,20 @@ runner_transition() (
     runner_owned "$root" "$runtime" "$backup"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; updater refused'
   fi
+  runner_check_prior_task_limit "$runtime" "$backup" "$journal/previous.env"
   if [ "$(runner_status "$root")" = missing ]; then
     ! "$migration_completed" || die 'committed migration candidate is missing; recovery refused'
     # Keep a newly created candidate idle until readiness has been verified.
     if [ -z "${migration_commit:-}" ]; then runner_prepare_storage "$root" "$runtime" "$candidate" "$agent" true; fi
-    runner_start "$root" "$port" "$agent" update
+    runner_start "$root" "$port" "$agent" update "$task_limit"
   else
     runner_owned "$root" "$runtime" "$name"
     runner_workflow_mount_owned "$root" "$runtime" "$name" directory || die 'candidate workflow layout differs; roll back through symphony update --rollback-runner'
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$agent" ] || die 'candidate provider differs; updater refused'
     [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$("$runtime" image inspect --format '{{.Id}}' "$candidate")" ] || die 'candidate image differs; updater refused'
     [ "$(runner_update_port "$root" "$runtime" "$name")" = "$port" ] || die 'candidate port differs; updater refused'
+    [ "$(runner_task_limit_applied "$runtime" "$name")" = "$task_limit" ] ||
+      die 'candidate task limit differs; retained prior runner can be restored with symphony update --rollback-runner'
     if [ "$agent" = codex ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.codex.runtime" }}' "$name")" = "$expected_runtime" ] || die 'candidate Codex runtime profile differs; retained prior runner can be restored with symphony update --rollback-runner'
       codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"
@@ -2683,7 +2956,7 @@ runner_rollback_migration() {
       [ "$("$runtime" inspect --format '{{index .Config.Labels "com.symphony.agent"}}' "$name")" = "$(cat "$journal/target")" ] ||
         die 'migration candidate provider differs; rollback refused'
       if [ "$(runner_status "$root")" = true ] &&
-         "$runtime" exec "$name" sh -ceu 'grep -Fx "migration:$1" /var/lib/symphony/agent-draining >/dev/null' sh "$migration_commit"; then
+         runner_candidate_hold "$root" "$runtime" "$name" "$current_image" 'grep -Fx "migration:$1" /var/lib/symphony/agent-draining >/dev/null' "$migration_commit"; then
         "$runtime" stop --time 30 "$name" >/dev/null
       elif [ "$(runner_status "$root")" = true ]; then
         runner_pause "$root"
@@ -2698,7 +2971,7 @@ runner_rollback_migration() {
   runner_migration_prior "$migration_checkout" "$runtime" "$name"
   [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior checkout image differs; rollback refused'
   temporary=$(mktemp "$runner_home/.runner.XXXXXX")
-  cp -p "$journal/previous.env" "$temporary"
+  sed '/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=/d; /^SYMPHONY_TRANSITION_PIDS_LIMIT=/d' "$journal/previous.env" >"$temporary"
   mv -f "$temporary" "$(runner_env_file "$root")"
   # Keep the restored checkout listener stopped and held for migration retry.
   : >"$journal/migration.rollback"
@@ -2708,7 +2981,7 @@ runner_rollback_migration() {
 }
 
 runner_rollback() (
-  local root=$1 runtime name backup id journal port previous_agent previous_image state
+  local root=$1 runtime name backup id journal port candidate previous_agent previous_image state
   runtime=$(container_runtime); name=$(runner_id "$root"); backup="$name-before-update"; id=$(project_id "$root")
   journal="$runner_home/$id.transition"
   runner_project_lock "$root" || return
@@ -2723,14 +2996,16 @@ runner_rollback() (
   fi
   if "$runtime" inspect "$backup" >/dev/null 2>&1; then
     runner_owned "$root" "$runtime" "$backup"
+    runner_check_prior_task_limit "$runtime" "$backup" "$journal/previous.env"
     [ "$("$runtime" inspect --format '{{.State.Running}}' "$backup")" = false ] || die 'prior runner is unexpectedly active; rollback refused'
     codex_config_rollback_preflight "$root" "$runtime" "$backup"
     if [ "$(runner_status "$root")" != missing ]; then
       runner_owned "$root" "$runtime" "$name"
-      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$(runner_transition_image "$journal")" ] || die 'candidate image differs; rollback refused'
+      candidate=$(runner_transition_image "$journal")
+      [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$candidate" ] || die 'candidate image differs; rollback refused'
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.agent" }}' "$name")" = "$(cat "$journal/target")" ] || die 'candidate provider differs; rollback refused'
       if [ "$(runner_status "$root")" = true ] &&
-         "$runtime" exec "$name" sh -ceu 'test -f /var/lib/symphony/agent-upgrade-unresumed && test -f /var/lib/symphony/agent-draining'; then
+         runner_candidate_unresumed "$root" "$runtime" "$name" "$candidate"; then
         "$runtime" stop --time 30 "$name" >/dev/null
       else
         runner_pause "$root"
@@ -2742,6 +3017,7 @@ runner_rollback() (
     runner_owned "$root" "$runtime" "$name"
     previous_image=$(sed -n 's/^SYMPHONY_RUNNER_IMAGE_ID=//p' "$journal/previous.env")
     [ -n "$previous_image" ] && [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior container cannot be verified; rollback refused'
+    runner_check_prior_task_limit "$runtime" "$name" "$journal/previous.env"
     codex_config_rollback_preflight "$root" "$runtime" "$name"
   fi
   previous_image=$("$runtime" inspect --format '{{.Image}}' "$name")
@@ -2834,7 +3110,7 @@ runner_codex_sandbox_ready() {
 }
 
 runner_doctor() {
-  local root=$1 agent=${2:-} sandbox_only=${3:-false} runtime image metadata
+  local root=$1 agent=${2:-} sandbox_only=${3:-false} task_probe_limit=${4:-inherited} runtime image metadata
   if registered_project "$root"; then
     ! "$sandbox_only" || die 'registered workflow preflight needs project credentials; use runner doctor without --sandbox-only'
     metadata=$(runner_env_file "$root")
@@ -2863,7 +3139,13 @@ runner_doctor() {
     printf 'Protected project launch checks passed. Native authentication, Git preflight, tracker access and model tasks remain untested. No listener or model request was started.\n'
     return
   fi
-  if [ "$agent" = claude ]; then runner_claude_workflow_ready "$root" "$runtime" "$image" || return; fi
+  if [ "$task_probe_limit" != inherited ] && registered_project "$root"; then
+    local remote_resolved_branch
+    project_credentials_export
+    runner_remote_probe "$root" "$runtime" "$image" "$agent" "$task_probe_limit" || return
+  elif [ "$agent" = claude ]; then
+    runner_claude_workflow_ready "$root" "$runtime" "$image" || return
+  fi
   if [ "$agent" = claude ]; then claude_auth check || { printf 'Native authentication/policy failed; run symphony auth claude login and retry.\n' >&2; return 1; }
   else auth_codex_check || { printf 'Native authentication/policy failed; run symphony auth codex login and retry.\n' >&2; return 1; }; fi
   if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
