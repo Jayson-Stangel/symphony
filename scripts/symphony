@@ -1842,14 +1842,19 @@ codex_verify_profile() {
 # Host preparation is a separate, explicitly authorized administrator command.
 runner_codex_run() {
   local runtime=$1; shift
+  runner_codex_container "$runtime" run "$@"
+}
+
+runner_codex_container() {
+  local runtime=$1 command=$2; shift 2
   local profile="$symphony_home/scripts/codex-seccomp.json" apparmor
   codex_verify_profile "$profile" "$(codex_seccomp_id)"
   apparmor=$(codex_apparmor_profile "$runtime") || return
   if [ "$apparmor" != none ]; then
     codex_verify_profile "$symphony_home/scripts/codex-apparmor.profile" "$(codex_apparmor_id)"
-    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges --security-opt "apparmor=$apparmor" "$@"
+    "$runtime" "$command" --security-opt "seccomp=$profile" --security-opt no-new-privileges --security-opt "apparmor=$apparmor" "$@"
   else
-    "$runtime" run --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
+    "$runtime" "$command" --security-opt "seccomp=$profile" --security-opt no-new-privileges "$@"
   fi
 }
 
@@ -1858,12 +1863,12 @@ runner_codex_run() {
 claude_runtime_profile_id() { printf '%s' 'cpu4-build1g-v2'; }
 runner_claude_run() {
   local runtime=$1; shift
-  local -a flags=(--read-only --cap-drop ALL --security-opt no-new-privileges)
-  if [ "${1:-}" = --pids-limit ]; then
-    flags+=(--pids-limit "$2")
-    shift 2
-  fi
-  "$runtime" run "${flags[@]}" \
+  runner_claude_container "$runtime" run "$@"
+}
+
+runner_claude_container() {
+  local runtime=$1 command=$2; shift 2
+  "$runtime" "$command" --read-only --cap-drop ALL --security-opt no-new-privileges \
     --cpus 4 --tmpfs /tmp:rw,nosuid,nodev,size=512m \
     --tmpfs /var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g \
     "$@"
@@ -1928,18 +1933,19 @@ runner_remove_task_limit_probe() {
 }
 
 runner_task_limit_preflight() (
-  local runtime=$1 image=$2 limit=$3 agent=$4 fixture probe observer resource uid=0 probe_home=/root cleanup_failed=false
+  local runtime=$1 image=$2 limit=$3 agent=$4 fixture probe probe_id observer resource uid=0 probe_home=/root cleanup_failed=false
   local -a launch
   [ "$limit" != inherited ] || return 0
   if [ "$agent" = claude ]; then
-    launch=(runner_claude_run "$runtime" --pids-limit "$limit")
+    launch=(runner_claude_container "$runtime" create --pids-limit "$limit")
     uid=11001; probe_home=/home/claude
   else
-    launch=(runner_codex_run "$runtime" --pids-limit "$limit" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m)
+    launch=(runner_codex_container "$runtime" create --pids-limit "$limit" --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m)
   fi
 
-  # Boot the real image entrypoint on an empty memory tracker. Use the probe's
-  # network namespace to read its API without spending a task slot inside it.
+  # Copy the empty tracker workflow into the stopped probe's anonymous volume.
+  # Docker streams it from this client even when the daemon is on another host.
+  # Then boot the real entrypoint and observe it from outside the capped cgroup.
   fixture=$(mktemp -d "${TMPDIR:-/tmp}/symphony-task-limit.XXXXXX") || return
   probe="$runtime_prefix-task-limit-${fixture##*.}"
   observer="$probe-observer"
@@ -1955,7 +1961,7 @@ runner_task_limit_preflight() (
   ' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  cat >"$fixture/WORKFLOW.md" <<'WORKFLOW'
+  cat >"$fixture/WORKFLOW.md" <<'WORKFLOW' || return
 ---
 tracker:
   kind: memory
@@ -1966,19 +1972,21 @@ observability:
 ---
 Credential-free task limit preflight.
 WORKFLOW
-  chmod 755 "$fixture"
-  chmod 644 "$fixture/WORKFLOW.md"
-  if ! "${launch[@]}" --detach --name "$probe" --network none \
+  chmod 644 "$fixture/WORKFLOW.md" || return
+  if ! probe_id=$("${launch[@]}" --name "$probe" --network none \
     --label com.symphony.mode=task-limit-probe --label "com.symphony.task-limit-probe=$probe" \
     --tmpfs "$probe_home:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
     --tmpfs "/var/lib/symphony:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
     --tmpfs "/workspaces:rw,nosuid,nodev,uid=$uid,gid=$uid,mode=700,size=32m" \
     --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 --env ERL_CRASH_DUMP_SECONDS=0 \
     --env SYMPHONY_GIT_TOKEN=credential-free-task-limit-probe \
-    --mount "type=bind,source=$fixture,target=/etc/symphony,readonly" "$image" >/dev/null ||
-    [ "$("$runtime" inspect --format '{{json .HostConfig.PidsLimit}}' "$probe")" != "$limit" ] ||
+    --mount type=volume,target=/etc/symphony,volume-nocopy "$image") ||
+    [ -z "$probe_id" ] ||
+    ! "$runtime" cp "$fixture/WORKFLOW.md" "$probe_id:/etc/symphony/WORKFLOW.md" ||
+    ! "$runtime" start "$probe_id" >/dev/null ||
+    [ "$("$runtime" inspect --format '{{json .HostConfig.PidsLimit}}' "$probe_id")" != "$limit" ] ||
     ! "$runtime" run --name "$observer" --label "com.symphony.task-limit-probe=$observer" \
-      --network "container:$probe" --read-only --cap-drop ALL \
+      --network "container:$probe_id" --read-only --cap-drop ALL \
       --security-opt no-new-privileges --entrypoint python3 "$image" -c '
 import json, sys, time, urllib.request
 
@@ -2000,7 +2008,7 @@ while time.monotonic() < deadline:
     time.sleep(0.25)
 sys.exit(1)
 ' "$agent" ||
-    [ "$("$runtime" exec "$probe" /bin/sh -ceu "$runner_task_limit_cgroup")" != "$limit" ]; then
+    [ "$("$runtime" exec "$probe_id" /bin/sh -ceu "$runner_task_limit_cgroup")" != "$limit" ]; then
     die "container engine could not apply SYMPHONY_RUNNER_PIDS_LIMIT=$limit and boot the selected runner"
   fi
 )
