@@ -152,7 +152,11 @@ defmodule SymphonyElixir.ConcurrencyTest do
 
         for {total_turns, attempt_turns} <- [{4, 1}, {5, 2}] do
           release_input(ctx, issue, Enum.at(inputs(ctx, issue), total_turns - 1))
-          await(fn -> turn_count(ctx, issue) == total_turns + 1 and running_turn_count(ctx, issue) == attempt_turns + 1 end)
+
+          await(fn ->
+            turn_count(ctx, issue) == total_turns + 1 and running_turn_count(ctx, issue) == attempt_turns + 1
+          end)
+
           assert_retained_session(ctx, issue, renewed)
         end
 
