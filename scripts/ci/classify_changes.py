@@ -170,6 +170,7 @@ PORTABLE_RELEASE = {
     'ghcr_transport_recovery.py',
     'recover_ec2_registry.py',
     'ec2-registry-recovery-files.json',
+    'package-lifecycle.py',
     'prepare-candidate-source.sh',
     'prepare-manager-inputs.py',
     'previous-package-subject.py',
@@ -283,8 +284,8 @@ def consumer_selection(path):
     if path in ('scripts/release/engine-smoke.py', 'scripts/release/tests/test_engine_smoke.py',
                 'scripts/release/tests/test_package_update.py'):
         return {'portable', 'fixtures'}, 'native process or installed updater fixture'
-    if path in ('scripts/release/package-lifecycle.py', 'scripts/release/workflow_fixture.py'):
-        return {'portable', 'fixtures'}, 'native installed lifecycle fixture and its private service peer'
+    if path == 'scripts/release/workflow_fixture.py':
+        return {'portable', 'fixtures'}, 'private service process fixture for the installed lifecycle'
     if path in ('scripts/release/tests/test_component_provenance.py',
                 'scripts/release/tests/fixtures/manager-original-68.json'):
         return PACKAGES, 'packaged provenance validator fixture dependency'
