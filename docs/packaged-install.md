@@ -648,9 +648,10 @@ retains both platform checksums, and runs `package-lifecycle.py` on native Linux
 The clean Ubuntu 26.04 client gets archives and isolated data only, with optional
 host tools poisoned. The controller uses CI Python/Docker as test utilities.
 
-The lifecycle proof uses real memory-tracker listeners and loopback dashboards,
-physical mounts, same-basename projects, stop/restart, manager-only activation,
-selected-runner updates, post-create failure/retry and updater-controlled rollback.
+The lifecycle proof uses real listeners and loopback dashboards with empty
+Memory or isolated HTTPS Git and Linear fixtures. It checks physical mounts,
+same-basename projects, stop/restart, manager-only activation, selected-runner
+updates, post-create failure and retry, and updater-controlled rollback.
 It checks dirty tracked files, untracked evidence, state, credentials, workflows,
 local overrides and the unchanged second project's selected image. Native login
 entrypoints/Codex login status are explicitly stubbed; this is not authenticated

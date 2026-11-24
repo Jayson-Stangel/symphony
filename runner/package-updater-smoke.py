@@ -298,6 +298,13 @@ try:
             moved.rename(projects[0])
         assert preservation() == canary
     else:
+        def select_codex(index):
+            manifest = manifests[index]
+            image = manifest.get("distribution", {}).get("codex", {}).get("arm64", manifest["runners"]["codex"]["arm64"]["image"])
+            launch("environment", "select", "--agent", "codex", image)
+
+        if initial_remote:
+            select_codex(1)
         (proof / "docker-fault").write_text("create")
         update_second("--agent", "codex", expected=97)
         assert current_version() == manifests[0]["version"]
@@ -322,11 +329,15 @@ try:
         else:
             launch("run", "--port", str(ports[1]), project=1); state(ports[1])
         assert docker("inspect", "--format", "{{.Image}}", names[1]) != docker("inspect", "--format", "{{.Image}}", names[0])
+        if initial_remote:
+            select_codex(0)
         launch("update", "--rollback-release", "--agent", "codex")
         assert current_version() == manifests[0]["version"]
         assert state(ports[0]) and preservation() == canary
         # Fail manager activation after actual candidate admission. The old manager
         # and qualified prior container must still support updater-controlled rollback.
+        if initial_remote:
+            select_codex(1)
         (proof / "activation-fault").touch()
         failure = update_second("--agent", "codex", expected=None)
         assert "FAULT after actual resume" in failure
@@ -348,6 +359,9 @@ try:
         claude_image = manifests[1]["runners"]["claude"]["arm64"]["image"]
         docker("run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "sh", "--volume", claude_volume + ":/home/claude", claude_image, "-ceu", "chown 11001:11001 /home/claude")
         prior = docker("inspect", "--format", "{{.Id}}", names[0])
+        if initial_remote:
+            selected = manifests[1].get("distribution", {}).get("claude", {}).get("arm64", claude_image)
+            launch("environment", "select", "--agent", "claude", selected)
         missing = update_second("--agent", "claude", expected=1)
         assert "auth_required" in missing and "model_requests" in missing
         assert docker("inspect", "--format", "{{.Id}}", names[0]) == prior

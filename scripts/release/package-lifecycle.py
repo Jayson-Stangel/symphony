@@ -801,7 +801,7 @@ exec /usr/bin/curl "$@"
         image = current["runners"][primary_agent]["x86_64"]["image"]
         remove_local_image(run, f"localhost:5000/symphony-{primary_agent}:candidate")
         selected_distribution = current.get("distribution", {}).get(primary_agent, {}).get("x86_64")
-        if migration and selected_distribution and selected_distribution != image:
+        if (migration or initial_remote) and selected_distribution and selected_distribution != image:
             remove_local_image(run, selected_distribution)
         remove_local_image(run, image)
         digest = image.split("@", 1)[1]
@@ -875,13 +875,22 @@ exec /usr/bin/curl "$@"
             result["current_packaged_protected_execution"] = True
             record("installed stop-first checkout migration adopted existing credential/auth/workspace/state resources and resumed only the reviewed remote workflow commit")
         else:
-            failed = client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=1)
-            assert f"cannot pull released {primary_agent} image" in failed.stdout
+            if initial_remote:
+                selected_image = selected_distribution or image
+                failed = client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo, expected=1)
+                assert "team environment is unavailable locally" in failed.stdout
+            else:
+                failed = client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=1)
+                assert f"cannot pull released {primary_agent} image" in failed.stdout
             assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == previous["source_revision"]
             unchanged()
             restore_component(run, graphs[("candidate", primary_agent)], registry_state)
-            record("actual missing image/digest pull refuses before journal or manager activation; checksummed image restored for retry")
+            if initial_remote:
+                if selected_image != image:
+                    restore_component(run, graphs[("candidate", primary_agent)], registry_state, destination=selected_image)
+                client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo)
+            record("missing exact candidate image refuses before journal or manager activation; checksummed image restored for retry")
             (root / "fault").write_text("create")
             client_run([str(command), "update", *update_args, "--agent", primary_agent], cwd=repo, expected=97)
             assert (root / "config/runners" / (identifiers[0] + ".transition")).is_dir()
@@ -897,6 +906,9 @@ exec /usr/bin/curl "$@"
             # not start it. Prove both supported paths without changing policy.
             client_run([str(command), "runner", "stop"], cwd=repo)
             assert inspect(name, "{{.State.Running}}") == "false"
+            if initial_remote:
+                old_image = initial.get("distribution", {}).get(primary_agent, {}).get("x86_64", initial["runners"][primary_agent]["x86_64"]["image"])
+                client_run([str(command), "environment", "select", "--agent", primary_agent, old_image], cwd=repo)
             (root / "fault").write_text("create")
             client_run([str(command), "update", "--candidate-manifest", str(first_manifest), "--candidate-bundle", str(first_archive), "--agent", primary_agent], cwd=repo, expected=97)
             client_run([str(command), "update", "--rollback-runner"], cwd=repo)
@@ -904,6 +916,8 @@ exec /usr/bin/curl "$@"
             assert inspect(name, "{{.Image}}") == inspect(current["runners"][primary_agent]["x86_64"]["image"], "{{.Id}}")
             assert not (root / "config/runners" / (identifiers[0] + ".transition")).exists()
             workflow_mounts(mount_snapshot(name), repo, allow_legacy=False, remote=initial_remote)
+            if initial_remote:
+                client_run([str(command), "environment", "select", "--agent", primary_agent, selected_image], cwd=repo)
             record("stopped-source explicit selected transition and updater-controlled pending rollback resume healthy previous image, preserving native-volume/local-override/dirty/untracked/workflow/credential/state evidence")
         before_version = client_run([str(command), "--version"]).stdout
         corrupt = json.loads(second_manifest.read_text()); corrupt["bundles"]["linux_x86_64"]["sha256"] = "0" * 64
