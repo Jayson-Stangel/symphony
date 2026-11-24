@@ -3079,7 +3079,7 @@ runner_rollback_migration() {
   runner_migration_prior "$migration_checkout" "$runtime" "$name"
   [ "$("$runtime" inspect --format '{{.Image}}' "$name")" = "$previous_image" ] || die 'prior checkout image differs; rollback refused'
   temporary=$(mktemp "$runner_home/.runner.XXXXXX")
-  sed '/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=/d; /^SYMPHONY_TRANSITION_PIDS_LIMIT=/d; /^SYMPHONY_TRANSITION_PRIOR_CONTAINER_ID=/d' +    "$journal/previous.env" >"$temporary"
+  sed '/^SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=/d; /^SYMPHONY_TRANSITION_PIDS_LIMIT=/d; /^SYMPHONY_TRANSITION_PRIOR_CONTAINER_ID=/d' "$journal/previous.env" >"$temporary"
   mv -f "$temporary" "$(runner_env_file "$root")"
   # Keep the restored checkout listener stopped and held for migration retry.
   : >"$journal/migration.rollback"
