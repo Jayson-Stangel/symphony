@@ -128,7 +128,7 @@ project_registration_read() {
 }
 
 repo_root() {
-  local checkout record selected=${SYMPHONY_PROJECT:-}
+  local mode=${1:-required} checkout record selected=${SYMPHONY_PROJECT:-}
   if [ -n "$selected" ]; then
     [[ "$selected" =~ ^[a-zA-Z0-9._-]+-[a-f0-9]{12}$ ]] || die 'use the registered project ID with --project'
     record="$config_home/projects/$selected.remote"
@@ -143,7 +143,10 @@ repo_root() {
     [ -z "$selected" ] || die 'multiple registered projects; use symphony --project PROJECT-ID COMMAND'
     selected=$record
   done
-  [ -n "$selected" ] || die 'run inside an initialized Git repository or register one with symphony init --repository URL --linear-project SLUG'
+  if [ -z "$selected" ]; then
+    [ "$mode" != optional ] || return 0
+    die 'run inside an initialized Git repository or register one with symphony init --repository URL --linear-project SLUG'
+  fi
   project_registration_read "$selected" || return
   printf '%s\n' "$selected"
 }
@@ -1299,13 +1302,20 @@ claude_auth() {
 # Native readiness owns the account identity; no separate billing artifact.
 claude_native_profile() { claude_auth check | host_json profile; }
 
-auth_codex_login() {
-  local runtime image root
-  runtime=$(container_runtime); container_engine_ready "$runtime" || return
-  if "$packaged_install"; then
-    root=$(repo_root) || return
-    package_use_project_image "$root" codex || return
+auth_codex_select_image() {
+  local root
+  root=$(repo_root optional) || return
+  if [ -n "$root" ]; then
+    package_use_project_image "$root" codex
+  else
+    package_ensure_candidate_image codex
   fi
+}
+
+auth_codex_login() {
+  local runtime image
+  runtime=$(container_runtime); container_engine_ready "$runtime" || return
+  if "$packaged_install"; then auth_codex_select_image || return; fi
   image=$(runner_image)
   runner_build_image
   "$runtime" volume create "$codex_auth_volume" >/dev/null
@@ -1323,12 +1333,9 @@ auth_codex_remove() {
 }
 
 auth_codex_check() {
-  local runtime image root
+  local runtime image
   runtime=$(container_runtime); container_engine_ready "$runtime" || return
-  if "$packaged_install"; then
-    root=$(repo_root) || return
-    package_use_project_image "$root" codex || return
-  fi
+  if "$packaged_install"; then auth_codex_select_image || return; fi
   image=$(runner_image)
   "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
   if "$packaged_install"; then runner_build_image codex || return; fi
