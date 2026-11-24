@@ -58,6 +58,10 @@ codex:
     networkAccess: true
 ---
 
+The listener may get this workflow from a registered remote branch. Follow the
+repository's task checkout and delivery conventions even when the listener
+watches another branch.
+
 You are working on a Linear ticket `{{ issue.identifier }}`
 
 {% if attempt %}

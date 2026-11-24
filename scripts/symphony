@@ -105,23 +105,76 @@ install_prerequisites() {
   esac
 }
 
-repo_root() { if "$packaged_install"; then package_helper repository-root "$PWD"; return; fi; git rev-parse --show-toplevel 2>/dev/null || die 'run this command inside a Git repository'; }
+checkout_root() { if "$packaged_install"; then package_helper repository-root "$PWD"; return; fi; git rev-parse --show-toplevel 2>/dev/null || die 'run this command inside a Git repository'; }
 
-legacy_project_id() {
-  local remote name
-  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || true); fi
-  name=$(basename "${remote:-$1}" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//')
-  printf '%s\n' "$name"
+# Registered projects use a private, literal record as their project locator.
+# Checkout paths continue through their existing origin-based identity.
+registered_project() { [[ "$1" == "$config_home/projects/"*.remote ]]; }
+
+project_registration_read() {
+  local record=$1 extra
+  [ ! -L "$record" ] && [ -f "$record" ] || die 'missing or unsafe project registration'
+  if "$packaged_install"; then package_helper owned-file "$record" || return; fi
+  {
+    IFS= read -r registered_linear &&
+      IFS= read -r registered_repository &&
+      IFS= read -r registered_branch &&
+      ! IFS= read -r extra && [ -z "$extra" ]
+  } <"$record" || die 'invalid project registration'
+  [[ "$registered_linear" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] &&
+    [ "$(canonical_repository "$registered_repository")" = "$registered_repository" ] &&
+    [ "$(repository_id "$registered_repository")" = "$(basename "$record" .remote)" ] &&
+    valid_branch "$registered_branch" || die 'invalid project registration'
 }
 
-# Keep the established storage identity unchanged; every project resource now
-# uses the same normalized repository identity instead of its ambiguous basename.
-project_id() {
-  local remote digest
-  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || printf '%s' "$1"); fi
+repo_root() {
+  local mode=${1:-required} checkout record selected=${SYMPHONY_PROJECT:-}
+  if [ -n "$selected" ]; then
+    [[ "$selected" =~ ^[a-zA-Z0-9._-]+-[a-f0-9]{12}$ ]] || die 'use the registered project ID with --project'
+    record="$config_home/projects/$selected.remote"
+    project_registration_read "$record" || return
+    printf '%s\n' "$record"
+    return
+  fi
+  if checkout=$(checkout_root 2>/dev/null); then printf '%s\n' "$checkout"; return; fi
+  selected=
+  for record in "$config_home"/projects/*.remote; do
+    [ -e "$record" ] || [ -L "$record" ] || continue
+    [ -z "$selected" ] || die 'multiple registered projects; use symphony --project PROJECT-ID COMMAND'
+    selected=$record
+  done
+  if [ -z "$selected" ]; then
+    [ "$mode" != optional ] || return 0
+    die 'run inside an initialized Git repository or register one with symphony init --repository URL --linear-project SLUG'
+  fi
+  project_registration_read "$selected" || return
+  printf '%s\n' "$selected"
+}
+
+repository_basename() {
+  basename "$1" .git | tr -cs '[:alnum:]._' '-' | sed 's/-*$//'
+}
+
+legacy_project_id() {
+  local remote
+  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || true); fi
+  repository_basename "${remote:-$1}"
+}
+
+# Keep the established SHA-1 Git blob identity across SSH and HTTPS origins.
+repository_id() {
+  local remote=$1 name digest
+  name=$(repository_basename "$remote")
   remote=$(printf '%s' "$remote" | sed -E 's#^[^@/]+@([^:]+):#\1/#; s#^[[:alnum:]+.-]+://##; s#^[^/@]+@##; s#\.git/?$##; s#/$##')
   if "$packaged_install"; then digest=$(package_helper hash-blob "$remote"); else digest=$(printf '%s' "$remote" | git hash-object --stdin); fi
-  printf '%s-%s\n' "$(legacy_project_id "$1")" "${digest:0:12}"
+  printf '%s-%s\n' "$name" "${digest:0:12}"
+}
+
+project_id() {
+  local remote
+  if registered_project "$1"; then basename "$1" .remote; return; fi
+  if "$packaged_install"; then remote=$(repository_remote "$1") || return; else remote=$(repository_remote "$1" 2>/dev/null || printf '%s' "$1"); fi
+  repository_id "$remote"
 }
 
 host_json() {
@@ -166,7 +219,14 @@ sys.exit(0 if owned else 1)' "$@" ;;
   esac
 }
 
-repository_remote() { if "$packaged_install"; then package_helper repository-remote "$1"; else git -C "$1" remote get-url origin; fi; }
+repository_remote() {
+  if registered_project "$1"; then
+    project_registration_read "$1" || return
+    printf '%s\n' "$registered_repository"
+    return
+  fi
+  if "$packaged_install"; then package_helper repository-remote "$1"; else git -C "$1" remote get-url origin; fi
+}
 
 skill_name() { printf 'symphony-%s\n' "$1"; }
 
@@ -221,6 +281,8 @@ Usage:
   symphony doctor [--host] [--json] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony update [--development-runner] [--agent codex|claude | --pause-runner | --rollback-runner | --migrate-project-identity] [--bin-dir PATH] [--config-dir PATH] [--skills-dir PATH]
   symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...
+  symphony init --repository URL --linear-project SLUG [--workflow-branch BRANCH]
+  symphony --project PROJECT-ID COMMAND
   symphony skill override NAME
   symphony skill migrate-local NAME
   symphony skill use-global NAME
@@ -663,6 +725,10 @@ project_credentials_read() {
   [ -z "$credential_linear" ] || credential_linear_source=environment
   if [ -n "${GH_TOKEN:-}" ]; then credential_git_name=GH_TOKEN; credential_git_source=environment
   elif [ -n "${GITHUB_TOKEN:-}" ]; then credential_git_name=GITHUB_TOKEN; credential_git_source=environment; fi
+  if registered_project "$root" && { [ -e "$credential_file" ] || [ -L "$credential_file" ]; }; then
+    [ ! -L "$credential_file" ] && [ -f "$credential_file" ] || die 'unsafe project credential path'
+    if "$packaged_install"; then package_helper owned-file "$credential_file" || return; fi
+  fi
   if [ -r "$credential_file" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       line=${line%$'\r'}
@@ -712,7 +778,7 @@ credential_json_string() {
 
 project_credentials_report() {
   local root=$1 json=${2:-false}
-  project_credentials_read "$root"
+  project_credentials_read "$root" || return
   if "$json"; then
     printf '{"ready":%s,"file":%s,"tracker_configuration":"%s","linear_source":"%s","git_source":"%s","git_name":"%s","missing":%s,"native_authentication":"untested","tracker_access":"untested","repository_access":"untested"}' \
       "$([ -z "$credential_missing" ] && printf true || printf false)" "$(credential_json_string "$credential_file")" \
@@ -736,7 +802,7 @@ project_credentials_report() {
 }
 
 project_credentials_require() {
-  project_credentials_read "$1"
+  project_credentials_read "$1" || return
   if [ -n "$credential_missing" ]; then
     project_credentials_report "$1" >&2 || true
     return 1
@@ -765,19 +831,105 @@ project_credentials_export() {
   export LINEAR_API_KEY="$credential_linear" GH_TOKEN="$credential_git" GITHUB_TOKEN="$credential_git"
 }
 
+project_credentials_initialize() {
+  local env_file=$1
+  if [ -e "$env_file" ] || [ -L "$env_file" ]; then
+    [ ! -L "$env_file" ] && [ -f "$env_file" ] || die 'unsafe project credential path'
+    return
+  fi
+  (umask 077; mkdir -p "$(dirname "$env_file")"; set -o noclobber
+  cat >"$env_file" <<'EOF'
+# Automatically loaded literal KEY=value; do not use shell commands or quotes.
+# Nonempty exported credentials take precedence. Keep this file private.
+# Linear: Settings → Security & access → Personal API keys
+LINEAR_API_KEY=
+# GitHub: repository-scoped Contents/Pull requests read/write.
+# GH_TOKEN or GITHUB_TOKEN; native provider login and artifact access are separate.
+GH_TOKEN=
+EOF
+)
+}
+
+canonical_repository() {
+  local value=${1%/} path
+  case "$value" in
+    https://github.com/*) path=${value#https://github.com/} ;;
+    git@github.com:*) path=${value#git@github.com:} ;;
+    ssh://git@github.com/*) path=${value#ssh://git@github.com/} ;;
+    *) return 1 ;;
+  esac
+  path=${path%.git}
+  [[ "$path" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_.-]+$ ]] || return 1
+  printf 'https://github.com/%s.git\n' "$path"
+}
+
+valid_branch() {
+  local branch=$1
+  [ -z "$branch" ] && return 0
+  [[ ! "$branch" =~ [[:cntrl:][:space:]] && "$branch" != -* && "$branch" != refs/* ]] || return 1
+  case "$branch" in
+    /*|*/|*//*|.*|*/.*|*.|*.lock|*.lock/*|*..*|*'@{'*|*'~'*|*'^'*|*':'*|*'?'*|*'*'*|*'['*|*\\*) return 1 ;;
+  esac
+}
+
+project_registration_write() (
+  local record=$1 project=$2 repository=$3 branch=$4 temporary
+  umask 077
+  temporary=$(mktemp "$(dirname "$record")/.registration.XXXXXX") || return
+  trap 'rm -f "$temporary"' EXIT
+  printf '%s\n' "$project" "$repository" "$branch" >"$temporary" || return
+  mv -f "$temporary" "$record"
+)
+
+init_registered_project() {
+  local repository=$1 slug=$2 branch=$3 branch_seen=$4 agent=${5:-codex} record id env_file runtime name
+  repository=$(canonical_repository "$repository") || die 'use a GitHub HTTPS or standard GitHub SSH repository URL without credentials'
+  [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die 'use the Linear project slug from its URL'
+  valid_branch "$branch" || die 'use a short Git branch name'
+  id=$(repository_id "$repository")
+  record="$config_home/projects/$id.remote"
+  runner_project_lock "$record" || return
+  if [ -e "$record" ] || [ -L "$record" ]; then
+    project_registration_read "$record" || return
+    [ "$registered_linear" = "$slug" ] || die "repository resource $id already belongs to Linear project $registered_linear"
+    "$branch_seen" || branch=$registered_branch
+  fi
+  runtime=$(container_runtime)
+  container_engine_ready "$runtime" || return
+  runner_check_project_resources "$record" "$runtime" "$slug" || return
+  name=$(runner_id "$record")
+  if [ -e "$runner_home/$id.transition" ] || [ -e "$runner_home/$id.transition.complete" ]; then
+    die 'finish the retained runner transition before changing its registration'
+  fi
+  if [ "$("$runtime" inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)" = true ] &&
+     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.workflow-branch" }}' "$name")" != "$branch" ]; then
+    die 'drain and stop the registered runner before changing its workflow branch'
+  fi
+  env_file="$config_home/projects/$id.env"
+  project_credentials_initialize "$env_file" || return
+  project_registration_write "$record" "$slug" "$repository" "$branch" || return
+  printf 'Registered project: %s\nRepository: %s\nLinear project: %s\nWorkflow branch: %s\nCredentials: %s\n' \
+    "$id" "$repository" "$slug" "${branch:-remote default (resolved on first run)}" "$env_file"
+  printf 'Fill the private credentials file, then run:\n  symphony --project %s auth %s login\n  symphony --project %s runner doctor --agent %s\n  symphony --project %s run --agent %s\n' \
+    "$id" "$agent" "$id" "$agent" "$id" "$agent"
+}
+
 init() {
-  local slug='' root id remote workflow env_file skill runtime agent='' agent_seen=false
+  local slug='' root id remote workflow env_file skill runtime agent='' agent_seen=false repository='' branch='' branch_seen=false
   local -a local_skills
   local_skills=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --linear-project) [ "$#" -ge 2 ] || die '--linear-project requires a slug'; slug=$2; shift 2 ;;
+      --repository) [ "$#" -ge 2 ] && [ -n "$2" ] || die '--repository requires a URL'; repository=$2; shift 2 ;;
+      --workflow-branch) [ "$#" -ge 2 ] && [ -n "$2" ] || die '--workflow-branch requires a branch'; branch=$2; branch_seen=true; shift 2 ;;
+      --default-workflow-branch) branch=; branch_seen=true; shift ;;
       --agent)
         [ "$#" -ge 2 ] || die '--agent requires codex or claude'
         ! "$agent_seen" || die '--agent may be specified only once'
         agent=$2; validate_agent "$agent"; agent_seen=true; shift 2 ;;
       --local-skill) [ "$#" -ge 2 ] || die '--local-skill requires a name'; local_skills+=("$2"); shift 2 ;;
-      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--agent codex|claude] [--local-skill NAME]...\n'; return ;;
+      --help|-h) printf 'Usage: symphony init --linear-project SLUG [--repository URL [--workflow-branch BRANCH | --default-workflow-branch]] [--agent codex|claude]\n'; return ;;
       *) die "unknown init option: $1" ;;
     esac
   done
@@ -785,7 +937,13 @@ init() {
   if ! global_skills_ready; then
     if "$packaged_install"; then die 'bundled skills are not installed; rerun the bundle installer'; else ensure_global_skills; fi
   fi
-  root=$(repo_root)
+  if [ -n "$repository" ]; then
+    [ "${#local_skills[@]}" -eq 0 ] || die 'remote registration uses installed skills'
+    init_registered_project "$repository" "$slug" "$branch" "$branch_seen" "$agent"
+    return
+  fi
+  ! "$branch_seen" || die 'workflow branch options require --repository'
+  root=$(checkout_root)
   id=$(project_id "$root")
   remote=$(repository_remote "$root" 2>/dev/null || die 'the repository needs an origin remote')
   workflow="$root/WORKFLOW.md"
@@ -798,16 +956,7 @@ init() {
     if runtime=$(container_runtime 2>/dev/null); then runner_require_identity "$root"; fi
     printf 'Legacy basename credentials preserved without reuse. Review and copy only this repository’s intended values to %s.\n' "$env_file"
   fi
-  if [ ! -e "$env_file" ]; then (umask 077; cat >"$env_file" <<'EOF'
-# Automatically loaded literal KEY=value; do not use shell commands or quotes.
-# Nonempty exported credentials take precedence. Keep this file private.
-# Linear: Settings → Security & access → Personal API keys
-LINEAR_API_KEY=
-# GitHub: repository-scoped Contents/Pull requests read/write.
-# GH_TOKEN or GITHUB_TOKEN; native provider login and artifact access are separate.
-GH_TOKEN=
-EOF
-); fi
+  if [ ! -e "$env_file" ]; then project_credentials_initialize "$env_file" || return; fi
 
   if [ ! -e "$workflow" ]; then cat >"$workflow" <<EOF
 ---
@@ -864,15 +1013,24 @@ skill() {
   [ -n "$name" ] || die "skill $action requires a skill name"
   global_skills_ready || die 'global Symphony skills are missing; run symphony install first'
   case "$action" in
-    override) create_local_override "$(repo_root)" "$name" ;;
-    migrate-local) migrate_legacy_skill "$(repo_root)" "$name" ;;
-    use-global) use_global_skill "$(repo_root)" "$name" ;;
+    override) create_local_override "$(checkout_root)" "$name" ;;
+    migrate-local) migrate_legacy_skill "$(checkout_root)" "$name" ;;
+    use-global) use_global_skill "$(checkout_root)" "$name" ;;
   esac
 }
 
 project_doctor() {
   local json=$1 root id workflow env_file legacy_manifest legacy_count=0 override_count=0 legacy_refs=false wrapper=false skill
   root=$(repo_root)
+  if registered_project "$root"; then
+    project_registration_read "$root" || return
+    if ! "$json"; then
+      printf 'Repository: %s\nLinear project: %s\nWorkflow branch: %s\n' \
+        "$registered_repository" "$registered_linear" "${registered_branch:-remote default (unresolved)}"
+    fi
+    project_credentials_report "$root" "$json"
+    return
+  fi
   id=$(project_id "$root")
   workflow="$root/WORKFLOW.md"
   env_file="$config_home/projects/$id.env"
@@ -956,10 +1114,68 @@ runner_storage_id() { runner_id "$1"; }
 # A failed migration may leave individually renamed resources. Keep ordinary
 # commands out until its old owned container/backup names have both moved.
 # A different repository's basename-era runner is unrelated and is left alone.
+# A repository identity is shared across custom configuration roots. A
+# project label on retained resources survives container removal or replacement.
+runner_check_project_resources() {
+  local root=$1 runtime=$2 expected=$3 name storage object owner
+  storage=$(runner_storage_id "$root")
+  for name in "$storage" "$storage-before-update"; do
+    if owner=$("$runtime" inspect --format '{{with index .Config.Labels "com.symphony.linear-project"}}project={{.}}{{end}}' "$name" 2>/dev/null); then
+      case "$owner" in project=*) owner=${owner#project=} ;; *) owner= ;; esac
+      [ "$owner" = "$expected" ] || die "repository resource $name belongs to a different Linear project or a retained checkout; use the migration procedure"
+    fi
+  done
+  for object in "$storage-workspaces" "$storage-state" "$storage-claude-auth"; do
+    if owner=$("$runtime" volume inspect --format '{{with index .Labels "com.symphony.linear-project"}}project={{.}}{{end}}' "$object" 2>/dev/null); then
+      case "$owner" in project=*) owner=${owner#project=} ;; *) owner= ;; esac
+      [ "$owner" = "$expected" ] || die "repository resource $object belongs to a different Linear project or a retained checkout; use the migration procedure"
+    fi
+  done
+}
+
+runner_project_owner() {
+  if registered_project "$1"; then
+    project_registration_read "$1" || return
+    printf '%s\n' "$registered_linear"
+  fi
+}
+
+runner_create_project_volume() {
+  local runtime=$1 volume=$2 storage=$3 owner=$4
+  if [ -n "$owner" ]; then
+    "$runtime" volume create --label "com.symphony.storage=$storage" --label "com.symphony.linear-project=$owner" "$volume" >/dev/null
+  else
+    "$runtime" volume create --label "com.symphony.storage=$storage" "$volume" >/dev/null
+  fi
+}
+
+runner_remote_probe() {
+  local root=$1 runtime=$2 image=$3 agent=$4 resolved
+  project_registration_read "$root" || return
+  if ! resolved=$(SYMPHONY_GIT_TOKEN="$credential_git" "$runtime" run --rm \
+      --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+      --env SYMPHONY_CONTAINERIZED=1 --env LINEAR_API_KEY --env SYMPHONY_GIT_TOKEN \
+      --env "SYMPHONY_REMOTE_REPOSITORY=$registered_repository" \
+      --env "SYMPHONY_REMOTE_BRANCH=$registered_branch" \
+      --env "SYMPHONY_REMOTE_LINEAR_PROJECT=$registered_linear" \
+      --entrypoint /usr/bin/timeout "$image" --kill-after=2 100 \
+      /opt/symphony/elixir/bin/symphony --remote-workflow-probe "$agent"); then
+    printf '%s\n' 'Remote workflow preflight failed. Check project credentials, branch and workflow, and use a runner image that supports registered projects.' >&2
+    return 1
+  fi
+  [ -n "$resolved" ] && valid_branch "$resolved" || die 'runner returned an invalid workflow branch'
+  if [ -n "$registered_branch" ]; then
+    [ "$registered_branch" = "$resolved" ] || die 'runner returned a different workflow branch'
+  fi
+  remote_resolved_branch=$resolved
+}
+
 runner_require_identity() {
-  local root=$1 runtime old storage suffix
+  local root=$1 runtime old storage suffix owner
   runtime=$(container_runtime); old="$runtime_prefix-$(legacy_project_id "$root")"
   storage=$(runner_storage_id "$root")
+  owner=$(runner_project_owner "$root") || return
+  runner_check_project_resources "$root" "$runtime" "$owner" || return
   for suffix in '' '-before-update'; do
     if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$old$suffix" 2>/dev/null || true)" = "$storage" ]; then
       die 'legacy repository resource identity retained; run symphony update --migrate-project-identity before operating this runner'
@@ -1008,6 +1224,12 @@ claude_image_ready() {
 # through a private project directory on a native Linux bind.
 runner_claude_workflow_ready() {
   local root=$1 runtime=$2 image=$3
+  if registered_project "$root"; then
+    project_credentials_require "$root" || return
+    project_credentials_export
+    runner_remote_probe "$root" "$runtime" "$image" claude
+    return
+  fi
   if ! "$runtime" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
     --user 11001:11001 --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
     --entrypoint sh "$image" -ceu 'test -f /etc/symphony/WORKFLOW.md && test -r /etc/symphony/WORKFLOW.md'; then
@@ -1017,13 +1239,15 @@ runner_claude_workflow_ready() {
 }
 
 ensure_claude_auth_volume() {
-  local root=$1 runtime=$2 volume=$3 storage owner
+  local root=$1 runtime=$2 volume=$3 storage owner linear
   storage=$(runner_storage_id "$root")
+  linear=$(runner_project_owner "$root") || return
+  runner_check_project_resources "$root" "$runtime" "$linear" || return
   if "$runtime" volume inspect "$volume" >/dev/null 2>&1; then
     owner=$("$runtime" volume inspect --format '{{ index .Labels "com.symphony.storage" }}' "$volume")
     [ "$owner" = "$storage" ] || die 'refusing a foreign or unqualified Claude auth volume'
   else
-    "$runtime" volume create --label "com.symphony.storage=$storage" "$volume" >/dev/null
+    runner_create_project_volume "$runtime" "$volume" "$storage" "$linear"
   fi
 }
 
@@ -1078,10 +1302,20 @@ claude_auth() {
 # Native readiness owns the account identity; no separate billing artifact.
 claude_native_profile() { claude_auth check | host_json profile; }
 
+auth_codex_select_image() {
+  local root
+  root=$(repo_root optional) || return
+  if [ -n "$root" ]; then
+    package_use_project_image "$root" codex
+  else
+    package_ensure_candidate_image codex
+  fi
+}
+
 auth_codex_login() {
   local runtime image
   runtime=$(container_runtime); container_engine_ready "$runtime" || return
-  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
+  if "$packaged_install"; then auth_codex_select_image || return; fi
   image=$(runner_image)
   runner_build_image
   "$runtime" volume create "$codex_auth_volume" >/dev/null
@@ -1101,7 +1335,7 @@ auth_codex_remove() {
 auth_codex_check() {
   local runtime image
   runtime=$(container_runtime); container_engine_ready "$runtime" || return
-  if "$packaged_install"; then package_use_project_image "$(repo_root)" codex || return; fi
+  if "$packaged_install"; then auth_codex_select_image || return; fi
   image=$(runner_image)
   "$runtime" volume inspect "$codex_auth_volume" >/dev/null 2>&1 || die 'no Docker-managed Codex session; run: symphony auth codex login'
   if "$packaged_install"; then runner_build_image codex || return; fi
@@ -1152,6 +1386,10 @@ runner_report() {
   image=$("$runtime" inspect --format '{{.Image}}' "$name")
   printf 'Isolated Symphony: running\nContainer: %s\nAgent: %s\nImage: %s\nDashboard: http://127.0.0.1:%s\nWorkspaces: /workspaces (volume %s-workspaces)\nRuntime logs: volume %s-state\n' \
     "$name" "$agent" "$image" "$port" "$storage_id" "$storage_id"
+  if registered_project "$root"; then
+    project_registration_read "$root" || return
+    printf 'Linear project: %s\nWorkflow branch: %s\nWorkflow state: http://127.0.0.1:%s/api/v1/state\n' "$registered_linear" "$registered_branch" "$port"
+  fi
   if [ "$agent" = claude ]; then
     printf 'Claude native login: project-scoped volume %s\n' "$(claude_auth_volume "$root")"
   else
@@ -1412,10 +1650,24 @@ runner_claude_run() {
 }
 
 runner_start() {
-  local root=$1 port=${2:-4010} agent=${3:-codex} authority=${4:-run} id project_env runtime name state image env_file git_token storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
-  validate_agent "$agent"
+  local root=$1 port=${2:-} agent=${3:-} authority=${4:-run} id project_env runtime name state image env_file git_token storage_id existing_storage existing_agent image_id existing_image profile=none auth_volume expected_runtime=none
+  local registered=false remote_resolved_branch owner=
+  local -a project_args codex_project_mount
   runner_project_lock "$root" || return
   runner_require_identity "$root"
+  if registered_project "$root"; then
+    registered=true
+    project_registration_read "$root" || return
+    owner=$registered_linear
+    env_file=$(runner_env_file "$root")
+    if [ -f "$env_file" ]; then
+      [ -n "$port" ] || port=$(sed -n 's/^SYMPHONY_RUNNER_PORT=//p' "$env_file")
+      [ -n "$agent" ] || agent=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$env_file")
+    fi
+  fi
+  port=${port:-4010}
+  agent=${agent:-codex}
+  validate_agent "$agent"
   project_credentials_require "$root" || return
   project_credentials_export
   if "$packaged_install" && [ "$authority" != update ]; then package_use_project_image "$root" "$agent"; fi
@@ -1452,6 +1704,10 @@ runner_start() {
     [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Claude runtime profile differs; transition through symphony update --agent'
   fi
   if [ "$state" = true ]; then
+    if "$registered"; then
+      [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.workflow-branch" }}' "$name")" = "$registered_branch" ] ||
+        die 'running listener follows another branch; drain and stop it before changing the workflow branch'
+    fi
     if [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.mode" }}' "$name")" = listener ]; then
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$name")" = "$storage_id" ] ||
         die "existing listener $name has legacy or different repository storage; back up its workspaces before stopping and replacing it"
@@ -1471,6 +1727,9 @@ runner_start() {
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ] || die 'listener Claude runtime profile differs; transition through symphony update --agent'
         profile=$(claude_native_profile)
         [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.profile" }}' "$name")" = "$profile" ] || die 'listener native profile differs; transition through symphony update --agent'
+      fi
+      if "$registered" && ! runner_confirm_remote_start "$runtime" "$name"; then
+        die "registered listener has not initialized its workflow; inspect symphony --project $id runner logs"
       fi
       return
     fi
@@ -1499,9 +1758,28 @@ runner_start() {
       [ "${SYMPHONY_RUNNER_PROFILE:-none}" = "$profile" ] || die 'native profile change requires symphony update --agent'
     ) || return 1
   fi
+  project_args=(--env SYMPHONY_REMOTE_REPOSITORY= --env SYMPHONY_REMOTE_BRANCH= --env SYMPHONY_REMOTE_LINEAR_PROJECT=)
+  codex_project_mount=(--env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project)
+  if "$registered"; then
+    runner_remote_probe "$root" "$runtime" "$image_id" "$agent" || return
+    if [ -z "$registered_branch" ]; then
+      registered_branch=$remote_resolved_branch
+      project_registration_write "$root" "$registered_linear" "$registered_repository" "$registered_branch" || return
+    fi
+    project_args=(
+      --label "com.symphony.linear-project=$registered_linear"
+      --label "com.symphony.workflow-branch=$registered_branch"
+      --env "SYMPHONY_REMOTE_REPOSITORY=$registered_repository"
+      --env "SYMPHONY_REMOTE_BRANCH=$registered_branch"
+      --env "SYMPHONY_REMOTE_LINEAR_PROJECT=$registered_linear"
+    )
+  else
+    project_args+=(--mount "type=bind,source=$root,target=/etc/symphony,readonly")
+    codex_project_mount+=(--mount "type=bind,source=$root,target=/opt/symphony/project,readonly")
+  fi
   if [ "$agent" = claude ]; then
     claude_image_ready "$runtime" "$image"
-    runner_claude_workflow_ready "$root" "$runtime" "$image_id" || return
+    if ! "$registered"; then runner_claude_workflow_ready "$root" "$runtime" "$image_id" || return; fi
   fi
   if [ "$agent" = codex ]; then
     if [ "$authority" != update ]; then
@@ -1516,8 +1794,8 @@ runner_start() {
     runner_codex_sandbox_ready "$root" "$runtime" "$image_id"
   fi
   [ "$state" = missing ] || "$runtime" rm "$name" >/dev/null
-  "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-workspaces" >/dev/null
-  "$runtime" volume create --label "com.symphony.storage=$storage_id" "$storage_id-state" >/dev/null
+  runner_create_project_volume "$runtime" "$storage_id-workspaces" "$storage_id" "$owner"
+  runner_create_project_volume "$runtime" "$storage_id-state" "$storage_id" "$owner"
   runner_prepare_home || return
   if [ "$agent" = claude ]; then
     export SYMPHONY_GIT_TOKEN="$git_token"
@@ -1528,7 +1806,7 @@ runner_start() {
       --label "com.symphony.image=$image_id" --label "com.symphony.port=$port" \
       --publish "127.0.0.1:$port:4010" \
       --env-file "$project_env" --env LINEAR_API_KEY --env GH_TOKEN --env GITHUB_TOKEN --env SYMPHONY_GIT_TOKEN --env SYMPHONY_CONTAINERIZED=1 --env SYMPHONY_PORT=4010 \
-      --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
+      "${project_args[@]}" \
       --volume "$storage_id-workspaces:/workspaces" --volume "$storage_id-state:/var/lib/symphony" \
       --volume "$auth_volume:/home/claude" "$image_id" >/dev/null
     unset SYMPHONY_GIT_TOKEN
@@ -1544,11 +1822,9 @@ runner_start() {
     --env-file "$project_env" --env LINEAR_API_KEY --env GH_TOKEN --env GITHUB_TOKEN \
     --env SYMPHONY_CONTAINERIZED=1 \
     --env SYMPHONY_PORT=4010 \
-    --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
     --env HOME=/root --env CODEX_HOME=/root/.codex \
     --env "SYMPHONY_CODEX_CONFIG_PROFILE=$(codex_config_profile)" --env "SYMPHONY_CODEX_CONFIG_SHA256=$codex_config_sha" --env "SYMPHONY_CODEX_CONFIG_OWNER=$codex_config_owner" \
-    --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
-    --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
+    "${project_args[@]}" "${codex_project_mount[@]}" \
     --volume "$storage_id-workspaces:/workspaces" \
     --volume "$storage_id-state:/var/lib/symphony" \
     --volume "$codex_auth_volume:/root/.codex" \
@@ -1556,8 +1832,29 @@ runner_start() {
     "$image_id" >/dev/null
   fi
   runner_write_metadata "$root" "$port" "$agent" "$image_id" "$profile"
+  if "$registered" && ! runner_confirm_remote_start "$runtime" "$name"; then
+    "$runtime" stop "$name" >/dev/null || die "could not stop unconfirmed registered runner $name; inspect Docker and runner logs"
+    die "registered listener did not initialize its remote workflow; inspect symphony --project $id runner logs and retry"
+  fi
   codex_config_cleanup "$root" "$runtime"
   printf 'Symphony container: %s (http://127.0.0.1:%s)\n' "$name" "$port"
+}
+
+# Docker detach only confirms container creation. Verify that the named
+# container actually started its API after accepting the remote workflow.
+runner_confirm_remote_start() {
+  local runtime=$1 name=$2 state response deadline=$((SECONDS + 265))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$("$runtime" inspect --format '{{.State.Status}}' "$name") || return
+    case "$state" in exited|dead|restarting) return 1 ;; esac
+    if response=$("$runtime" exec "$name" curl --fail --silent --max-time 2 --max-filesize 1048576 \
+      http://127.0.0.1:4010/api/v1/state 2>/dev/null) &&
+      printf '%s' "$response" | host_json legacy-running; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 # The selected runtime cache is written atomically; the journal retains intent.
@@ -1599,6 +1896,13 @@ runner_record_observed_metadata() {
 # destination, bind type and read-only ownership remain mandatory.
 runner_workflow_mount_owned() {
   local root=$1 runtime=$2 name=$3 layout=${4:-owned} mounts
+  if registered_project "$root"; then
+    project_registration_read "$root" || return
+    [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.linear-project" }}' "$name")" = "$registered_linear" ] || return
+    mounts=$("$runtime" inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' "$name") || return
+    ! printf '%s\n' "$mounts" | grep -Eq '^(/etc/symphony|/opt/symphony/project)(/|$)'
+    return
+  fi
   mounts=$("$runtime" inspect --format '{{json .Mounts}}' "$name") || return
   printf '%s\n' "$mounts" | host_json workflow-mount "$root" "$(uname -s)" "$layout"
 }
@@ -1762,8 +2066,11 @@ PYLEGACY
 }
 
 runner_resume_when_ready() {
-  local port=$1 legacy=${2:-false} prior=${3:-false} attempt data
-  for attempt in $(seq 1 15); do
+  local port=$1 legacy=${2:-false} prior=${3:-false} root=${4:-} attempt data attempts=15 deadline
+  if [ -n "$root" ] && registered_project "$root"; then attempts=270; fi
+  deadline=$((SECONDS + attempts))
+  for attempt in $(seq 1 "$attempts"); do
+    if [ "$attempts" -gt 15 ] && [ "$SECONDS" -ge "$deadline" ]; then break; fi
     if data=$(curl --fail --silent --max-time 3 --max-filesize 1048576 "http://127.0.0.1:$port/api/v1/state"); then
       if "$legacy"; then
         if printf '%s' "$data" | host_json legacy-running; then return; fi
@@ -1964,6 +2271,7 @@ runner_prepare_storage() {
 # File and container renames are individually atomic and retriable after any
 # interruption. Storage/auth volumes and WORKFLOW.md are never moved or rewritten.
 runner_migrate_identity() (
+  ! registered_project "$1" || die 'repository identity migration applies to retained checkout runners'
   local root=$1 runtime old id name previous anchor=false move_runner=false move_backup=false metadata suffix source target old_lock new_lock
   runtime=$(container_runtime); old=$(legacy_project_id "$root"); id=$(project_id "$root")
   name=$(runner_id "$root"); previous="$runtime_prefix-$old"
@@ -2130,7 +2438,7 @@ runner_transition() (
        { [ "$agent" != claude ] || [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.claude.runtime" }}' "$name")" = "$expected_runtime" ]; }; then
       runner_owned "$root" "$runtime" "$name"
       if [ "$agent" = codex ]; then codex_config_matches_journal "$root" "$runtime" "$name" "$candidate" "$journal"; fi
-      runner_resume_when_ready "$port" || die 'candidate recovery refused'
+      runner_resume_when_ready "$port" false false "$root" || die 'candidate recovery refused'
       runner_record_observed_metadata "$root" "$runtime" "$name"
       if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
       runner_finish_journal "$journal"
@@ -2170,7 +2478,7 @@ runner_transition() (
       "$runtime" start "$name" >/dev/null
     fi
   fi
-  runner_resume_when_ready "$port" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
+  runner_resume_when_ready "$port" false false "$root" || die 'candidate is not ready; retained prior runner can be restored with symphony update --rollback-runner'
   runner_record_observed_metadata "$root" "$runtime" "$name"
   if ! "$packaged_install"; then "$runtime" tag "$candidate" "$(runner_local_image "$agent")"; fi
   # Validate selection staging before package activation or backup deletion.
@@ -2236,7 +2544,7 @@ runner_rollback() (
     # The previous API has no agent readiness or resume endpoint.
     runner_resume_when_ready "$port" true || die 'prior legacy runner retained but not ready; retry rollback when healthy'
   else
-    runner_resume_when_ready "$port" false true || die 'prior runner retained but not ready; repair authentication then retry recovery'
+    runner_resume_when_ready "$port" false true "$root" || die 'prior runner retained but not ready; repair authentication then retry recovery'
   fi
   if ! "$packaged_install"; then "$runtime" tag "$previous_image" "$(runner_local_image "$previous_agent")"; fi
   runner_finish_journal "$journal"
@@ -2258,21 +2566,39 @@ runner_stop() {
 }
 
 runner_codex_sandbox_ready() {
-  local root=$1 runtime=$2 image=$3 output
+  local root=$1 runtime=$2 image=$3 output deadline=195 git_token=
+  local -a source_args check_args
   apparmor_doctor "$runtime" || return
   codex_config_require "$root" "$image"
-  # The trusted project is read-only; the probe copies it into disposable
-  # storage for wrapper setup. Native login and Symphony credentials are absent.
-  if output=$(runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
+  if registered_project "$root"; then
+    project_registration_read "$root" || return
+    project_credentials_require "$root" || return
+    project_credentials_export
+    git_token=$credential_git
+    source_args=(
+      --env LINEAR_API_KEY --env SYMPHONY_GIT_TOKEN
+      --env "SYMPHONY_REMOTE_REPOSITORY=$registered_repository"
+      --env "SYMPHONY_REMOTE_BRANCH=$registered_branch"
+      --env "SYMPHONY_REMOTE_LINEAR_PROJECT=$registered_linear"
+    )
+    check_args=(--check-codex-remote-sandbox)
+    deadline=255
+  else
+    # Checkout wrapper setup runs from a disposable copy with no credentials.
+    source_args=(
+      --mount "type=bind,source=$root,target=/opt/symphony/project,readonly"
+      --mount "type=bind,source=$root,target=/etc/symphony,readonly"
+    )
+    check_args=(--check-codex-sandbox /etc/symphony/WORKFLOW.md)
+  fi
+  if output=$(SYMPHONY_GIT_TOKEN="$git_token" runner_codex_run "$runtime" --rm --env SYMPHONY_CONTAINERIZED=1 \
     --env HOME=/root --env CODEX_HOME=/root/.codex \
     --env "SYMPHONY_CODEX_CONFIG_PROFILE=$(codex_config_profile)" --env "SYMPHONY_CODEX_CONFIG_SHA256=$codex_config_sha" --env "SYMPHONY_CODEX_CONFIG_OWNER=$codex_config_owner" \
     --volume /root/.codex --mount "type=bind,source=$codex_config_file,target=/root/.codex/config.toml,readonly" \
     --env SYMPHONY_LAUNCH_ROOT=/opt/symphony/project \
-    --mount "type=bind,source=$root,target=/opt/symphony/project,readonly" \
-    --mount "type=bind,source=$root,target=/etc/symphony,readonly" \
-    --volume /workspaces --volume /var/lib/symphony \
-    --entrypoint /usr/bin/timeout "$image" --signal=KILL 195 \
-    /opt/symphony/elixir/bin/symphony --check-codex-sandbox /etc/symphony/WORKFLOW.md 2>&1); then
+    "${source_args[@]}" --volume /workspaces --volume /var/lib/symphony \
+    --entrypoint /usr/bin/timeout "$image" --signal=KILL "$deadline" \
+    /opt/symphony/elixir/bin/symphony "${check_args[@]}" 2>&1); then
     printf '%s\n' "$output"
     return
   fi
@@ -2292,7 +2618,13 @@ runner_codex_sandbox_ready() {
 }
 
 runner_doctor() {
-  local root=$1 agent=${2:-codex} sandbox_only=${3:-false} runtime image
+  local root=$1 agent=${2:-} sandbox_only=${3:-false} runtime image metadata
+  if registered_project "$root"; then
+    ! "$sandbox_only" || die 'registered workflow preflight needs project credentials; use runner doctor without --sandbox-only'
+    metadata=$(runner_env_file "$root")
+    if [ -z "$agent" ] && [ -f "$metadata" ]; then agent=$(sed -n 's/^SYMPHONY_RUNNER_AGENT=//p' "$metadata"); fi
+  fi
+  agent=${agent:-codex}
   validate_agent "$agent"
   if "$sandbox_only" && [ "$agent" != codex ]; then die '--sandbox-only requires --agent codex'; fi
   if ! "$sandbox_only"; then project_credentials_require "$root" || return; fi
@@ -2300,7 +2632,8 @@ runner_doctor() {
   container_engine_ready "$runtime" || return
   # Snapshot publication and verification share the runner's project owner.
   # Nested updater calls reuse their already-held resource/transition locks.
-  if [ "$agent" = codex ]; then runner_project_lock "$root" || return; fi
+  if [ "$agent" = codex ] || registered_project "$root"; then runner_project_lock "$root" || return; fi
+  if registered_project "$root"; then runner_require_identity "$root"; fi
   printf 'Container engine: ready.\n'
   if "$packaged_install"; then package_use_project_image "$root" "$agent"; fi
   image=$(runner_image "$agent")
@@ -2333,11 +2666,15 @@ runner_doctor() {
     printf 'Isolated Git preflight failed. Check Git support in the selected runner environment.\n' >&2
     return 1
   fi
-  printf 'Native authentication/policy and isolated Git preflight passed. No listener or model request was started. Tracker access and completed tasks remain untested.\n'
+  if registered_project "$root"; then
+    printf 'Remote workflow, Linear project, native authentication and isolated Git preflight passed. No listener or model request was started.\n'
+  else
+    printf 'Native authentication/policy and isolated Git preflight passed. No listener or model request was started. Tracker access and completed tasks remain untested.\n'
+  fi
 }
 
 runner() {
-  local command=${1:-} root agent=codex sandbox_only=false archive=
+  local command=${1:-} root agent= sandbox_only=false archive= runtime owner port
   if [ "$command" = import ]; then
     shift
     while [ "$#" -gt 0 ]; do
@@ -2356,7 +2693,7 @@ runner() {
   if [ "$command" = apparmor ]; then shift; runner_apparmor "$@"; return; fi
   root=$(repo_root)
   case "$command" in
-    start) runner_start "$root" "${2:-4010}" ;;
+    start) runner_start "$root" "${2:-}" ;;
     stop) runner_stop "$root" ;;
     status) runner_report "$root" ;;
     doctor)
@@ -2368,9 +2705,11 @@ runner() {
           *) die 'Usage: symphony runner doctor [--agent codex|claude] [--sandbox-only]' ;;
         esac
       done
-      validate_agent "$agent"; runner_doctor "$root" "$agent" "$sandbox_only" ;;
+      runner_doctor "$root" "$agent" "$sandbox_only" ;;
     logs)
       runtime=$(container_runtime)
+      owner=$(runner_project_owner "$root") || return
+      runner_check_project_resources "$root" "$runtime" "$owner" || return
       [ "$("$runtime" inspect --format '{{ index .Config.Labels "com.symphony.storage" }}' "$(runner_id "$root")")" = "$(runner_storage_id "$root")" ] || die 'unknown or foreign runner; logs refused'
       "$runtime" logs --follow "$(runner_id "$root")" ;;
     drain|resume|recheck)
@@ -2386,7 +2725,7 @@ runner() {
 }
 
 run() {
-  local root id env_file workflow runtime host=false port=4010 agent=codex agent_seen=false
+  local root id env_file workflow runtime host=false port= agent= agent_seen=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host=true; shift ;;
@@ -2395,30 +2734,40 @@ run() {
         [ "$#" -ge 2 ] || die '--agent requires codex or claude'
         ! "$agent_seen" || die '--agent may be specified only once'
         agent=$2; validate_agent "$agent"; agent_seen=true; shift 2 ;;
-      --port) [ "$#" -ge 2 ] || die '--port requires a value'; port=$2; shift 2 ;;
+      --port) [ "$#" -ge 2 ] && [ -n "$2" ] || die '--port requires a value'; port=$2; shift 2 ;;
       *) die "unknown run option: $1" ;;
     esac
   done
-  case "$port" in ''|*[!0-9]*) die '--port requires an integer' ;; esac
-  [ "$port" -le 65535 ] || die 'port must not exceed 65535'
+  case "$port" in *[!0-9]*) die '--port requires an integer' ;; esac
+  [ "${port:-4010}" -le 65535 ] || die 'port must not exceed 65535'
   if "$packaged_install" && "$host"; then die 'packaged installs require isolated container execution'; fi
   if "$host" && [ "$agent" = claude ]; then die 'Claude host/SSH execution is unsupported; use the isolated runner'; fi
   root=$(repo_root); id=$(project_id "$root")
   env_file="$config_home/projects/$id.env"; workflow="$root/WORKFLOW.md"
-  [ -f "$workflow" ] || die "missing workflow: $workflow"
+  if registered_project "$root"; then
+    ! "$host" || die 'registered projects use the isolated runner'
+  else
+    [ -f "$workflow" ] || die "missing workflow: $workflow"
+  fi
   if ! "$host"; then
     runner_start "$root" "$port" "$agent"
     runner_report "$root"
     return
   fi
-  project_credentials_read "$root"
+  project_credentials_read "$root" || return
   runtime_ready || die 'host runtime is not ready; run symphony setup'
   project_environment_export
   project_credentials_export
   runtime="$symphony_home/elixir/bin/symphony"
   exec mise exec -C "$symphony_home/elixir" -- "$runtime" \
-    --i-understand-that-this-will-be-running-without-the-usual-guardrails --agent codex --port "$port" "$workflow" "$@"
+    --i-understand-that-this-will-be-running-without-the-usual-guardrails --agent codex --port "${port:-4010}" "$workflow" "$@"
 }
+
+if [ "${1:-}" = --project ]; then
+  [ "$#" -ge 3 ] || die 'use symphony --project PROJECT-ID COMMAND'
+  export SYMPHONY_PROJECT=$2
+  shift 2
+fi
 
 case "${1:-}" in
   --version) if "$packaged_install"; then printf '{"mode":"cli","installation":"packaged","version":"%s","base_version":"%s","source_revision":"%s","storage_revision":"%s","source_state":"packaged"}\n' "$package_version" "$package_base_version" "$package_revision" "$package_storage_revision"; exit; fi; printf '{"mode":"cli","source_revision":"%s","source_state":"%s"}\n' "$(source_revision)" "$(source_state)" ;;

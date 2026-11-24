@@ -329,6 +329,13 @@ Loader behavior:
 - If the file cannot be read, return `missing_workflow_file` error.
 - The workflow file is expected to be repository-owned and version-controlled.
 
+The packaged manager can also resolve the root `WORKFLOW.md` from a GitHub
+branch registered with a Linear project. It passes the selected source to the
+runner and retains the resolved default branch once selected. The listener
+verifies candidate source bytes against the registered project and reports the
+accepted commit and SHA-256. Worker workspace checkout and delivery targets
+are still controlled by the workflow.
+
 ### 5.2 File Format
 
 `WORKFLOW.md` is a Markdown file with OPTIONAL YAML front matter.
@@ -604,6 +611,13 @@ Dynamic reload is REQUIRED:
   before dispatch) in case filesystem watch events are missed.
 - Invalid reloads MUST NOT crash the service; keep operating with the last known good effective
   configuration and emit an operator-visible error.
+
+For a registered remote source, admission requires an initially verified
+workflow. A transient Git error can leave the last accepted candidate active.
+When the source confirms a missing branch or root file, or candidate validation
+fails, new claims pause and the last accepted workflow is retained. A subsequent
+valid source clears this pause while the existing drain and readiness rules
+continue to apply.
 
 ### 6.3 Dispatch Preflight Validation
 

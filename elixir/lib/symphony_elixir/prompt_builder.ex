@@ -4,6 +4,7 @@ defmodule SymphonyElixir.PromptBuilder do
   """
 
   alias SymphonyElixir.{AgentPause, Config, Workflow}
+  alias SymphonyElixir.Tracker.Issue
 
   @render_opts [strict_variables: true, strict_filters: true]
 
@@ -15,16 +16,54 @@ defmodule SymphonyElixir.PromptBuilder do
       |> parse_template!()
 
     template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
+    |> Solid.render!(render_values(issue, Keyword.get(opts, :attempt)), @render_opts)
     |> IO.iodata_to_binary()
     |> Kernel.<>(tracker_recovery_instructions(issue.id))
   end
+
+  @doc "Checks a template with the worker's strict rendering rules and representative issue inputs."
+  @spec validate_template(String.t()) :: :ok | {:error, :invalid_workflow}
+  def validate_template(prompt) do
+    heap = %{size: 2_000_000, kill: true, error_logger: false, include_shared_binaries: true}
+
+    {pid, ref} =
+      :erlang.spawn_opt(fn -> exit(validate_render(prompt)) end, [:monitor, {:max_heap_size, heap}])
+
+    {:ok, timer} = :timer.kill_after(2_000, pid)
+
+    result =
+      receive do
+        {:DOWN, ^ref, :process, ^pid, :ok} -> :ok
+        {:DOWN, ^ref, :process, ^pid, _reason} -> {:error, :invalid_workflow}
+      end
+
+    :timer.cancel(timer)
+    result
+  end
+
+  defp validate_render(prompt) do
+    issue = %Issue{
+      id: "fixture",
+      identifier: "FIXTURE-1",
+      title: "Example issue",
+      description: "Example description",
+      priority: 1,
+      state: "In Progress",
+      branch_name: "fixture-branch",
+      url: "https://example.invalid",
+      labels: ["fixture"],
+      blocked_by: [%{id: "blocked", identifier: "FIXTURE-2", state: "Done"}]
+    }
+
+    with {:ok, template} <- Solid.parse(prompt),
+         true <- Enum.all?([nil, 1, 2], &match?({:ok, _, _}, Solid.render(template, render_values(issue, &1), @render_opts))) do
+      :ok
+    else
+      _ -> {:error, :invalid_workflow}
+    end
+  end
+
+  defp render_values(issue, attempt), do: %{"attempt" => attempt, "issue" => issue |> Map.from_struct() |> to_solid_map()}
 
   defp tracker_recovery_instructions(issue_id) do
     """
