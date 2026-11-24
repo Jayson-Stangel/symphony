@@ -240,11 +240,7 @@ defmodule SymphonyElixir.Claude.Adapter do
       {:ok, %{"v" => 1, "type" => "error", "code" => "agent_max_turns"}} ->
         pending_failure(session, pending, :claude_attempt_turn_limit)
 
-      {:ok, %{"v" => 1, "type" => "turn_accepted", "session_id" => id, "request_id" => ^request}} when id == session.id ->
-        if is_nil(pending), do: emit(callback, :session_started, %{session_id: event_id, provider: :claude})
-        await_turn(session, request, event_id, issue, callback, until, pending || %{})
-
-      {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id and is_map(pending) ->
+      {:ok, %{"v" => 1, "session_id" => id, "request_id" => ^request} = message} when id == session.id ->
         handle_message(message, session, request, event_id, issue, callback, until, pending)
 
       _ ->
@@ -252,7 +248,15 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map() | nil) :: term()
+  defp handle_message(%{"type" => "turn_accepted"}, session, request, event_id, issue, callback, until, pending) do
+    if is_nil(pending), do: emit(callback, :session_started, %{session_id: event_id, provider: :claude})
+    await_turn(session, request, event_id, issue, callback, until, pending || %{})
+  end
+
+  defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, nil),
+    do: pending_failure(session, nil)
+
   defp handle_message(%{"type" => "progress", "activity" => activity} = message, session, request, event_id, issue, callback, until, pending)
        when activity in ["agent", "tool"] do
     {text, advances?} = progress_summary(message)
