@@ -291,6 +291,9 @@ defmodule SymphonyElixir.Orchestrator do
       nil ->
         {:noreply, state}
 
+      %{cleanup_action: :tracker_stop, tracker_stop: %{reason: :fresh_session}} = entry ->
+        {:noreply, record_finishing_turn(state, issue_id, entry, update)}
+
       %{cleanup_action: _} ->
         {:noreply, state}
 
@@ -310,9 +313,7 @@ defmodule SymphonyElixir.Orchestrator do
             {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry), agent_usage_observed: observed}}
 
           error ->
-            Logger.warning(
-              "Issue blocked by live agent budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
-            )
+            log_live_budget_block(issue_id, updated_running_entry, error)
 
             state = stop_and_block_issue(state, issue_id, updated_running_entry, error)
 
@@ -380,6 +381,32 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  # A start admitted by the outgoing worker may arrive during its captured stop.
+  # Count it against that attempt while the existing cleanup keeps ownership.
+  defp record_finishing_turn(state, issue_id, %{cleanup_owner_pid: worker} = entry, %{event: :session_started, worker_pid: worker} = update) when is_pid(worker) do
+    updated = record_turn_start(entry, update)
+
+    if updated == entry do
+      state
+    else
+      updated = %{updated | session_id: update.session_id}
+
+      updated =
+        case live_turn_budget_blocker(updated, Config.settings!(), Config.coding_agent() == :codex) do
+          nil ->
+            updated
+
+          error ->
+            log_live_budget_block(issue_id, updated, error)
+            Map.put(updated, :cleanup_action, {:block, error})
+        end
+
+      remember_tracker_stop(state, issue_id, updated)
+    end
+  end
+
+  defp record_finishing_turn(state, _issue_id, _entry, _update), do: state
+
   defp finish_session_cleanup(state, issue_id, %{tracker_stop: stop} = entry, cleanup_reason) do
     if cleanup_reason == :normal and entry[:cleanup_result] == :ok do
       Logger.info(
@@ -394,7 +421,7 @@ defmodule SymphonyElixir.Orchestrator do
           finish_agent_down(state, issue_id, Map.put(entry, :replacement_stop, stop), reason)
 
         {:block, error} ->
-          block_issue_from_entry(state, issue_id, entry, error)
+          finish_tracker_block(state, issue_id, entry, error)
 
         {:retry, attempt, metadata} ->
           schedule_issue_retry(state, issue_id, attempt, Map.merge(metadata, replacement))
@@ -1278,21 +1305,23 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_input_required_outcome(_outcome), do: nil
 
   defp live_budget_blocker(running_entry) when is_map(running_entry) do
-    %{agent: agent, codex: codex} = Config.settings!()
+    %{codex: codex} = settings = Config.settings!()
     codex? = Config.coding_agent() == :codex
-    live_max_turns = agent.live_max_turns || if(codex?, do: codex.live_max_turns)
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+
+    if codex? and budget_exceeded?(total_tokens, codex.live_max_total_tokens) do
+      "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
+    else
+      live_turn_budget_blocker(running_entry, settings, codex?)
+    end
+  end
+
+  defp live_turn_budget_blocker(running_entry, %{agent: agent, codex: codex}, codex?) do
+    live_max_turns = agent.live_max_turns || if(codex?, do: codex.live_max_turns)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
-    cond do
-      codex? and budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
-        "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
-
-      budget_exceeded?(turn_count, live_max_turns) ->
-        "agent.live_max_turns reached: turn_count=#{turn_count} limit=#{live_max_turns}"
-
-      true ->
-        nil
+    if budget_exceeded?(turn_count, live_max_turns) do
+      "agent.live_max_turns reached: turn_count=#{turn_count} limit=#{live_max_turns}"
     end
   end
 
@@ -1300,6 +1329,10 @@ defmodule SymphonyElixir.Orchestrator do
     do: value >= limit
 
   defp budget_exceeded?(_value, _limit), do: false
+
+  defp log_live_budget_block(issue_id, entry, error) do
+    Logger.warning("Issue blocked by live agent budget: issue_id=#{issue_id} issue_identifier=#{entry.identifier} session_id=#{running_entry_session_id(entry)} #{error}")
+  end
 
   defp blocker_error(running_entry, fallback) when is_map(running_entry) do
     codex_event_blocker_error(Map.get(running_entry, :last_codex_event)) ||
@@ -1381,6 +1414,17 @@ defmodule SymphonyElixir.Orchestrator do
         stop_running_task(issue_id, running_entry, state.task_supervisor)
         state = record_session_completion_totals(state, running_entry)
         block_issue_from_entry(state, issue_id, running_entry, error)
+    end
+  end
+
+  defp finish_tracker_block(state, issue_id, entry, error) do
+    terminal_states = terminal_state_set()
+
+    if retry_candidate_issue?(entry.issue, terminal_states) do
+      block_issue_from_entry(state, issue_id, entry, error)
+    else
+      cleanup_stopped_workspace(terminal_issue_state?(entry.issue.state, terminal_states), entry, entry.identifier)
+      release_issue_claim(state, issue_id)
     end
   end
 
