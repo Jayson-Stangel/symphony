@@ -179,7 +179,7 @@ curl() {
 package_arch=arm64; package_channel=candidate
 symphony_home=$root
 export TEST_IMPORTED="$root/imported" TMPDIR="$root"
-package_runner_provision codex
+package_runner_provision codex "$config_home/projects/$(project_id "$root").remote"
 [ "$(cat "$TEST_IMPORTED")" = imported ]
 [ -z "$(find "$root" -name 'symphony-runner-download.*' -print)" ]
 ''', 'GH_TOKEN=file_canary\n',

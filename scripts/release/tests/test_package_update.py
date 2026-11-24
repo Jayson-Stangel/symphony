@@ -103,7 +103,14 @@ source_revision() { package_helper manager-revision "$symphony_home/release.json
 resolve_runner_home() { mkdir -p "$runner_home"; }
 validate_agent() { case "$1" in codex|claude) ;; *) die 'bad fixture agent' ;; esac; }
 repo_root() { pwd; }
+registered_project() { return 1; }
 project_id() { basename "$1"; }
+runner_pending_migration() { :; }
+runner_clear_completed_journal() {
+  package_remove_transition_fields "$1"
+  rm -f "$1/target"
+  rmdir "$1"
+}
 # Installer boundary is a fixture here; native installer has its own tests.
 package_stage_bundle() {
   local from=$1 version revision destination

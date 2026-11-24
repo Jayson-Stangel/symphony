@@ -63,6 +63,7 @@ package_helper() {{ {str(self.helper)!r} "$@"; }}
 die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
 project_id() {{ printf 'project-one\\n'; }}
 validate_agent() {{ case "$1" in codex|claude) ;; *) return 1 ;; esac; }}
+runner_pending_migration() {{ :; }}
 runner_project_lock() {{ :; }}
 package_update_lock() {{ :; }}
 package_current_home() {{ printf '%s\\n' "$symphony_home"; }}

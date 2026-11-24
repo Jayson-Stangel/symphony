@@ -779,7 +779,7 @@ preserving the rollback container until the replacement passes readiness. See
 
 Project configuration, container and transition names use the same normalized repository hash
 identity already used by retained storage volumes. Basename-era installations migrate only
-through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
+through `symphony update --migrate-project-identity # invoke with the prior checkout-era manager` (add `--development-runner` for an isolated
 namespace). Migration preserves volume names, credential bytes, workflow files and pending
 rollback evidence; it requires an owned retained container and refuses mixed or foreign
 resources. See the [installation migration procedure](../docs/operations.md#migrate-an-older-project-identity) for credentials without

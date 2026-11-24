@@ -29,7 +29,7 @@ from workflow_fixture import WorkflowFixture
 CLAUDE_AUTH_FIXTURE = r'''credential_free_claude_auth() {
   local action="${@: -1}" storage image actual expected expected_build argument index auth_like=false
   for argument in "$@"; do
-    case "$argument" in *auth.mjs*) auth_like=true ;; esac
+    case "$argument" in /opt/symphony/claude/auth.mjs) auth_like=true ;; esac
   done
   "$auth_like" || return 1
   local -a args=("$@") command=(run --rm)
@@ -480,6 +480,18 @@ def main():
         tools = root / "tools"; tools.mkdir()
         for name in ("git", "python", "python3", "node", "mise", "swift", "swiftc", "elixir", "erl", "shasum", "codex", "claude"):
             tool = tools / name; tool.write_text("#!/bin/sh\necho 'unexpected host dependency: " + name + "' >&2\nexit 98\n"); tool.chmod(0o755)
+        curl_peer = tools / "curl"
+        curl_peer.write_text("""#!/bin/sh
+for argument in "$@"; do
+  case "$argument" in
+    https://api.github.com/repos/Jayson-Stangel/symphony/actions/artifacts/*)
+      echo 'FIXTURE: original candidate companion unavailable' >&2
+      exit 22 ;;
+  esac
+done
+exec /usr/bin/curl "$@"
+""")
+        curl_peer.chmod(0o755)
         wrapper = root / "docker-peer"
         wrapper.write_text(docker_peer_script()); wrapper.chmod(0o755)
         socket_gid = os.stat("/var/run/docker.sock").st_gid
@@ -517,7 +529,10 @@ def main():
         record("ordinary-user clean Ubuntu26.04 source-free repeat install, version and doctor with poisoned optional tools")
         initial_launcher = root / "app" / os.readlink(root / "app/current") / "scripts/symphony"
         initial_remote = "project migrate" in client_run([str(command), "--help"]).stdout
-        migration = not initial_remote and not manager_update_only
+        with tarfile.open(second_archive, "r:gz") as archive:
+            payload = next(member for member in archive.getmembers() if member.name.lstrip("./") == "scripts/symphony")
+            current_remote = b"project migrate --linear-project" in archive.extractfile(payload).read()
+        migration = current_remote and not initial_remote and not manager_update_only
         if migration:
             primary_agent, project_agents = "codex", ("codex", "claude")
             result["project_agents"] = list(project_agents)
@@ -561,7 +576,7 @@ def main():
             identifiers.append(identity); name = prefix + "-" + identity; names.append(name); owned.update((name, name + "-before-update")); storages.add(name)
             fixture_storages[str(repo)] = name
             credentials = root / "config/projects" / (identity + ".env")
-            credentials.write_text(f"GH_TOKEN=credential-free-placeholder-{number}\nLINEAR_API_KEY=synthetic-tracker-placeholder\n# credential-canary\n")
+            credentials.write_text(f"GH_TOKEN=fixture_git_placeholder_{number}\nLINEAR_API_KEY=synthetic-tracker-placeholder\n# credential-canary\n")
             credentials.chmod(0o600)
             client_run([str(command), "auth", "codex", "login"], cwd=repo)
             client_run([str(command), "auth", "claude", "login"], cwd=repo)
@@ -618,6 +633,7 @@ def main():
         canaries += [r / filename for r in repositories for filename in ("tracked-project-canary", "untracked-project-canary")]
         canaries += [r / ".codex/skills/symphony-commit/SKILL.md" for r in repositories]
         hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries}
+        credential_modes = {p: (p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in canaries[:2]}
         def unchanged(migrated=False):
             assert preserved(name) == before
             mounts = workflow_mounts(mount_snapshot(name), repo, remote=initial_remote or migrated)
@@ -629,6 +645,7 @@ def main():
             assert inspect(names[1], "{{.Id}}") == second_id
             assert preserved(names[1]) == second_before and mount_snapshot(names[1]) == second_mount_before
             assert auth_canaries() == auth_before
+            assert {p: (p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in credential_modes} == credential_modes
             assert {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in canaries} == hashes
         metadata = [root / "config/runners" / (i + ".env") for i in identifiers]
         second_metadata = metadata[1].read_bytes(); second_image = inspect(names[1], "{{.Image}}")
@@ -736,9 +753,10 @@ def main():
             client_run([str(command), 'update', *update_args], cwd=repo)
             assert json.loads(client_run([str(command), '--version']).stdout)['source_revision'] == current['source_revision']
             retained()
-            historical_command = command if initial_remote else initial_launcher
+            retired_layout = current_remote and not initial_remote
+            historical_command = initial_launcher if retired_layout else command
             for selected_repo, selected_name, selected_port, selected_agent in zip(repositories, names, ports, project_agents):
-                if not initial_remote:
+                if retired_layout:
                     retired = client_run([str(command), 'run'], cwd=selected_repo, expected=1)
                     assert 'project migrate' in retired.stdout
                 client_run([str(historical_command), 'runner', 'stop'], cwd=selected_repo)
@@ -791,11 +809,13 @@ def main():
             stopped_metadata = metadata[0].read_bytes()
             baseline_container = inspect(name, "{{.Id}}")
             client_run([str(command), "update", *update_args], cwd=repo)
-            retired = client_run([str(command), "run"], cwd=repo, expected=1)
-            assert "project migrate" in retired.stdout
+            for old_args in (["run"], ["runner", "status"], ["update", "--agent", primary_agent], ["update", "--rollback-runner"]):
+                retired = client_run([str(command), *old_args], cwd=repo, expected=1)
+                assert "project migrate" in retired.stdout
             migrate = [str(command), "project", "migrate", "--linear-project", slugs[0], "--workflow-branch", "main"]
             failed = client_run(migrate, cwd=repo, expected=1)
-            assert f"cannot pull released {primary_agent} image" in failed.stdout
+            assert "selected candidate artifact is inaccessible" in failed.stdout
+            assert "FIXTURE: original candidate companion unavailable" in failed.stdout
             assert not journal.exists() and inspect(name, "{{.Id}}") == baseline_container
             assert json.loads(client_run([str(command), "--version"]).stdout)["source_revision"] == current["source_revision"]
             unchanged(); state(port)

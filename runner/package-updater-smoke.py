@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import tarfile
 import socket
 import subprocess
 import sys
@@ -35,6 +36,17 @@ for index in (0, 1):
     if hashlib.sha256(inputs[index * 2 + 1].read_bytes()).hexdigest() != manifests[index]["bundle"]["sha256"]:
         raise SystemExit("candidate archive checksum differs")
 checkout = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(checkout / "scripts/release"))
+from workflow_fixture import WorkflowFixture
+
+def supports_migration(archive):
+    with tarfile.open(archive, "r:gz") as bundle:
+        launcher = next(member for member in bundle.getmembers() if member.name.lstrip("./") == "scripts/symphony")
+        return b"project migrate --linear-project" in bundle.extractfile(launcher).read()
+
+initial_remote = supports_migration(inputs[1])
+migration = not initial_remote and supports_migration(inputs[3])
+workflow_fixture = None
 proof = Path(tempfile.mkdtemp(prefix="symphony-package-updater-proof-")).resolve()
 namespace = "package-proof-" + uuid.uuid4().hex[:10]
 prefix = "symphony-" + namespace
@@ -73,6 +85,10 @@ root=pathlib.Path(os.environ['PROOF_ROOT']);args=sys.argv[1:]
 with (root/'docker.jsonl').open('a') as log: log.write(json.dumps(args)+'\n')
 if args[0]=='run' and '--entrypoint' in args and args[args.index('--entrypoint')+1]=='codex' and args[-2:]==['login','status']:
     print('STUB Codex native login status: no account credentials or inference');sys.exit(0)
+if os.environ.get("PROOF_WORKFLOW_NETWORK") and args[0] == "run" and (
+        "--detach" in args or any(arg.startswith("SYMPHONY_REMOTE_REPOSITORY=") for arg in args)):
+    args[1:1] = ["--network", os.environ["PROOF_WORKFLOW_NETWORK"], "--mount",
+                "type=bind,source="+os.environ["PROOF_WORKFLOW_CA"]+",target=/etc/ssl/certs/ca-certificates.crt,readonly"]
 result=subprocess.run([os.environ['PROOF_DOCKER'],*args])
 fault=root/'docker-fault'
 if result.returncode==0 and fault.exists():
@@ -118,7 +134,7 @@ def docker(*args):
 
 
 def launch(*args, project=0, expected=0, extra=None):
-    directory = projects[project] if projects[project].exists() else proof
+    directory = projects[project] if project is not None and projects[project].exists() else proof
     return run([*sandbox_prefix, command, *args], expected, cwd=directory, env=environment | (extra or {})).stdout
 
 
@@ -151,7 +167,7 @@ def update_second(*args, expected=0):
 
 projects = [proof / "one/service", proof / "two/service"]
 ports = [free_port(), free_port()]
-identities = []
+identities, commits = [], []
 try:
     extracted = proof / "download"
     extracted.mkdir()
@@ -164,21 +180,37 @@ try:
         denied = run([*sandbox_prefix, "/bin/cat", checkout / "scripts/symphony"], expected=None, env=environment)
         assert denied.returncode != 0, "source checkout access was not denied"
     docker("volume", "create", auth_volume)
+    if initial_remote or migration:
+        directory = proof / "workflow-peer"; directory.mkdir(mode=0o700)
+        initial = manifests[0]
+        utility_image = initial.get("distribution", {}).get("codex", {}).get("arm64", initial["runners"]["codex"]["arm64"]["image"])
+        workflow_fixture = WorkflowFixture(directory, docker, prefix + "-workflow-peer", utility_image)
+        workflow_fixture.start()
+        environment.update(workflow_fixture.environment)
     for index, project in enumerate(projects):
         project.mkdir(parents=True)
-        run(["git", "init", "-q", project])
-        run(["git", "-C", project, "remote", "add", "origin", f"https://example.invalid/proof-{index}/service.git"])
-        launch("init", "--linear-project", "unused-dispatch-disabled", project=index)
-        (project / "WORKFLOW.md").write_text("---\ntracker:\n  kind: memory\nworkspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\nobservability:\n  dashboard_enabled: true\n---\nEmpty isolated package proof. No issues or inference.\n")
-        metadata = json.loads(launch("project", "doctor", "--json", project=index))
-        identity = metadata.get("project_id") or metadata.get("identity")
-        if not identity:
-            candidates = set((config / "projects").glob("*.env")) - {config / "projects" / (value + ".env") for value in identities}
-            assert len(candidates) == 1, metadata
-            identity = candidates.pop().stem
+        owner = f"fixture-{index}"
+        origin = f"https://github.com/{owner}/service.git"
+        slug = f"fixture-macos-{index}"
+        run(["git", "init", "-q", "-b", "main", project])
+        run(["git", "-C", project, "remote", "add", "origin", origin])
+        tracker = f"  kind: linear\n  provider:\n    project_slug: {slug}\n    api_key: $LINEAR_API_KEY\n  active_states: [Todo]\n" if workflow_fixture else "  kind: memory\n"
+        workflow = project / "WORKFLOW.md"
+        workflow.write_text(f"---\ntracker:\n{tracker}workspace:\n  root: /workspaces\npolling:\n  interval_ms: 1000\nobservability:\n  dashboard_enabled: true\n---\nEmpty isolated package proof. No issues or inference.\n")
+        if workflow_fixture:
+            run(["git", "-C", project, "add", "WORKFLOW.md"])
+            run(["git", "-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"])
+            commits.append(workflow_fixture.publish(project, owner, "service"))
+        if initial_remote:
+            launch("init", "--repository", origin, "--linear-project", slug, "--workflow-branch", "main", project=index)
+        else:
+            launch("init", "--linear-project", slug, project=index)
+        candidates = set((config / "projects").glob("*.env")) - {config / "projects" / (value + ".env") for value in identities}
+        assert len(candidates) == 1
+        identity = candidates.pop().stem
         identities.append(identity)
         credentials = config / "projects" / (identity + ".env")
-        credentials.write_text("GH_TOKEN=credential-free-placeholder-" + str(index) + "\n")
+        credentials.write_text(f"GH_TOKEN=fixture_git_placeholder_{index}\nLINEAR_API_KEY=synthetic-tracker-placeholder\n")
         name = prefix + "-" + identity
         owned_containers.extend([name, name + "-before-update"])
         owned_storage.append(name)
@@ -194,14 +226,14 @@ try:
         mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", name))
         expected_volumes = {"/root/.codex": auth_volume, "/workspaces": name + "-workspaces", "/var/lib/symphony": name + "-state"}
         workflow_mounts = [value for value in mounts if value["Destination"].startswith("/etc/symphony")]
-        assert len(workflow_mounts) == 1
+        assert len(workflow_mounts) == (0 if initial_remote else 1)
         for value in mounts:
             destination = value["Destination"]
             if destination in ("/etc/symphony", "/etc/symphony/WORKFLOW.md", "/opt/symphony/project"):
                 expected = str(project / "WORKFLOW.md") if destination.endswith("/WORKFLOW.md") else str(project)
                 assert value["Type"] == "bind" and value["RW"] is False
                 assert value["Source"] in (expected, "/host_mnt" + expected)
-            elif destination == "/root/.codex/config.toml":
+            elif destination in ("/root/.codex/config.toml", "/etc/ssl/certs/ca-certificates.crt"):
                 assert value["Type"] == "bind" and value["RW"] is False
             else:
                 assert value["Type"] == "volume" and value["Name"] == expected_volumes[destination]
@@ -223,69 +255,118 @@ try:
     failure = launch("update", "--candidate-manifest", inputs[2], "--candidate-bundle", corrupt, expected=1)
     assert "checksum mismatch" in failure and current_version() == manifests[0]["version"]
     assert state(ports[0]) and preservation() == canary
-    (proof / "docker-fault").write_text("create")
-    update_second("--agent", "codex", expected=97)
-    assert current_version() == manifests[0]["version"]
-    alternate = proof / "alternate-config"
-    alternate.mkdir()
-    refusal = launch("update", project=1, expected=1, extra={"SYMPHONY_CONFIG_HOME": str(alternate)})
-    assert "unfinished packaged update" in refusal
-    launch("runner", "stop")
-    launch("update", "--agent", "codex")
-    assert current_version() == manifests[1]["version"]
-    adopted = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[0]))
-    assert {m["Destination"] for m in adopted} >= {"/etc/symphony", "/opt/symphony/project", "/root/.codex/config.toml"}
-    assert not any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in adopted)
-    assert state(ports[0]) and preservation() == canary
-    launch("runner", "stop", project=1)
-    second_mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[1]))
-    if any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in second_mounts):
-        refusal = launch("run", "--port", str(ports[1]), project=1, expected=1)
-        assert "adopt through symphony update" in refusal
-        assert docker("inspect", "--format", "{{.State.Running}}", names[1]) == "false"
+    if migration:
+        initial_id = docker("inspect", "--format", "{{.Id}}", names[0])
+        second_id = docker("inspect", "--format", "{{.Id}}", names[1])
+        credential = config / "projects" / (identities[0] + ".env")
+        permission = (credential.stat().st_ino, credential.stat().st_mode)
+        update_second()
+        assert current_version() == manifests[1]["version"]
+        assert "project migrate" in launch("run", expected=1)
+        migrate = ("project", "migrate", "--linear-project", "fixture-macos-0", "--workflow-branch", "main")
+        local = projects[0] / "WORKFLOW.md"
+        original = local.read_bytes()
+        local.write_bytes(original + b"Local-only edit with ./setup.\n")
+        try:
+            diagnostic = launch(*migrate)
+            assert commits[0] in diagnostic and "local-only edits" in diagnostic
+            action = (*migrate, "--apply", commits[0])
+            (proof / "docker-fault").write_text("create")
+            launch(*action, expected=97)
+            assert docker("inspect", "--format", "{{.Id}}:{{.State.Running}}", names[0] + "-before-update") == initial_id + ":false"
+            held = state(ports[0])
+            assert held["agent"]["draining"] is True and held["workflow"]["commit"] == commits[0]
+            launch("--project", identities[0], "update", "--rollback-runner")
+            assert docker("inspect", "--format", "{{.Id}}:{{.State.Running}}", names[0]) == initial_id + ":false"
+            (proof / "docker-fault").write_text("create")
+            launch(*action, expected=97)
+            launch(*action)
+        finally:
+            local.write_bytes(original)
+        assert state(ports[0])["agent"]["admission"]["ready"] is True
+        assert docker("inspect", "--format", "{{.Id}}", names[1]) == second_id
+        assert (credential.stat().st_ino, credential.stat().st_mode) == permission
+        migrated = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[0]))
+        assert not any(m["Destination"].startswith(("/etc/symphony", "/opt/symphony/project")) for m in migrated)
+        moved = projects[0].with_name("former-checkout")
+        projects[0].rename(moved)
+        try:
+            launch("--project", identities[0], "runner", "stop", project=None)
+            launch("--project", identities[0], "run", project=None)
+            assert state(ports[0])["workflow"]["commit"] == commits[0]
+        finally:
+            moved.rename(projects[0])
+        assert preservation() == canary
     else:
-        launch("run", "--port", str(ports[1]), project=1); state(ports[1])
-    assert docker("inspect", "--format", "{{.Image}}", names[1]) != docker("inspect", "--format", "{{.Image}}", names[0])
-    launch("update", "--rollback-release", "--agent", "codex")
-    assert current_version() == manifests[0]["version"]
-    assert state(ports[0]) and preservation() == canary
-    # Fail manager activation after actual candidate admission. The old manager
-    # and qualified prior container must still support updater-controlled rollback.
-    (proof / "activation-fault").touch()
-    failure = update_second("--agent", "codex", expected=None)
-    assert "FAULT after actual resume" in failure
-    assert current_version() == manifests[0]["version"]
-    assert docker("inspect", "--format", "{{.State.Running}}", names[0] + "-before-update") == "false"
-    app.chmod(0o700)
-    launch("update", "--rollback-runner")
-    assert current_version() == manifests[0]["version"]
-    assert state(ports[0]) and preservation() == canary
-    (proof / "docker-fault").write_text("backup-remove")
-    update_second("--agent", "codex", expected=97)
-    assert current_version() == manifests[1]["version"]
-    launch("update", "--agent", "codex")
-    assert current_version() == manifests[1]["version"]
-    assert state(ports[0]) and preservation() == canary
-    claude_volume = names[0] + "-claude-auth"
-    docker("volume", "create", "--label", "com.symphony.storage=" + names[0], claude_volume)
-    claude_image = manifests[1]["runners"]["claude"]["arm64"]["image"]
-    docker("run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "sh", "--volume", claude_volume + ":/home/claude", claude_image, "-ceu", "chown 11001:11001 /home/claude")
-    prior = docker("inspect", "--format", "{{.Id}}", names[0])
-    missing = update_second("--agent", "claude", expected=1)
-    assert "auth_required" in missing and "model_requests" in missing
-    assert docker("inspect", "--format", "{{.Id}}", names[0]) == prior
-    assert state(ports[0]) and preservation() == canary
+        (proof / "docker-fault").write_text("create")
+        update_second("--agent", "codex", expected=97)
+        assert current_version() == manifests[0]["version"]
+        alternate = proof / "alternate-config"
+        alternate.mkdir()
+        refusal = launch("update", project=1, expected=1, extra={"SYMPHONY_CONFIG_HOME": str(alternate)})
+        assert "unfinished packaged update" in refusal
+        launch("runner", "stop")
+        launch("update", "--agent", "codex")
+        assert current_version() == manifests[1]["version"]
+        adopted = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[0]))
+        expected = {"/root/.codex/config.toml"} if initial_remote else {"/etc/symphony", "/opt/symphony/project", "/root/.codex/config.toml"}
+        assert {m["Destination"] for m in adopted} >= expected
+        assert not any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in adopted)
+        assert state(ports[0]) and preservation() == canary
+        launch("runner", "stop", project=1)
+        second_mounts = json.loads(docker("inspect", "--format", "{{json .Mounts}}", names[1]))
+        if any(m["Destination"] == "/etc/symphony/WORKFLOW.md" for m in second_mounts):
+            refusal = launch("run", "--port", str(ports[1]), project=1, expected=1)
+            assert "adopt through symphony update" in refusal
+            assert docker("inspect", "--format", "{{.State.Running}}", names[1]) == "false"
+        else:
+            launch("run", "--port", str(ports[1]), project=1); state(ports[1])
+        assert docker("inspect", "--format", "{{.Image}}", names[1]) != docker("inspect", "--format", "{{.Image}}", names[0])
+        launch("update", "--rollback-release", "--agent", "codex")
+        assert current_version() == manifests[0]["version"]
+        assert state(ports[0]) and preservation() == canary
+        # Fail manager activation after actual candidate admission. The old manager
+        # and qualified prior container must still support updater-controlled rollback.
+        (proof / "activation-fault").touch()
+        failure = update_second("--agent", "codex", expected=None)
+        assert "FAULT after actual resume" in failure
+        assert current_version() == manifests[0]["version"]
+        assert docker("inspect", "--format", "{{.State.Running}}", names[0] + "-before-update") == "false"
+        app.chmod(0o700)
+        launch("update", "--rollback-runner")
+        assert current_version() == manifests[0]["version"]
+        assert state(ports[0]) and preservation() == canary
+        (proof / "docker-fault").write_text("backup-remove")
+        update_second("--agent", "codex", expected=97)
+        assert current_version() == manifests[1]["version"]
+        launch("update", "--agent", "codex")
+        assert current_version() == manifests[1]["version"]
+        assert state(ports[0]) and preservation() == canary
+        claude_volume = names[0] + "-claude-auth"
+        docker("volume", "create", "--label", "com.symphony.storage=" + names[0],
+               *(["--label", "com.symphony.linear-project=fixture-macos-0"] if initial_remote else []), claude_volume)
+        claude_image = manifests[1]["runners"]["claude"]["arm64"]["image"]
+        docker("run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "sh", "--volume", claude_volume + ":/home/claude", claude_image, "-ceu", "chown 11001:11001 /home/claude")
+        prior = docker("inspect", "--format", "{{.Id}}", names[0])
+        missing = update_second("--agent", "claude", expected=1)
+        assert "auth_required" in missing and "model_requests" in missing
+        assert docker("inspect", "--format", "{{.Id}}", names[0]) == prior
+        assert state(ports[0]) and preservation() == canary
     assert all(path.read_bytes() == contents for path, contents in original_credentials.items())
     assert all((path / "WORKFLOW.md").read_bytes() == contents for path, contents in workflows.items())
     assert not (app / "pending-transition").exists()
     evidence = {"environment": "macOS native arm64 developer host, isolated installed candidate bundles",
                 "namespace": namespace, "versions": [{key: value[key] for key in ("version", "source_revision", "runners")} for value in manifests],
                 "sourceAccessDenied": bool(sandbox), "nativeLogin": "STUB login-status ONLY; no credentials",
-                "modelRequests": 0, "tracker": "Memory, zero issues", "cleanMacOS": False,
+                "modelRequests": 0, "tracker": "local HTTPS Linear peer" if workflow_fixture else "Memory, zero issues",
+                "checkoutMigration": migration, "cleanMacOS": False,
                 "actualIntelMac": False, "root": str(proof), "ports": ports,
                 "productionRelease": False, "distinctCodeRevisionMigration": manifests[0]["source_revision"] != manifests[1]["source_revision"],
                 "unselectedArchitectureEvidence": "x86_64 is unobserved by this native ARM lifecycle proof; fixture records are not qualified release artifacts",
-                "observations": "actual archive install, rendered dashboard screenshot/UI HTML/API, retained mounts/state/Git, stop/restart, failed checksum, incomplete create/retry, two-project pin, completed rollback, activation-failure rollback, backup-removal interruption/retry, native Claude missing-auth preflight"}
+                "observations": (
+                    "checkout migration, stopped rollback source, interrupted creation/retry, second project pin, and restart without checkout"
+                    if migration else "actual archive install, dashboard/API, retained state, stop/restart, checksum refusal, incomplete create/retry, two-project pin, rollback, and Claude missing auth"
+                )}
     (proof / "evidence.json").write_text(json.dumps(evidence, indent=2))
     print("PASS actual packaged update lifecycle; evidence " + str(proof / "evidence.json"), flush=True)
 finally:
@@ -296,6 +377,8 @@ finally:
         owner = subprocess.run([real_docker, "inspect", "--format", '{{index .Config.Labels "com.symphony.storage"}}', name], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         if owner.returncode == 0 and owner.stdout.strip() in owned_storage:
             subprocess.run([real_docker, "rm", "-f", name], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if workflow_fixture:
+        workflow_fixture.stop()
     volumes = subprocess.check_output([real_docker, "volume", "ls", "--format", "{{.Name}}"], env=environment, text=True).splitlines()
     for volume in volumes:
         if volume.startswith(prefix + "-"):

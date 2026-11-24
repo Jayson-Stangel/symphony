@@ -160,12 +160,14 @@ for the complete PR inventory, exact revisions and rollout targets. See
 
 ## Opt-in updater lifecycle proof
 
-From a separate development checkout, prepare both production images explicitly:
+The historical checkout-era updater fixture requires an isolated checkout of the
+prior manager. Build both of that revision's runner images, then point
+`SYMPHONY_HISTORICAL_SOURCE` at that checkout when running the fixture:
 
 ```sh
 docker build --file runner/Dockerfile --target codex -t updater-proof:codex .
 docker build --file runner/Dockerfile --target claude -t updater-proof:claude .
-python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
+SYMPHONY_HISTORICAL_SOURCE="$PWD" python3 runner/updater-smoke.py updater-proof:codex updater-proof:claude
 ```
 
 This optional script uses the actual application, entrypoints, Docker mounts,

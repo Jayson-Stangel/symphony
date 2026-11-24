@@ -28,8 +28,9 @@ class WorkflowFixture:
         assert re.fullmatch(r"[a-z0-9-]+", owner) and re.fullmatch(r"[a-z0-9-]+", basename)
         bare = self.directory / "git" / owner / (basename + ".git")
         bare.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--quiet", "--bare", str(checkout), str(bare)], check=True)
-        return subprocess.check_output(["git", "-C", str(bare), "rev-parse", "HEAD"], text=True).strip()
+        env = {"PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
+        subprocess.run(["git", "clone", "--quiet", "--bare", str(checkout), str(bare)], check=True, env=env)
+        return subprocess.check_output(["git", "-C", str(bare), "rev-parse", "HEAD"], text=True, env=env).strip()
 
     def certificates(self):
         def openssl(*args):

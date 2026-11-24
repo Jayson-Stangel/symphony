@@ -24,7 +24,7 @@ Choose one disposable issue and restrict its labels and concurrency before start
 the listener, as described in the [first-run guide](getting-started.md#initialize-a-repository):
 
 ```sh
-symphony init --linear-project YOUR_LINEAR_PROJECT_SLUG --agent claude
+symphony init --repository https://github.com/OWNER/REPO.git --linear-project YOUR_LINEAR_PROJECT_SLUG --agent claude
 # Fill the printed credentials file before continuing.
 symphony auth claude login
 # Complete native sign-in in the terminal; never paste its codes into a workpad.
