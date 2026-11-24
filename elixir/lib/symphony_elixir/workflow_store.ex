@@ -432,8 +432,8 @@ defmodule SymphonyElixir.WorkflowStore do
       tracker.provider["api_key"] not in [nil, "$LINEAR_API_KEY"] ->
         {:error, :linear_credential_mismatch}
 
-      Config.coding_agent() == :codex and codex_wrapper?(settings.codex.command) ->
-        {:error, :remote_codex_wrapper_unsupported}
+      Config.coding_agent() == :codex ->
+        validate_codex_command(settings.codex.command)
 
       true ->
         :ok
@@ -444,9 +444,17 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp validate_source_prompt(_source, prompt), do: PromptBuilder.validate_template(prompt)
 
-  defp codex_wrapper?(command) do
-    executable = command |> OptionParser.split() |> List.first("")
-    Path.basename(executable) == "bash"
+  defp validate_codex_command(command) do
+    with {:ok, tokens} <- tokenize_codex_command(command) do
+      executable = Path.basename(List.first(tokens, ""))
+      if executable == "bash", do: {:error, :remote_codex_wrapper_unsupported}, else: :ok
+    end
+  end
+
+  defp tokenize_codex_command(command) do
+    {:ok, OptionParser.split(command)}
+  rescue
+    RuntimeError -> {:error, :invalid_workflow}
   end
 
   defp hash_content(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
