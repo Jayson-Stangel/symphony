@@ -21,7 +21,7 @@ class FakeQuery {
   interrupt() { this.interrupted = true; return Promise.resolve(); }
 }
 
-async function fixture(t, model = 'sonnet', effort, maxTurns = 20) {
+async function fixture(t, model = 'sonnet', effort, maxTurns = 20, nativeLimit) {
   const messages = [];
   let query;
   const helper = new Helper({ identity: { profile: 'test' }, env: {}, binary: '/test/native',
@@ -30,7 +30,8 @@ async function fixture(t, model = 'sonnet', effort, maxTurns = 20) {
     makeQuery: params => { query = new FakeQuery(params); return query; } });
   t.after(() => helper.stop('test_cleanup'));
   await helper.command({ type: 'start', session_id: 'session', request_id: 'start', workspace: process.cwd(),
-    config: { model, effort, max_turns: maxTurns, max_agentic_turns: 5, turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
+    config: { model, effort, max_turns: maxTurns, ...(nativeLimit ? { max_agentic_turns: nativeLimit } : {}),
+      turn_timeout_ms: 30_000 }, tools: [], instructions: 'policy' });
   query.push({ type: 'system', subtype: 'init', session_id: 'native-one' });
   await tick();
   assert.equal(query.params.options.env.TMPDIR, '/fixture/owned-scratch');
@@ -289,7 +290,7 @@ test('progress is categorical and only new assistant blocks advance activity', a
 
 test('shared attempt allowance permits 129 inputs while bounding replay history', async t => {
   const ctx = await fixture(t, 'sonnet', undefined, 129);
-  assert.equal(ctx.query.params.options.maxTurns, 5); // Native agentic allowance remains separate.
+  assert.ok(!Object.hasOwn(ctx.query.params.options, 'maxTurns'));
   for (let index = 1; index <= 129; index++) {
     const input = await turn(ctx, `turn-${index}`);
     const uuid = randomUUID();
@@ -304,6 +305,11 @@ test('shared attempt allowance permits 129 inputs while bounding replay history'
   await assert.rejects(() => turn(ctx, 'turn-1'), { message: 'invalid_turn_state' });
   assert.equal(ctx.helper.usedRequests.size, 129);
   assert.equal(ctx.helper.terminals.size, 129);
+});
+
+test('an explicit legacy native limit reaches the SDK separately from the attempt allowance', async t => {
+  const ctx = await fixture(t, 'sonnet', undefined, 20, 50);
+  assert.equal(ctx.query.params.options.maxTurns, 50);
 });
 
 test('stale native IDs cannot grow replay history or complete the current input', async t => {

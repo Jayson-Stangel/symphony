@@ -18,6 +18,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+    assert config.agent.live_max_turns == nil
+    assert config.claude.max_agentic_turns == nil
     assert config.codex.live_max_total_tokens == 0
     assert config.codex.live_max_turns == 0
 
@@ -108,6 +110,19 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+  end
+
+  test "shared live turn allowance accepts nonnegative integers" do
+    for limit <- [0, 3] do
+      write_workflow_file!(Workflow.workflow_file_path(), live_max_turns: limit)
+      assert Config.settings!().agent.live_max_turns == limit
+    end
+
+    for limit <- [-1, "bad"] do
+      write_workflow_file!(Workflow.workflow_file_path(), live_max_turns: limit)
+      assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+      assert message =~ "agent.live_max_turns"
+    end
   end
 
   test "current WORKFLOW.md file is valid and complete" do

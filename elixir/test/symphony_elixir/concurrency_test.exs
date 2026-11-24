@@ -95,6 +95,64 @@ defmodule SymphonyElixir.ConcurrencyTest do
     %{root: root, server: server, issues: issues, options: options}
   end
 
+  for {name, limits} <- [
+        {"omitted", []},
+        {"explicit zero overrides legacy Codex limit", [live_max_turns: 0, codex_live_max_turns: 1]},
+        {"positive shared overrides legacy Codex limit", [live_max_turns: 3, codex_live_max_turns: 1]},
+        {"legacy Codex fallback", [codex_live_max_turns: 3]}
+      ] do
+    test "live turn breaker with #{name}", ctx do
+      limits = unquote(limits)
+      [issue | _] = ctx.issues
+      options = Keyword.merge(ctx.options, [max_turns: 3] ++ limits)
+      write_workflow_file!(Workflow.workflow_file_path(), options)
+      assert :ok = WorkflowStore.force_reload()
+      set_issues([issue])
+      poll(ctx.server)
+
+      await(fn -> turn_count(ctx, issue) == 1 and running_turn_count(ctx, issue) == 1 end)
+      [first] = inputs(ctx, issue)
+      worker = :sys.get_state(ctx.server).running[issue.id]
+      report_update(ctx, issue, :session_started, worker.session_id)
+      assert running_turn_count(ctx, issue) == 1
+      release_input(ctx, issue, first)
+
+      await(fn -> turn_count(ctx, issue) == 2 and running_turn_count(ctx, issue) == 2 end)
+      [^first, second] = inputs(ctx, issue)
+      second_session = :sys.get_state(ctx.server).running[issue.id].session_id
+      report_update(ctx, issue, :agent_progress, second_session)
+      report_update(ctx, issue, :session_started, worker.session_id)
+      assert running_turn_count(ctx, issue) == 2
+      release_input(ctx, issue, second)
+
+      if limits[:live_max_turns] == 3 or (limits[:codex_live_max_turns] == 3 and Config.coding_agent() == :codex) do
+        await(fn -> Map.has_key?(:sys.get_state(ctx.server).blocked, issue.id) end)
+
+        assert %{blocked: [%{turn_count: 3, error: "agent.live_max_turns reached: turn_count=3 limit=3"}], running: [], retrying: []} =
+                 Orchestrator.snapshot(__MODULE__, 5_000)
+
+        refute Process.alive?(worker.pid)
+        assert Port.info(worker.agent_session.native.port) == nil
+        poll(ctx.server)
+        assert Map.has_key?(:sys.get_state(ctx.server).blocked, issue.id)
+      else
+        await(fn -> turn_count(ctx, issue) == 3 and running_turn_count(ctx, issue) == 3 end)
+        [^first, ^second, third] = inputs(ctx, issue)
+        assert_retained_session(ctx, issue, worker)
+        release_input(ctx, issue, third)
+
+        await(fn -> turn_count(ctx, issue) == 4 and running_turn_count(ctx, issue) == 1 end)
+        renewed = :sys.get_state(ctx.server).running[issue.id]
+        assert renewed.workspace_path == worker.workspace_path
+        refute renewed.pid == worker.pid
+        refute Process.alive?(worker.pid)
+        assert Port.info(worker.agent_session.native.port) == nil
+        assert :sys.get_state(ctx.server).blocked == %{}
+        stop_workers(ctx)
+      end
+    end
+  end
+
   test "three real worker sessions fill shared slots; fourth starts after cancellation", ctx do
     set_issues(ctx.issues)
     poll(ctx.server)
@@ -446,6 +504,12 @@ defmodule SymphonyElixir.ConcurrencyTest do
   end
 
   defp turn_count(ctx, issue), do: length(inputs(ctx, issue))
+
+  defp running_turn_count(ctx, issue), do: get_in(:sys.get_state(ctx.server).running, [issue.id, :turn_count])
+
+  defp report_update(ctx, issue, event, session_id) do
+    send(ctx.server, {:codex_worker_update, issue.id, %{event: event, session_id: session_id, timestamp: DateTime.utc_now(), provider: Config.coding_agent()}})
+  end
 
   defp await(check, remaining \\ 1_000)
   defp await(_check, 0), do: flunk("concurrent worker state did not advance")

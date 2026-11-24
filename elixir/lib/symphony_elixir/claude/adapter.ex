@@ -101,6 +101,13 @@ defmodule SymphonyElixir.Claude.Adapter do
     settings = Config.settings!()
     config = settings.claude
     max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
+
+    helper_config =
+      config
+      |> Map.take([:model, :effort, :max_agentic_turns, :turn_timeout_ms])
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.put(:max_turns, max_turns)
+
     binding = Keyword.fetch!(opts, :tool_binding)
 
     with :ok <-
@@ -110,7 +117,7 @@ defmodule SymphonyElixir.Claude.Adapter do
              session_id: id,
              request_id: start_id,
              workspace: workspace,
-             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]) |> Map.put(:max_turns, max_turns),
+             config: helper_config,
              tools: binding.tool_specs,
              skills: skills,
              instructions: instructions

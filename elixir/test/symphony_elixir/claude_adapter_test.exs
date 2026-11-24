@@ -277,6 +277,38 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "native turn limit is omitted by default and explicit legacy values reach the SDK", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "native-limit-omitted", ctx.issue, [])
+    after
+      assert :ok = Adapter.stop_session(session)
+    end
+
+    workflow = Workflow.workflow_file_path()
+    contents = File.read!(workflow)
+
+    for limit <- [0, 101, "invalid", 100] do
+      File.write!(workflow, String.replace(contents, "---\n", "---\nclaude:\n  max_agentic_turns: #{limit}\n", global: false))
+
+      if limit == 100 do
+        assert Config.settings!().claude.max_agentic_turns == 100
+      else
+        assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+        assert message =~ "claude.max_agentic_turns"
+      end
+    end
+
+    assert {:ok, legacy} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(legacy, "native-limit-100", ctx.issue, [])
+    after
+      assert :ok = Adapter.stop_session(legacy)
+    end
+  end
+
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
     contents = File.read!(Workflow.workflow_file_path())
     File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))
@@ -1439,11 +1471,18 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert Port.info(renewed.port) == nil
   end
 
-  test "late Human Review and terminal tracker states prevent native allowance redispatch", ctx do
+  test "late Human Review, manual block and terminal tracker states prevent native allowance redispatch", ctx do
     supervisor = start_supervised!(Task.Supervisor)
-    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", prompt: "native-allowance", max_turns: 3)
 
-    for late_state <- ["Human Review", "Done"] do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      tracker_kind: "memory",
+      tracker_blocked_states: ["Blocked"],
+      prompt: "native-allowance",
+      max_turns: 3
+    )
+
+    for late_state <- ["Human Review", "Blocked", "Done"] do
       issue = %{ctx.issue | id: late_state, identifier: "ALLOWANCE-#{String.replace(late_state, " ", "-")}", state: "In Progress", dispatchable: true}
       Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
       {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
@@ -1458,7 +1497,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert released.blocked == %{}
       refute Map.has_key?(released.retry_attempts, issue.id)
       refute MapSet.member?(released.claimed, issue.id)
-      assert File.dir?(workspace) == (late_state == "Human Review")
+      assert File.dir?(workspace) == (late_state != "Done")
       assert :ready = AgentPause.current()
     end
   end

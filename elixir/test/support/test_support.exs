@@ -230,6 +230,9 @@ defmodule SymphonyElixir.TestSupport do
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
+        if(Keyword.has_key?(overrides, :live_max_turns),
+          do: "  live_max_turns: #{yaml_value(Keyword.fetch!(config, :live_max_turns))}"
+        ),
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         if(Keyword.has_key?(overrides, :fresh_session_on_enter),

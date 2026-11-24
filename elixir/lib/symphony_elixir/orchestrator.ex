@@ -311,7 +311,7 @@ defmodule SymphonyElixir.Orchestrator do
 
           error ->
             Logger.warning(
-              "Issue blocked by live Codex budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
+              "Issue blocked by live agent budget: issue_id=#{issue_id} issue_identifier=#{updated_running_entry.identifier} session_id=#{running_entry_session_id(updated_running_entry)} #{error}"
             )
 
             state = stop_and_block_issue(state, issue_id, updated_running_entry, error)
@@ -1278,20 +1278,18 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_input_required_outcome(_outcome), do: nil
 
   defp live_budget_blocker(running_entry) when is_map(running_entry) do
-    if Config.coding_agent() == :claude, do: nil, else: codex_live_budget_blocker(running_entry)
-  end
-
-  defp codex_live_budget_blocker(running_entry) do
-    codex = Config.settings!().codex
+    %{agent: agent, codex: codex} = Config.settings!()
+    codex? = Config.coding_agent() == :codex
+    live_max_turns = agent.live_max_turns || if(codex?, do: codex.live_max_turns)
     total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     cond do
-      budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
+      codex? and budget_exceeded?(total_tokens, codex.live_max_total_tokens) ->
         "codex live token budget exceeded: total_tokens=#{total_tokens} limit=#{codex.live_max_total_tokens}"
 
-      budget_exceeded?(turn_count, codex.live_max_turns) ->
-        "codex live turn budget exceeded: turn_count=#{turn_count} limit=#{codex.live_max_turns}"
+      budget_exceeded?(turn_count, live_max_turns) ->
+        "agent.live_max_turns reached: turn_count=#{turn_count} limit=#{live_max_turns}"
 
       true ->
         nil
@@ -2556,10 +2554,12 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
-    turn_count = Map.get(running_entry, :turn_count, 0)
 
     {
-      Map.merge(activity_entry(running_entry, update), %{
+      running_entry
+      |> record_turn_start(update)
+      |> activity_entry(update)
+      |> Map.merge(%{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
@@ -2570,8 +2570,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
-        codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported)
       }),
       token_delta
     }
@@ -2604,23 +2603,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp session_id_for_update(existing, _update), do: existing
 
-  defp turn_count_for_update(existing_count, existing_session_id, %{
-         event: :session_started,
-         session_id: session_id
-       })
-       when is_integer(existing_count) and is_binary(session_id) do
-    if session_id == existing_session_id do
-      existing_count
+  defp record_turn_start(entry, %{event: :session_started, session_id: session_id}) when is_binary(session_id) do
+    started_turn_ids = Map.get(entry, :started_turn_ids, MapSet.new())
+
+    if MapSet.member?(started_turn_ids, session_id) do
+      entry
     else
-      existing_count + 1
+      entry
+      |> Map.put(:started_turn_ids, MapSet.put(started_turn_ids, session_id))
+      |> Map.update(:turn_count, 1, &(&1 + 1))
     end
   end
 
-  defp turn_count_for_update(existing_count, _existing_session_id, _update)
-       when is_integer(existing_count),
-       do: existing_count
-
-  defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
+  defp record_turn_start(entry, _update), do: entry
 
   defp summarize_codex_update(update) do
     %{

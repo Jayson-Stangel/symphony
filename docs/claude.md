@@ -118,10 +118,12 @@ Provider selection is startup state (`--agent codex|claude`) and cannot be chang
 by editing the workflow. Existing Codex settings retain their meaning.
 
 ```yaml
+agent:
+  max_turns: 20
+  # live_max_turns: 0
 claude:
   model: sonnet
   effort: high # optional; omit or use null for the model default
-  max_agentic_turns: 50
   read_timeout_ms: 5000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
@@ -160,16 +162,32 @@ The terminal dashboard, web UI and `/api/v1/state` expose the configured effort
 model support and account policies may cap the effective level. The web UI
 shows status; edit `WORKFLOW.md` to change the setting.
 
-`agent.max_turns` bounds continuation turns within one worker attempt for both
-providers. Reaching it closes that session normally; the existing scheduler
-continuation check revalidates active work and can start another attempt in the
-same workspace. `claude.max_agentic_turns` bounds SDK steps within one turn.
-Reaching this native allowance closes the exhausted session and yields normally;
-the scheduler reads live tracker state and can renew the session in the retained
-workspace. Human Review and terminal work are not redispatched. Recorded denied-tool
-history does not override native success or max-turn results; it does not establish
-an unresolved input request. Native execution failures with permission denials keep
-their blocked outcome. Genuine authentication, quota and policy stops remain distinct.
+`agent.max_turns` caps completed Symphony turns in one worker attempt for both
+providers and defaults to 20. Reaching it closes the session normally. The
+scheduler reads live tracker state and can start another attempt in the same
+workspace. Progress, tool calls and SDK steps occur inside a Symphony turn.
+`agent.live_max_turns` is an optional circuit breaker for both providers. Each
+distinct turn start counts once in the current worker run. At the threshold,
+Symphony stops and cleans up the worker, reports the count and limit in blocked
+status, and suppresses automatic continuation. Omit it or set it to 0 to leave
+the breaker disabled. Codex uses an existing `codex.live_max_turns` only when the
+shared key is absent. Explicit shared 0 disables that fallback.
+
+Remove `claude.max_agentic_turns` to use the native default. In the pinned Agent
+SDK 0.3.316 and Claude Code 2.1.316, omitting `maxTurns` leaves the native
+headless turn limit unset in Symphony's worker environment. Provider account,
+model and service limits still apply. Existing explicit values from 1 to 100
+remain supported as a deprecated override of SDK steps within a Symphony turn.
+An SDK-step count cannot be converted into a Symphony turn count. Upgrades
+preserve stored workflows. [Claude Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
+
+A native `error_max_turns` closes the session through bounded cleanup and yields
+to the scheduler. After a live tracker read, eligible work can resume in a fresh
+session in the retained workspace. Human Review, terminal and manually blocked
+issues stay ineligible. Recorded denied-tool history does not override native
+success or max-turn results. Native execution failures with permission denials
+keep their blocked outcome. Genuine authentication, quota and policy stops remain
+distinct.
 Claude settings reject unknown keys, arbitrary commands, authentication overrides and raw SDK options.
 
 Root AGENTS.md and CLAUDE.md are combined without generating tracked files.

@@ -188,3 +188,13 @@ test('internal attempt allowance accepts the shared configuration without a help
     assert.throws(() => parseCommand(JSON.stringify({ ...command, config: { ...command.config, max_turns } })));
   }
 });
+
+test('native step override is optional and keeps its legacy bounds', () => {
+  const command = { v: 1, type: 'start', session_id: 's', request_id: 'r', workspace: '/tmp/workspace',
+    config: { model: 'sonnet', max_turns: 20, turn_timeout_ms: 30_000 }, tools: [], instructions: '' };
+  assert.ok(!Object.hasOwn(parseCommand(JSON.stringify(command)).config, 'max_agentic_turns'));
+  const parseLimit = max_agentic_turns => parseCommand(JSON.stringify({ ...command,
+    config: { ...command.config, max_agentic_turns } })).config.max_agentic_turns;
+  for (const limit of [1, 50, 100]) assert.equal(parseLimit(limit), limit);
+  for (const limit of [0, 101, 1.5, null]) assert.throws(() => parseLimit(limit));
+});

@@ -470,10 +470,16 @@ Fields:
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
 - `max_turns` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session, for both providers.
+  - Limits the number of completed coding-agent turns within one worker attempt, for both providers.
   - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
     continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
+- `live_max_turns` (optional nonnegative integer)
+  - Omitted or `0` disables the shared breaker. Codex uses its legacy provider setting
+    only if the shared key is omitted.
+  - Each distinct admitted turn start counts once within the current worker run.
+  - At the configured positive threshold, the orchestrator MUST stop and clean up the worker
+    and expose the issue as blocked with the count and limit, suppressing automatic continuation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
   - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
@@ -522,11 +528,8 @@ fields locally if they want stricter startup checks.
   - If `<= 0`, live token budget enforcement is disabled.
   - If the running session reports `codex_total_tokens >= live_max_total_tokens`, the orchestrator
     MUST stop the worker and expose the issue as blocked instead of scheduling a retry.
-- `live_max_turns` (integer)
-  - Default: implementation-defined.
-  - If `<= 0`, live turn budget enforcement is disabled.
-  - If the running session reports `turn_count >= live_max_turns`, the orchestrator MUST stop the
-    worker and expose the issue as blocked instead of scheduling a retry.
+- `live_max_turns` (deprecated Codex-only fallback, nonnegative integer)
+  - Default: `0` (disabled). Used only when `agent.live_max_turns` is omitted.
 
 ### 5.4 Prompt Template Contract
 
@@ -672,6 +675,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
+- `agent.live_max_turns`: optional nonnegative integer, disabled by default for both providers.
+  An explicit value, including `0`, overrides `codex.live_max_turns`.
 - `agent.fresh_session_on_enter`: list of active destination status names, default `[]`.
   Trim and compare status names case-insensitively. Reject malformed values.
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
@@ -684,7 +689,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.live_max_total_tokens`: integer, default `0` (disabled)
-- `codex.live_max_turns`: integer, default `0` (disabled)
+- `codex.live_max_turns`: deprecated Codex-only fallback, default `0` (disabled)
+- `claude.max_agentic_turns`: deprecated native SDK step override, integer from `1` to `100`.
+  Omit it to use the native default. A native allowance result yields after cleanup and tracker
+  revalidation for eligible continuation.
 
 ### Container Execution Bindings
 
