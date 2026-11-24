@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.FreshSessionTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.{AgentRuntimeSupervisor, Config.Schema}
+
   @active_states ["In Progress", "Agent Review", "Verification", "Retest"]
 
   setup do
@@ -38,7 +40,7 @@ defmodule SymphonyElixir.FreshSessionTest do
     for invalid <- [nil, "Agent Review", [42], [nil], ["   "]] do
       write_workflow_file!(Workflow.workflow_file_path(), Keyword.put(ctx.config, :fresh_session_on_enter, invalid))
       assert {:ok, workflow} = Workflow.load()
-      assert {:error, reason} = SymphonyElixir.Config.Schema.parse(workflow.config)
+      assert {:error, reason} = Schema.parse(workflow.config)
       assert inspect(reason) =~ "fresh_session_on_enter"
     end
   end
@@ -237,7 +239,8 @@ defmodule SymphonyElixir.FreshSessionTest do
     write_workflow_file!(Workflow.workflow_file_path(), config)
     tasks = Module.concat(__MODULE__, :Tasks)
     runtime = Module.concat(__MODULE__, :Runtime)
-    start_supervised!({SymphonyElixir.AgentRuntimeSupervisor, name: runtime, orchestrator_name: __MODULE__, task_supervisor_name: tasks})
+    runtime_opts = [name: runtime, orchestrator_name: __MODULE__, task_supervisor_name: tasks]
+    start_supervised!({AgentRuntimeSupervisor, runtime_opts})
     fixture = Map.merge(ctx, %{server: __MODULE__, config: config})
     move(fixture, ctx.issue.state)
     fixture

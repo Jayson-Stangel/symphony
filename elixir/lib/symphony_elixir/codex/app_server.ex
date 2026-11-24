@@ -4,7 +4,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{AgentPause, Codex.DynamicTool, CodingAgent, Codex.SandboxReadiness, Config, SSH, ToolCall, Workspace}
+  alias SymphonyElixir.{AgentPause, CodingAgent, Config, SSH, ToolCall, Workspace}
+  alias SymphonyElixir.Codex.{DynamicTool, SandboxReadiness}
 
   @initialize_id 1
   @thread_start_id 2
@@ -94,13 +95,16 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:ok, Map.merge(session, %{thread_id: thread_id, model: model})}
 
       {:error, reason} ->
-        if opts[:on_startup_closed] do
-          if interrupt_and_confirm_exit(session) == :ok, do: CodingAgent.report_startup_closed(opts)
-        else
-          stop_port(session.port)
-        end
-
+        close_failed_startup(session, opts)
         {:error, reason}
+    end
+  end
+
+  defp close_failed_startup(session, opts) do
+    if opts[:on_startup_closed] do
+      with :ok <- interrupt_and_confirm_exit(session), do: CodingAgent.report_startup_closed(opts)
+    else
+      stop_port(session.port)
     end
   end
 

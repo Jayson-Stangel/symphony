@@ -7,10 +7,17 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentPause, AgentReadiness, AgentRunner, CodingAgent, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.AgentPause
+  alias SymphonyElixir.AgentReadiness
+  alias SymphonyElixir.AgentRunner
   alias SymphonyElixir.Codex.SandboxReadiness
+  alias SymphonyElixir.CodingAgent
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.StatusDashboard
+  alias SymphonyElixir.Tracker
   alias SymphonyElixir.Tracker.Issue
+  alias SymphonyElixir.Workspace
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -225,7 +232,12 @@ defmodule SymphonyElixir.Orchestrator do
     case state.running[issue_id] do
       %{pid: ^pid} = entry ->
         entry = %{entry | session_starting: false}
-        state = if entry[:tracker_stop], do: remember_tracker_stop(state, issue_id, entry), else: put_in(state.running[issue_id], entry)
+
+        state =
+          if entry[:tracker_stop],
+            do: remember_tracker_stop(state, issue_id, entry),
+            else: put_in(state.running[issue_id], entry)
+
         {:noreply, state}
 
       _ ->
@@ -1164,7 +1176,8 @@ defmodule SymphonyElixir.Orchestrator do
        when not is_map_key(entry, :agent_session), do: state
 
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :cleanup_action) or Map.has_key?(running_entry, :tracker_stop) do
+    if Map.has_key?(state.blocked, issue_id) or Map.has_key?(running_entry, :cleanup_action) or
+         Map.has_key?(running_entry, :tracker_stop) do
       state
     else
       restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)

@@ -99,7 +99,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_codex_turns(workspace, issue, recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     orchestrator = opts[:orchestrator]
-    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
+    issue_state_fetcher = issue_state_fetcher(orchestrator, opts)
 
     session_opts = [
       max_turns: max_turns,
@@ -140,6 +140,12 @@ defmodule SymphonyElixir.AgentRunner do
       :defer -> :ok
       error -> error
     end
+  end
+
+  defp issue_state_fetcher(nil, opts), do: Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
+
+  defp issue_state_fetcher(orchestrator, _opts) do
+    fn [issue_id] -> GenServer.call(orchestrator, {:worker_refresh_issue, issue_id}, :infinity) end
   end
 
   defp startup_closed_callback(nil, _issue_id), do: nil
@@ -196,13 +202,7 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, turn_session} ->
         Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-        fetcher =
-          case opts[:orchestrator] do
-            nil -> issue_state_fetcher
-            orchestrator -> fn _ids -> GenServer.call(orchestrator, {:worker_refresh_issue, issue.id}, :infinity) end
-          end
-
-        case continue_with_issue?(issue, fetcher) do
+        case continue_with_issue?(issue, issue_state_fetcher) do
           {:continue, refreshed_issue} when turn_number < max_turns ->
             Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
