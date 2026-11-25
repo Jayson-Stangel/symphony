@@ -53,9 +53,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
-
           </div>
 
+          <div class="hero-side">
             <%= if agent = Map.get(@payload, :agent) do %>
               <% source_rejected = get_in(agent, [:admission, :reason]) == "workflow_source_rejected" %>
               <% admitting = agent.readiness[:ready] && !agent.draining && !agent.pause && !source_rejected %>
@@ -76,25 +76,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <span class="runner-state runner-state-offline"><span class="runner-state-dot" aria-hidden="true"></span>Offline</span>
               </div>
             <% end %>
+            <%= if workflow_url = get_in(@payload, [:workflow, :github_url]) do %>
+              <p class="hero-copy" id="workflow-source">
+                <%= if project = @payload.workflow[:project_details] do %>
+                  <a href={project.url} aria-label={"Open #{project.name} in Linear"}><%= project.name %></a> ·
+                <% end %>
+                <a href={workflow_url}>View WORKFLOW.md on GitHub</a> · <%= @payload.workflow.branch %>
+                <%= case @payload.workflow.status do %>
+                  <% "stale" -> %> · Source unavailable, using last accepted version
+                  <% "rejected" -> %> · Update rejected, showing last accepted version
+                  <% _ -> %>
+                <% end %>
+              </p>
+            <% end %>
+          </div>
         </div>
       </header>
-
-      <%= if workflow = @payload[:workflow] do %>
-        <%= if workflow[:branch] do %>
-          <section class="panel" aria-label="Workflow source">
-            <h2>Workflow source</h2>
-            <p><strong><%= workflow.project %></strong> · <%= workflow.branch %> · <%= workflow.status %></p>
-            <dl>
-              <dt>Accepted commit</dt><dd><code><%= workflow.commit %></code></dd>
-              <dt>Workflow SHA-256</dt><dd><code><%= workflow.sha256 %></code></dd>
-              <dt>Last successful source check</dt><dd><%= workflow.last_successful_source_check_at %></dd>
-              <%= if workflow.source_error do %>
-                <dt>Latest source error</dt><dd><%= workflow.source_error %></dd>
-              <% end %>
-            </dl>
-          </section>
-        <% end %>
-      <% end %>
 
       <%= if @payload[:error] do %>
         <section class="error-card">

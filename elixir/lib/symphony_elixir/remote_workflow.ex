@@ -3,6 +3,7 @@ defmodule SymphonyElixir.RemoteWorkflow do
 
   @max_workflow_bytes 1_048_576
   @git_timeout "15"
+  @github_repository ~r{\A(https://github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+)\.git\z}
 
   @type source :: %{optional(:scratch_root) => Path.t(), repository: binary(), branch: binary(), project: binary()}
   @type candidate :: %{branch: String.t(), commit: String.t(), content: binary()}
@@ -30,8 +31,19 @@ defmodule SymphonyElixir.RemoteWorkflow do
 
   @spec valid_source?(source()) :: boolean()
   def valid_source?(source) do
-    Regex.match?(~r{\Ahttps://github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+\.git\z}, source.repository) and
+    Regex.match?(@github_repository, source.repository) and
       Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9-]*\z/, source.project)
+  end
+
+  @doc "Returns a GitHub link to the root workflow at the accepted commit."
+  @spec github_workflow_url(String.t(), String.t()) :: String.t() | nil
+  def github_workflow_url(repository, commit) do
+    with [github_url] <- Regex.run(@github_repository, repository, capture: :all_but_first),
+         {:ok, commit} <- validate_commit(commit) do
+      github_url <> "/blob/" <> commit <> "/WORKFLOW.md"
+    else
+      _ -> nil
+    end
   end
 
   @spec fetch(source(), String.t() | nil) :: {:ok, candidate() | :unchanged} | {:error, source_error()}

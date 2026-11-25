@@ -8,6 +8,7 @@ defmodule SymphonyElixir.WorkflowStore do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Linear.Client, as: LinearClient
   alias SymphonyElixir.{PromptBuilder, RemoteWorkflow, Workflow}
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -33,6 +34,7 @@ defmodule SymphonyElixir.WorkflowStore do
       :accepted_at,
       :checked_at,
       :source,
+      :project_details,
       :commit,
       :source_checked_at,
       :source_error,
@@ -215,7 +217,9 @@ defmodule SymphonyElixir.WorkflowStore do
       |> Map.merge(%{
         branch: source.branch,
         project: source.project,
+        project_details: state.project_details,
         commit: state.commit,
+        github_url: RemoteWorkflow.github_workflow_url(source.repository, state.commit),
         last_successful_source_check_at: state.source_checked_at,
         source_error: state.source_error,
         source_block: state.source_block
@@ -305,7 +309,7 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp apply_remote_result(state, {:ok, accepted, content}, time) do
     case retain_remote(state.path, content, true) do
-      :ok -> accepted
+      :ok -> %{accepted | project_details: state.project_details}
       {:error, reason} -> reject_remote(%{state | source_checked_at: time}, reason, time)
     end
   end
@@ -423,7 +427,7 @@ defmodule SymphonyElixir.WorkflowStore do
     tracker = settings.tracker
 
     cond do
-      tracker.kind != "linear" or tracker.project_slug != project ->
+      tracker.kind != "linear" or not LinearClient.same_project_slug?(tracker.project_slug, project) ->
         {:error, :linear_project_mismatch}
 
       tracker.endpoint != "https://api.linear.app/graphql" ->

@@ -332,8 +332,11 @@ Loader behavior:
 Managed projects resolve the root `WORKFLOW.md` from a GitHub branch
 registered with a Linear project. It passes the selected source to the
 runner and retains the resolved default branch once selected. The listener
-verifies candidate source bytes against the registered project and reports the
-accepted commit and SHA-256. Worker workspace checkout and delivery targets
+verifies candidate source bytes against the registered project. The registration
+and workflow can use the full Linear project slug or its slug ID for the same
+project. The state API reports the accepted commit and SHA-256. The dashboard
+links to the project by its Linear display name and to the root workflow at the
+accepted commit. Worker workspace checkout and delivery targets
 are still controlled by the workflow. A checkout-based installation can adopt
 its existing resources after the prior runner drains and stops. The replacement
 verifies the reviewed remote commit and readiness before removing its admission

@@ -239,8 +239,11 @@ JAY-735's separate native acceptance or select a release candidate.
 
 Commit a root `WORKFLOW.md` to the GitHub branch Symphony should watch. Set
 `tracker.kind` to `linear` and `tracker.provider.project_slug` to the Linear
-project's slug ID. Use the standard Linear endpoint and `LINEAR_API_KEY`
-binding. The workflow still controls worker checkout and delivery conventions.
+project's full slug from its URL or its slug ID. The `--linear-project` value
+can use either form for the same project. When changing an existing registration,
+reuse the spelling originally recorded by `init`. Use the standard Linear
+endpoint and `LINEAR_API_KEY` binding. The workflow controls worker checkout and
+delivery conventions.
 
 Run initialization from any directory and use the printed project ID in later
 commands. The registered repository may use an HTTPS or standard GitHub SSH
@@ -280,9 +283,11 @@ A remote Codex workflow uses a direct `codex … app-server` command. Put worker
 checkout and setup steps in the workflow's workspace hooks. Run
 `symphony project validate WORKFLOW.md` for unpublished YAML and prompt rendering.
 
-The dashboard and `/api/v1/state` report the watched branch, accepted commit,
-workflow SHA-256 and last successful source check. Initial source and Linear
-project verification must pass before the manager starts the listener. During
+The Operations Dashboard links to the project by its Linear display name and
+to `WORKFLOW.md` on GitHub at the accepted commit. It shows the watched branch.
+`/api/v1/state` also reports the accepted commit, workflow SHA-256 and last
+successful source check. Initial source and Linear project verification must
+pass before the manager starts the listener. During
 operation Symphony checks the watched branch about every 30 seconds. A
 temporary Git failure reports stale and keeps using the last accepted workflow.
 A confirmed missing branch or root workflow, or a rejected candidate, holds

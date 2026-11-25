@@ -47,7 +47,7 @@ defmodule SymphonyElixir.CLI do
 
     with %{} = source <- RemoteWorkflow.source_from_environment(),
          {:ok, state} <- WorkflowStore.prepare_remote(source, false),
-         :ok <- Client.verify_project(state.settings.tracker),
+         {:ok, _project} <- Client.fetch_project(state.settings.tracker),
          :ok <- report_remote_probe(state, options) do
       System.halt(0)
     else
@@ -71,7 +71,7 @@ defmodule SymphonyElixir.CLI do
   def main(["--check-codex-remote-sandbox"], _ensure_all_started) do
     with %{} = source <- RemoteWorkflow.source_from_environment(),
          {:ok, state} <- WorkflowStore.prepare_remote(source, true),
-         :ok <- Client.verify_project(state.settings.tracker),
+         {:ok, _project} <- Client.fetch_project(state.settings.tracker),
          :ok <- SymphonyElixir.Workflow.set_workflow_file_path(state.path),
          :ok <- SandboxReadiness.check(credential_free: true) do
       IO.puts("Codex sandbox protected-command checks passed.")
@@ -155,7 +155,7 @@ defmodule SymphonyElixir.CLI do
 
   defp report_remote_probe(state, ["--compare-local"]) do
     with {:ok, content, workflow, settings} <- read_local_workflow(),
-         true <- settings.tracker.kind == "linear" and settings.tracker.project_slug == state.source.project do
+         true <- settings.tracker.kind == "linear" and Client.same_project_slug?(settings.tracker.project_slug, state.source.project) do
       local_sha = :sha256 |> :crypto.hash(content) |> Base.encode16(case: :lower)
       IO.puts(Enum.join([state.source.branch, state.commit, state.stamp, local_sha], " "))
 
@@ -222,12 +222,20 @@ defmodule SymphonyElixir.CLI do
       source ->
         with true <- path == RemoteWorkflow.accepted_path() and source.branch != "",
              {:ok, state} <- WorkflowStore.prepare_remote(source, true) do
+          state = %{state | project_details: project_details(state.settings.tracker)}
           Application.put_env(:symphony_elixir, :prepared_remote_workflow, state)
           :ok
         else
           false -> {:error, remote_message(:invalid_registration)}
           {:error, reason} -> {:error, remote_message(reason)}
         end
+    end
+  end
+
+  defp project_details(tracker) do
+    case Client.fetch_project(tracker, request_timeout: 2_000) do
+      {:ok, project} -> project
+      {:error, _reason} -> nil
     end
   end
 
