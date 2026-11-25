@@ -93,6 +93,11 @@ class SigningEntrypointTest(unittest.TestCase):
         forwarded = re.findall(r'^      ([A-Z0-9_]+): \$\{\{ secrets\.([A-Z0-9_]+) \}\}$', caller, re.M)
         self.assertEqual(dict(forwarded), {name: name for name in expected_secrets})
         self.assertNotIn('secrets: inherit', caller)
+        self.assertIn('runs-on: symphony-macos14\n', worker)
+        preflight = worker.split('      - name: Require successful original', 1)[1].split('      - name: Sign and submit', 1)[0]
+        self.assertNotIn('secrets.', preflight)
+        self.assertLess(preflight.index('persistent_mac_runner.py signing-ready'),
+                        preflight.index('macos_signing_inputs.py'))
         self.assertIn('environment: macos-signing', worker)
         self.assertIn('MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}', worker)
         self.assertNotIn('packages: write', caller + worker)

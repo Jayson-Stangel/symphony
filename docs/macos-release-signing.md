@@ -102,7 +102,8 @@ set to that successful manual integration run. Approve the matching
 `macos-signing` environment deployment. Signing mode skips normal qualification,
 helper/package builds and runner-image work; it calls the same-commit
 **Signed macOS distribution candidate** worker with the already-qualified inputs.
-It never qualifies itself or substitutes an earlier source revision.
+The worker targets the dedicated `symphony-macos14` Actions runner. It never
+qualifies itself or substitutes an earlier source revision.
 
 GitHub requires a manually dispatched workflow to exist on the repository's
 [default branch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
@@ -140,9 +141,11 @@ it does not rewrite qualification or claim new signatures were previously tested
 The controller imports only into a newly generated temporary keychain, uses
 explicit keychain selection, preserves the default keychain and restores the
 preexisting user search list. Secret files are mode-restricted and removed on
-success/failure; SIGINT/SIGTERM unwind cleanup. Use only disposable GitHub-hosted
-macOS runners, never persistent/shared workers. Hard power loss/SIGKILL cannot run
-Python cleanup; destruction of the hosted runner is the final isolation boundary.
+success/failure; SIGINT/SIGTERM unwind cleanup. Before exposing credentials, the
+worker requires the dedicated guest and the installed completion hook to pass the
+same `signing-ready` check as production. The hook can reconcile interrupted
+credential cleanup in the runner's own temp directory. Unavailable capacity stays
+queued, and missing or ineligible cleanup blocks signing.
 No signing secrets are passed to ordinary PR jobs, candidate packages, forks,
 tag/release workflows, or unreviewed feature code. Raw Apple/tool diagnostics and
 arguments are suppressed; only allowlisted submission/log fields are retained.
