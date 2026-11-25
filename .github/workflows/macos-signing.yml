@@ -47,7 +47,7 @@ jobs:
       github.ref == 'refs/heads/dev' && inputs.approved_revision == github.sha &&
       (github.workflow_ref == format('{0}/.github/workflows/runner-integration.yml@refs/heads/dev', github.repository) ||
        github.workflow_ref == format('{0}/.github/workflows/macos-signing.yml@refs/heads/dev', github.repository))
-    runs-on: macos-14
+    runs-on: symphony-macos14
     timeout-minutes: 90
     # REQUIRED before use: operator approval (sole-operator self-review allowed),
     # dev-only deployment and no admin bypass. Never store secrets at repo level.
@@ -64,6 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           QUALIFIED_RUN: ${{ inputs.qualified_run }}
         run: |
+          python3 scripts/ci/persistent_mac_runner.py signing-ready
           python3 scripts/release/macos_signing_inputs.py "$QUALIFIED_RUN" "$RUNNER_TEMP/signing-inputs"
       - name: Sign and submit only this approved candidate to Apple
         env:
