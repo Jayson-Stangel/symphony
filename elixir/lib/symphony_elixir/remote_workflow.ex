@@ -36,8 +36,8 @@ defmodule SymphonyElixir.RemoteWorkflow do
   end
 
   @doc "Returns a GitHub link to the root workflow at the accepted commit."
-  @spec github_workflow_url(String.t(), String.t() | nil) :: String.t() | nil
-  def github_workflow_url(repository, commit) when is_binary(commit) do
+  @spec github_workflow_url(String.t(), String.t()) :: String.t() | nil
+  def github_workflow_url(repository, commit) do
     with [github_url] <- Regex.run(@github_repository, repository, capture: :all_but_first),
          {:ok, commit} <- validate_commit(commit) do
       github_url <> "/blob/" <> commit <> "/WORKFLOW.md"
@@ -45,8 +45,6 @@ defmodule SymphonyElixir.RemoteWorkflow do
       _ -> nil
     end
   end
-
-  def github_workflow_url(_repository, nil), do: nil
 
   @spec fetch(source(), String.t() | nil) :: {:ok, candidate() | :unchanged} | {:error, source_error()}
   def fetch(source, accepted_commit \\ nil) do
