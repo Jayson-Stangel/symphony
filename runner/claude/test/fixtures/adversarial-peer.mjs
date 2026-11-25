@@ -22,15 +22,24 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (mode === 'error-start') { send({ v: 1, type: 'error', code: 'unsupported_tool_schema' }); continue; }
     if (mode === 'auth-start') { send({ ready: false, code: 'auth_required' }); continue; }
     send({ ...base, type: 'ready', identity: { profile: mode === 'bad-profile' ? 12 : 'a'.repeat(64) },
-      owned_native: mode === 'bad-owned' ? 'invalid' : mode === 'bad-pid' ? [{ pid: 1, start: '0' }] : mode === 'valid-owned' ? [{ pid: 999999, start: '0' }] : [] });
+      owned_native: mode === 'bad-owned' ? 'invalid' : mode === 'bad-pid' ? [{ pid: 1, start: '0' }] : ['valid-owned', 'valid-owned-lost-stop'].includes(mode) ? [{ pid: 999999, start: '0' }] : [] });
   } else if (c.type === 'turn') {
     active = base; activePrompt = c.prompt;
     const type = c.prompt;
     if (type === 'exit') process.exit(1);
-    if (type === 'diagnostic-unknown' || type === 'diagnostic-map') { send({ ...base, type: 'turn_result', outcome: 'protocol_error', code: type === 'diagnostic-map' ? { secret: 'secret-canary' } : 'secret-canary' }); continue; }
     if (type === 'oversized') { process.stdout.write('x'.repeat(1_100_000) + '\n'); continue; }
     if (type === 'array') { send([]); continue; }
     if (type === 'wrong-session') { send({ ...base, session_id: 'wrong', type: 'progress', activity: 'agent' }); continue; }
+    if (type === 'foreign-turn-ack') { send({ ...base, session_id: 'wrong', type: 'turn_accepted' }); continue; }
+    if (type === 'stale-turn-ack') { send({ ...base, request_id: 'stale', type: 'turn_accepted' }); continue; }
+    if (type === 'missing-turn-ack') { send({ ...base, type: 'turn_result', outcome: 'completed' }); continue; }
+    send({ ...base, type: 'turn_accepted' });
+    if (type === 'duplicate-turn-ack') {
+      send({ ...base, type: 'turn_accepted' });
+      send({ ...base, type: 'turn_result', outcome: 'completed' });
+      continue;
+    }
+    if (type === 'diagnostic-unknown' || type === 'diagnostic-map') { send({ ...base, type: 'turn_result', outcome: 'protocol_error', code: type === 'diagnostic-map' ? { secret: 'secret-canary' } : 'secret-canary' }); continue; }
     if (type === 'usage-invalid') { send({ ...base, type: 'usage', totals: { input_tokens: -1 } }); continue; }
     if (type === 'usage-array') { send({ ...base, type: 'usage', totals: [] }); continue; }
     if (type === 'unexpected') { send({ ...base, type: 'unknown' }); continue; }
@@ -55,7 +64,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     send({ ...active, type: 'turn_result', outcome: 'completed' }); // Deliberately missing tool ACK.
   } else if (c.type === 'stop') {
     if (mode === 'silent-stop') continue;
-    if (mode === 'exit-on-stop') process.exit(1);
+    if (['exit-on-stop', 'valid-owned-lost-stop'].includes(mode)) process.exit(1);
     if (mode === 'invalid-stop') { process.stdout.write('bad-json\n'); continue; }
     send({ ...base, type: 'progress', activity: 'agent' });
     send({ ...base, type: 'stopped', ...(mode === 'wrong-stop' ? { request_id: 'foreign' } : {}), ...(mode === 'wrong-session-stop' ? { session_id: 'foreign' } : {}) });

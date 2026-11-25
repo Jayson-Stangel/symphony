@@ -103,7 +103,14 @@ source_revision() { package_helper manager-revision "$symphony_home/release.json
 resolve_runner_home() { mkdir -p "$runner_home"; }
 validate_agent() { case "$1" in codex|claude) ;; *) die 'bad fixture agent' ;; esac; }
 repo_root() { pwd; }
+registered_project() { return 1; }
 project_id() { basename "$1"; }
+runner_pending_migration() { :; }
+runner_clear_completed_journal() {
+  package_remove_transition_fields "$1"
+  rm -f "$1/target"
+  rmdir "$1"
+}
 # Installer boundary is a fixture here; native installer has its own tests.
 package_stage_bundle() {
   local from=$1 version revision destination
@@ -153,6 +160,12 @@ runner_rollback() {
 }
 case "${1:-}" in
   update) shift; package_update "$@" ;;
+  record-project)
+    package_update_lock
+    package_note_project_registration
+    mkdir -p "$config_home/projects"
+    printf '%s\n' fixture https://github.com/one/project-one.git main adopted >"$config_home/projects/project-one-a655f1ffd4d3.remote"
+    ;;
   _complete-package-update) shift; complete_package_update "$@" ;;
   version) source_revision ;;
 esac
@@ -200,12 +213,21 @@ class PackageUpdateTest(unittest.TestCase):
         (self.app / "current").symlink_to(self.initial)
         self.command = self.app / "current/scripts/symphony"
 
-    def bundle(self, version, revision, channel="candidate"):
+    def bundle(self, version, revision, channel="candidate", registration="adopted"):
         directory = self.root / f"{version}-{revision}"
         (directory / "scripts").mkdir(parents=True)
         (directory / "libexec").mkdir()
-        (directory / "scripts/symphony").write_text(LAUNCHER)
+        launcher = LAUNCHER
+        if registration == "selector-only":
+            launcher = launcher.replace("case \"${1:-}\" in", "project_registration_write() (\n  :\n)\ncase \"${1:-}\" in")
+        (directory / "scripts/symphony").write_text(launcher)
         (directory / "scripts/symphony").chmod(0o755)
+        if registration != "checkout":
+            package = (REPOSITORY / "scripts/symphony-package.sh").read_text()
+            if registration == "selector-only":
+                package = package.replace("# Manager capability: adopted project registrations v1\n", "")
+                package = package.replace("# Manager capability: records registration use v1\n", "")
+            (directory / "scripts/symphony-package.sh").write_text(package)
         shutil.copyfile(UPDATER, directory / "scripts/symphony-package-update.sh")
         (directory / "libexec/symphony-host").write_text(HELPER.replace("__FIXTURE_BUILD_REVISION__", revision))
         (directory / "libexec/symphony-host").chmod(0o755)
@@ -288,6 +310,75 @@ class PackageUpdateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.current(), self.initial)
         self.assertEqual((self.config / "runners/project-one.image").read_text().strip(), "a" * 40)
+
+    def test_unused_install_can_select_checkout_only_release(self):
+        legacy = self.bundle("0.0.0", "0" * 40, registration="checkout")
+        self.assertEqual(self.run_update("--candidate-manifest", str(legacy[0]),
+                                        "--candidate-bundle", str(legacy[1])).returncode, 0)
+        self.assertEqual(self.current().name, legacy[2].name)
+        self.assertEqual(self.candidate().returncode, 0)
+        self.assertEqual((self.app / "update.lock").stat().st_size, 0)
+        result = self.run_update("--rollback-release")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current().name, legacy[2].name)
+
+    def test_registered_projects_require_compatible_manager_before_release_rollback(self):
+        self.assertEqual(self.candidate().returncode, 0)
+        current = self.current()
+        legacy = self.bundle("0.0.0", "0" * 40, registration="checkout")
+        legacy_release = self.app / "releases" / legacy[2].name
+        shutil.copytree(legacy[2], legacy_release)
+        early = self.bundle("0.0.1-early", "e" * 40, registration="selector-only")
+        early_release = self.app / "releases" / early[2].name
+        shutil.copytree(early[2], early_release)
+        compatible = self.bundle("0.0.3", "c" * 40)[2]
+        retained = self.app / "releases" / compatible.name
+        shutil.copytree(compatible, retained)
+        result = subprocess.run([self.command, "record-project"], env=self.env, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        registration = self.config / "projects/project-one-a655f1ffd4d3.remote"
+        registered = registration.read_bytes()
+        previous = self.app / "previous"
+        other = self.root / "empty-config"
+        other.mkdir()
+
+        for incompatible, archives in ((legacy_release, legacy), (early_release, early)):
+            previous.unlink()
+            previous.symlink_to(incompatible)
+            for transition in ([], ["--agent", "codex"], ["--config-dir", str(other)]):
+                with self.subTest(incompatible=incompatible, transition=transition):
+                    result = self.run_update("--rollback-release", *transition)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("selected release cannot manage registered projects", result.stdout)
+                    self.assertEqual(self.current(), current)
+                    self.assertEqual(previous.resolve(), incompatible)
+                    self.assertFalse((self.app / "pending-transition").exists())
+                    self.assertFalse((self.config / "runners/project-one.image").exists())
+                    self.assertEqual(registration.read_bytes(), registered)
+            result = self.run_update("--candidate-manifest", str(archives[0]),
+                                     "--candidate-bundle", str(archives[1]), "--config-dir", str(other))
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("selected release cannot manage registered projects", result.stdout)
+            self.assertEqual(self.current(), current)
+
+        previous.unlink()
+        previous.symlink_to(retained)
+        result = self.run_update("--rollback-release")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.current(), retained)
+
+    def test_earlier_remote_manager_could_have_untracked_configuration_roots(self):
+        early = self.bundle("0.0.1-early", "e" * 40, registration="selector-only")
+        installed = self.app / "releases" / early[2].name
+        shutil.copytree(early[2], installed)
+        (self.app / "current").unlink()
+        (self.app / "current").symlink_to(installed)
+        self.assertFalse((self.config / "projects").exists())
+        self.assertEqual(self.candidate().returncode, 0)
+        result = self.run_update("--rollback-release")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("selected release cannot manage registered projects", result.stdout)
+        self.assertEqual(self.current().name, self.second[2].name)
 
     def test_failed_verification_keeps_current_and_existing_project_canaries(self):
         evidence = self.projects[1] / "untracked-evidence"
@@ -504,17 +595,23 @@ runner_resume_when_ready() { :; }; runner_record_observed_metadata() { :; }
 package_write_transition() { :; }; package_remove_transition_fields() { :; }
 package_finish_transition() { die 'injected manager activation failure'; }
 fixture_runtime() {
+  local file
   case "$1" in
     info) printf '%s\n' 'name=seccomp,profile=builtin' ;;
     image) echo new ;;
     inspect)
       case "${!#}" in
-        project-before-update)
-          [ -f "$fixture/backup" ] || return 1
-          case "$*" in *State.Running*) echo false ;; *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/backup" ;; esac ;;
-        project)
-          [ -f "$fixture/current" ] || return 1
-          case "$*" in *com.symphony.agent*) echo claude ;; *'{{.Image}}'*) cat "$fixture/current" ;; esac ;;
+        project-before-update) file="$fixture/backup" ;;
+        project) file="$fixture/current" ;;
+        *) return 1 ;;
+      esac
+      [ -f "$file" ] || return 1
+      case "$*" in
+        *State.Running*) echo false ;;
+        *com.symphony.agent*) echo claude ;;
+        *'{{.Image}}'*) cat "$file" ;;
+        *'{{.Id}}'*)
+          if [ "$(cat "$file")" = old ]; then printf '%064d\n' 1; else printf '%064d\n' 2; fi ;;
       esac ;;
     rename)
       if [ "$2" = project ]; then mv "$fixture/current" "$fixture/backup"

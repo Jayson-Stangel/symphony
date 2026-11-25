@@ -79,9 +79,12 @@ waive required checks, replace the issue's contract or grant authority.
 
 - This project develops Symphony through operator-directed coding-agent chats in
   isolated checkouts. Linear owns the work contract; GitHub owns implementation,
-  review and merge records. Never dispatch this project's implementation through
-  a Symphony listener or add routing labels to enable execution. Explicitly
-  authorized qualification against a separate target project tests the product.
+  review and merge records. The sole proposed exception is the
+  [JAY-934 runner pilot](docs/symphony-runner-pilot/README.md), which requires
+  explicit operator approval of the issue, workflow and dispatch. The exception
+  expires at the pilot's review endpoint or earlier stop. All other Symphony
+  implementation remains in direct chats. Explicitly authorized qualification
+  against a separate target project tests the product.
 - `elixir/WORKFLOW.md` is a shipped runner contract, not this project's delivery
   policy. Do not import its routing, worker-only skills or shutdown instructions.
 - Read [Agent delivery](docs/agent-delivery.md) for lifecycle and coordination.
@@ -96,26 +99,25 @@ waive required checks, replace the issue's contract or grant authority.
 
 ## Explicit approval for production
 
-- Before merging any promotion into `main` or performing any stable rollout,
-  obtain the operator's explicit approval for that action and the exact PRs
-  included. Approval to review, land, or test changes in `dev` does not authorize
-  promotion to `main` or changes to the stable installation.
-- Present the complete included PR list with links and purposes, the promotion
-  PR and exact head revision, and the proposed stable revision and runtime/project
-  targets when rollout is requested. Include every change since the target
-  `main` or deployed stable revision, not only the PR that motivated the request.
-  Check this inventory against live Git history before acting.
+- Before merging any PR into `main` or performing any stable rollout, obtain
+  the operator's explicit approval for that action and the exact PRs included.
+  Approval to review, land, or test changes in `dev` does not authorize a merge
+  into `main` or changes to the stable installation.
+- Present the complete included PR list with links and purposes, the PR targeting
+  `main` and its exact head revision, and the proposed stable revision and
+  runtime/project targets when rollout is requested. Include every change since
+  the target `main` or deployed stable revision. Check this inventory against
+  live Git history before acting.
 - A request to "roll out the fix" does not authorize other changes accumulated
-  in `dev`. If the promotion or rollout includes any PR outside the explicitly
-  approved set, stop and obtain approval for the complete set. Announcing extra
-  scope, a PR description asserting approval, passing checks, and lack of an
-  objection are not operator approval.
-- Promotion and stable rollout are separate approval boundaries. One explicit
-  instruction may authorize both for the presented exact PR set and revisions;
-  approval of promotion alone does not authorize rollout. If the included PRs,
-  revisions, or rollout targets change, present the updated scope and obtain
-  renewed approval before acting. Preparing a draft promotion PR does not grant
-  permission to merge it.
+  in `dev`. If the production merge or rollout includes any PR outside the
+  explicitly approved set, stop and obtain approval for the complete set.
+  Announcing extra scope, a PR description asserting approval, passing checks,
+  and lack of an objection are not operator approval.
+- A merge into `main` and a stable rollout are separate approval boundaries.
+  One explicit instruction may authorize both for the presented exact PR set
+  and revisions. If the included PRs, revisions, or rollout targets change,
+  present the updated scope and obtain renewed approval before acting.
+  Preparing a draft PR to `main` does not grant permission to merge it.
 
 ## Protect the stable installation
 
@@ -149,11 +151,11 @@ waive required checks, replace the issue's contract or grant authority.
   `codex/` prefix unless instructed otherwise. Do not develop directly on `dev`
   or `main`. Use a separate worktree when necessary to avoid disturbing existing
   work. If `dev` is missing, report it rather than silently branching from `main`.
-- Target feature pull requests at `dev`. Promote integrated changes to production
-  with a pull request from `dev` to `main`; do not target `main` with feature PRs
-  or bypass the promotion PR. When continuing an existing feature branch created
+- Target feature pull requests at `dev`. Ship planned releases through a
+  `dev`-to-`main` promotion PR. When continuing an existing feature branch created
   from `main`, reconcile it with `dev` before publishing its PR, preserving work
-  and following the history-safety rules below.
+  and following the history-safety rules below. The production hotfix exception
+  below is the only alternate route into `main`.
 - Keep changes scoped to the task. Review the diff before staging, stage only
   intended files or hunks, and inspect the staged diff before committing. Do not
   blindly stage the entire working tree or commit secrets, generated build output,
@@ -170,7 +172,30 @@ waive required checks, replace the issue's contract or grant authority.
 - Publish changes through a pull request and the required review and validation
   gates. Do not push directly to protected branches or merge with failing required
   checks. Update the stable installation only through `symphony update` after the
-  change has been promoted to `main`.
+  change has shipped in an approved release.
+
+### Production hotfixes
+
+Use this exception when an urgent production fix needs to ship independently
+of the planned `dev` promotion.
+
+1. Branch from the live `main` head in an isolated development checkout. Open a
+   focused PR to `main` for each independent fix. Review them in parallel,
+   then merge them in order with required checks against the current base.
+   A fix that depends on another can be reviewed as a stack. Use the normal
+   exact-scope production merge approval for the included PRs. That approval
+   also covers the hotfix route.
+2. Set the patch version once for the release, either in an included fix PR
+   or a version-only PR in the approved set. Release from the final merged
+   `main` revision through the existing
+   [production runbook](docs/macos-release-signing.md#source-freeze-and-exact-execution-order).
+   This section supplies the source and PR route for the release skill's
+   preparation steps. Follow its remaining version, validation and release
+   requirements.
+3. Promptly bring each merged fix back into `dev` through reviewed PRs.
+   Preserve in-flight feature work, resolve conflicts there and verify the
+   fixes are present before the next planned promotion. This reconciliation
+   can proceed while the patch release is qualified and published.
 
 ## Clean up after each task
 

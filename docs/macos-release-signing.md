@@ -338,13 +338,22 @@ these settings changes; workflow source cannot create or enforce them.
 
 ### Source freeze and exact execution order
 
-1. Finish and review the feature PR to `dev`, then freeze its integrated source
-   `D`. Refresh the complete included PR/link/purpose inventory against live
-   `main`; include this PR and all other intervening work. Obtain explicit
-   promotion approval for that inventory and promotion PR/head. Promote normally
-   and observe the actual resulting main commit **`P`**. Equal trees between
-   `D` and `P` never permit rewriting a receipt's source SHA.
-2. Keep main at `P` through qualification and signing. With separate execution
+1. For a planned release, finish and review the feature PR to `dev`, then freeze
+   its integrated source `D` and prepare the promotion PR. For an urgent fix
+   shipping independently, use the reviewed
+   [production hotfix path](../AGENTS.md#production-hotfixes). Batch fixes that
+   can ship together under one patch version. If one fix must ship sooner,
+   release it first and leave the other PRs open for a later patch. In either
+   case, refresh the complete included PR/link/purpose inventory against live
+   `main` and obtain explicit production merge approval for the inventory and
+   exact PR heads before merging. If a head or the included set changes,
+   refresh the affected approval. Observe the final merged `main` commit
+   **`P`** after all approved PRs for the release land. Equal trees across
+   revisions never permit rewriting a receipt's source SHA.
+2. Keep `main` at `P` through qualification and signing. Development and
+   hotfix review can continue during that window. If another fix must join
+   this release, approve the updated scope, land it, and start qualification
+   again at the new `P`. With separate execution
    authority, manually run `burrito-release.yml` **on main**, setting
    `production_prepare=true`. It performs full existing runner/helper/package and
    standalone-engine qualification, then prepares stable-reference manifests and
@@ -378,8 +387,8 @@ these settings changes; workflow source cannot create or enforce them.
    A candidate-registry lifecycle proves composition, not final public GHCR
    availability. Keep any check requiring actual public refs explicitly pending
    until the next authorized stage; do not rewrite the package to insert aliases.
-6. Only with exact tag/publication approval, create `v0.0.7` at `P`, then manually
-   dispatch `production-publish.yml` **on that tag**, supplying
+6. Only with exact tag/publication approval, create the matching version tag
+   at `P`, then manually dispatch `production-publish.yml` **on that tag**, supplying
    `approved_revision=P`, `signed_run=S`, `signed_attempt=S_ATTEMPT`. The source
    must remain an ancestor of protected `main`; later unrelated main advancement
    does not authorize another `P`. All jobs consume the frozen approved SHA and

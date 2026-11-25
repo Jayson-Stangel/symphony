@@ -90,6 +90,14 @@ An external/symlinked Git directory refuses qualification; no full-access fallba
 is used. Local-remote Git proof does not establish GitHub authentication or a
 completed provider task.
 
+
+Managed container runners load a registered GitHub branch's root workflow.
+The runner validates each candidate with the same workflow loader and keeps its
+last accepted bytes in project state. See the
+[remote project setup](../docs/packaged-install.md#register-a-new-project-from-a-remote-workflow).
+Use `symphony project validate WORKFLOW.md` to check unpublished configuration
+and strict prompt rendering.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
@@ -214,7 +222,9 @@ still-active tracker issue can become a dispatch candidate again after restart.
 For durable blockers, configure `tracker.blocked_states: ["Blocked"]` and create that status in the
 tracker. These states must not overlap active or terminal states. Symphony polls them alongside
 active work and shows matching issues in the dashboard and JSON API, including after a restart.
-Blocked issues are not dispatched. The issue workpad holds the blocker and exact unblock action;
+Blocked issues are not dispatched. Moving an active issue to Blocked interrupts its current
+session and retains the claim until native shutdown is confirmed. The issue workpad holds the
+blocker and exact unblock action;
 `Human Review` holds validated PRs awaiting human assessment. Record available feedback
 and pending external reviews, then end the worker turn. Required repository checks,
 reviews and human approval remain merge obligations; optional bot latency is not a
@@ -338,7 +348,7 @@ workspace:
   clone_url: https://github.com/your-org/your-repo.git
 agent:
   max_concurrent_agents: 10
-  max_turns: 20
+  max_turns_per_attempt: 20
 codex:
   command: codex app-server
 ---
@@ -391,26 +401,44 @@ Notes:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back coding-agent turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-  Reaching this per-attempt allowance closes the native session normally and schedules the existing
-  continuation check in the retained workspace; it does not block the issue. Both providers use this
-  behavior. Claude helper replay history uses this same captured attempt allowance, with no
-  separate input ceiling; workflow reloads apply to the next attempt. Claude native `max_agentic_turns` exhaustion also yields after cleanup for a fresh
-  session; it does not permanently block active work or reuse the exhausted session. Tracker state
-  and dispatch limits are checked again before another attempt starts.
+- `agent.max_turns_per_attempt` limits completed turns in one worker attempt for both providers.
+  It accepts a positive integer and defaults to `20`. At the limit, the worker closes the native
+  session normally. The scheduler rechecks eligibility and can continue in the retained workspace
+  with a fresh count. Claude helper replay uses the same captured allowance.
+  Workflow reloads apply to the next attempt. The deprecated `agent.max_turns` key is used only
+  when `agent.max_turns_per_attempt` is absent. A Claude native `error_max_turns` also
+  yields after cleanup. The scheduler rechecks tracker state and dispatch limits
+  before opening a fresh session for eligible work.
   Only a successful native turn result completes a turn (`turn/completed` for Codex or
   a correlated successful SDK result for Claude). Progress messages, review polling, and
   status notifications remain inside that turn and do not consume continuation turns.
+- `agent.fresh_session_on_enter` is an optional list of active destination status names.
+  Symphony trims whitespace and ignores case. Omit the setting or use `[]` to continue
+  the current conversation across active statuses. An observed entry into a configured
+  status interrupts the captured Codex or Claude session, including when the entry is
+  first seen between turns. A session that starts in the destination can continue there.
+  Leaving and later re-entering that destination creates a new boundary.
+  After the old session exits, Symphony refreshes eligibility and starts a fresh
+  conversation in the same workspace. It reads the current issue again before the
+  first turn and uses the current workflow. The branch, PR and untracked files stay
+  available in the workspace. If shutdown is unconfirmed, Symphony keeps the claim
+  and retries confirmation on subsequent polls when it has captured shutdown
+  information. That includes a native process identified during startup.
+  A pending startup without shutdown information or closure evidence keeps
+  the claim. A failed tracker refresh delays replacement until a successful
+  current read. Pending stops survive a scheduler child restart within the
+  running manager. Before restarting the manager itself after an unconfirmed
+  stop, verify that the old native worker has exited.
 - `codex.live_max_total_tokens` is a live circuit breaker. When a running issue session reports
   total token usage at or above this value, Symphony stops the worker and exposes the issue as
   blocked instead of retrying it. Set to `0` to disable. Default: `0`.
-- `codex.live_max_turns` is a live circuit breaker on observed Codex session starts for one issue
-  run. When the count reaches this value, Symphony stops the worker and exposes the issue as
-  blocked instead of retrying it. Set to `0` to disable. Default: `0`.
-  Generated and sample workflows leave both live circuit breakers disabled. Existing project
-  workflows keep any explicitly configured limits; remove them or set them to `0` to use ordinary
-  continuation behavior. Symphony does not rewrite existing project policy on update.
+- `agent.live_max_turns` is a live circuit breaker on distinct turn starts in the current worker
+  run for both providers. When the count reaches this value, Symphony stops and cleans up the
+  worker, reports the count and limit in blocked status, and suppresses automatic continuation.
+  The shared breaker is disabled by default. Codex falls back to `codex.live_max_turns` when
+  the shared key is absent. Setting the shared key to `0` disables that fallback.
+  Generated and sample workflows leave live circuit breakers disabled. Updates preserve stored
+  workflows and their explicit settings.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - For local clone-only setup, use `workspace.clone_url` as above; it cannot be combined
@@ -771,7 +799,7 @@ preserving the rollback container until the replacement passes readiness. See
 
 Project configuration, container and transition names use the same normalized repository hash
 identity already used by retained storage volumes. Basename-era installations migrate only
-through `symphony update --migrate-project-identity` (add `--development-runner` for an isolated
+through `symphony update --migrate-project-identity # invoke with the prior checkout-era manager` (add `--development-runner` for an isolated
 namespace). Migration preserves volume names, credential bytes, workflow files and pending
 rollback evidence; it requires an owned retained container and refuses mixed or foreign
 resources. See the [installation migration procedure](../docs/operations.md#migrate-an-older-project-identity) for credentials without

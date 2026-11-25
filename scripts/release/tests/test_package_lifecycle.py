@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,6 +21,27 @@ spec.loader.exec_module(lifecycle)
 
 
 class LifecycleControllerTest(unittest.TestCase):
+    def test_registration_layout_uses_package_capability_and_refuses_intermediate_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "manager.tar.gz"
+            profiles = (
+                (b"# Checkout launcher\n", b"# Checkout package\n", False),
+                (b"project_registration_write() (\n", b"# Early registration package\n", None),
+                (b"project_registration_write() (\n", b"# Manager capability: adopted project registrations v1\n", True),
+            )
+            for launcher, package, supported in profiles:
+                with self.subTest(package=package):
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        for name, content in (("symphony", launcher), ("symphony-package.sh", package)):
+                            member = tarfile.TarInfo(f"./scripts/{name}")
+                            member.size = len(content)
+                            archive.addfile(member, io.BytesIO(content))
+                    if supported is None:
+                        with self.assertRaisesRegex(ValueError, "requires a checkout-only or adopted-registration manager"):
+                            lifecycle.package_uses_adopted_registrations(archive_path)
+                    else:
+                        self.assertIs(lifecycle.package_uses_adopted_registrations(archive_path), supported)
+
     def test_browser_qualification_reuses_actual_image_only_after_success(self):
         completed = set()
         calls = []

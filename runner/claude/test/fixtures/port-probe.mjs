@@ -18,6 +18,8 @@ class Probe {
       // Worker prompts append recovery instructions after the scenario's first line.
       const text = input.message.content.split('\n', 1)[0];
       if (text.startsWith('effort:') && this.options.effort !== text.slice(7)) throw new Error('effort_mismatch');
+      if (text === 'native-limit-omitted' && Object.hasOwn(this.options, 'maxTurns')) throw new Error('native_limit_present');
+      if (text === 'native-limit-100' && this.options.maxTurns !== 100) throw new Error('native_limit_mismatch');
       if (text === 'silence') continue;
       if (text === 'native-allowance') {
         const path = join(this.options.cwd, 'native-allowance-count');

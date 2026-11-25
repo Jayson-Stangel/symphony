@@ -25,6 +25,9 @@ defmodule SymphonyElixir.UpdaterTest do
     git!(remote, ["symbolic-ref", "HEAD", "refs/heads/main"])
     git!(root, ["clone", remote, installation])
     initial = git!(installation, ["rev-parse", "HEAD"])
+    record = Path.join(root, "config/projects/service-a655f1ffd4d3.remote")
+    File.mkdir_p!(Path.dirname(record))
+    File.write!(record, "fixture\nhttps://github.com/one/service.git\nmain\n")
     on_exit(fn -> File.rm_rf!(root) end)
     %{root: root, seed: seed, remote: remote, installation: installation, initial: initial, log: Path.join(root, "calls")}
   end
@@ -351,12 +354,25 @@ defmodule SymphonyElixir.UpdaterTest do
     File.mkdir!(peer_dir)
     File.write!(Path.join(peer_dir, "git"), "#!/bin/bash\nif [ \"${3:-}\" = fetch ]; then printf 'fetch\\n' >> \"$FIXTURE_FETCHES\"; fi\nexec \"$FIXTURE_REAL_GIT\" \"$@\"\n")
     File.chmod!(Path.join(peer_dir, "git"), 0o755)
+    id = "service-a655f1ffd4d3"
+    record = Path.join(config, "projects/#{id}.remote")
+    File.mkdir_p!(Path.dirname(record))
+    File.write!(record, "fixture\nhttps://github.com/one/service.git\nmain\n")
     args = ["--agent", "claude", "--bin-dir", bin, "--config-dir", config, "--skills-dir", skills]
-    env = [{"SYMPHONY_RUNNER_HOME", runner}, {"FIXTURE_DETAILS", details}, {"FIXTURE_FETCHES", fetches}, {"FIXTURE_REAL_GIT", real_git}, {"PATH", peer_dir <> ":" <> System.fetch_env!("PATH")}]
+
+    env = [
+      {"SYMPHONY_PROJECT", id},
+      {"SYMPHONY_RUNNER_HOME", runner},
+      {"FIXTURE_DETAILS", details},
+      {"FIXTURE_FETCHES", fetches},
+      {"FIXTURE_REAL_GIT", real_git},
+      {"PATH", peer_dir <> ":" <> System.fetch_env!("PATH")}
+    ]
+
     assert {output, 0} = update(ctx, args, env)
     assert output =~ "Updated: #{ctx.initial} -> #{selected}"
     assert File.read!(ctx.log) == "NEW install\nNEW setup\nNEW transition claude\n"
-    assert File.read!(details) == Enum.join([bin, config, skills, runner, git!(ctx.installation, ["rev-parse", "--show-toplevel"]), selected], "\n") <> "\n"
+    assert File.read!(details) == Enum.join([bin, config, skills, runner, record, selected], "\n") <> "\n"
     assert File.read!(fetches) == "fetch\n"
   end
 
@@ -381,7 +397,10 @@ defmodule SymphonyElixir.UpdaterTest do
       config = Path.join(ctx.root, "selected-config")
       runners = Path.join(ctx.root, "selected-runners")
       File.mkdir_p!(runners)
-      id = project_id!(ctx.installation)
+      id = "service-a655f1ffd4d3"
+      record = Path.join(config, "projects/#{id}.remote")
+      File.mkdir_p!(Path.dirname(record))
+      File.cp!(Path.join(ctx.root, "config/projects/#{id}.remote"), record)
       File.write!(Path.join(runners, "#{id}.env"), "fixture metadata")
       paused = Path.join(ctx.root, "source-paused")
       peer_dir = Path.join(ctx.root, "source-python-peer")
@@ -488,11 +507,6 @@ defmodule SymphonyElixir.UpdaterTest do
     assert {_, 0} = installed_update(ctx)
   end
 
-  defp project_id!(repo) do
-    {identity, 0} = System.cmd("bash", ["-c", ~s(source "$1" --help >/dev/null; project_id "$2"), "identity", @launcher, repo])
-    String.trim(identity)
-  end
-
   defp transition_fixture_launcher(version) do
     [definitions, main] = String.split(File.read!(@launcher), "\ncase \"${1:-}\" in", parts: 2)
 
@@ -506,7 +520,9 @@ defmodule SymphonyElixir.UpdaterTest do
     install() { fixture_pause install; }
     setup() { fixture_pause setup; }
     container_runtime() { printf false; }
-    runner_status() { printf true; }
+    runner_transition_state() {
+      case "$2" in *-before-update) printf 'missing\\n' ;; *) printf 'true\\n' ;; esac
+    }
     runner_owned() { :; }
     # This source-lock fixture models an already-qualified retained source;
     # lifecycle tests own real engine/provider/configuration preflight behavior.
@@ -606,6 +622,7 @@ defmodule SymphonyElixir.UpdaterTest do
         {"FIXTURE_LOG", ctx.log},
         {"SYMPHONY_BIN_DIR", Path.join(ctx.root, "bin")},
         {"SYMPHONY_CONFIG_HOME", Path.join(ctx.root, "config")},
+        {"SYMPHONY_PROJECT", "service-a655f1ffd4d3"},
         {"SYMPHONY_SKILLS_DIR", Path.join(ctx.root, "skills")},
         {"SYMPHONY_RUNNER_HOME", nil}
       ] ++ extra_env

@@ -1514,6 +1514,15 @@ do {
             else if isBool(a["draining"], false), isBool(d["ready"], false), d["reason"] as? String == "quota_exhausted", integer(d["retry_at"]) != nil { print("quota_paused") }
             else { print("unhealthy") }
         case "idle": guard isBool(agent["draining"], true), integer(object(state["counts"])["running"]) == 0 else { exit(1) }
+        case "workflow-sha":
+            guard let sha = object(state["workflow"])["sha256"] as? String, matches(sha, "^[a-f0-9]{64}$") else { exit(1) }; print(sha)
+        case "migration-ready":
+            let workflow = object(state["workflow"])
+            guard args.count == 5, workflow["commit"] as? String == args[2], workflow["branch"] as? String == args[3],
+                  workflow["project"] as? String == args[4], workflow["status"] as? String == "loaded",
+                  workflow["source_block"] is NSNull, workflow["source_error"] is NSNull,
+                  isBool(agent["draining"], true), isBool(object(agent["readiness"])["ready"], true),
+                  integer(object(state["counts"])["running"]) == 0 else { exit(1) }
         case "workflow-mount":
             guard args.count >= 5 else { fail("workflow mount check requires root, platform and layout") }
             guard let mounts = try json(data) as? [[String: Any]] else { exit(1) }

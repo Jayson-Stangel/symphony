@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   @behaviour SymphonyElixir.CodingAgent
 
   require Logger
-  alias SymphonyElixir.{AgentPause, AgentReadiness, Config, ToolCall, Tracker, Workspace}
+  alias SymphonyElixir.{AgentPause, AgentReadiness, CodingAgent, Config, ToolCall, Tracker, Workspace}
   alias SymphonyElixir.Claude.{Instructions, Skills}
 
   @max_frame 1_048_576
@@ -19,8 +19,12 @@ defmodule SymphonyElixir.Claude.Adapter do
   @impl true
   def start_session(workspace, opts) do
     case Keyword.get(opts, :worker_host) do
-      nil -> start_local_session(workspace, opts)
-      _ -> {:error, :claude_ssh_unsupported}
+      nil ->
+        start_local_session(workspace, opts)
+
+      _ ->
+        CodingAgent.report_startup_cleanup(opts, :closed)
+        {:error, :claude_ssh_unsupported}
     end
   end
 
@@ -32,6 +36,10 @@ defmodule SymphonyElixir.Claude.Adapter do
          {:ok, env} <- Config.claude_child_environment(System.get_env(), binding.secret_environment_names),
          {:ok, port} <- start_port(workspace, env, opts) do
       initialize_or_close(port, workspace, instructions, skills, Keyword.put(opts, :tool_binding, binding))
+    else
+      error ->
+        CodingAgent.report_startup_cleanup(opts, :closed)
+        error
     end
   end
 
@@ -45,6 +53,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:readiness_observation, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
 
         if AgentReadiness.observation_code?(code),
           do: {:error, {:claude_startup_failed, code}},
@@ -52,10 +61,12 @@ defmodule SymphonyElixir.Claude.Adapter do
 
       {:error, {:before_start, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, :ok)
 
       {:error, {:stopped, code}} ->
         close_port(port)
+        CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, :ok)
 
       {:error, code} ->
@@ -64,6 +75,7 @@ defmodule SymphonyElixir.Claude.Adapter do
         write(port, %{v: 1, type: "stop", session_id: id, request_id: request})
         cleanup = await_startup_stop(port, deadline(5_000), id, request)
         close_port(port)
+        if cleanup == :ok, do: CodingAgent.report_startup_cleanup(opts, :closed)
         startup_failure(code, cleanup)
     end
   end
@@ -88,7 +100,14 @@ defmodule SymphonyElixir.Claude.Adapter do
   defp initialize_native(port, workspace, instructions, skills, opts, id, start_id) do
     settings = Config.settings!()
     config = settings.claude
-    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
+    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns_per_attempt)
+
+    helper_config =
+      config
+      |> Map.take([:model, :effort, :max_agentic_turns, :turn_timeout_ms])
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.put(:max_turns, max_turns)
+
     binding = Keyword.fetch!(opts, :tool_binding)
 
     with :ok <-
@@ -98,36 +117,47 @@ defmodule SymphonyElixir.Claude.Adapter do
              session_id: id,
              request_id: start_id,
              workspace: workspace,
-             config: Map.take(Map.from_struct(config), [:model, :effort, :max_agentic_turns, :turn_timeout_ms]) |> Map.put(:max_turns, max_turns),
+             config: helper_config,
              tools: binding.tool_specs,
              skills: skills,
              instructions: instructions
            }),
          {:ok, %{"v" => 1, "type" => "ready", "session_id" => ^id, "request_id" => ^start_id, "identity" => %{"profile" => profile} = identity, "owned_native" => owned}} <-
            frame(port, deadline(15_000)),
-         true <- valid_profile?(profile) and valid_owned?(owned),
-         :ok <- match_expected_profile(profile, Keyword.get(opts, :expected_profile)) do
-      {:ok,
-       %{
-         port: port,
-         owner: self(),
-         id: id,
-         workspace: workspace,
-         config: config,
-         binding: binding,
-         identity: identity,
-         owned_native: owned,
-         helper_identity: port_identity(port),
-         node: Keyword.get(opts, :node_path, Config.claude_node_path()),
-         cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
-       }}
+         true <- valid_profile?(profile) and valid_owned?(owned) do
+      session = %{
+        port: port,
+        owner: self(),
+        id: id,
+        workspace: workspace,
+        config: config,
+        binding: binding,
+        identity: identity,
+        owned_native: owned,
+        helper_identity: port_identity(port),
+        node: Keyword.get(opts, :node_path, Config.claude_node_path()),
+        cleanup: Keyword.get(opts, :cleanup_path, Path.join(Path.dirname(Keyword.get(opts, :helper_path, Config.claude_helper_path())), "cleanup.mjs"))
+      }
+
+      accept_native_session(session, opts)
     else
       {:ok, %{"v" => 1, "type" => "stopped", "session_id" => ^id, "request_id" => ^start_id}} -> {:error, {:stopped, "protocol_error"}}
-      {:error, :native_identity_mismatch} -> {:error, "policy_blocked"}
       false -> {:error, "native_ownership_unavailable"}
       {:ok, %{"ready" => false, "code" => code}} -> {:error, code}
       {:ok, %{"type" => "error", "code" => code}} -> {:error, code}
       _ -> {:error, "protocol_error"}
+    end
+  end
+
+  defp accept_native_session(session, opts) do
+    if session.helper_identity || session.owned_native != [] do
+      target = Map.take(session, [:helper_identity, :owned_native, :node, :cleanup])
+      CodingAgent.report_startup_cleanup(opts, fn -> cleanup_owned(target) end)
+    end
+
+    case match_expected_profile(session.identity["profile"], opts[:expected_profile]) do
+      :ok -> {:ok, session}
+      {:error, :native_identity_mismatch} -> {:error, "policy_blocked"}
     end
   end
 
@@ -176,8 +206,7 @@ defmodule SymphonyElixir.Claude.Adapter do
 
     case write(session.port, %{v: 1, type: "turn", session_id: session.id, request_id: request, prompt: prompt}) do
       :ok ->
-        emit(callback, :session_started, %{session_id: event_id, provider: :claude})
-        await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), %{})
+        await_turn(session, request, event_id, issue, callback, deadline(session.config.turn_timeout_ms), nil)
 
       {:error, :port_closed} ->
         {:error, :claude_helper_closed}
@@ -187,7 +216,8 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  @spec await_turn(map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  # Pending tool acknowledgements are tracked after the helper accepts the turn.
+  @spec await_turn(map(), String.t(), String.t(), map(), function(), integer(), map() | nil) :: term()
   defp await_turn(session, request, event_id, issue, callback, until, pending) do
     case frame(session.port, min(until, deadline(session.config.read_timeout_ms))) do
       {:error, :timeout} ->
@@ -218,7 +248,15 @@ defmodule SymphonyElixir.Claude.Adapter do
     end
   end
 
-  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map()) :: term()
+  @spec handle_message(map(), map(), String.t(), String.t(), map(), function(), integer(), map() | nil) :: term()
+  defp handle_message(%{"type" => "turn_accepted"}, session, request, event_id, issue, callback, until, pending) do
+    if is_nil(pending), do: emit(callback, :session_started, %{session_id: event_id, provider: :claude})
+    await_turn(session, request, event_id, issue, callback, until, pending || %{})
+  end
+
+  defp handle_message(_message, session, _request, _event_id, _issue, _callback, _until, nil),
+    do: pending_failure(session, nil)
+
   defp handle_message(%{"type" => "progress", "activity" => activity} = message, session, request, event_id, issue, callback, until, pending)
        when activity in ["agent", "tool"] do
     {text, advances?} = progress_summary(message)
@@ -344,7 +382,7 @@ defmodule SymphonyElixir.Claude.Adapter do
   end
 
   defp pending_failure(session, pending, cause \\ nil) do
-    Enum.each(pending, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
+    Enum.each(pending || %{}, fn {_id, context} -> ToolCall.fail(context, "ack_missing") end)
     if cause, do: {:error, cause}, else: pause(session, "protocol_error", %{})
   end
 

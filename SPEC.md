@@ -329,6 +329,16 @@ Loader behavior:
 - If the file cannot be read, return `missing_workflow_file` error.
 - The workflow file is expected to be repository-owned and version-controlled.
 
+Managed projects resolve the root `WORKFLOW.md` from a GitHub branch
+registered with a Linear project. It passes the selected source to the
+runner and retains the resolved default branch once selected. The listener
+verifies candidate source bytes against the registered project and reports the
+accepted commit and SHA-256. Worker workspace checkout and delivery targets
+are still controlled by the workflow. A checkout-based installation can adopt
+its existing resources after the prior runner drains and stops. The replacement
+verifies the reviewed remote commit and readiness before removing its admission
+hold. Local workflow syntax and prompt rendering can be checked independently.
+
 ### 5.2 File Format
 
 `WORKFLOW.md` is a Markdown file with OPTIONAL YAML front matter.
@@ -458,12 +468,20 @@ Fields:
 - `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
-- `max_turns` (positive integer)
+- `max_turns_per_attempt` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session, for both providers.
+  - Limits the number of completed coding-agent turns within one worker attempt, for both providers.
+  - The count resets for each new attempt. Apply deprecated `max_turns` only when
+    `max_turns_per_attempt` is absent.
   - Reaching the allowance MUST exit normally after cleanup, allowing the existing short
     continuation retry to revalidate active work in its retained workspace.
   - Invalid values fail configuration validation.
+- `live_max_turns` (optional nonnegative integer)
+  - Omitted or `0` disables the shared breaker. Codex uses its legacy provider setting
+    only if the shared key is omitted.
+  - Each distinct admitted turn start counts once within the current worker run.
+  - At the configured positive threshold, the orchestrator MUST stop and clean up the worker
+    and expose the issue as blocked with the count and limit, suppressing automatic continuation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
   - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
@@ -512,11 +530,8 @@ fields locally if they want stricter startup checks.
   - If `<= 0`, live token budget enforcement is disabled.
   - If the running session reports `codex_total_tokens >= live_max_total_tokens`, the orchestrator
     MUST stop the worker and expose the issue as blocked instead of scheduling a retry.
-- `live_max_turns` (integer)
-  - Default: implementation-defined.
-  - If `<= 0`, live turn budget enforcement is disabled.
-  - If the running session reports `turn_count >= live_max_turns`, the orchestrator MUST stop the
-    worker and expose the issue as blocked instead of scheduling a retry.
+- `live_max_turns` (deprecated Codex-only fallback, nonnegative integer)
+  - Default: `0` (disabled). Used only when `agent.live_max_turns` is omitted.
 
 ### 5.4 Prompt Template Contract
 
@@ -605,6 +620,13 @@ Dynamic reload is REQUIRED:
 - Invalid reloads MUST NOT crash the service; keep operating with the last known good effective
   configuration and emit an operator-visible error.
 
+For a registered remote source, admission requires an initially verified
+workflow. A transient Git error can leave the last accepted candidate active.
+When the source confirms a missing branch or root file, or candidate validation
+fails, new claims pause and the last accepted workflow is retained. A subsequent
+valid source clears this pause while the existing drain and readiness rules
+continue to apply.
+
 ### 6.3 Dispatch Preflight Validation
 
 This validation is a scheduler preflight run before attempting to dispatch new work. It validates
@@ -654,7 +676,12 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
+- `agent.max_turns_per_attempt`: positive integer, default `20`. Falls back to deprecated
+  `agent.max_turns` when omitted.
+- `agent.live_max_turns`: optional nonnegative integer, disabled by default for both providers.
+  An explicit value, including `0`, overrides `codex.live_max_turns`.
+- `agent.fresh_session_on_enter`: list of active destination status names, default `[]`.
+  Trim and compare status names case-insensitively. Reject malformed values.
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
 - `codex.command`: shell command string, default `codex app-server`
@@ -665,7 +692,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `codex.read_timeout_ms`: integer, default `5000`
 - `codex.stall_timeout_ms`: integer, default `300000`
 - `codex.live_max_total_tokens`: integer, default `0` (disabled)
-- `codex.live_max_turns`: integer, default `0` (disabled)
+- `codex.live_max_turns`: deprecated Codex-only fallback, default `0` (disabled)
+- `claude.max_agentic_turns`: deprecated native SDK step override, integer from `1` to `100`.
+  Omit it to use the native default. A native allowance result yields after cleanup and tracker
+  revalidation for eligible continuation.
 
 ### Container Execution Bindings
 
@@ -724,7 +754,14 @@ Important nuance:
 - The worker MAY continue through multiple back-to-back coding-agent turns before it exits.
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
-  coding-agent thread in the same workspace, up to `agent.max_turns`.
+  coding-agent thread in the same workspace, up to `agent.max_turns_per_attempt`.
+- A successfully observed change into a configured fresh-session destination interrupts
+  the captured native session. Apply the same rule in scheduler polls and before a
+  continuation turn. Remaining in the same status continues the session.
+- Retain the claim until native shutdown is confirmed. Revalidate current dispatch
+  eligibility before replacement and refresh the issue before its first turn. Use a
+  fresh conversation and the existing workspace. Terminal, inactive, blocked and
+  unrouted issues are ineligible for a replacement.
 - The first turn SHOULD use the full rendered task prompt.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
@@ -904,6 +941,8 @@ Part B: Tracker state refresh
 - For each running issue:
   - If tracker state is terminal: terminate worker and clean workspace.
   - If tracker state is still active and routable: update the in-memory issue snapshot.
+    An entry into a configured fresh-session destination stops the old session first.
+  - If tracker state is Blocked: stop the native session and retain the workspace.
   - If tracker state is active but no longer routable: terminate worker without workspace cleanup.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
@@ -2033,11 +2072,11 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     run_hook_best_effort("after_run", workspace.path)
     fail_worker("agent session startup error")
 
-  max_turns = config.agent.max_turns
+  max_turns_per_attempt = config.agent.max_turns_per_attempt
   turn_number = 1
 
   while true:
-    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
+    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns_per_attempt)
     if prompt failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
@@ -2069,7 +2108,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     if issue.state is not active or not issue_routable(issue):
       break
 
-    if turn_number >= max_turns:
+    if turn_number >= max_turns_per_attempt:
       break
 
     turn_number = turn_number + 1

@@ -4,7 +4,9 @@ defmodule SymphonyElixir.CLI do
   """
 
   alias SymphonyElixir.Codex.{ConfigSnapshot, SandboxReadiness}
-  alias SymphonyElixir.LogFile
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{LogFile, PromptBuilder, RemoteWorkflow, Workflow, WorkflowStore}
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, agent: [:string, :keep]]
@@ -35,6 +37,54 @@ defmodule SymphonyElixir.CLI do
 
       {:error, code} ->
         IO.puts(Jason.encode!(%{schema: 1, mode: "codex-config-snapshot", error: code}))
+        System.halt(1)
+    end
+  end
+
+  def main(["--remote-workflow-probe", agent | options], _ensure_all_started)
+      when agent in ["codex", "claude"] and options in [[], ["--compare-local"]] do
+    :ok = set_coding_agent(if(agent == "claude", do: :claude, else: :codex))
+
+    with %{} = source <- RemoteWorkflow.source_from_environment(),
+         {:ok, state} <- WorkflowStore.prepare_remote(source, false),
+         :ok <- Client.verify_project(state.settings.tracker),
+         :ok <- report_remote_probe(state, options) do
+      System.halt(0)
+    else
+      nil -> stop_remote(:invalid_registration)
+      {:error, reason} -> stop_remote(reason)
+    end
+  end
+
+  def main(["--validate-local-workflow"], _ensure_all_started) do
+    with {:ok, _content, workflow, _settings} <- read_local_workflow(),
+         :ok <- PromptBuilder.validate_template(workflow.prompt_template) do
+      IO.puts("Workflow configuration and prompt rendering passed.")
+      System.halt(0)
+    else
+      _ ->
+        IO.puts(:stderr, "Invalid local workflow configuration or prompt template.")
+        System.halt(1)
+    end
+  end
+
+  def main(["--check-codex-remote-sandbox"], _ensure_all_started) do
+    with %{} = source <- RemoteWorkflow.source_from_environment(),
+         {:ok, state} <- WorkflowStore.prepare_remote(source, true),
+         :ok <- Client.verify_project(state.settings.tracker),
+         :ok <- SymphonyElixir.Workflow.set_workflow_file_path(state.path),
+         :ok <- SandboxReadiness.check(credential_free: true) do
+      IO.puts("Codex sandbox protected-command checks passed.")
+      System.halt(0)
+    else
+      nil ->
+        stop_remote(:invalid_registration)
+
+      {:error, reason} when is_atom(reason) ->
+        stop_remote(reason)
+
+      {:error, code} ->
+        IO.puts(:stderr, "Codex sandbox not ready: #{code}")
         System.halt(1)
     end
   end
@@ -94,6 +144,65 @@ defmodule SymphonyElixir.CLI do
   def run(workflow_path, deps) do
     expanded_path = Path.expand(workflow_path)
 
+    with :ok <- prepare_remote_listener(expanded_path) do
+      run_local(expanded_path, deps)
+    end
+  end
+
+  defp report_remote_probe(state, []) do
+    IO.puts(state.source.branch)
+  end
+
+  defp report_remote_probe(state, ["--compare-local"]) do
+    with {:ok, content, workflow, settings} <- read_local_workflow(),
+         true <- settings.tracker.kind == "linear" and settings.tracker.project_slug == state.source.project do
+      local_sha = :sha256 |> :crypto.hash(content) |> Base.encode16(case: :lower)
+      IO.puts(Enum.join([state.source.branch, state.commit, state.stamp, local_sha], " "))
+
+      for {field, local, remote} <- [
+            {"workspace.root", settings.workspace.root, state.settings.workspace.root},
+            {"workspace.clone_url", settings.workspace.clone_url, state.settings.workspace.clone_url},
+            {"codex.command", settings.codex.command, state.settings.codex.command},
+            {"hooks", settings.hooks, state.settings.hooks},
+            {"execution", settings.execution, state.settings.execution}
+          ],
+          local != remote do
+        IO.puts("Review changed workflow settings in #{field}.")
+      end
+
+      if String.contains?(content, ["/etc/symphony", "/opt/symphony/project", "SYMPHONY_LAUNCH_ROOT"]) or
+           Regex.match?(~r{(?:^|[\s"'=:])\.\.?/}m, content) or
+           checkout_relative_workspace?(workflow.config) do
+        IO.puts("Review checkout-relative paths in workspace, agent, hook and prompt settings. Runner containers no longer mount this checkout.")
+      end
+
+      :ok
+    else
+      false -> {:error, :checkout_linear_project_mismatch}
+      _ -> {:error, :invalid_checkout_workflow}
+    end
+  end
+
+  defp checkout_relative_workspace?(config) do
+    Enum.any?(["root", "clone_url"], fn key ->
+      case get_in(config, ["workspace", key]) do
+        path when is_binary(path) -> not String.starts_with?(path, ["/", "~/", "$", "git@"]) and not String.contains?(path, "://")
+        _ -> false
+      end
+    end)
+  end
+
+  defp read_local_workflow do
+    with content when is_binary(content) and byte_size(content) <= 1_048_576 <- IO.binread(:stdio, 1_048_577),
+         {:ok, workflow} <- Workflow.parse(content),
+         {:ok, settings} <- Schema.parse(workflow.config) do
+      {:ok, content, workflow, settings}
+    else
+      _ -> {:error, :invalid_checkout_workflow}
+    end
+  end
+
+  defp run_local(expanded_path, deps) do
     if deps.file_regular?.(expanded_path) do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
@@ -103,6 +212,34 @@ defmodule SymphonyElixir.CLI do
     else
       {:error, "Workflow file not found: #{expanded_path}"}
     end
+  end
+
+  defp prepare_remote_listener(path) do
+    case RemoteWorkflow.source_from_environment() do
+      nil ->
+        :ok
+
+      source ->
+        with true <- path == RemoteWorkflow.accepted_path() and source.branch != "",
+             {:ok, state} <- WorkflowStore.prepare_remote(source, true) do
+          Application.put_env(:symphony_elixir, :prepared_remote_workflow, state)
+          :ok
+        else
+          false -> {:error, remote_message(:invalid_registration)}
+          {:error, reason} -> {:error, remote_message(reason)}
+        end
+    end
+  end
+
+  @spec stop_remote(atom()) :: no_return()
+  defp stop_remote(reason) do
+    IO.puts(:stderr, remote_message(reason))
+    System.halt(1)
+  end
+
+  defp remote_message(reason) do
+    "Remote workflow unavailable (#{reason}). Check the registered repository, watched branch, root WORKFLOW.md, " <>
+      "Linear project and project credentials, then retry."
   end
 
   defp start_application(path, deps) do

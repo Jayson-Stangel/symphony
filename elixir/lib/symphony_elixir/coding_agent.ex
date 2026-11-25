@@ -44,6 +44,24 @@ defmodule SymphonyElixir.CodingAgent do
     adapter.interrupt(native, reason)
   end
 
+  @doc false
+  @spec report_startup_cleanup(keyword(), :closed | (-> :ok | {:error, term()})) :: :ok
+  def report_startup_cleanup(opts, update) do
+    if callback = opts[:on_startup_cleanup], do: callback.(update)
+    :ok
+  end
+
+  @spec session_identity(session()) :: String.t()
+  def session_identity(%{native: %{id: id}}), do: safe_session_id(id)
+  def session_identity(%{native: %{thread_id: id}}), do: safe_session_id(id)
+  def session_identity(_session), do: "n/a"
+
+  defp safe_session_id(id) when is_binary(id) and byte_size(id) <= 128 do
+    if Regex.match?(~r/^[A-Za-z0-9_-]+$/, id), do: id, else: "n/a"
+  end
+
+  defp safe_session_id(_id), do: "n/a"
+
   @spec stop_session(session()) :: :ok | {:error, term()}
   def stop_session(%{adapter: adapter, native: native}) do
     adapter.stop_session(native)

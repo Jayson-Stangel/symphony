@@ -13,7 +13,12 @@ Does not qualify authenticated inference or successful mixed-provider migration.
 import json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time, urllib.request, uuid
 if len(sys.argv) != 3:
  raise SystemExit('Usage: python3 runner/updater-smoke.py CODEX_IMAGE CLAUDE_IMAGE')
-checkout=pathlib.Path(__file__).resolve().parent.parent
+historical = os.environ.get("SYMPHONY_HISTORICAL_SOURCE")
+if not historical:
+ raise SystemExit("Set SYMPHONY_HISTORICAL_SOURCE to an isolated checkout of the checkout-era manager. Use the installed package lifecycle fixture for registered projects.")
+checkout=pathlib.Path(historical).resolve(strict=True)
+if "project migrate --linear-project" in (checkout/"scripts/symphony").read_text():
+ raise SystemExit("This fixture exercises a checkout-era manager. Use the installed package lifecycle fixture for migration.")
 codex_image, claude_image = sys.argv[1:]
 root=pathlib.Path(tempfile.mkdtemp(prefix='symphony-updater-smoke-')); root.chmod(0o755)
 namespace='updater-smoke-'+uuid.uuid4().hex[:12]; prefix='symphony-'+namespace

@@ -2,10 +2,10 @@
 package_runner_provision() (
   set -euo pipefail
   set +x
-  local agent=${1:?provider required} image root credentials token artifact temporary size
+  local agent=${1:?provider required} root=${2:-} image credentials token artifact temporary size
   image=$(package_helper release-get "$symphony_home/release.json" "runners.$agent.$package_arch.image")
   case "$package_channel/$image" in "candidate/localhost:5000/symphony-$agent@sha256:"*) ;; *) die 'automatic companion acquisition requires an original candidate graph' ;; esac
-  root=$(repo_root)
+  if [ -z "$root" ]; then root=$(repo_root) || return; fi
   credentials="$config_home/projects/$(project_id "$root").env"
   # JAY-738 supplies the shared literal reader in the composed launcher. Keep
   # standalone candidate acquisition compatible with the generated file format,
@@ -60,14 +60,14 @@ package_runner_provision() (
 )
 
 package_ensure_candidate_image() {
-  local agent=$1 image runtime
+  local agent=$1 root=${2:-} image runtime
   image=$(package_image "$agent")
   case "$package_channel/$image" in
     candidate/localhost:5000/*@sha256:*|candidate/127.0.0.1:*/*@sha256:*)
       runtime=$(container_runtime)
       container_engine_ready "$runtime" || return
       if ! "$runtime" image inspect "$image" >/dev/null 2>&1; then
-        package_runner_provision "$agent" || return
+        package_runner_provision "$agent" "$root" || return
       fi
       ;;
   esac

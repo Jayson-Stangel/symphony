@@ -170,6 +170,59 @@ defmodule SymphonyElixir.CleanupResponsivenessTest do
     assert :ready = SymphonyElixir.AgentPause.current()
   end
 
+  for final_status <- ["Agent Review", "Blocked", "Human Review", "Done"] do
+    @final_status final_status
+    test "a queued turn at the live cap during fresh cleanup respects #{@final_status}", ctx do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_active_states: ["In Progress", "Agent Review"],
+        tracker_blocked_states: ["Blocked"],
+        workspace_root: ctx.workspaces,
+        fresh_session_on_enter: ["Agent Review"],
+        live_max_turns: 2,
+        poll_interval_ms: 60_000
+      )
+
+      %{"budget" => worker} = install_workers(ctx, ["budget"], :probe)
+      issue = worker.issue
+      first = %{event: :session_started, session_id: "first", timestamp: DateTime.utc_now(), worker_pid: worker.pid}
+      send(ctx.server, {:codex_worker_update, issue.id, first})
+      assert :sys.get_state(ctx.server, 200).running[issue.id].turn_count == 1
+
+      review = %{issue | state: "Agent Review"}
+      poll(ctx.server, [review])
+      assert_receive {:cleanup_started, "budget", cleanup, :fresh_session}, 500
+      assert Process.alive?(worker.pid)
+
+      send(ctx.server, {:codex_worker_update, issue.id, first})
+      send(ctx.server, {:codex_worker_update, issue.id, %{first | session_id: "stale", worker_pid: self()}})
+      assert :sys.get_state(ctx.server, 200).running[issue.id].turn_count == 1
+      send(ctx.server, {:codex_worker_update, issue.id, %{first | session_id: "second"}})
+
+      assert %{pid: ^cleanup, turn_count: 2, cleanup_action: {:block, reason}} =
+               :sys.get_state(ctx.server, 200).running[issue.id]
+
+      assert reason == "agent.live_max_turns reached: turn_count=2 limit=2"
+      poll(ctx.server, [%{review | state: @final_status}])
+      refute_receive {:cleanup_started, _, _, _}, 30
+      send(cleanup, :finish_cleanup)
+      await(fn -> :sys.get_state(ctx.server, 200).running == %{} end)
+
+      state = :sys.get_state(ctx.server, 200)
+      refute Process.alive?(worker.pid)
+      assert state.retry_attempts == %{}
+
+      if @final_status == "Agent Review" do
+        assert %{error: ^reason, turn_count: 2} = state.blocked[issue.id]
+        assert MapSet.member?(state.claimed, issue.id)
+      else
+        refute Map.has_key?(state.blocked, issue.id)
+        refute MapSet.member?(state.claimed, issue.id)
+        assert File.dir?(worker.workspace_path) == (@final_status != "Done")
+      end
+    end
+  end
+
   test "terminal tracker truth supersedes pending retry even if cleanup task dies", ctx do
     entries = install_workers(ctx, ["one"], :probe)
     issue = entries["one"].issue

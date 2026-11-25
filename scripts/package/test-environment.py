@@ -63,6 +63,7 @@ package_helper() {{ {str(self.helper)!r} "$@"; }}
 die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
 project_id() {{ printf 'project-one\\n'; }}
 validate_agent() {{ case "$1" in codex|claude) ;; *) return 1 ;; esac; }}
+runner_pending_migration() {{ :; }}
 runner_project_lock() {{ :; }}
 package_update_lock() {{ :; }}
 package_current_home() {{ printf '%s\\n' "$symphony_home"; }}
@@ -192,7 +193,7 @@ class InitProviderGuidanceTest(unittest.TestCase):
             target.symlink_to(ROOT / ".codex/skills" / skill)
         self.runtime = self.root / "runtime"
         self.runtime.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$HOME/../operations"\n'
-            'case "$*" in *State.Status*) [ -n "${ACTUAL:-}" ] || exit 1; echo running ;; '
+            'case "$*" in info) exit 0 ;; *State.Status*) [ -n "${ACTUAL:-}" ] || exit 1; echo running ;; '
             '*com.symphony.agent*) echo "$ACTUAL" ;; *) exit 99 ;; esac\n')
         self.runtime.chmod(0o700)
         self.env["SYMPHONY_CONTAINER_RUNTIME"] = str(self.runtime)
@@ -203,7 +204,7 @@ class InitProviderGuidanceTest(unittest.TestCase):
             env=dict(self.env, **env), text=True, capture_output=True)
 
     def init(self, *args, **env):
-        return self.cli("init", "--linear-project", "fixture", *args, **env)
+        return self.cli("init", "--repository", "https://github.com/fixture/init.git", "--linear-project", "fixture", *args, **env)
 
     def metadata(self, provider):
         files = list((self.root / "config/projects").glob("*.env"))
@@ -221,12 +222,12 @@ class InitProviderGuidanceTest(unittest.TestCase):
                         f"runner doctor --agent {provider}", f"run --agent {provider}"):
                     self.assertIn(command, result.stdout)
                 self.assertNotIn("auth " + ("codex" if provider == "claude" else "claude"), result.stdout)
-        self.assertTrue(all(line.startswith("inspect ") for line in (self.root / "operations").read_text().splitlines()))
+        self.assertTrue(all(line == "info" or line.startswith("inspect ") or line.startswith("volume inspect ") for line in (self.root / "operations").read_text().splitlines()))
 
     def test_both_provider_transition_instructions_preserve_all_project_state(self):
         self.assertEqual(self.init().returncode, 0)
         workflow = self.repo / "WORKFLOW.md"
-        workflow.write_text(workflow.read_text() + "\nuser policy\n")
+        workflow.write_text("user policy\n")
         credentials = next((self.root / "config/projects").glob("*.env"))
         credentials.write_text("LINEAR_API_KEY=private-fixture\nGH_TOKEN=private-fixture\n")
         override = self.repo / ".codex/skills/custom/SKILL.md"
@@ -239,12 +240,12 @@ class InitProviderGuidanceTest(unittest.TestCase):
             self.assertIn("Intended provider: " + new, result.stdout)
             self.assertIn("Stored desired provider: " + old, result.stdout)
             self.assertIn("Actual runner provider: " + old, result.stdout)
-            self.assertIn("symphony update --development-runner --agent " + new, result.stdout)
+            self.assertIn("update --development-runner --agent " + new, result.stdout)
             self.assertEqual(before, {p: p.read_bytes() for p in before})
             self.assertNotIn("private-fixture", result.stdout + result.stderr)
             retained = self.init(ACTUAL=old)
             self.assertIn("Intended provider: " + old, retained.stdout)
-        self.assertTrue(all(line.startswith("inspect ") for line in (self.root / "operations").read_text().splitlines()))
+        self.assertTrue(all(line == "info" or line.startswith("inspect ") or line.startswith("volume inspect ") for line in (self.root / "operations").read_text().splitlines()))
 
     def test_retained_claude_checks_auth_before_conditional_pause_and_login(self):
         self.init()

@@ -277,6 +277,38 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
+  test "native turn limit is omitted by default and explicit legacy values reach the SDK", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(session, "native-limit-omitted", ctx.issue, [])
+    after
+      assert :ok = Adapter.stop_session(session)
+    end
+
+    workflow = Workflow.workflow_file_path()
+    contents = File.read!(workflow)
+
+    for limit <- [0, 101, "invalid", 100] do
+      File.write!(workflow, String.replace(contents, "---\n", "---\nclaude:\n  max_agentic_turns: #{limit}\n", global: false))
+
+      if limit == 100 do
+        assert Config.settings!().claude.max_agentic_turns == 100
+      else
+        assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+        assert message =~ "claude.max_agentic_turns"
+      end
+    end
+
+    assert {:ok, legacy} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(legacy, "native-limit-100", ctx.issue, [])
+    after
+      assert :ok = Adapter.stop_session(legacy)
+    end
+  end
+
   test "configured effort reaches the SDK and workflow reload changes only new sessions", ctx do
     contents = File.read!(Workflow.workflow_file_path())
     File.write!(Workflow.workflow_file_path(), String.replace(contents, "---\n", "---\nclaude:\n  effort: xhigh\n", global: false))
@@ -490,6 +522,36 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
              Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :expected_profile, String.duplicate("b", 64)))
 
     assert :ready = AgentPause.current()
+  end
+
+  test "a rejected Claude profile retains validated startup ownership when stop is unconfirmed", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "valid-owned-lost-stop")
+    cleanup = Path.join(ctx.root, "capture-cleanup.mjs")
+    receipt = Path.join(ctx.root, "cleanup-receipt")
+
+    File.write!(cleanup, """
+    import { writeFileSync } from 'node:fs';
+    writeFileSync(#{Jason.encode!(receipt)}, process.argv[2]);
+    """)
+
+    owner = self()
+
+    opts =
+      Keyword.merge(ctx.opts,
+        helper_path: helper,
+        cleanup_path: cleanup,
+        expected_profile: String.duplicate("b", 64),
+        on_startup_cleanup: &send(owner, {:startup_cleanup, &1})
+      )
+
+    assert {:error, {:agent_pause, :policy_blocked, _}} = Adapter.start_session(ctx.workspace, opts)
+    assert_received {:startup_cleanup, retry} when is_function(retry, 0)
+    refute_received {:startup_cleanup, :closed}
+    refute File.exists?(receipt)
+
+    assert :ok = retry.()
+    assert %{"native" => [%{"pid" => 999_999, "start" => "0"}]} = receipt |> File.read!() |> Jason.decode!()
   end
 
   test "a transient error after quota recovery remains eligible for scheduler backoff", ctx do
@@ -1339,9 +1401,58 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     end
   end
 
-  test "shared attempt override permits 129 inputs through the production helper Port", ctx do
-    assert {:ok, session} = Adapter.start_session(ctx.workspace, Keyword.put(ctx.opts, :max_turns, 129))
-    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", max_turns: 1)
+  test "a turn rejected by the helper does not emit a start", ctx do
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    owner = self()
+    on_message = &send(owner, {:turn_update, &1})
+
+    try do
+      assert {:error, {:agent_blocked, "protocol_error"}} =
+               Adapter.run_turn(session, String.duplicate("x", 524_289), ctx.issue, on_message: on_message)
+
+      refute_received {:turn_update, %{event: :session_started}}
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "a turn start requires an acknowledgement for its session and request and emits once", ctx do
+    helper = Path.expand("../../../runner/claude/test/fixtures/adversarial-peer.mjs", __DIR__)
+    File.write!(Path.join(ctx.workspace, "peer-mode"), "events")
+    opts = Keyword.put(ctx.opts, :helper_path, helper)
+    owner = self()
+    on_message = &send(owner, {:turn_update, &1})
+
+    for prompt <- ["foreign-turn-ack", "stale-turn-ack", "missing-turn-ack"] do
+      assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
+
+      try do
+        assert {:error, {:agent_blocked, "protocol_error"}} =
+                 Adapter.run_turn(session, prompt, ctx.issue, on_message: on_message)
+
+        refute_received {:turn_update, %{event: :session_started}}
+      after
+        Adapter.stop_session(session)
+      end
+    end
+
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, opts)
+
+    try do
+      assert {:ok, %{session_id: id}} = Adapter.run_turn(session, "duplicate-turn-ack", ctx.issue, on_message: on_message)
+      assert_received {:turn_update, %{event: :session_started, provider: :claude, session_id: ^id}}
+      refute_received {:turn_update, %{event: :session_started}}
+    after
+      Adapter.stop_session(session)
+    end
+  end
+
+  test "shared attempt budget is captured by the production helper Port", ctx do
+    path = Workflow.workflow_file_path()
+    workflow = [workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory"]
+    write_workflow_file!(path, Keyword.merge(workflow, max_turns_per_attempt: 129, max_turns: 1))
+    assert {:ok, session} = Adapter.start_session(ctx.workspace, ctx.opts)
+    write_workflow_file!(path, Keyword.put(workflow, :max_turns, 1))
 
     try do
       for _ <- 1..129, do: assert({:ok, _} = Adapter.run_turn(session, "ordinary continuation", ctx.issue, []))
@@ -1349,6 +1460,15 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert :ready = AgentPause.current()
     after
       Adapter.stop_session(session)
+    end
+
+    assert {:ok, replacement} = Adapter.start_session(ctx.workspace, ctx.opts)
+
+    try do
+      assert {:ok, _} = Adapter.run_turn(replacement, "legacy allowance", ctx.issue, [])
+      assert {:error, :claude_attempt_turn_limit} = Adapter.run_turn(replacement, "attempt overrun", ctx.issue, [])
+    after
+      Adapter.stop_session(replacement)
     end
   end
 
@@ -1409,11 +1529,18 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
     assert Port.info(renewed.port) == nil
   end
 
-  test "late Human Review and terminal tracker states prevent native allowance redispatch", ctx do
+  test "late Human Review, manual block and terminal tracker states prevent native allowance redispatch", ctx do
     supervisor = start_supervised!(Task.Supervisor)
-    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: Path.join(ctx.root, "workspaces"), tracker_kind: "memory", prompt: "native-allowance", max_turns: 3)
 
-    for late_state <- ["Human Review", "Done"] do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(ctx.root, "workspaces"),
+      tracker_kind: "memory",
+      tracker_blocked_states: ["Blocked"],
+      prompt: "native-allowance",
+      max_turns: 3
+    )
+
+    for late_state <- ["Human Review", "Blocked", "Done"] do
       issue = %{ctx.issue | id: late_state, identifier: "ALLOWANCE-#{String.replace(late_state, " ", "-")}", state: "In Progress", dispatchable: true}
       Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
       {worker, native, workspace, event_id} = native_allowance_attempt(supervisor, issue)
@@ -1428,7 +1555,7 @@ defmodule SymphonyElixir.ClaudeAdapterTest do
       assert released.blocked == %{}
       refute Map.has_key?(released.retry_attempts, issue.id)
       refute MapSet.member?(released.claimed, issue.id)
-      assert File.dir?(workspace) == (late_state == "Human Review")
+      assert File.dir?(workspace) == (late_state != "Done")
       assert :ready = AgentPause.current()
     end
   end

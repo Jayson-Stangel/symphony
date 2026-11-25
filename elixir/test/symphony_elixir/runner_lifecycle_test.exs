@@ -32,8 +32,59 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     esac
     case "$1:${!#}" in
       inspect:symphony*-service|inspect:symphony*-service-before-update|inspect:symphony*-other|inspect:symphony*-other-before-update) exit 1 ;;
+      ps:name=*-task-limit-*)
+        pattern=${!#}; pattern=${pattern#name=^}; pattern=${pattern%\$}
+        for role in probe observer; do
+          if [ -f "$FIXTURE_STATE.$role-name" ] && [ "$(cat "$FIXTURE_STATE.$role-name")" = "$pattern" ]; then
+            cat "$FIXTURE_STATE.$role-name"
+          fi
+        done
+        exit ;;
+      ps:name=^*'before-update$')
+        [ "${FIXTURE_BACKUP_LIST_FAIL:-false}" != true ] || exit 1
+        if [ -f "$FIXTURE_STATE.backup" ]; then cat "$FIXTURE_STATE.backup.id"; fi
+        exit ;;
+      ps:name=^*'$')
+        if [ -f "$FIXTURE_STATE" ]; then cat "$FIXTURE_STATE.id"; fi
+        exit ;;
+      inspect:*-task-limit-*)
+        role=probe; case "${!#}" in *-observer) role=observer ;; esac
+        [ -f "$FIXTURE_STATE.$role-name" ] && [ "$(cat "$FIXTURE_STATE.$role-name")" = "${!#}" ] || exit 1
+        case "$*" in
+          *PidsLimit*) cat "$FIXTURE_STATE.probe-limit" ;;
+          *)
+            if [ "${FIXTURE_TASK_LIMIT_INSPECT_FAIL:-false}" = true ] && [ ! -f "$FIXTURE_STATE.inspect-failed" ]; then
+              touch "$FIXTURE_STATE.inspect-failed"; exit 1
+            fi
+            cat "$FIXTURE_STATE.$role-name" ;;
+        esac
+        exit ;;
+      stop:*-task-limit-*) exit ;;
+      rm:*-task-limit-*-observer) rm "$FIXTURE_STATE.observer-name"; exit ;;
+      rm:*-task-limit-*) rm -f "$FIXTURE_STATE.probe-limit" "$FIXTURE_STATE.probe-name" "$FIXTURE_STATE.probe-workflow"; exit ;;
+      start:*-task-limit-*) grep -qx '  kind: memory' "$FIXTURE_STATE.probe-workflow"; exit ;;
     esac
+    case "$1:${2:-}" in exec:*-task-limit-*) cat "$FIXTURE_STATE.probe-limit"; exit ;; esac
     case "$1" in
+      create)
+        case "$*" in
+          *com.symphony.mode=task-limit-probe*) ;;
+          *) exit 1 ;;
+        esac
+        [[ "$*" = *type=volume,target=/etc/symphony,volume-nocopy* && "$*" != *type=bind* ]] || exit 1
+        while [ "$#" -gt 1 ]; do
+          case "$1" in
+            --pids-limit) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-limit" ;;
+            --name) printf '%s\\n' "$2" >"$FIXTURE_STATE.probe-name" ;;
+          esac
+          shift
+        done
+        [ "${FIXTURE_TASK_LIMIT_INTERRUPT:-false}" != true ] || exit 1
+        cat "$FIXTURE_STATE.probe-name" ;;
+      cp)
+        [ "$3" = "$(cat "$FIXTURE_STATE.probe-name"):/etc/symphony/WORKFLOW.md" ] || exit 1
+        cp "$2" "$FIXTURE_STATE.probe-workflow"
+        [ "${FIXTURE_TASK_LIMIT_COPY_FAIL:-false}" != true ] ;;
       context) printf 'ssh://fixture-daemon\\n' ;;
       info)
         case "${!#}" in
@@ -44,6 +95,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         [ "${FIXTURE_SECURITY_EMPTY:-false}" != true ] || exit 0
         printf '%s\\n' "${FIXTURE_SECURITY_OPTIONS-name=seccomp,profile=builtin}" ;;
       inspect)
+        if [ "$state" = "$FIXTURE_STATE.backup" ] && [ "${FIXTURE_BACKUP_INSPECT_FAIL:-false}" = true ]; then exit 1; fi
         [ -f "$state" ] || { printf '\\n'; exit 1; }
         case "$*" in
           *State.Running*) cat "$state" ;;
@@ -57,9 +109,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
           *com.symphony.codex.config.sha256*) cat "$state.config-sha" ;;
           *com.symphony.codex.config.owner*) cat "$state.config-owner" ;;
           *com.symphony.codex.config.profile*) echo trust-ro-v2 ;;
-          *com.symphony.claude.runtime*) cat "$state.claude-runtime" ;;
+          *com.symphony.claude.runtime*) if [ -f "$state.claude-runtime" ]; then cat "$state.claude-runtime"; fi ;;
+          *com.symphony.pids-limit*) if [ -f "$state.pids-limit" ]; then cat "$state.pids-limit"; fi ;;
           *com.symphony.profile*) cat "$state.profile" ;;
           *"{{.Image}}"*) cat "$state.image" ;;
+          *"{{.Id}}"*) cat "$state.id" ;;
+          *com.symphony.storage*com.symphony.linear-project*) printf '%s|\\n' "$(cat "$state.storage")" ;;
           *com.symphony.storage*) cat "$state.storage" ;;
           *Config.Entrypoint*) echo "${FIXTURE_ENTRYPOINT:-/usr/local/bin/symphony-runner}" ;;
           *HostConfig.PortBindings*) printf '127.0.0.1 %s\\n' "$(cat "$state.port")" ;;
@@ -93,7 +148,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         case "$*" in
           *--format*)
             [ "${FIXTURE_FOREIGN_VOLUME:-false}" != true ] || { echo foreign; exit 0; }
-            name=${!#}; printf '%s' "${name%-claude-auth}" ;;
+            name=${!#}; storage=${name%-claude-auth}; storage=${storage%-workspaces}; storage=${storage%-state}
+            case "$*" in *com.symphony.linear-project*) printf '%s|' "$storage" ;; *) printf '%s' "$storage" ;; esac ;;
         esac ;;
       ps)
         case "$*" in
@@ -102,6 +158,10 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         esac ;;
       run)
         case "$*" in
+          *container:*-task-limit-*)
+            while [ "$1" != --name ]; do shift; done
+            printf '%s\\n' "$2" >"$FIXTURE_STATE.observer-name"
+            [ "${FIXTURE_TASK_LIMIT_FAIL:-false}" != true ] ;;
           *'test -f /etc/symphony/WORKFLOW.md'*) [ "${FIXTURE_WORKFLOW_UNREADABLE:-false}" != true ] || exit 1 ;;
           *--codex-config-snapshot*)
             [ "${FIXTURE_CONFIG_FAIL:-false}" != true ] || { echo '{"error":"sandbox_unqualified_config"}'; exit 1; }
@@ -137,6 +197,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     with open(sys.argv[1],'w') as stream: json.dump([{'Config':{'Env':env,'Labels':labels},'Mounts':mounts}],stream)
     INSPECTPY
             echo true > "$FIXTURE_STATE"
+            python3 -c 'import secrets; print(secrets.token_hex(32))' > "$FIXTURE_STATE.id"
             printf '%s' "${!#}" > "$FIXTURE_STATE.image"
             for arg in "$@"; do
               case "$arg" in
@@ -147,6 +208,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
                 com.symphony.codex.config.owner=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.config-owner" ;;
                 com.symphony.codex.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.codex-runtime" ;;
                 com.symphony.claude.runtime=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.claude-runtime" ;;
+                com.symphony.pids-limit=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.pids-limit" ;;
                 com.symphony.profile=*) printf '%s' "${arg#*=}" > "$FIXTURE_STATE.profile" ;;
               esac
             done
@@ -181,10 +243,20 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
             printf '%s %s %s\\n' "$provider" "$initialize" "$uid" >> "$FIXTURE_STATE.preparations"
             if [ -f "${FIXTURE_FAIL_PREP_AFTER_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_PREP_AFTER_FILE"; exit 1; fi ;;
           *"/state/agent-upgrade-unresumed"*) touch "$FIXTURE_STATE.unresumed" "$FIXTURE_STATE.draining" ;;
+          *"test -f /var/lib/symphony/agent-upgrade-unresumed"*)
+            test -f "$FIXTURE_STATE.unresumed" && test -f "$FIXTURE_STATE.draining" ;;
         esac ;;
       exec)
         case "$*" in
-          *agent-upgrade-unresumed*) test -f "$FIXTURE_STATE.unresumed" && test -f "$FIXTURE_STATE.draining" ;;
+          *pids.max*)
+            limit=inherited
+            if [ -f "$state.pids-limit" ]; then limit=$(cat "$state.pids-limit")
+            elif [ -f "$state.claude-runtime" ] && [ "$(cat "$state.claude-runtime")" = cpu4-pid512-build1g-v1 ]; then limit=512; fi
+            if [ "$limit" = inherited ]; then limit=37505; fi
+            printf '%s\\n' "$limit" ;;
+          *agent-upgrade-unresumed*)
+            [ "${FIXTURE_TASK_LIMIT_EXEC_BLOCKED:-false}" != true ] &&
+              test -f "$FIXTURE_STATE.unresumed" && test -f "$FIXTURE_STATE.draining" ;;
         esac ;;
       stop)
         echo false > "$FIXTURE_STATE"
@@ -198,12 +270,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
         fi
         echo true > "$FIXTURE_STATE" ;;
       rm)
+        if [ -f "${FIXTURE_FAIL_RM_BEFORE_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_RM_BEFORE_FILE"; exit 1; fi
         rm -f "$state"
         if [ -f "${FIXTURE_FAIL_RM_FILE:-/nonexistent}" ]; then rm "$FIXTURE_FAIL_RM_FILE"; exit 1; fi ;;
       rename)
         from=$FIXTURE_STATE; to=$FIXTURE_STATE.backup
         case "$2" in *-before-update) from=$FIXTURE_STATE.backup; to=$FIXTURE_STATE ;; esac
-        for suffix in '' .agent .port .profile .image .storage .codex-runtime .claude-runtime .config-sha .config-owner .inspect; do
+        [ -f "$from.pids-limit" ] || rm -f "$to.pids-limit"
+        for suffix in '' .agent .port .profile .image .id .storage .codex-runtime .claude-runtime .config-sha .config-owner .pids-limit .inspect; do
           if [ -f "$from$suffix" ]; then mv "$from$suffix" "$to$suffix"; fi
         done ;;
     esac
@@ -334,14 +408,21 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   end
 
   test "missing container inspection discards stdout before reporting or creating", ctx do
-    assert {"Isolated worker: not running\n", 0} = launch(ctx, "status")
+    assert {status, 0} = launch(ctx, "status")
+    assert status =~ "Isolated worker: not running\n"
+    assert status =~ "desired inherited; launched unavailable; observed cgroup pids.max unavailable"
     assert {_, 0} = launch(ctx, "start")
 
     calls = File.read!(ctx.log) |> String.split("\n", trim: true)
     assert Enum.any?(calls, &String.starts_with?(&1, "run\t"))
     refute Enum.any?(calls, &String.starts_with?(&1, "rm\t"))
     before_creation = Enum.take_while(calls, &(not String.contains?(&1, "--detach")))
-    refute Enum.any?(before_creation, &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t")))
+
+    refute Enum.any?(
+             before_creation,
+             &(String.starts_with?(&1, "inspect\t") and String.contains?(&1, "com.symphony.storage") and not String.contains?(&1, "com.symphony.linear-project") and
+                 String.contains?(&1, "symphony-#{ctx.namespace}-#{@project_id}\t"))
+           )
   end
 
   test "runner recreation reuses repository volumes and stops gracefully", ctx do
@@ -371,7 +452,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     metadata = File.read!(Path.join(ctx.config, "runners/#{@project_id}.env"))
     File.write!(ctx.log, "")
     assert {_, 0} = launch(ctx, "stop")
-    assert {"Isolated worker: stopped (false)\n", 0} = launch(ctx, "status")
+    assert {status, 0} = launch(ctx, "status")
+    assert status =~ "Isolated worker: stopped (false)\n"
+    assert status =~ "desired inherited; launched inherited; observed cgroup pids.max unavailable"
     assert File.read!(Path.join(ctx.config, "runners/#{@project_id}.env")) == metadata
     calls = File.read!(ctx.log)
     assert calls =~ "stop\t--time\t30\tsymphony-#{ctx.namespace}-service"
@@ -574,7 +657,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.write!(Path.join(ctx.root, "sleep"), "#!/bin/sh\nexit 0\n")
     File.chmod!(Path.join(ctx.root, "sleep"), 0o755)
     # Exercise the ordinary transition after source handoff, without invoking the source updater.
-    script = ~s|source "$1" --help >/dev/null; runner_transition "$(repo_root)" codex false|
+    script = ~s|source "$1" --help >/dev/null; runner_transition "$(checkout_root)" codex false|
     assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
     assert message =~ "pending transition has no qualified Codex settings"
     refute File.read!(ctx.log) =~ "stop\t"
@@ -594,6 +677,12 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute File.read!(ctx.log) =~ "rename\t"
     assert String.trim(File.read!(ctx.state)) == "true"
     assert File.read!(Path.join(journal, "image")) == record
+
+    File.mkdir!(Path.join(journal, "previous.env"))
+    assert {message, 1} = System.cmd("bash", ["-c", script, "fixture", @launcher], cd: ctx.repo, env: ctx.env, stderr_to_stdout: true)
+    assert message =~ "cannot read prior transition metadata"
+    refute File.read!(ctx.log) =~ "stop\t"
+    refute File.read!(ctx.log) =~ "rename\t"
   end
 
   test "pre-existing pending transition refuses incompatible legacy rollback and preserves both containers", ctx do
@@ -843,8 +932,9 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     File.mkdir_p!(other_repo)
     assert {_, 0} = System.cmd("git", ["init", "-q", other_repo])
     assert {_, 0} = System.cmd("git", ["-C", other_repo, "remote", "add", "origin", "https://github.com/example/other.git"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"])
-    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"])
+    other_runtime = [{"FIXTURE_STATE", Path.join(ctx.root, "other-auth-state")}]
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "login"], other_runtime)
+    assert {_, 0} = launch_args(%{ctx | repo: other_repo}, ["auth", "claude", "remove"], other_runtime)
 
     File.touch!(barrier <> ".release")
     # The updater invokes native readiness internally while holding the same lock.
@@ -1045,9 +1135,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
     metadata = Path.join(ctx.config, "runners/#{@project_id}.env")
+    interrupt_after_backup_removed!(ctx, env)
     File.cp!(Path.join(journal, "previous.env"), metadata)
-    File.rm!(ctx.state <> ".backup")
-    ready_curl!(ctx)
     assert {_, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert File.read!(metadata) =~ "SYMPHONY_RUNNER_IMAGE_ID=fixture-claude-image\n"
     refute File.exists?(journal)
@@ -1175,6 +1264,14 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env
   end
 
+  defp interrupt_after_backup_removed!(ctx, env) do
+    ready_curl!(ctx)
+    fail = Path.join(ctx.root, "fail-after-backup-removed")
+    File.write!(fail, "")
+    assert {_, 1} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env ++ [{"FIXTURE_FAIL_RM_FILE", fail}])
+    refute File.exists?(ctx.state <> ".backup")
+  end
+
   defp ready_curl!(ctx) do
     File.write!(Path.join(ctx.root, "curl"), """
     #!/bin/sh
@@ -1195,7 +1292,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
 
-    for suffix <- ["", ".agent", ".port", ".profile", ".image", ".storage"] do
+    for suffix <- ["", ".agent", ".port", ".profile", ".image", ".id", ".storage"] do
       if File.exists?(ctx.state <> ".backup" <> suffix) do
         File.rename!(ctx.state <> ".backup" <> suffix, ctx.state <> suffix)
       end
@@ -1254,10 +1351,8 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
   test "development refresh recovers a journal after the old candidate committed and backup was removed", ctx do
     env = pending_claude_transition!(ctx)
     journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
-    # The previous transition passed readiness and removed its backup, but died before journal cleanup.
-    File.rm!(ctx.state <> ".backup")
+    interrupt_after_backup_removed!(ctx, env)
     File.cp!(Path.join(journal, "previous.env"), Path.join(ctx.config, "runners/#{@project_id}.env"))
-    ready_curl!(ctx)
     env = env ++ [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}]
     assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--agent", "claude"], env)
     assert message =~ "Runner transition complete: claude"
@@ -1332,7 +1427,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     script = """
     source "$1" --help >/dev/null
-    root=$(repo_root)
+    root=$(checkout_root)
     # Inject an interruption at the completed candidate's commit boundary.
     # Startup and ownership/preflight still use the actual manager functions.
     runner_record_observed_metadata() {
@@ -1366,7 +1461,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     test "journal settles interrupted refresh before completion unknown=#{unknown}", ctx do
       script = """
       source "$1" --help >/dev/null
-      root=$(repo_root); runtime=$(container_runtime)
+      root=$(checkout_root); runtime=$(container_runtime)
       runner_project_lock "$root"
       journal="$runner_home/$(project_id "$root").transition"
       mkdir -m 700 "$journal"
@@ -1424,7 +1519,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
 
     script = """
     source "$1" --help >/dev/null
-    root=$(repo_root); runtime=$(container_runtime); name=$(runner_id "$root")
+    root=$(checkout_root); runtime=$(container_runtime); name=$(runner_id "$root")
     runner_project_lock "$root"
     journal="$runner_home/$(project_id "$root").transition"
     mkdir -m 700 "$journal"; printf codex > "$journal/target"
@@ -1477,6 +1572,107 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert length(Regex.scan(~r/--codex-config-snapshot/, File.read!(ctx.log))) == 1
     assert File.read!(ctx.log) =~ "rename\t"
     refute File.exists?(ctx.state <> ".backup")
+  end
+
+  test "same-image Codex update replaces the original and settles an interrupted commit", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    previous = File.read!(ctx.state <> ".id")
+    image = File.read!(ctx.state <> ".image")
+    fail = Path.join(ctx.root, "interrupt-after-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "codex"]
+
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_FILE", fail}])
+    candidate = File.read!(ctx.state <> ".id")
+    refute previous == candidate
+    assert File.read!(ctx.state <> ".image") == image
+    refute File.exists?(ctx.state <> ".backup")
+    assert {message, 1} = launch_args(ctx, ["run"])
+    assert message =~ "runner update is pending"
+    rollback = ["update", "--development-runner", "--rollback-runner"]
+    assert {message, 1} = launch_args(ctx, rollback)
+    assert message =~ "prior container is no longer retained"
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    records = File.read!(Path.join(journal, "previous.env"))
+    File.rename!(ctx.state <> ".id", ctx.state <> ".saved-id")
+    assert {message, 1} = launch_args(ctx, rollback)
+    assert message =~ "cannot verify transition container identity"
+    assert File.read!(Path.join(journal, "previous.env")) == records
+    File.rename!(ctx.state <> ".saved-id", ctx.state <> ".id")
+    File.write!(ctx.state <> ".id", String.duplicate("e", 64) <> "\n")
+    assert {message, 1} = launch_args(ctx, update)
+    assert message =~ "prior container differs from the journal"
+    File.write!(ctx.state <> ".id", candidate)
+    # The committed candidate can be unavailable or held on another reload.
+    # Settling its journal must not retry admission or recreate the listener.
+    File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nexit 1\n")
+    assert {message, 1} = launch_args(ctx, update, [{"FIXTURE_BACKUP_LIST_FAIL", "true"}])
+    assert message =~ "cannot verify transition container state"
+    assert File.read!(Path.join(journal, "previous.env")) == records
+    assert {message, 0} = launch_args(ctx, update)
+    assert message =~ "Previously completed runner transition recovered"
+    assert File.read!(ctx.state <> ".id") == candidate
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+  end
+
+  test "same-image Codex retry settles an interrupted commit with the backup still retained", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    fail = Path.join(ctx.root, "interrupt-before-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "codex"]
+
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_BEFORE_FILE", fail}])
+    candidate = File.read!(ctx.state <> ".id")
+    assert File.read!(ctx.state <> ".backup") == "false\n"
+    File.write!(Path.join(ctx.root, "curl"), "#!/bin/sh\nexit 1\n")
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    records = File.read!(Path.join(journal, "previous.env"))
+    rollback = ["update", "--development-runner", "--rollback-runner"]
+
+    for command <- [update, rollback] do
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, command, [{"FIXTURE_BACKUP_INSPECT_FAIL", "true"}])
+      assert message =~ "cannot verify transition container state"
+      assert File.read!(ctx.state <> ".backup") == "false\n"
+      assert File.read!(Path.join(journal, "previous.env")) == records
+      refute File.read!(ctx.log) =~ ~r/(^|\n)(start|stop|rm|rename)\t/
+    end
+
+    File.rename!(ctx.state <> ".id", ctx.state <> ".saved-id")
+    assert {message, 1} = launch_args(ctx, update)
+    assert message =~ "cannot verify transition container identity"
+    assert File.read!(ctx.state <> ".backup") == "false\n"
+    File.rename!(ctx.state <> ".saved-id", ctx.state <> ".id")
+    assert {message, 0} = launch_args(ctx, update)
+    assert message =~ "Runner transition complete"
+    assert File.read!(ctx.state <> ".id") == candidate
+    refute File.exists?(ctx.state <> ".backup")
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+  end
+
+  test "same-image rollback retry recognizes the restored prior by its known ID", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run"])
+    prior = File.read!(ctx.state <> ".id")
+    fail = Path.join(ctx.root, "interrupt-before-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "codex"]
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_BEFORE_FILE", fail}])
+    candidate = File.read!(ctx.state <> ".id")
+    refute candidate == prior
+
+    fail_start = Path.join(ctx.root, "interrupt-after-prior-rename")
+    File.write!(fail_start, "")
+    rollback = ["update", "--development-runner", "--rollback-runner"]
+    assert {_, 1} = launch_args(ctx, rollback, [{"FIXTURE_FAIL_START_FILE", fail_start}])
+    refute File.exists?(ctx.state <> ".backup")
+    assert File.read!(ctx.state <> ".id") == prior
+    assert {message, 0} = launch_args(ctx, rollback)
+    assert message =~ "Prior runner restored"
+    assert File.read!(ctx.state <> ".id") == prior
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
   end
 
   test "Codex development refresh pins one atomic tuple across interrupted replacement", ctx do
@@ -1681,10 +1877,11 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert calls =~ "--read-only"
     assert calls =~ "--cap-drop\tALL"
     assert calls =~ "--security-opt\tno-new-privileges"
-    assert calls =~ "--pids-limit\t512\t--cpus\t4"
+    assert calls =~ "--cpus\t4"
+    refute calls =~ ~r/[^\n]*--pids-limit[^\n]*--detach/
     assert calls =~ "/tmp:rw,nosuid,nodev,size=512m"
     assert calls =~ "/var/tmp/symphony-build:rw,exec,nosuid,nodev,uid=11001,gid=11001,mode=700,size=1g"
-    assert calls =~ "com.symphony.claude.runtime=cpu4-pid512-build1g-v1"
+    assert calls =~ "com.symphony.claude.runtime=cpu4-build1g-v2"
     assert calls =~ "127.0.0.1:4111:4010"
     assert calls =~ "-claude-auth:/home/claude"
     assert calls =~ "--env\tSYMPHONY_GIT_TOKEN\t"
@@ -2001,7 +2198,7 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     refute message =~ "Previously completed"
     assert File.read!(ctx.log) =~ "rename\t"
     assert File.read!(ctx.log) =~ "--detach"
-    assert File.read!(ctx.state <> ".claude-runtime") == "cpu4-pid512-build1g-v1"
+    assert File.read!(ctx.state <> ".claude-runtime") == "cpu4-build1g-v2"
     assert File.read!(ctx.state <> ".backup.claude-runtime") == "previous-profile"
   end
 
@@ -2036,8 +2233,182 @@ defmodule SymphonyElixir.RunnerLifecycleTest do
     assert File.read!(ctx.state <> ".claude-runtime") == "previous-profile"
   end
 
+  for agent <- ["claude", "codex"] do
+    @task_limit_agent agent
+    test "#{agent} applies and clears a project task cap using the same image", ctx do
+      project = Path.join(ctx.config, "projects/#{@project_id}.env")
+      {initial, 0} = launch_args(ctx, ["run", "--agent", @task_limit_agent], [{"SYMPHONY_RUNNER_PIDS_LIMIT", "800"}])
+      assert initial =~ "desired inherited; launched inherited; observed cgroup pids.max 37505"
+      refute File.read!(ctx.log) =~ ~r/--detach[^\n]*--pids-limit|--pids-limit[^\n]*--detach/
+      image = File.read!(ctx.state <> ".image")
+      ready_curl!(ctx)
+      update = ["update", "--development-runner", "--agent", @task_limit_agent]
+      File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+      assert {message, 1} = launch_args(ctx, ["run", "--agent", @task_limit_agent])
+      assert message =~ "listener task limit differs"
+      assert {result, 0} = launch_args(ctx, update)
+      assert result =~ "Runner transition complete"
+      calls = File.read!(ctx.log)
+      assert calls =~ "--pids-limit\t2048"
+      assert calls =~ ~r/create[^\n]*type=volume,target=\/etc\/symphony,volume-nocopy/
+      assert calls =~ ~r/\ncp\t[^\n]*\/WORKFLOW\.md\t[^\n]*:\/etc\/symphony\/WORKFLOW\.md\t\nstart\t/
+      assert File.read!(ctx.state <> ".image") == image
+      assert {status, 0} = launch_args(ctx, ["runner", "status"])
+      assert status =~ "desired explicit (2048); launched explicit (2048); observed cgroup pids.max 2048"
+      File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=\n")
+      File.write!(ctx.log, "")
+      assert {_, 0} = launch_args(ctx, update)
+      refute File.read!(ctx.log) =~ ~r/--detach[^\n]*--pids-limit|--pids-limit[^\n]*--detach/
+      assert File.read!(ctx.state <> ".image") == image
+      assert {status, 0} = launch_args(ctx, ["runner", "status"])
+      assert status =~ "desired inherited; launched inherited; observed cgroup pids.max 37505"
+    end
+  end
+
+  test "invalid task caps fail before an existing runner is drained or replaced", ctx do
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    update = ["update", "--development-runner", "--agent", "claude"]
+
+    for invalid <- ["0", "-1", "01", "1.5", "max", "9223372036854775808"] do
+      File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=#{invalid}\n")
+      File.write!(ctx.log, "")
+      assert {message, 1} = launch_args(ctx, update)
+      assert message =~ "positive decimal integer"
+      refute File.read!(ctx.log) =~ ~r/(^|\n)(exec|stop|rename|rm|build)\t/
+    end
+
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=59\n")
+    File.write!(ctx.log, "")
+    assert {message, 1} = launch_args(ctx, update, [{"FIXTURE_TASK_LIMIT_FAIL", "true"}, {"FIXTURE_TASK_LIMIT_INSPECT_FAIL", "true"}])
+    assert message =~ "SYMPHONY_RUNNER_PIDS_LIMIT=59 and boot the selected runner"
+    calls = File.read!(ctx.log)
+    assert calls =~ "stop\t--time\t5\tsymphony-#{ctx.namespace}-task-limit-"
+    assert File.exists?(ctx.state <> ".inspect-failed")
+    assert calls =~ ~r/rm\t--volumes\tsymphony-#{ctx.namespace}-task-limit-[^\t]+-observer/
+    refute File.exists?(ctx.state <> ".observer-name")
+    refute File.exists?(ctx.state <> ".probe-name")
+    refute calls =~ ~r/(^|\n)(exec|stop|rename|rm)\t[^\n]*symphony-#{ctx.namespace}-#{@project_id}/
+    assert String.trim(File.read!(ctx.state)) == "true"
+    refute File.exists?(Path.join(ctx.config, "runners/#{@project_id}.transition"))
+
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_TASK_LIMIT_INTERRUPT", "true"}])
+    assert File.read!(ctx.log) =~ "stop\t--time\t5\tsymphony-#{ctx.namespace}-task-limit-"
+    assert File.read!(ctx.log) =~ "rm\t--volumes\tsymphony-#{ctx.namespace}-task-limit-"
+    refute File.exists?(ctx.state <> ".probe-name")
+    assert String.trim(File.read!(ctx.state)) == "true"
+
+    File.write!(ctx.log, "")
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_TASK_LIMIT_COPY_FAIL", "true"}])
+    calls = File.read!(ctx.log)
+    assert calls =~ ~r/\ncp\t[^\n]*:\/etc\/symphony\/WORKFLOW\.md/
+    refute calls =~ ~r/\nstart\t[^\n]*-task-limit-/
+    refute File.exists?(ctx.state <> ".probe-workflow")
+    assert String.trim(File.read!(ctx.state)) == "true"
+  end
+
+  test "failed same-image transition can restore a legacy Claude 512 task cap", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    File.write!(ctx.state <> ".claude-runtime", "cpu4-pid512-build1g-v1")
+    File.rm!(ctx.state <> ".pids-limit")
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+    fail = Path.join(ctx.root, "failed-task-limit-create")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "claude"]
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_CREATE_FILE", fail}])
+    assert File.read!(ctx.state <> ".pids-limit") == "2048"
+    assert {message, 0} = launch_args(ctx, ["update", "--development-runner", "--rollback-runner"], [{"FIXTURE_TASK_LIMIT_EXEC_BLOCKED", "true"}])
+    assert message =~ "Prior runner restored"
+    assert {status, 0} = launch_args(ctx, ["runner", "status"])
+    assert status =~ "desired explicit (2048); launched explicit (512); observed cgroup pids.max 512"
+    assert File.read!(ctx.log) =~ "target=/var/lib/symphony,readonly"
+  end
+
+  test "a pending task limit stays pinned if the project setting changes", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+    fail = Path.join(ctx.root, "failed-task-limit-create")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "claude"]
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_CREATE_FILE", fail}])
+    previous = File.read!(Path.join(ctx.config, "runners/#{@project_id}.transition/previous.env"))
+    assert previous =~ "SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=inherited"
+    assert previous =~ "SYMPHONY_TRANSITION_PIDS_LIMIT=2048"
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=4096\n")
+    File.write!(ctx.log, "")
+    assert {_, 0} = launch_args(ctx, update)
+    assert {status, 0} = launch_args(ctx, ["runner", "status"])
+    assert status =~ "desired explicit (4096); launched explicit (2048); observed cgroup pids.max 2048"
+    refute File.read!(ctx.log) =~ ~r/--detach[^\n]*--name\tsymphony-#{ctx.namespace}-#{@project_id}/
+  end
+
+  test "development refresh after backup removal retains the updated same-image cap", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+    fail = Path.join(ctx.root, "interrupt-after-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "claude"]
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_FILE", fail}])
+    refute File.exists?(ctx.state <> ".backup")
+    assert File.read!(ctx.state <> ".pids-limit") == "2048"
+    assert {message, 0} = launch_args(ctx, update, [{"FIXTURE_CLAUDE_IMAGE_ID", "fixture-claude-image-new"}])
+    assert message =~ "Runner transition complete"
+    assert File.read!(ctx.state <> ".image") == "fixture-claude-image-new"
+    assert File.read!(ctx.state <> ".pids-limit") == "2048"
+  end
+
+  test "older same-image journal settles a running candidate with the pinned changed cap", ctx do
+    ready_curl!(ctx)
+    assert {_, 0} = launch_args(ctx, ["run", "--agent", "claude"])
+    image = File.read!(ctx.state <> ".image")
+    project = Path.join(ctx.config, "projects/#{@project_id}.env")
+    File.write!(project, "GH_TOKEN=fixture\nSYMPHONY_RUNNER_PIDS_LIMIT=2048\n")
+    fail = Path.join(ctx.root, "interrupt-after-backup-removal")
+    File.write!(fail, "")
+    update = ["update", "--development-runner", "--agent", "claude"]
+
+    assert {_, 1} = launch_args(ctx, update, [{"FIXTURE_FAIL_RM_FILE", fail}])
+    refute File.exists?(ctx.state <> ".backup")
+    candidate = File.read!(ctx.state <> ".id")
+    assert File.read!(ctx.state <> ".image") == image
+    assert File.read!(ctx.state <> ".pids-limit") == "2048"
+    journal = Path.join(ctx.config, "runners/#{@project_id}.transition")
+    # Match older launchers' journal format at the same interruption point.
+    previous = Path.join(journal, "previous.env")
+    legacy = Regex.replace(~r/^SYMPHONY_TRANSITION_(PRIOR|RESUMED)_CONTAINER_ID=.*\n/m, File.read!(previous), "")
+    assert legacy =~ "SYMPHONY_RUNNER_APPLIED_PIDS_LIMIT=inherited\n"
+    assert legacy =~ "SYMPHONY_TRANSITION_PIDS_LIMIT=2048\n"
+    File.write!(previous, legacy)
+    File.write!(ctx.log, "")
+
+    assert {message, 0} = launch_args(ctx, update)
+    assert message =~ "Previously completed runner transition recovered"
+    assert File.read!(ctx.state <> ".id") == candidate
+    refute File.read!(ctx.log) =~ "--detach"
+    refute File.read!(ctx.log) =~ "rename\t"
+    refute File.exists?(journal)
+  end
+
   defp launch_args(ctx, args, extra_env \\ []) do
     env = Map.merge(Map.new(ctx.env), Map.new(extra_env)) |> Enum.to_list()
-    System.cmd("bash", [@launcher | args], cd: ctx.repo, env: env, stderr_to_stdout: true)
+    # Historical mount and crash-recovery cases exercise checkout ownership in
+    # the shared launcher functions. The supported CLI resolver is tested with
+    # registered projects in ProjectIdentityTest and the installed lifecycle.
+    script = """
+    source "$1" --help >/dev/null
+    shift
+    repo_root() { checkout_root; }
+    command=$1; shift
+    "$command" "$@"
+    """
+
+    System.cmd("bash", ["-c", script, "lifecycle", @launcher | args], cd: ctx.repo, env: env, stderr_to_stdout: true)
   end
 end
