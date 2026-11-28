@@ -4,7 +4,10 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.{PromptBuilder, RemoteWorkflow}
   alias SymphonyElixir.Tracker.Issue
-  alias SymphonyElixirWeb.ObservabilityPubSub
+  alias SymphonyElixirWeb.{DashboardLive, ObservabilityPubSub}
+  import Phoenix.LiveViewTest, only: [render_component: 2]
+
+  @project_details %{name: "Example App", url: "https://linear.app/example/project/example-app-6bc7f07fd71e"}
 
   setup do
     root = Path.join(System.tmp_dir!(), "symphony-remote-test-#{System.unique_integer([:positive])}")
@@ -148,7 +151,13 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     # boot snapshot and a local transport in place of a private GitHub repo.
     store = Process.whereis(WorkflowStore)
     old = :sys.get_state(store)
-    Application.put_env(:symphony_elixir, :prepared_remote_workflow, %{state | source: Map.put(ctx.remote, :scratch_root, Path.dirname(state.path))})
+
+    Application.put_env(:symphony_elixir, :prepared_remote_workflow, %{
+      state
+      | source: Map.put(ctx.remote, :scratch_root, Path.dirname(state.path)),
+        project_details: @project_details
+    })
+
     assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
     System.put_env("SYMPHONY_REMOTE_REPOSITORY", ctx.source.repository)
 
@@ -174,7 +183,7 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
 
       next = workflow(ctx.source.project, "changed prompt for {{ issue.identifier }}")
       next_commit = commit!(ctx.root, next)
-      assert %{commit: ^next_commit, status: "loaded"} = check_now(store)
+      assert %{commit: ^next_commit, status: "loaded", project_details: @project_details} = check_now(store)
       assert_receive :observability_updated
       assert WorkflowStore.status().sha256 == digest(next)
       assert File.read!(state.path) == next
@@ -256,22 +265,104 @@ defmodule SymphonyElixir.RemoteWorkflowTest do
     assert :ok = PromptBuilder.validate_template(workflow.prompt_template)
   end
 
-  test "the Linear project probe checks the exact slug through the selected token", ctx do
+  test "project registration and workflow can use either form of the same Linear slug", ctx do
+    slug_id = "6bc7f07fd71e"
+    full_slug = "example-app-#{slug_id}"
+    fetch = fn _ -> RemoteWorkflow.fetch(ctx.remote) end
+
+    for workflow_slug <- [slug_id, full_slug] do
+      commit = commit!(ctx.root, workflow(workflow_slug, "project #{workflow_slug}"))
+
+      for registered_slug <- [slug_id, full_slug] do
+        source = %{ctx.source | project: registered_slug}
+        assert {:ok, %{commit: ^commit}} = WorkflowStore.prepare_remote(source, false, fetch)
+      end
+    end
+
+    assert {:error, :linear_project_mismatch} =
+             WorkflowStore.prepare_remote(%{ctx.source | project: "other-app-abcdef123456"}, false, fetch)
+  end
+
+  test "the Linear project lookup verifies identity and returns display details through the selected token", ctx do
     assert {:ok, state} = WorkflowStore.prepare_remote(ctx.source, false, fn _ -> RemoteWorkflow.fetch(ctx.remote) end)
+    slug_id = "6bc7f07fd71e"
+    project = %{"id" => "project-id", "slugId" => slug_id, "name" => @project_details.name, "url" => @project_details.url}
 
-    assert :ok =
-             Client.verify_project(state.settings.tracker,
-               request_fun: fn payload, headers ->
-                 assert payload["variables"] == %{projectSlug: ctx.source.project}
-                 assert {"Authorization", "fixture-key"} in headers
-                 {:ok, %{status: 200, body: %{"data" => %{"projects" => %{"nodes" => [%{"id" => "id", "slugId" => ctx.source.project}]}}}}}
-               end
-             )
+    for slug <- [slug_id, "example-app-#{slug_id}"] do
+      tracker = %{state.settings.tracker | project_slug: slug}
 
-    assert {:error, :linear_project_unverified} =
-             Client.verify_project(state.settings.tracker,
-               request_fun: fn _, _ -> {:ok, %{status: 200, body: %{"data" => %{"projects" => %{"nodes" => []}}}}} end
-             )
+      assert {:ok, @project_details} =
+               Client.fetch_project(tracker,
+                 request_fun: fn payload, headers ->
+                   assert payload["variables"] == %{projectSlug: slug}
+                   assert {"Authorization", "fixture-key"} in headers
+                   {:ok, %{status: 200, body: %{"data" => %{"projects" => %{"nodes" => [project]}}}}}
+                 end
+               )
+
+      assert {:ok, nil} =
+               Client.fetch_project(tracker,
+                 request_fun: fn _, _ ->
+                   untrusted_url = %{project | "url" => "https://linear.app@example.test/project"}
+                   {:ok, %{status: 200, body: %{"data" => %{"projects" => %{"nodes" => [untrusted_url]}}}}}
+                 end
+               )
+
+      for nodes <- [[], [project, project], [%{project | "slugId" => "abcdef123456"}]] do
+        assert {:error, :linear_project_unverified} =
+                 Client.fetch_project(tracker,
+                   request_fun: fn _, _ -> {:ok, %{status: 200, body: %{"data" => %{"projects" => %{"nodes" => nodes}}}}} end
+                 )
+      end
+    end
+  end
+
+  test "the dashboard links to the Linear project and exact accepted workflow", ctx do
+    fetch = fn _ -> RemoteWorkflow.fetch(ctx.remote) end
+    assert {:ok, state} = WorkflowStore.prepare_remote(ctx.source, false, fetch)
+    expected_url = "https://github.com/example/project/blob/#{ctx.commit}/WORKFLOW.md"
+
+    payload = %{
+      counts: %{running: 0, retrying: 0, blocked: 0},
+      codex_totals: %{seconds_running: 0},
+      rate_limits: %{},
+      running: [],
+      blocked: [],
+      retrying: []
+    }
+
+    with_project = %{state | project_details: @project_details}
+
+    for status <- ["loaded", "stale", "rejected"] do
+      {:reply, workflow, _state} = WorkflowStore.handle_call(:status, self(), %{with_project | status: status})
+      assert workflow.github_url == expected_url
+      assert workflow.commit == ctx.commit
+      assert workflow.sha256 == digest(ctx.bytes)
+      assert workflow.last_successful_source_check_at
+
+      html = render_component(&DashboardLive.render/1, payload: Map.put(payload, :workflow, workflow), now: DateTime.utc_now())
+      links = html |> Floki.parse_fragment!() |> Floki.find("#workflow-source a")
+      assert Floki.attribute(links, "href") == [@project_details.url, expected_url]
+      assert Floki.text(hd(links)) == @project_details.name
+      assert html =~ "View WORKFLOW.md on GitHub"
+      assert html =~ ctx.source.branch
+      refute html |> Floki.parse_fragment!() |> Floki.find("#workflow-source") |> Floki.text() =~ workflow.project
+      refute html =~ workflow.sha256
+      refute html =~ "Last successful source check"
+
+      case status do
+        "loaded" -> refute html =~ "last accepted version"
+        "stale" -> assert html =~ "Source unavailable, using last accepted version"
+        "rejected" -> assert html =~ "Update rejected, showing last accepted version"
+      end
+    end
+
+    {:reply, workflow, _state} = WorkflowStore.handle_call(:status, self(), state)
+    html = render_component(&DashboardLive.render/1, payload: Map.put(payload, :workflow, workflow), now: DateTime.utc_now())
+    assert Floki.attribute(Floki.parse_fragment!(html), "#workflow-source a", "href") == [expected_url]
+
+    html = render_component(&DashboardLive.render/1, payload: Map.put(payload, :workflow, %{status: "loaded"}), now: DateTime.utc_now())
+    refute html =~ "View WORKFLOW.md on GitHub"
   end
 
   defp check_now(store) do

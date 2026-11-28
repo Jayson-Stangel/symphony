@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Linear.Client do
   alias SymphonyElixir.Tracker.Issue
 
   @issue_page_size 50
+  @full_project_slug ~r/\A[a-z0-9][a-z0-9-]*-([0-9a-f]{12})\z/i
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -100,24 +101,54 @@ defmodule SymphonyElixir.Linear.Client do
   @project_query """
   query SymphonyLinearProject($projectSlug: String!) {
     projects(filter: {slugId: {eq: $projectSlug}}, first: 2) {
-      nodes { id slugId }
+      nodes { id slugId name url }
     }
   }
   """
 
   @doc false
-  @spec verify_project(Tracker.t(), keyword()) :: :ok | {:error, atom()}
-  def verify_project(tracker, opts \\ []) do
+  @spec fetch_project(Tracker.t(), keyword()) :: {:ok, %{name: String.t(), url: String.t()} | nil} | {:error, atom()}
+  def fetch_project(tracker, opts \\ []) do
     slug = tracker.project_slug
 
     with {:ok, _} <- Application.ensure_all_started(:req),
-         {:ok, %{"data" => %{"projects" => %{"nodes" => [%{"id" => id, "slugId" => ^slug}]}}} = body}
+         {:ok, %{"data" => %{"projects" => %{"nodes" => [%{"id" => id, "slugId" => slug_id} = project]}}} = body}
          when is_binary(id) and byte_size(id) > 0 <-
            graphql(@project_query, %{projectSlug: slug}, Keyword.put(opts, :tracker_settings, tracker)),
-         [] <- Map.get(body, "errors", []) do
-      :ok
+         [] <- Map.get(body, "errors", []),
+         true <- same_project_slug?(slug, slug_id) do
+      {:ok, project_details(project)}
     else
       _ -> {:error, :linear_project_unverified}
+    end
+  end
+
+  defp project_details(%{"name" => name, "url" => url})
+       when is_binary(name) and is_binary(url) do
+    case URI.new(url) do
+      {:ok, %URI{scheme: "https", host: "linear.app", userinfo: nil, port: 443, path: "/" <> _rest}}
+      when name != "" ->
+        %{name: name, url: url}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp project_details(_project), do: nil
+
+  @doc "Compares a Linear project slug or slug ID by its project identity."
+  @spec same_project_slug?(term(), term()) :: boolean()
+  def same_project_slug?(left, right) when is_binary(left) and is_binary(right) do
+    project_slug_id(left) == project_slug_id(right)
+  end
+
+  def same_project_slug?(_left, _right), do: false
+
+  defp project_slug_id(slug) do
+    case Regex.run(@full_project_slug, slug, capture: :all_but_first) do
+      [slug_id] -> slug_id
+      nil -> slug
     end
   end
 
@@ -169,7 +200,7 @@ defmodule SymphonyElixir.Linear.Client do
 
     request_fun =
       Keyword.get(opts, :request_fun, fn request_payload, headers ->
-        post_graphql_request(request_payload, headers, tracker_settings.endpoint)
+        post_graphql_request(request_payload, headers, tracker_settings.endpoint, Keyword.get(opts, :request_timeout, 30_000))
       end)
 
     with {:ok, headers} <- graphql_headers(tracker_settings, Keyword.get(opts, :sign_file_urls, false)),
@@ -379,12 +410,13 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp post_graphql_request(payload, headers, endpoint) do
+  defp post_graphql_request(payload, headers, endpoint, timeout) do
     Req.post(endpoint,
       headers: headers,
       json: payload,
       retry: false,
-      connect_options: [timeout: 30_000]
+      connect_options: [timeout: timeout],
+      receive_timeout: min(timeout, 15_000)
     )
   end
 

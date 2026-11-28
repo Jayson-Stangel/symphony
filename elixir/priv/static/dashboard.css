@@ -161,6 +161,12 @@ pre,
   align-items: start;
 }
 
+.hero-side {
+  width: fit-content;
+  max-width: min(100%, 28rem);
+  justify-self: end;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--muted);
@@ -182,6 +188,20 @@ pre,
   max-width: 46rem;
   color: var(--muted);
   font-size: 1rem;
+}
+
+#workflow-source {
+  overflow-wrap: anywhere;
+}
+
+#workflow-source a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+#workflow-source a:hover {
+  color: var(--ink);
 }
 
 .metric-grid {
@@ -421,9 +441,8 @@ pre,
   flex-wrap: wrap;
   gap: 0.75rem 1.125rem;
   width: fit-content;
-  max-width: min(100%, 28rem);
+  max-width: 100%;
   box-sizing: border-box;
-  justify-self: end;
   padding: 0.75rem 1rem;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -528,7 +547,7 @@ pre,
 }
 
 @media (max-width: 860px) {
-  .runner-identity {
+  .hero-side {
     justify-self: start;
   }
 }

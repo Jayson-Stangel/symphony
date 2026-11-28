@@ -25,7 +25,8 @@ updates, and a choice of Codex or Claude.
 
 For new projects, an installed Symphony manager can read the root workflow
 from a registered GitHub branch and reload it as commits land. Multiple
-registrations can run independently on one host. See the
+registrations can run independently on one host. The Operations Dashboard links
+to the Linear project and the exact workflow each runner loaded. See the
 [remote project setup](docs/packaged-install.md#register-a-new-project-from-a-remote-workflow).
 
 ## What is different
